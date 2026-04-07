@@ -46,7 +46,7 @@ class SummaryDAG:
         self._init_db()
 
     def _init_db(self):
-        self._conn = sqlite3.connect(str(self.db_path), timeout=5.0)
+        self._conn = sqlite3.connect(str(self.db_path), timeout=5.0, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS summary_nodes (

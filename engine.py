@@ -225,7 +225,16 @@ class LCMEngine(ContextEngine):
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [LCM_GREP, LCM_DESCRIBE, LCM_EXPAND]
 
-    def handle_tool_call(self, name: str, args: Dict[str, Any]) -> str:
+    def handle_tool_call(self, name: str, args: Dict[str, Any], **kwargs) -> str:
+        # Ingest live messages if passed (enables current-turn search)
+        messages = kwargs.get("messages")
+        
+        if messages and self._session_id:
+            try:
+                self._ingest_messages(messages)
+            except Exception as e:
+                logger.debug("Ingest during tool call failed: %s", e)
+
         handlers = {
             "lcm_grep": lcm_tools.lcm_grep,
             "lcm_describe": lcm_tools.lcm_describe,
@@ -259,9 +268,11 @@ class LCMEngine(ContextEngine):
         (dedup by role+content for the current session).
         """
         if not self._session_id:
+            logger.debug("Ingest skipped: no session_id")
             return
 
         existing_count = self._store.get_session_count(self._session_id)
+        logger.debug("Ingest: session=%s existing=%d incoming=%d", self._session_id, existing_count, len(messages))
 
         # Only ingest messages beyond what we've already stored
         # This is a simple heuristic — in practice, the message list
@@ -273,6 +284,7 @@ class LCMEngine(ContextEngine):
 
         estimates = [count_message_tokens(m) for m in new_messages]
         self._store.append_batch(self._session_id, new_messages, estimates)
+        logger.debug("Ingested %d messages into LCM store", len(new_messages))
 
     def _get_store_ids_for_messages(self, messages: List[Dict[str, Any]]) -> List[int]:
         """Map message list back to store_ids.
