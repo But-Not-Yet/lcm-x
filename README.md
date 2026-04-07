@@ -40,11 +40,11 @@ into anything that was compacted.
  └────────────────────┘            └──────────┘
                                         │
                                         ▼
-                              ┌───────────────────┐
-                              │ Immutable Store   │
-                              │ (SQLite + FTS5)   │
-                              │ Every msg verbatim│
-                              └───────────────────┘
+                              ┌────────────────────┐
+                              │ Immutable Store    │
+                              │ (SQLite + FTS5)    │
+                              │ Every msg verbatim │
+                              └────────────────────┘
 ```
 
 ## What It Does
