@@ -58,7 +58,7 @@ into anything that was compacted.
 
 ## Requirements
 
-- Hermes Agent with the **context engine plugin slot** ([PR #5700](https://github.com/NousResearch/hermes-agent/pull/5700))
+- Hermes Agent with the **pluggable context engine slot** ([PR #6126](https://github.com/NousResearch/hermes-agent/pull/6126))
 - Python 3.11+
 - No additional dependencies (uses Hermes auxiliary LLM for summarization)
 
@@ -70,6 +70,13 @@ git clone https://github.com/stephenschoettler/hermes-lcm ~/.hermes/plugins/herm
 
 # Or for a specific profile
 git clone https://github.com/stephenschoettler/hermes-lcm ~/.hermes/profiles/myprofile/plugins/hermes-lcm
+```
+
+Set the context engine in your `config.yaml`:
+
+```yaml
+context:
+  engine: lcm
 ```
 
 Restart Hermes. Check with `/plugins`:
@@ -128,12 +135,14 @@ hermes-lcm/
 └── tests/           # 35 tests
 ```
 
-Requires the **context engine plugin slot** — a small patch to hermes-agent core
-that makes the `ContextCompressor` swappable via the plugin system.
-Same pattern as OpenClaw's `contextEngine` slot + `lossless-claw`.
+Requires the **pluggable context engine slot** — an ABC (`ContextEngine`) in
+hermes-agent core that makes the `ContextCompressor` swappable via the plugin
+system. Config-driven selection via `context.engine` in config.yaml, with a
+`plugins/context_engine/` discovery directory. Same pattern as OpenClaw's
+`contextEngine` slot + `lossless-claw`.
 
-- **PR:** [NousResearch/hermes-agent#5700](https://github.com/NousResearch/hermes-agent/pull/5700)
-- **Issue:** [NousResearch/hermes-agent#5701](https://github.com/NousResearch/hermes-agent/issues/5701)
+- **PR:** [NousResearch/hermes-agent#6126](https://github.com/NousResearch/hermes-agent/pull/6126) (supersedes [#5700](https://github.com/NousResearch/hermes-agent/pull/5700))
+- **Issue:** [NousResearch/hermes-agent#5701](https://github.com/NousResearch/hermes-agent/issues/5701) (closed by #6126)
 - **Paper:** [papers.voltropy.com/LCM](https://papers.voltropy.com/LCM)
 
 ## License
