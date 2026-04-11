@@ -58,7 +58,7 @@ into anything that was compacted.
 
 ## Requirements
 
-- Hermes Agent with the **pluggable context engine slot** ([PR #6126](https://github.com/NousResearch/hermes-agent/pull/6126))
+- Hermes Agent with the **pluggable context engine slot** ([PR #7464](https://github.com/NousResearch/hermes-agent/pull/7464))
 - Python 3.11+
 - No additional dependencies (uses Hermes auxiliary LLM for summarization)
 
@@ -72,18 +72,32 @@ git clone https://github.com/stephenschoettler/hermes-lcm ~/.hermes/plugins/herm
 git clone https://github.com/stephenschoettler/hermes-lcm ~/.hermes/profiles/myprofile/plugins/hermes-lcm
 ```
 
-Set the context engine in your `config.yaml`:
+Restart Hermes. Activate the engine — either via the interactive UI or config file:
+
+**Option A — `hermes plugins` UI:**
+
+```
+hermes plugins
+```
+
+The composite plugins screen shows provider categories at the bottom.
+Select **Context Engine** and pick `lcm` from the radiolist.
+
+**Option B — config.yaml:**
 
 ```yaml
 context:
   engine: lcm
 ```
 
-Restart Hermes. Check with `/plugins`:
+Verify with `hermes plugins`:
 
 ```
 Plugins (1):
   ✓ hermes-lcm v0.1.0 (3 tools, 0 hooks)
+
+Provider Plugins:
+  Context Engine: lcm
 ```
 
 ## Configuration
@@ -141,8 +155,8 @@ system. Config-driven selection via `context.engine` in config.yaml, with a
 `plugins/context_engine/` discovery directory. Same pattern as OpenClaw's
 `contextEngine` slot + `lossless-claw`.
 
-- **PR:** [NousResearch/hermes-agent#6126](https://github.com/NousResearch/hermes-agent/pull/6126) (supersedes [#5700](https://github.com/NousResearch/hermes-agent/pull/5700))
-- **Issue:** [NousResearch/hermes-agent#5701](https://github.com/NousResearch/hermes-agent/issues/5701) (closed by #6126)
+- **PR:** [NousResearch/hermes-agent#7464](https://github.com/NousResearch/hermes-agent/pull/7464) (supersedes [#6126](https://github.com/NousResearch/hermes-agent/pull/6126), [#5700](https://github.com/NousResearch/hermes-agent/pull/5700))
+- **Issue:** [NousResearch/hermes-agent#5701](https://github.com/NousResearch/hermes-agent/issues/5701) (closed by #7464)
 - **Paper:** [papers.voltropy.com/LCM](https://papers.voltropy.com/LCM)
 
 ## License
