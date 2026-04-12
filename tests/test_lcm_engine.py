@@ -60,6 +60,27 @@ class TestEngineABC:
         assert "store_messages" in status
         assert "dag_nodes" in status
 
+    def test_compress_accepts_focus_topic(self, engine, monkeypatch):
+        import importlib
+
+        captured = {}
+
+        def mock_summary(**kwargs):
+            captured["focus_topic"] = kwargs.get("focus_topic")
+            return "Focused summary.\nExpand for details about: database", 1
+
+        lcm_engine_module = importlib.import_module("hermes_lcm.engine")
+        monkeypatch.setattr(lcm_engine_module, "summarize_with_escalation", mock_summary)
+
+        messages = [{"role": "system", "content": "You are a helpful assistant."}]
+        for i in range(20):
+            messages.append({"role": "user", "content": f"Question {i}: " + "x" * 200})
+            messages.append({"role": "assistant", "content": f"Answer {i}: " + "y" * 200})
+
+        engine.compress(messages, focus_topic="database schema")
+
+        assert captured["focus_topic"] == "database schema"
+
 
 class TestEngineIngest:
     def test_ingest_stores_messages(self, engine):
