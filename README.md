@@ -149,6 +149,15 @@ hermes-lcm/
 └── tests/           # 46 tests
 ```
 
+**Running tests:**
+
+`test_lcm_core.py` (store, DAG, tokenizer, escalation) runs standalone — no dependencies beyond pytest. `test_lcm_engine.py` (engine integration) imports `agent.context_engine` and must be run from a Hermes Agent checkout:
+
+```bash
+cd hermes-agent
+python -m pytest plugins/hermes-lcm/tests/ -v
+```
+
 Requires the **pluggable context engine slot** — an ABC (`ContextEngine`) in
 hermes-agent core that makes the `ContextCompressor` swappable via the plugin
 system. Config-driven selection via `context.engine` in config.yaml, with a
