@@ -117,7 +117,8 @@ class LCMEngine(ContextEngine):
         return rough >= self.threshold_tokens
 
     def compress(self, messages: List[Dict[str, Any]],
-                 current_tokens: int = None) -> List[Dict[str, Any]]:
+                 current_tokens: int = None,
+                 focus_topic: Optional[str] = None) -> List[Dict[str, Any]]:
         """Main compaction entry point.
 
         1. Ingest any new messages into the store
@@ -169,6 +170,7 @@ class LCMEngine(ContextEngine):
             model=self._config.summary_model,
             l2_budget_ratio=self._config.l2_budget_ratio,
             l3_truncate_tokens=self._config.l3_truncate_tokens,
+            focus_topic=focus_topic or "",
         )
 
         # Step 5: Create DAG node
@@ -190,7 +192,7 @@ class LCMEngine(ContextEngine):
         self._last_compacted_store_id = max(source_store_ids) if source_store_ids else 0
 
         # Step 6: Check if condensation is needed
-        self._maybe_condense()
+        self._maybe_condense(focus_topic=focus_topic)
 
         # Step 7: Assemble new active context
         compressed = self._assemble_context(messages[0], messages[fresh_tail_start:])
@@ -382,7 +384,7 @@ class LCMEngine(ContextEngine):
 
     # -- Internal: condensation --------------------------------------------
 
-    def _maybe_condense(self) -> None:
+    def _maybe_condense(self, focus_topic: Optional[str] = None) -> None:
         """Check if any depth level has enough nodes for condensation."""
         max_depth = self._config.incremental_max_depth
         if max_depth == 0:
@@ -418,6 +420,7 @@ class LCMEngine(ContextEngine):
                 model=self._config.summary_model,
                 l2_budget_ratio=self._config.l2_budget_ratio,
                 l3_truncate_tokens=self._config.l3_truncate_tokens,
+                focus_topic=focus_topic or "",
             )
 
             node = SummaryNode(
