@@ -516,6 +516,35 @@ class TestAssemblyGuardrails:
         assert "B" * 120 not in summary_blob
         assert "C" * 10 not in summary_blob
 
+    def test_max_assembly_tokens_keeps_newest_tail_message_even_if_it_alone_exceeds_cap(self, tmp_path, monkeypatch):
+        import importlib
+
+        config = LCMConfig(
+            fresh_tail_count=10,
+            database_path=str(tmp_path / "lcm_guardrail_newest.db"),
+            max_assembly_tokens=50,
+        )
+        instance = LCMEngine(config=config)
+        instance._session_id = "guardrail-session"
+        instance.compression_count = 1
+
+        lcm_engine_module = importlib.import_module("hermes_lcm.engine")
+        monkeypatch.setattr(
+            lcm_engine_module,
+            "count_message_tokens",
+            lambda msg: len(msg.get("content", "")),
+        )
+
+        result = instance._assemble_context(
+            {"role": "system", "content": "s" * 10},
+            [
+                {"role": "user", "content": "a" * 20},
+                {"role": "assistant", "content": "b" * 60},
+            ],
+        )
+
+        assert [msg["content"] for msg in result[1:]] == ["b" * 60]
+
     def test_reserve_tokens_floor_warns_when_misconfigured(self, tmp_path, caplog):
         config = LCMConfig(
             database_path=str(tmp_path / "lcm_guardrail_warn.db"),

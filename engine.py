@@ -475,7 +475,7 @@ class LCMEngine(ContextEngine):
             tail_token_total = 0
             for msg in reversed(tail_messages):
                 msg_tokens = count_message_tokens(msg)
-                if used + tail_token_total + msg_tokens > assembly_cap:
+                if used + tail_token_total + msg_tokens > assembly_cap and kept_tail_reversed:
                     break
                 kept_tail_reversed.append(msg)
                 tail_token_total += msg_tokens
