@@ -468,7 +468,7 @@ class LCMEngine(ContextEngine):
         assembly_cap = self._effective_assembly_token_cap()
 
         tail_selected = tail_messages
-        tail_budget = None
+        summary_budget = None
         if assembly_cap is not None:
             used = count_message_tokens(sys_msg)
             kept_tail_reversed: list[Dict[str, Any]] = []
@@ -476,11 +476,11 @@ class LCMEngine(ContextEngine):
             for msg in reversed(tail_messages):
                 msg_tokens = count_message_tokens(msg)
                 if used + tail_token_total + msg_tokens > assembly_cap:
-                    continue
+                    break
                 kept_tail_reversed.append(msg)
                 tail_token_total += msg_tokens
             tail_selected = list(reversed(kept_tail_reversed))
-            tail_budget = max(0, assembly_cap - used - tail_token_total)
+            summary_budget = max(0, assembly_cap - used - tail_token_total)
 
         # Collect DAG summaries — highest depth first for context hierarchy
         all_nodes = self._dag.get_session_nodes(self._session_id)
@@ -509,13 +509,14 @@ class LCMEngine(ContextEngine):
                 last_role = result[-1].get("role", "system")
                 summary_role = "assistant" if last_role != "assistant" else "user"
                 selected_parts = summary_parts
-                if tail_budget is not None:
+                if summary_budget is not None:
                     selected_parts = []
                     for part in summary_parts:
                         candidate = "\n\n---\n\n".join(selected_parts + [part])
                         candidate_msg = {"role": summary_role, "content": candidate}
-                        if count_message_tokens(candidate_msg) <= tail_budget:
-                            selected_parts.append(part)
+                        if count_message_tokens(candidate_msg) > summary_budget:
+                            break
+                        selected_parts.append(part)
                 if selected_parts:
                     combined = "\n\n---\n\n".join(selected_parts)
                     result.append({"role": summary_role, "content": combined})
@@ -541,6 +542,12 @@ class LCMEngine(ContextEngine):
             reserve_cap = self.context_length - self._config.reserve_tokens_floor
             if reserve_cap > 0:
                 caps.append(reserve_cap)
+            else:
+                logger.warning(
+                    "LCM reserve_tokens_floor=%d disables reserve-based assembly cap because context_length=%d",
+                    self._config.reserve_tokens_floor,
+                    self.context_length,
+                )
 
         if not caps:
             return None
