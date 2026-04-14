@@ -6,6 +6,10 @@
 ██   ██ ███████ ██   ██ ██      ██ ███████ ███████       ███████  ██████ ██      ██
 ```
 
+[![CI](https://github.com/stephenschoettler/hermes-lcm/actions/workflows/ci.yml/badge.svg)](https://github.com/stephenschoettler/hermes-lcm/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/stephenschoettler/hermes-lcm)](https://github.com/stephenschoettler/hermes-lcm/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **Lossless Context Management plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent)**
 
 > Bounded context, unbounded memory. Nothing is ever lost.
@@ -20,10 +24,32 @@ Inspired by [lossless-claw](https://github.com/martian-engineering/lossless-claw
 When context fills up, agents replace your conversation with a flat lossy summary.
 Details get lost. The model confidently misremembers. No way to go back.
 
+```
+Standard compression:
+
+  Turn 1-50:  "You discussed database schema changes and deployment plans"
+  Turn 51+:   (live conversation)
+
+  You: "What column type did we decide on for the user_events table?"
+  Agent: "I believe we discussed using JSONB" ← wrong, it was an integer array
+```
+
 ## The Fix
 
 Every message persisted. Hierarchical DAG summaries. Agent tools to drill back
 into anything that was compacted.
+
+```
+LCM compression:
+
+  D2 summary: project overview, key decisions (weeks of context)
+  D1 summary: database schema discussion, deployment checklist (hours)
+  D0 summary: specific column decisions, migration commands (minutes)
+  Fresh tail: last 64 messages (live, never compacted)
+
+  You: "What column type did we decide on for the user_events table?"
+  Agent: [lcm_grep: "user_events column type"] → integer[] with GIN index
+```
 
 ```
   Active Context                    Summary DAG
@@ -170,17 +196,19 @@ hermes-lcm/
 ├── tokens.py        # tiktoken with char-based fallback
 ├── schemas.py       # tool schemas (what the LLM sees)
 ├── tools.py         # tool handlers (lcm_grep, lcm_describe, lcm_expand, lcm_expand_query)
-└── tests/           # 59 tests
+└── tests/           # 67 tests
 ```
 
 **Running tests:**
 
-`test_lcm_core.py` (store, DAG, tokenizer, escalation) runs standalone — no dependencies beyond pytest. `test_lcm_engine.py` (engine integration) imports `agent.context_engine` and must be run from a Hermes Agent checkout:
-
 ```bash
-cd hermes-agent
-python -m pytest plugins/hermes-lcm/tests/ -v
+pip install pytest
+python -m pytest tests/ -v
 ```
+
+No Hermes Agent checkout required — the test suite includes a lightweight ABC stub so it runs standalone.
+
+## Context Engine Slot
 
 Requires the **pluggable context engine slot** — an ABC (`ContextEngine`) in
 hermes-agent core that makes the `ContextCompressor` swappable via the plugin
@@ -191,6 +219,16 @@ system. Config-driven selection via `context.engine` in config.yaml, with a
 - **PR:** [NousResearch/hermes-agent#7464](https://github.com/NousResearch/hermes-agent/pull/7464) (supersedes [#6126](https://github.com/NousResearch/hermes-agent/pull/6126), [#5700](https://github.com/NousResearch/hermes-agent/pull/5700))
 - **Issue:** [NousResearch/hermes-agent#5701](https://github.com/NousResearch/hermes-agent/issues/5701) (closed by #7464)
 - **Paper:** [papers.voltropy.com/LCM](https://papers.voltropy.com/LCM)
+
+## Contributing
+
+Issues and PRs welcome. This project has active community contributors and CI runs on every push and PR.
+
+- **Bug fixes** and **correctness improvements** are always top priority
+- **New features** should be scoped and backwards-compatible
+- **Tests required** — run `python -m pytest tests/ -v` before submitting
+
+See the [releases page](https://github.com/stephenschoettler/hermes-lcm/releases) for changelogs.
 
 ## License
 
