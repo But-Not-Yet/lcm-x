@@ -32,4 +32,16 @@ def register(ctx):
     # Register as the context engine (replaces ContextCompressor)
     ctx.register_context_engine(engine)
 
+    register_command = getattr(ctx, "register_command", None)
+    if callable(register_command):
+        from .command import handle_lcm_command
+
+        register_command(
+            "lcm",
+            lambda raw_args: handle_lcm_command(raw_args, engine),
+            description="LCM status and diagnostics",
+        )
+    else:
+        logger.info("LCM slash command registration unavailable on this Hermes host; continuing without /lcm")
+
     logger.info("LCM plugin loaded — lossless context management active")
