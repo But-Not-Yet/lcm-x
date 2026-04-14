@@ -15,7 +15,7 @@ from agent.context_engine import ContextEngine
 from .config import LCMConfig
 from .dag import SummaryDAG, SummaryNode
 from .escalation import summarize_with_escalation
-from .schemas import LCM_DESCRIBE, LCM_EXPAND, LCM_EXPAND_QUERY, LCM_GREP
+from .schemas import LCM_DESCRIBE, LCM_DOCTOR, LCM_EXPAND, LCM_EXPAND_QUERY, LCM_GREP, LCM_STATUS
 from .session_patterns import (
     build_session_match_keys,
     compile_session_patterns,
@@ -288,7 +288,7 @@ class LCMEngine(ContextEngine):
         return self._dag.reassign_session_nodes(old_session_id, new_session_id)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [LCM_GREP, LCM_DESCRIBE, LCM_EXPAND, LCM_EXPAND_QUERY]
+        return [LCM_GREP, LCM_DESCRIBE, LCM_EXPAND, LCM_EXPAND_QUERY, LCM_STATUS, LCM_DOCTOR]
 
     def handle_tool_call(self, name: str, args: Dict[str, Any], **kwargs) -> str:
         # Ingest live messages if passed (enables current-turn search)
@@ -305,6 +305,8 @@ class LCMEngine(ContextEngine):
             "lcm_describe": lcm_tools.lcm_describe,
             "lcm_expand": lcm_tools.lcm_expand,
             "lcm_expand_query": lcm_tools.lcm_expand_query,
+            "lcm_status": lcm_tools.lcm_status,
+            "lcm_doctor": lcm_tools.lcm_doctor,
         }
         handler = handlers.get(name)
         if handler:

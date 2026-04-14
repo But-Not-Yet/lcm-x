@@ -37,6 +37,8 @@ class TestEngineABC:
         assert "lcm_grep" in names
         assert "lcm_describe" in names
         assert "lcm_expand" in names
+        assert "lcm_status" in names
+        assert "lcm_doctor" in names
         assert "lcm_expand_query" in names
 
     def test_should_compress(self, engine):
@@ -843,3 +845,98 @@ class TestEngineTools:
 
         overview = json.loads(engine.handle_tool_call("lcm_describe", {}))
         assert "d2" in overview["depths"]
+
+    def test_handle_status_returns_session_overview(self, engine):
+        engine._store.append("test-session", {"role": "user", "content": "hello world"})
+        engine._dag.add_node(
+            SummaryNode(
+                session_id="test-session",
+                depth=0,
+                summary="greeting summary",
+                token_count=10,
+                source_token_count=50,
+                source_ids=[1],
+                source_type="messages",
+                created_at=0,
+            )
+        )
+        engine.compression_count = 3
+        engine.context_length = 128000
+        engine.threshold_tokens = 96000
+        engine.last_prompt_tokens = 40000
+
+        result = json.loads(engine.handle_tool_call("lcm_status", {}))
+
+        assert result["session_id"] == "test-session"
+        assert result["compression_count"] == 3
+        assert result["context_length"] == 128000
+        assert result["store"]["messages"] == 1
+        assert result["dag"]["total_nodes"] == 1
+        assert "d0" in result["dag"]["depths"]
+        assert result["config"]["fresh_tail_count"] == engine._config.fresh_tail_count
+        assert result["session_filters"]["ignored"] is False
+
+    def test_handle_status_shows_compression_ratio(self, engine):
+        engine._dag.add_node(
+            SummaryNode(
+                session_id="test-session",
+                depth=0,
+                summary="short",
+                token_count=10,
+                source_token_count=100,
+                source_ids=[],
+                source_type="messages",
+                created_at=0,
+            )
+        )
+
+        result = json.loads(engine.handle_tool_call("lcm_status", {}))
+        assert result["dag"]["compression_ratio"] == "10.0:1"
+
+    def test_handle_doctor_returns_healthy(self, engine):
+        result = json.loads(engine.handle_tool_call("lcm_doctor", {}))
+
+        assert result["overall"] == "healthy"
+        check_names = [c["check"] for c in result["checks"]]
+        assert "database_integrity" in check_names
+        assert "fts_index_sync" in check_names
+        assert "orphaned_dag_nodes" in check_names
+        assert "config_validation" in check_names
+        assert all(c["status"] == "pass" for c in result["checks"])
+
+    def test_handle_doctor_warns_on_bad_config(self, tmp_path):
+        config = LCMConfig(
+            database_path=str(tmp_path / "lcm_doctor.db"),
+            fresh_tail_count=1,
+            context_threshold=0.99,
+            condensation_fanin=1,
+        )
+        engine = LCMEngine(config=config)
+        engine._session_id = "test-session"
+
+        result = json.loads(engine.handle_tool_call("lcm_doctor", {}))
+
+        assert result["overall"] == "warnings"
+        config_check = next(c for c in result["checks"] if c["check"] == "config_validation")
+        assert config_check["status"] == "warn"
+        assert len(config_check["detail"]) == 3  # three warnings
+
+    def test_handle_doctor_detects_orphaned_nodes(self, engine):
+        # Add a node referencing a store_id that doesn't exist
+        engine._dag.add_node(
+            SummaryNode(
+                session_id="test-session",
+                depth=0,
+                summary="orphan",
+                token_count=10,
+                source_token_count=50,
+                source_ids=[99999],
+                source_type="messages",
+                created_at=0,
+            )
+        )
+
+        result = json.loads(engine.handle_tool_call("lcm_doctor", {}))
+
+        orphan_check = next(c for c in result["checks"] if c["check"] == "orphaned_dag_nodes")
+        assert orphan_check["status"] == "warn"

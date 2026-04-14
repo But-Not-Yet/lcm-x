@@ -72,6 +72,36 @@ LCM_EXPAND = {
     },
 }
 
+LCM_STATUS = {
+    "name": "lcm_status",
+    "description": (
+        "Get a quick health overview of the LCM engine for the current session. "
+        "Shows compression count, store size, DAG depth distribution, context usage, "
+        "and active configuration. Use this to understand how much history has been "
+        "compacted and how the engine is performing."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
+LCM_DOCTOR = {
+    "name": "lcm_doctor",
+    "description": (
+        "Run diagnostics on the LCM database and configuration. Checks database "
+        "integrity, detects orphaned DAG nodes, validates configuration, and "
+        "reports potential issues. Use this to troubleshoot problems or verify "
+        "a healthy setup."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
 LCM_EXPAND_QUERY = {
     "name": "lcm_expand_query",
     "description": (

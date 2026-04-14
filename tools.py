@@ -342,3 +342,174 @@ def lcm_expand_query(args: Dict[str, Any], **kwargs) -> str:
             ],
         }
     )
+
+
+def lcm_status(args: Dict[str, Any], **kwargs) -> str:
+    """Quick health overview of the LCM engine for the current session."""
+    engine = _require_engine(kwargs)
+    if engine is None:
+        return json.dumps({"error": "LCM engine not initialized"})
+
+    session_id = engine._session_id
+    if not session_id:
+        return json.dumps({"error": "No active session"})
+
+    # Store stats
+    store_messages = engine._store.get_session_count(session_id)
+    store_tokens = engine._store.get_session_token_total(session_id)
+
+    # DAG stats by depth
+    all_nodes = engine._dag.get_session_nodes(session_id)
+    depths: dict[int, dict] = {}
+    for node in all_nodes:
+        d = depths.setdefault(node.depth, {"count": 0, "tokens": 0, "source_tokens": 0})
+        d["count"] += 1
+        d["tokens"] += node.token_count
+        d["source_tokens"] += node.source_token_count
+
+    total_dag_tokens = sum(d["tokens"] for d in depths.values())
+    total_source_tokens = sum(d["source_tokens"] for d in depths.values())
+    compression_ratio = round(total_source_tokens / total_dag_tokens, 1) if total_dag_tokens > 0 else 0
+
+    return json.dumps({
+        "session_id": session_id,
+        "compression_count": engine.compression_count,
+        "context_length": engine.context_length,
+        "threshold_tokens": engine.threshold_tokens,
+        "last_prompt_tokens": engine.last_prompt_tokens,
+        "store": {
+            "messages": store_messages,
+            "estimated_tokens": store_tokens,
+        },
+        "dag": {
+            "total_nodes": len(all_nodes),
+            "total_tokens": total_dag_tokens,
+            "compression_ratio": f"{compression_ratio}:1",
+            "depths": {
+                f"d{depth}": info for depth, info in sorted(depths.items())
+            },
+        },
+        "config": {
+            "fresh_tail_count": engine._config.fresh_tail_count,
+            "leaf_chunk_tokens": engine._config.leaf_chunk_tokens,
+            "context_threshold": engine._config.context_threshold,
+            "max_depth": engine._config.incremental_max_depth,
+            "condensation_fanin": engine._config.condensation_fanin,
+            "summary_model": engine._config.summary_model or "(auxiliary)",
+            "expansion_model": engine._config.expansion_model or "(summary model)",
+        },
+        "session_filters": {
+            "ignored": engine._session_ignored,
+            "stateless": engine._session_stateless,
+        },
+    })
+
+
+def lcm_doctor(args: Dict[str, Any], **kwargs) -> str:
+    """Run diagnostics on the LCM database and configuration."""
+    engine = _require_engine(kwargs)
+    if engine is None:
+        return json.dumps({"error": "LCM engine not initialized"})
+
+    checks: list[dict] = []
+    session_id = engine._session_id
+
+    # 1. Database integrity
+    try:
+        result = engine._store._conn.execute("PRAGMA integrity_check").fetchone()
+        ok = result and result[0] == "ok"
+        checks.append({
+            "check": "database_integrity",
+            "status": "pass" if ok else "fail",
+            "detail": result[0] if result else "no response",
+        })
+    except Exception as e:
+        checks.append({
+            "check": "database_integrity",
+            "status": "fail",
+            "detail": str(e),
+        })
+
+    # 2. FTS index sync
+    try:
+        msg_count = engine._store._conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
+        ).fetchone()[0]
+        fts_count = engine._store._conn.execute(
+            "SELECT COUNT(*) FROM messages_fts"
+        ).fetchone()[0]
+        checks.append({
+            "check": "fts_index_sync",
+            "status": "pass" if fts_count >= msg_count else "warn",
+            "detail": f"{fts_count} FTS rows, {msg_count} session messages",
+        })
+    except Exception as e:
+        checks.append({
+            "check": "fts_index_sync",
+            "status": "fail",
+            "detail": str(e),
+        })
+
+    # 3. Orphaned DAG nodes (nodes referencing store_ids that don't exist)
+    try:
+        all_nodes = engine._dag.get_session_nodes(session_id)
+        orphaned = 0
+        for node in all_nodes:
+            if node.source_type == "messages":
+                for sid in node.source_ids:
+                    stored = engine._store.get(sid)
+                    if stored is None:
+                        orphaned += 1
+                        break
+        checks.append({
+            "check": "orphaned_dag_nodes",
+            "status": "pass" if orphaned == 0 else "warn",
+            "detail": f"{orphaned} nodes reference missing store messages" if orphaned else "all nodes have valid sources",
+        })
+    except Exception as e:
+        checks.append({
+            "check": "orphaned_dag_nodes",
+            "status": "fail",
+            "detail": str(e),
+        })
+
+    # 4. Configuration validation
+    config_warnings = []
+    c = engine._config
+    if c.fresh_tail_count < 2:
+        config_warnings.append("fresh_tail_count < 2 may cause aggressive compaction")
+    if c.context_threshold > 0.95:
+        config_warnings.append("context_threshold > 0.95 leaves very little headroom")
+    if c.context_threshold < 0.3:
+        config_warnings.append("context_threshold < 0.3 triggers compaction very early")
+    if c.condensation_fanin < 2:
+        config_warnings.append("condensation_fanin < 2 creates excessive depth growth")
+    if c.incremental_max_depth == 0:
+        config_warnings.append("incremental_max_depth=0 disables condensation entirely")
+
+    checks.append({
+        "check": "config_validation",
+        "status": "pass" if not config_warnings else "warn",
+        "detail": config_warnings if config_warnings else "all settings within normal ranges",
+    })
+
+    # 5. Context pressure
+    if engine.context_length > 0:
+        usage_pct = round(engine.last_prompt_tokens / engine.context_length * 100, 1) if engine.context_length else 0
+        threshold_pct = round(c.context_threshold * 100, 1)
+        checks.append({
+            "check": "context_pressure",
+            "status": "pass" if usage_pct < threshold_pct else "warn",
+            "detail": f"{usage_pct}% used, compaction triggers at {threshold_pct}%",
+        })
+
+    overall = "healthy"
+    if any(ch["status"] == "fail" for ch in checks):
+        overall = "unhealthy"
+    elif any(ch["status"] == "warn" for ch in checks):
+        overall = "warnings"
+
+    return json.dumps({
+        "overall": overall,
+        "checks": checks,
+    })

@@ -127,7 +127,7 @@ Verify with `hermes plugins`:
 
 ```
 Plugins (1):
-  ✓ hermes-lcm v0.1.0 (4 tools, 0 hooks)
+  ✓ hermes-lcm v0.1.0 (6 tools, 0 hooks)
 
 Provider Plugins:
   Context Engine: lcm
@@ -172,6 +172,8 @@ That means patterns like `cron:*` can catch Hermes cron sessions today, while pl
 | `lcm_describe` | Inspect DAG structure — token counts, children, expand hints. No node_id = session overview. |
 | `lcm_expand` | Recover original content from a summary node. Token-budgeted. |
 | `lcm_expand_query` | Answer a question from expanded LCM context using either a query or explicit node_ids. Uses the expansion path/model instead of the summarization path. |
+| `lcm_status` | Quick health overview — compression count, store size, DAG depth distribution, context usage, and active config. |
+| `lcm_doctor` | Run diagnostics — database integrity, FTS index sync, orphaned nodes, config validation, context pressure. |
 
 ## How It Works
 
@@ -196,7 +198,7 @@ hermes-lcm/
 ├── tokens.py        # tiktoken with char-based fallback
 ├── schemas.py       # tool schemas (what the LLM sees)
 ├── tools.py         # tool handlers (lcm_grep, lcm_describe, lcm_expand, lcm_expand_query)
-└── tests/           # 67 tests
+└── tests/           # 72 tests
 ```
 
 **Running tests:**
