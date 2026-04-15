@@ -13,6 +13,13 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .db_bootstrap import (
+    ExternalContentFtsSpec,
+    configure_connection,
+    ensure_external_content_fts,
+    run_versioned_migrations,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -27,8 +34,7 @@ class MessageStore:
 
     def _init_db(self):
         self._conn = sqlite3.connect(str(self.db_path), timeout=5.0, check_same_thread=False)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA busy_timeout=5000")
+        configure_connection(self._conn)
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS messages (
                 store_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,23 +53,37 @@ class MessageStore:
             CREATE INDEX IF NOT EXISTS idx_msg_session_ts
                 ON messages(session_id, timestamp);
 
-            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-                content,
-                content=messages,
-                content_rowid=store_id
-            );
-
-            CREATE TRIGGER IF NOT EXISTS msg_fts_insert
-                AFTER INSERT ON messages BEGIN
-                INSERT INTO messages_fts(rowid, content)
-                    VALUES (new.store_id, new.content);
-            END;
-
             CREATE TABLE IF NOT EXISTS metadata (
                 key TEXT PRIMARY KEY,
                 value TEXT
             );
         """)
+        ensure_external_content_fts(
+            self._conn,
+            ExternalContentFtsSpec(
+                table_name="messages_fts",
+                content_table="messages",
+                content_rowid="store_id",
+                indexed_column="content",
+                trigger_sqls=(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS msg_fts_insert
+                        AFTER INSERT ON messages BEGIN
+                        INSERT INTO messages_fts(rowid, content)
+                            VALUES (new.store_id, new.content);
+                    END;
+                    """,
+                    """
+                    CREATE TRIGGER IF NOT EXISTS msg_fts_delete
+                        AFTER DELETE ON messages BEGIN
+                        INSERT INTO messages_fts(messages_fts, rowid, content)
+                            VALUES('delete', old.store_id, old.content);
+                    END;
+                    """,
+                ),
+            ),
+        )
+        run_versioned_migrations(self._conn)
         self._conn.commit()
 
     # -- Write operations ---------------------------------------------------
@@ -201,31 +221,54 @@ class MessageStore:
     def search(self, query: str, session_id: str | None = None,
                limit: int = 20) -> List[Dict[str, Any]]:
         """FTS5 search across messages. Returns matches with snippets."""
-        if session_id:
-            rows = self._conn.execute(
-                """SELECT m.*, snippet(messages_fts, 0, '>>>', '<<<', '...', 40) as snippet
-                   FROM messages_fts fts
-                   JOIN messages m ON m.store_id = fts.rowid
-                   WHERE messages_fts MATCH ? AND m.session_id = ?
-                   ORDER BY rank LIMIT ?""",
-                (query, session_id, limit),
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                """SELECT m.*, snippet(messages_fts, 0, '>>>', '<<<', '...', 40) as snippet
-                   FROM messages_fts fts
-                   JOIN messages m ON m.store_id = fts.rowid
-                   WHERE messages_fts MATCH ?
-                   ORDER BY rank LIMIT ?""",
-                (query, limit),
-            ).fetchall()
-        results = []
-        for r in rows:
-            d = self._row_to_dict(r)
-            # snippet is the extra column
-            d["snippet"] = r[-1] if len(r) > 10 else ""
-            results.append(d)
-        return results
+        try:
+            if session_id:
+                rows = self._conn.execute(
+                    """SELECT m.*, snippet(messages_fts, 0, '>>>', '<<<', '...', 40) as snippet
+                       FROM messages_fts fts
+                       JOIN messages m ON m.store_id = fts.rowid
+                       WHERE messages_fts MATCH ? AND m.session_id = ?
+                       ORDER BY rank LIMIT ?""",
+                    (query, session_id, limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """SELECT m.*, snippet(messages_fts, 0, '>>>', '<<<', '...', 40) as snippet
+                       FROM messages_fts fts
+                       JOIN messages m ON m.store_id = fts.rowid
+                       WHERE messages_fts MATCH ?
+                       ORDER BY rank LIMIT ?""",
+                    (query, limit),
+                ).fetchall()
+            results = []
+            for r in rows:
+                d = self._row_to_dict(r)
+                # snippet is the extra column
+                d["snippet"] = r[-1] if len(r) > 10 else ""
+                results.append(d)
+            return results
+        except sqlite3.DatabaseError:
+            like = f"%{query.strip().lower()}%"
+            if session_id:
+                rows = self._conn.execute(
+                    """SELECT * FROM messages
+                       WHERE session_id = ? AND LOWER(COALESCE(content, '')) LIKE ?
+                       ORDER BY store_id LIMIT ?""",
+                    (session_id, like, limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """SELECT * FROM messages
+                       WHERE LOWER(COALESCE(content, '')) LIKE ?
+                       ORDER BY store_id LIMIT ?""",
+                    (like, limit),
+                ).fetchall()
+            results = []
+            for r in rows:
+                d = self._row_to_dict(r)
+                d["snippet"] = d.get("content") or ""
+                results.append(d)
+            return results
 
     # -- Helpers ------------------------------------------------------------
 
