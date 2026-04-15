@@ -101,6 +101,7 @@ class LCMEngine(ContextEngine):
         self.quiet_mode = False
         self.summary_model = self._config.summary_model
         self._last_overflow_recovery_failed = False
+        self._last_condensation_suppressed_reason = ""
 
     @property
     def name(self) -> str:
@@ -372,7 +373,11 @@ class LCMEngine(ContextEngine):
         self._last_compacted_store_id = max(source_store_ids) if source_store_ids else 0
 
         # Step 6: Check if condensation is needed
-        self._maybe_condense(focus_topic=focus_topic)
+        self._maybe_condense(
+            focus_topic=focus_topic,
+            leaf_compacted_this_turn=True,
+            force_overflow=force_overflow,
+        )
 
         # Step 7: Assemble new active context
         compressed = self._assemble_context(
@@ -413,6 +418,7 @@ class LCMEngine(ContextEngine):
         self._ingest_cursor = 0
         self._last_compacted_store_id = 0
         self._last_overflow_recovery_failed = False
+        self._last_condensation_suppressed_reason = ""
         self._refresh_session_filters()
         if "hermes_home" in kwargs:
             self._hermes_home = kwargs["hermes_home"]
@@ -435,6 +441,7 @@ class LCMEngine(ContextEngine):
         self._context_probed = False
         self._context_probe_persistable = False
         self._last_overflow_recovery_failed = False
+        self._last_condensation_suppressed_reason = ""
 
         # Retain DAG nodes across sessions based on config.
         #   -1  → keep all nodes
@@ -528,6 +535,7 @@ class LCMEngine(ContextEngine):
             status["ignore_session_patterns_source"] = self._config.ignore_session_patterns_source
             status["stateless_session_patterns_source"] = self._config.stateless_session_patterns_source
             status["overflow_recovery_failed"] = self._last_overflow_recovery_failed
+            status["condensation_suppressed_reason"] = self._last_condensation_suppressed_reason
         return status
 
     def update_model(self, model: str, context_length: int,
@@ -690,8 +698,38 @@ class LCMEngine(ContextEngine):
 
     # -- Internal: condensation --------------------------------------------
 
-    def _maybe_condense(self, focus_topic: Optional[str] = None) -> None:
+    def _should_allow_follow_on_condensation(
+        self,
+        *,
+        uncondensed_count: int,
+        leaf_compacted_this_turn: bool,
+        force_overflow: bool,
+    ) -> tuple[bool, str]:
+        if not leaf_compacted_this_turn:
+            return True, ""
+        if not self._config.cache_friendly_condensation_enabled:
+            return True, ""
+        if force_overflow:
+            return True, ""
+
+        fanin = max(1, self._config.condensation_fanin)
+        debt_threshold = fanin * max(1, self._config.cache_friendly_min_debt_groups)
+        if uncondensed_count >= debt_threshold:
+            return True, ""
+        if uncondensed_count == fanin:
+            return False, "cache_friendly_single_group"
+        return False, "cache_friendly_low_debt"
+
+    def _maybe_condense(
+        self,
+        focus_topic: Optional[str] = None,
+        *,
+        leaf_compacted_this_turn: bool = False,
+        force_overflow: bool = False,
+    ) -> None:
         """Check if any depth level has enough nodes for condensation."""
+        self._last_condensation_suppressed_reason = ""
+
         max_depth = self._config.incremental_max_depth
         if max_depth == 0:
             return  # condensation disabled
@@ -705,11 +743,23 @@ class LCMEngine(ContextEngine):
         else:
             upper = max_depth
 
+        condensed_any = False
+        suppression_reason = ""
+
         for depth in range(upper):
             uncondensed = self._dag.get_uncondensed_at_depth(
                 self._session_id, depth
             )
             if len(uncondensed) < self._config.condensation_fanin:
+                continue
+
+            allow_condense, reason = self._should_allow_follow_on_condensation(
+                uncondensed_count=len(uncondensed),
+                leaf_compacted_this_turn=leaf_compacted_this_turn,
+                force_overflow=force_overflow,
+            )
+            if not allow_condense:
+                suppression_reason = reason or suppression_reason
                 continue
 
             # Take the first fanin nodes and condense
@@ -745,12 +795,19 @@ class LCMEngine(ContextEngine):
                 expand_hint=self._extract_expand_hint(summary_text),
             )
             self._dag.add_node(node)
+            condensed_any = True
 
             logger.info(
                 "LCM condensation: d%d × %d → d%d (L%d, %d→%d tokens)",
                 depth, len(to_condense), depth + 1, level,
                 source_tokens, count_tokens(summary_text),
             )
+
+            if leaf_compacted_this_turn and self._config.cache_friendly_condensation_enabled:
+                break
+
+        if not condensed_any and leaf_compacted_this_turn and self._config.cache_friendly_condensation_enabled:
+            self._last_condensation_suppressed_reason = suppression_reason
 
     # -- Internal: context assembly ----------------------------------------
 

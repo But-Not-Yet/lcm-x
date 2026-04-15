@@ -427,6 +427,10 @@ def lcm_status(args: Dict[str, Any], **kwargs) -> str:
         "config": {
             "fresh_tail_count": engine._config.fresh_tail_count,
             "leaf_chunk_tokens": engine._config.leaf_chunk_tokens,
+            "dynamic_leaf_chunk_enabled": engine._config.dynamic_leaf_chunk_enabled,
+            "dynamic_leaf_chunk_max": engine._config.dynamic_leaf_chunk_max,
+            "cache_friendly_condensation_enabled": engine._config.cache_friendly_condensation_enabled,
+            "cache_friendly_min_debt_groups": engine._config.cache_friendly_min_debt_groups,
             "context_threshold": engine._config.context_threshold,
             "max_depth": engine._config.incremental_max_depth,
             "condensation_fanin": engine._config.condensation_fanin,

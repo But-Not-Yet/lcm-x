@@ -29,6 +29,8 @@ class TestConfig:
         assert c.condensation_fanin == 4
         assert c.dynamic_leaf_chunk_enabled is False
         assert c.dynamic_leaf_chunk_max == 40_000
+        assert c.cache_friendly_condensation_enabled is False
+        assert c.cache_friendly_min_debt_groups == 2
         assert c.ignore_session_patterns == []
         assert c.stateless_session_patterns == []
         assert c.ignore_session_patterns_source == "default"
@@ -48,6 +50,8 @@ class TestConfig:
         monkeypatch.setenv("LCM_EXPANSION_TIMEOUT_MS", "90000")
         monkeypatch.setenv("LCM_DYNAMIC_LEAF_CHUNK_ENABLED", "1")
         monkeypatch.setenv("LCM_DYNAMIC_LEAF_CHUNK_MAX", "64000")
+        monkeypatch.setenv("LCM_CACHE_FRIENDLY_CONDENSATION_ENABLED", "1")
+        monkeypatch.setenv("LCM_CACHE_FRIENDLY_MIN_DEBT_GROUPS", "3")
         c = LCMConfig.from_env()
         assert c.fresh_tail_count == 32
         assert c.context_threshold == 0.80
@@ -60,6 +64,8 @@ class TestConfig:
         assert c.expansion_timeout_ms == 90_000
         assert c.dynamic_leaf_chunk_enabled is True
         assert c.dynamic_leaf_chunk_max == 64_000
+        assert c.cache_friendly_condensation_enabled is True
+        assert c.cache_friendly_min_debt_groups == 3
 
     def test_from_env_invalid_numeric_values_fall_back_to_defaults(self, monkeypatch):
         monkeypatch.setenv("LCM_FRESH_TAIL_COUNT", "not-a-number")

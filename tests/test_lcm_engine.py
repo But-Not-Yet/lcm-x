@@ -529,6 +529,162 @@ class TestEngineCompress:
         assert call_count == 1
         assert engine._dag.get_session_nodes("test-session") == []
 
+    def test_cache_friendly_gating_suppresses_follow_on_condensation_for_single_fanin_group(self, tmp_path, monkeypatch):
+        config = LCMConfig(
+            fresh_tail_count=2,
+            leaf_chunk_tokens=50,
+            dynamic_leaf_chunk_enabled=True,
+            dynamic_leaf_chunk_max=120,
+            condensation_fanin=2,
+            database_path=str(tmp_path / "lcm_cache_friendly_suppress.db"),
+        )
+        config.cache_friendly_condensation_enabled = True
+        config.cache_friendly_min_debt_groups = 2
+        engine = LCMEngine(config=config)
+        engine._session_id = "test-session"
+        engine.context_length = 200000
+        engine.threshold_tokens = int(200000 * config.context_threshold)
+
+        engine._dag.add_node(SummaryNode(
+            session_id="test-session",
+            depth=0,
+            summary="Earlier leaf",
+            token_count=40,
+            source_token_count=80,
+            source_ids=[1],
+            source_type="messages",
+            created_at=time.time() - 10,
+            expand_hint="earlier leaf",
+        ))
+
+        messages = [{"role": "system", "content": "You are a helpful assistant."}]
+        for i in range(6):
+            role = "user" if i % 2 == 0 else "assistant"
+            messages.append({
+                "role": role,
+                "content": f"Message {i}: " + ("chunk " * 35),
+            })
+
+        import hermes_lcm.engine as engine_module
+
+        def mock_summary(**kwargs):
+            if kwargs["depth"] == 0:
+                return "Leaf summary.\nExpand for details about: oldest raw chunk", 1
+            return "Condensed summary.\nExpand for details about: d0 summaries", 1
+
+        monkeypatch.setattr(engine_module, "summarize_with_escalation", mock_summary)
+
+        engine.compress(messages)
+
+        depth0 = engine._dag.get_session_nodes("test-session", depth=0)
+        depth1 = engine._dag.get_session_nodes("test-session", depth=1)
+        assert len(depth0) == 2
+        assert depth1 == []
+        assert engine.get_status()["condensation_suppressed_reason"] == "cache_friendly_single_group"
+
+    def test_cache_friendly_gating_allows_condensation_when_debt_reaches_two_groups(self, tmp_path, monkeypatch):
+        config = LCMConfig(
+            fresh_tail_count=2,
+            leaf_chunk_tokens=50,
+            dynamic_leaf_chunk_enabled=True,
+            dynamic_leaf_chunk_max=120,
+            condensation_fanin=2,
+            database_path=str(tmp_path / "lcm_cache_friendly_debt.db"),
+        )
+        config.cache_friendly_condensation_enabled = True
+        config.cache_friendly_min_debt_groups = 2
+        engine = LCMEngine(config=config)
+        engine._session_id = "test-session"
+        engine.context_length = 200000
+        engine.threshold_tokens = int(200000 * config.context_threshold)
+
+        for i in range(3):
+            engine._dag.add_node(SummaryNode(
+                session_id="test-session",
+                depth=0,
+                summary=f"Earlier leaf {i}",
+                token_count=40,
+                source_token_count=80,
+                source_ids=[i + 1],
+                source_type="messages",
+                created_at=time.time() - (10 + i),
+                expand_hint=f"earlier leaf {i}",
+            ))
+
+        messages = [{"role": "system", "content": "You are a helpful assistant."}]
+        for i in range(6):
+            role = "user" if i % 2 == 0 else "assistant"
+            messages.append({
+                "role": role,
+                "content": f"Message {i}: " + ("chunk " * 35),
+            })
+
+        import hermes_lcm.engine as engine_module
+
+        def mock_summary(**kwargs):
+            if kwargs["depth"] == 0:
+                return "Leaf summary.\nExpand for details about: oldest raw chunk", 1
+            return "Condensed summary.\nExpand for details about: d0 summaries", 1
+
+        monkeypatch.setattr(engine_module, "summarize_with_escalation", mock_summary)
+
+        engine.compress(messages)
+
+        depth1 = engine._dag.get_session_nodes("test-session", depth=1)
+        assert len(depth1) == 1
+        assert engine.get_status()["condensation_suppressed_reason"] == ""
+
+    def test_cache_friendly_gating_does_not_block_forced_overflow_condensation(self, tmp_path, monkeypatch):
+        config = LCMConfig(
+            fresh_tail_count=1,
+            leaf_chunk_tokens=50,
+            dynamic_leaf_chunk_enabled=True,
+            dynamic_leaf_chunk_max=120,
+            condensation_fanin=2,
+            max_assembly_tokens=90,
+            database_path=str(tmp_path / "lcm_cache_friendly_overflow.db"),
+        )
+        config.cache_friendly_condensation_enabled = True
+        config.cache_friendly_min_debt_groups = 2
+        engine = LCMEngine(config=config)
+        engine._session_id = "test-session"
+        engine.context_length = 200000
+        engine.threshold_tokens = int(200000 * config.context_threshold)
+
+        engine._dag.add_node(SummaryNode(
+            session_id="test-session",
+            depth=0,
+            summary="Earlier leaf",
+            token_count=40,
+            source_token_count=80,
+            source_ids=[1],
+            source_type="messages",
+            created_at=time.time() - 10,
+            expand_hint="earlier leaf",
+        ))
+
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "A " * 40},
+            {"role": "assistant", "content": "B " * 40},
+            {"role": "user", "content": "Tail " * 60},
+        ]
+
+        import hermes_lcm.engine as engine_module
+
+        def mock_summary(**kwargs):
+            if kwargs["depth"] == 0:
+                return "Leaf summary.\nExpand for details about: oldest raw chunk", 1
+            return "Condensed summary.\nExpand for details about: d0 summaries", 1
+
+        monkeypatch.setattr(engine_module, "summarize_with_escalation", mock_summary)
+
+        engine.compress(messages, current_tokens=120)
+
+        depth1 = engine._dag.get_session_nodes("test-session", depth=1)
+        assert len(depth1) == 1
+        assert engine.get_status()["condensation_suppressed_reason"] == ""
+
 
 class TestPostCompactionIngestion:
     """Regression tests for issue #1 — messages must be persisted after
