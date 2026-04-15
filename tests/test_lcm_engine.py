@@ -9,6 +9,7 @@ from agent.context_engine import ContextEngine
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.dag import SummaryNode
 from hermes_lcm.engine import LCMEngine
+from hermes_lcm.tokens import count_message_tokens, count_messages_tokens
 
 
 @pytest.fixture
@@ -118,6 +119,21 @@ class TestSessionFiltering:
         assert status["ignore_session_patterns_source"] == "env"
         assert "LCM ignore_session_patterns from env: cron:*" in caplog.text
         assert "matched ignore_session_patterns" in caplog.text
+
+    def test_filter_config_diagnostics_log_only_once_per_engine_instance(self, tmp_path, caplog):
+        config = LCMConfig(
+            database_path=str(tmp_path / "lcm_ignore_once.db"),
+            ignore_session_patterns=["cron:*"],
+            ignore_session_patterns_source="env",
+        )
+        instance = LCMEngine(config=config)
+
+        with caplog.at_level("INFO", logger="hermes_lcm.engine"):
+            instance.on_session_start("cron_123", platform="cron", context_length=1000)
+            instance.on_session_start("cron_456", platform="cron", context_length=1000)
+
+        assert caplog.text.count("LCM ignore_session_patterns from env: cron:*") == 1
+        assert caplog.text.count("matched ignore_session_patterns") == 2
 
     def test_on_session_start_marks_stateless_session_and_reports_status(self, tmp_path, caplog):
         config = LCMConfig(
@@ -336,6 +352,389 @@ class TestEngineCompress:
         parent = next(node for node in nodes if node.depth == 1)
         assert parent.earliest_at == child_windows[0][0]
         assert parent.latest_at == child_windows[-1][1]
+
+    def test_dynamic_leaf_chunk_sizing_compacts_only_oldest_bounded_raw_chunk(self, tmp_path, monkeypatch):
+        config = LCMConfig(
+            fresh_tail_count=2,
+            leaf_chunk_tokens=50,
+            dynamic_leaf_chunk_enabled=True,
+            dynamic_leaf_chunk_max=120,
+            database_path=str(tmp_path / "lcm_dynamic_leaf.db"),
+        )
+        engine = LCMEngine(config=config)
+        engine._session_id = "test-session"
+        engine.context_length = 200000
+        engine.threshold_tokens = int(200000 * config.context_threshold)
+
+        messages = [{"role": "system", "content": "You are a helpful assistant."}]
+        for i in range(6):
+            role = "user" if i % 2 == 0 else "assistant"
+            messages.append({
+                "role": role,
+                "content": f"Message {i}: " + ("chunk " * 35),
+            })
+
+        candidate_raw = messages[1:-config.fresh_tail_count]
+        candidate_tokens = [count_message_tokens(msg) for msg in candidate_raw]
+        assert len(candidate_raw) == 4
+        assert sum(candidate_tokens) > config.dynamic_leaf_chunk_max
+        assert sum(candidate_tokens[:2]) <= config.dynamic_leaf_chunk_max
+        assert sum(candidate_tokens[:3]) > config.dynamic_leaf_chunk_max
+
+        import hermes_lcm.engine as engine_module
+
+        def mock_summary(**kwargs):
+            return "Dynamic leaf summary.\nExpand for details about: oldest raw chunk", 1
+
+        monkeypatch.setattr(engine_module, "summarize_with_escalation", mock_summary)
+
+        compressed = engine.compress(messages)
+
+        nodes = engine._dag.get_session_nodes("test-session")
+        assert len(nodes) == 1
+        node = nodes[0]
+
+        stored = engine._store.get_session_messages("test-session")
+        selected_contents = [
+            engine._store.get(store_id)["content"]
+            for store_id in node.source_ids
+        ]
+
+        assert len(node.source_ids) == 2
+        assert selected_contents == [msg["content"] for msg in candidate_raw[:2]]
+
+        compressed_contents = [msg.get("content") for msg in compressed]
+        assert candidate_raw[2]["content"] in compressed_contents
+        assert candidate_raw[3]["content"] in compressed_contents
+        assert messages[-1]["content"] in compressed_contents
+        assert len(stored) == len(messages)
+
+    def test_adaptive_leaf_rescue_retries_with_smaller_oldest_chunk(self, tmp_path, monkeypatch):
+        config = LCMConfig(
+            fresh_tail_count=2,
+            leaf_chunk_tokens=50,
+            dynamic_leaf_chunk_enabled=True,
+            dynamic_leaf_chunk_max=120,
+            database_path=str(tmp_path / "lcm_dynamic_leaf_retry.db"),
+        )
+        engine = LCMEngine(config=config)
+        engine._session_id = "test-session"
+        engine.context_length = 200000
+        engine.threshold_tokens = int(200000 * config.context_threshold)
+
+        messages = [{"role": "system", "content": "You are a helpful assistant."}]
+        for i in range(6):
+            role = "user" if i % 2 == 0 else "assistant"
+            messages.append({
+                "role": role,
+                "content": f"Message {i}: " + ("chunk " * 35),
+            })
+
+        candidate_raw = messages[1:-config.fresh_tail_count]
+        initial_chunk = engine._select_oldest_leaf_chunk(
+            candidate_raw,
+            engine._working_leaf_chunk_tokens(count_messages_tokens(candidate_raw)),
+        )
+        assert len(initial_chunk) == 2
+        first_msg_tokens = count_message_tokens(candidate_raw[0])
+        assert count_messages_tokens(initial_chunk) > first_msg_tokens
+
+        import hermes_lcm.engine as engine_module
+
+        attempts: list[int] = []
+
+        def flaky_summary(**kwargs):
+            attempts.append(kwargs["source_tokens"])
+            if kwargs["source_tokens"] > first_msg_tokens:
+                raise RuntimeError("context length exceeded")
+            return "Recovered smaller leaf summary.\nExpand for details about: oldest raw chunk", 1
+
+        monkeypatch.setattr(engine_module, "summarize_with_escalation", flaky_summary)
+
+        compressed = engine.compress(messages)
+
+        assert len(attempts) == 2
+        assert attempts[0] > attempts[1]
+
+        nodes = engine._dag.get_session_nodes("test-session")
+        assert len(nodes) == 1
+        node = nodes[0]
+        selected_contents = [engine._store.get(store_id)["content"] for store_id in node.source_ids]
+        assert len(node.source_ids) == 1
+        assert selected_contents == [candidate_raw[0]["content"]]
+
+        compressed_contents = [msg.get("content") for msg in compressed]
+        assert candidate_raw[1]["content"] in compressed_contents
+        assert candidate_raw[2]["content"] in compressed_contents
+        assert candidate_raw[3]["content"] in compressed_contents
+
+    def test_dynamic_leaf_chunk_sizing_runs_bounded_catchup_passes_when_pressure_remains_high(self, tmp_path, monkeypatch):
+        config = LCMConfig(
+            fresh_tail_count=4,
+            leaf_chunk_tokens=180,
+            dynamic_leaf_chunk_enabled=True,
+            dynamic_leaf_chunk_max=360,
+            database_path=str(tmp_path / "lcm_dynamic_leaf_catchup.db"),
+        )
+        engine = LCMEngine(config=config)
+        engine._session_id = "test-session"
+        engine.context_length = 1200
+        engine.threshold_tokens = 700
+
+        messages = [{"role": "system", "content": "You are a helpful assistant."}]
+        for i in range(16):
+            role = "user" if i % 2 == 0 else "assistant"
+            messages.append({
+                "role": role,
+                "content": f"Message {i}: " + ("dense " * 40),
+            })
+
+        import hermes_lcm.engine as engine_module
+
+        def mock_summary(**kwargs):
+            return "Catchup summary.\nExpand for details about: oldest raw chunk", 1
+
+        monkeypatch.setattr(engine_module, "summarize_with_escalation", mock_summary)
+
+        compressed = engine.compress(messages, current_tokens=count_messages_tokens(messages))
+
+        nodes = engine._dag.get_session_nodes("test-session")
+        assert len(nodes) >= 2
+        assert count_messages_tokens(compressed) < engine.threshold_tokens
+        compressed_contents = [msg.get("content") for msg in compressed]
+        assert messages[-1]["content"] in compressed_contents
+
+    def test_adaptive_leaf_rescue_stops_after_bounded_retry_worthy_failures(self, tmp_path, monkeypatch):
+        config = LCMConfig(
+            fresh_tail_count=2,
+            leaf_chunk_tokens=50,
+            dynamic_leaf_chunk_enabled=True,
+            dynamic_leaf_chunk_max=120,
+            database_path=str(tmp_path / "lcm_dynamic_leaf_retry_fail.db"),
+        )
+        engine = LCMEngine(config=config)
+        engine._session_id = "test-session"
+        engine.context_length = 200000
+        engine.threshold_tokens = int(200000 * config.context_threshold)
+
+        messages = [{"role": "system", "content": "You are a helpful assistant."}]
+        for i in range(6):
+            role = "user" if i % 2 == 0 else "assistant"
+            messages.append({
+                "role": role,
+                "content": f"Message {i}: " + ("chunk " * 35),
+            })
+
+        import hermes_lcm.engine as engine_module
+
+        attempts: list[int] = []
+
+        def always_fails(**kwargs):
+            attempts.append(kwargs["source_tokens"])
+            raise RuntimeError("context length exceeded")
+
+        monkeypatch.setattr(engine_module, "summarize_with_escalation", always_fails)
+
+        with pytest.raises(RuntimeError, match="context length exceeded"):
+            engine.compress(messages)
+
+        assert len(attempts) == 2
+        assert attempts[0] > attempts[-1]
+        assert engine._dag.get_session_nodes("test-session") == []
+
+    def test_adaptive_leaf_rescue_does_not_retry_non_retry_worthy_errors(self, tmp_path, monkeypatch):
+        config = LCMConfig(
+            fresh_tail_count=2,
+            leaf_chunk_tokens=50,
+            dynamic_leaf_chunk_enabled=True,
+            dynamic_leaf_chunk_max=120,
+            database_path=str(tmp_path / "lcm_dynamic_leaf_retry_nonretry.db"),
+        )
+        engine = LCMEngine(config=config)
+        engine._session_id = "test-session"
+        engine.context_length = 200000
+        engine.threshold_tokens = int(200000 * config.context_threshold)
+
+        messages = [{"role": "system", "content": "You are a helpful assistant."}]
+        for i in range(6):
+            role = "user" if i % 2 == 0 else "assistant"
+            messages.append({
+                "role": role,
+                "content": f"Message {i}: " + ("chunk " * 35),
+            })
+
+        import hermes_lcm.engine as engine_module
+
+        call_count = 0
+
+        def bad_template(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("template exploded")
+
+        monkeypatch.setattr(engine_module, "summarize_with_escalation", bad_template)
+
+        with pytest.raises(RuntimeError, match="template exploded"):
+            engine.compress(messages)
+
+        assert call_count == 1
+        assert engine._dag.get_session_nodes("test-session") == []
+
+    def test_cache_friendly_gating_suppresses_follow_on_condensation_for_single_fanin_group(self, tmp_path, monkeypatch):
+        config = LCMConfig(
+            fresh_tail_count=2,
+            leaf_chunk_tokens=50,
+            dynamic_leaf_chunk_enabled=True,
+            dynamic_leaf_chunk_max=120,
+            condensation_fanin=2,
+            database_path=str(tmp_path / "lcm_cache_friendly_suppress.db"),
+        )
+        config.cache_friendly_condensation_enabled = True
+        config.cache_friendly_min_debt_groups = 2
+        engine = LCMEngine(config=config)
+        engine._session_id = "test-session"
+        engine.context_length = 200000
+        engine.threshold_tokens = int(200000 * config.context_threshold)
+
+        engine._dag.add_node(SummaryNode(
+            session_id="test-session",
+            depth=0,
+            summary="Earlier leaf",
+            token_count=40,
+            source_token_count=80,
+            source_ids=[1],
+            source_type="messages",
+            created_at=time.time() - 10,
+            expand_hint="earlier leaf",
+        ))
+
+        messages = [{"role": "system", "content": "You are a helpful assistant."}]
+        for i in range(6):
+            role = "user" if i % 2 == 0 else "assistant"
+            messages.append({
+                "role": role,
+                "content": f"Message {i}: " + ("chunk " * 35),
+            })
+
+        import hermes_lcm.engine as engine_module
+
+        def mock_summary(**kwargs):
+            if kwargs["depth"] == 0:
+                return "Leaf summary.\nExpand for details about: oldest raw chunk", 1
+            return "Condensed summary.\nExpand for details about: d0 summaries", 1
+
+        monkeypatch.setattr(engine_module, "summarize_with_escalation", mock_summary)
+
+        engine.compress(messages)
+
+        depth0 = engine._dag.get_session_nodes("test-session", depth=0)
+        depth1 = engine._dag.get_session_nodes("test-session", depth=1)
+        assert len(depth0) == 2
+        assert depth1 == []
+        assert engine.get_status()["condensation_suppressed_reason"] == "cache_friendly_single_group"
+
+    def test_cache_friendly_gating_allows_condensation_when_debt_reaches_two_groups(self, tmp_path, monkeypatch):
+        config = LCMConfig(
+            fresh_tail_count=2,
+            leaf_chunk_tokens=50,
+            dynamic_leaf_chunk_enabled=True,
+            dynamic_leaf_chunk_max=120,
+            condensation_fanin=2,
+            database_path=str(tmp_path / "lcm_cache_friendly_debt.db"),
+        )
+        config.cache_friendly_condensation_enabled = True
+        config.cache_friendly_min_debt_groups = 2
+        engine = LCMEngine(config=config)
+        engine._session_id = "test-session"
+        engine.context_length = 200000
+        engine.threshold_tokens = int(200000 * config.context_threshold)
+
+        for i in range(3):
+            engine._dag.add_node(SummaryNode(
+                session_id="test-session",
+                depth=0,
+                summary=f"Earlier leaf {i}",
+                token_count=40,
+                source_token_count=80,
+                source_ids=[i + 1],
+                source_type="messages",
+                created_at=time.time() - (10 + i),
+                expand_hint=f"earlier leaf {i}",
+            ))
+
+        messages = [{"role": "system", "content": "You are a helpful assistant."}]
+        for i in range(6):
+            role = "user" if i % 2 == 0 else "assistant"
+            messages.append({
+                "role": role,
+                "content": f"Message {i}: " + ("chunk " * 35),
+            })
+
+        import hermes_lcm.engine as engine_module
+
+        def mock_summary(**kwargs):
+            if kwargs["depth"] == 0:
+                return "Leaf summary.\nExpand for details about: oldest raw chunk", 1
+            return "Condensed summary.\nExpand for details about: d0 summaries", 1
+
+        monkeypatch.setattr(engine_module, "summarize_with_escalation", mock_summary)
+
+        engine.compress(messages)
+
+        depth1 = engine._dag.get_session_nodes("test-session", depth=1)
+        assert len(depth1) == 1
+        assert engine.get_status()["condensation_suppressed_reason"] == ""
+
+    def test_cache_friendly_gating_does_not_block_forced_overflow_condensation(self, tmp_path, monkeypatch):
+        config = LCMConfig(
+            fresh_tail_count=1,
+            leaf_chunk_tokens=50,
+            dynamic_leaf_chunk_enabled=True,
+            dynamic_leaf_chunk_max=120,
+            condensation_fanin=2,
+            max_assembly_tokens=90,
+            database_path=str(tmp_path / "lcm_cache_friendly_overflow.db"),
+        )
+        config.cache_friendly_condensation_enabled = True
+        config.cache_friendly_min_debt_groups = 2
+        engine = LCMEngine(config=config)
+        engine._session_id = "test-session"
+        engine.context_length = 200000
+        engine.threshold_tokens = int(200000 * config.context_threshold)
+
+        engine._dag.add_node(SummaryNode(
+            session_id="test-session",
+            depth=0,
+            summary="Earlier leaf",
+            token_count=40,
+            source_token_count=80,
+            source_ids=[1],
+            source_type="messages",
+            created_at=time.time() - 10,
+            expand_hint="earlier leaf",
+        ))
+
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "A " * 40},
+            {"role": "assistant", "content": "B " * 40},
+            {"role": "user", "content": "Tail " * 60},
+        ]
+
+        import hermes_lcm.engine as engine_module
+
+        def mock_summary(**kwargs):
+            if kwargs["depth"] == 0:
+                return "Leaf summary.\nExpand for details about: oldest raw chunk", 1
+            return "Condensed summary.\nExpand for details about: d0 summaries", 1
+
+        monkeypatch.setattr(engine_module, "summarize_with_escalation", mock_summary)
+
+        engine.compress(messages, current_tokens=120)
+
+        depth1 = engine._dag.get_session_nodes("test-session", depth=1)
+        assert len(depth1) == 1
+        assert engine.get_status()["condensation_suppressed_reason"] == ""
 
 
 class TestPostCompactionIngestion:
@@ -1183,6 +1582,26 @@ class TestEngineTools:
         )
         assert result["sort"] == "relevance"
 
+    def test_handle_grep_prefers_conversational_hits_over_tool_output_noise(self, engine):
+        engine._store.append(
+            "test-session",
+            {"role": "user", "content": "vendoring should stay generic host support only"},
+        )
+        engine._store.append(
+            "test-session",
+            {"role": "tool", "content": '{"vendoring":"vendoring vendoring vendoring","payload":"generic host support"}'},
+        )
+
+        result = json.loads(
+            engine.handle_tool_call(
+                "lcm_grep",
+                {"query": "vendoring", "limit": 2, "sort": "relevance"},
+            )
+        )
+
+        assert result["results"][0]["role"] == "user"
+        assert result["results"][1]["role"] == "tool"
+
     def test_handle_describe_overview(self, engine):
         result = json.loads(engine.handle_tool_call("lcm_describe", {}))
         assert "session_id" in result
@@ -1260,6 +1679,47 @@ class TestEngineTools:
         assert seen["max_tokens"] == 500
         assert seen["prompt"] == "What was the plan?"
         assert seen["context_blocks"]
+
+    def test_handle_expand_query_hyphenated_operator_query_falls_back_cleanly(self, engine, monkeypatch):
+        engine._store.append(
+            "test-session",
+            {
+                "role": "user",
+                "content": "hermes-lcm plugin-only external context-engine generic host support no vendoring stays external",
+            },
+        )
+        node_id = engine._dag.add_node(
+            SummaryNode(
+                session_id="test-session",
+                depth=0,
+                summary="hermes-lcm plugin-only external context-engine generic host support no vendoring stays external",
+                token_count=10,
+                source_token_count=20,
+                source_ids=[1],
+                source_type="messages",
+                created_at=0,
+            )
+        )
+
+        monkeypatch.setattr(
+            "hermes_lcm.tools._synthesize_expansion_answer",
+            lambda **kwargs: "Recovered through normalized retrieval",
+        )
+
+        result = json.loads(
+            engine.handle_tool_call(
+                "lcm_expand_query",
+                {
+                    "query": "8416 OR vendored OR vendoring OR plugin-only OR external context-engine OR generic host support OR hermes-lcm stays external OR no vendoring",
+                    "prompt": "What were the agreements?",
+                    "max_tokens": 500,
+                },
+            )
+        )
+
+        assert result["answer"] == "Recovered through normalized retrieval"
+        assert result["node_ids"] == [node_id]
+        assert result["matches"]
 
     def test_describe_and_expand_are_session_scoped(self, engine):
         node_id = engine._dag.add_node(

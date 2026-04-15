@@ -27,6 +27,10 @@ class TestConfig:
         assert c.leaf_chunk_tokens == 20_000
         assert c.context_threshold == 0.75
         assert c.condensation_fanin == 4
+        assert c.dynamic_leaf_chunk_enabled is False
+        assert c.dynamic_leaf_chunk_max == 40_000
+        assert c.cache_friendly_condensation_enabled is False
+        assert c.cache_friendly_min_debt_groups == 2
         assert c.ignore_session_patterns == []
         assert c.stateless_session_patterns == []
         assert c.ignore_session_patterns_source == "default"
@@ -44,6 +48,10 @@ class TestConfig:
         monkeypatch.setenv("LCM_EXPANSION_MODEL", "openai/gpt-5.4-mini")
         monkeypatch.setenv("LCM_SUMMARY_TIMEOUT_MS", "45000")
         monkeypatch.setenv("LCM_EXPANSION_TIMEOUT_MS", "90000")
+        monkeypatch.setenv("LCM_DYNAMIC_LEAF_CHUNK_ENABLED", "1")
+        monkeypatch.setenv("LCM_DYNAMIC_LEAF_CHUNK_MAX", "64000")
+        monkeypatch.setenv("LCM_CACHE_FRIENDLY_CONDENSATION_ENABLED", "1")
+        monkeypatch.setenv("LCM_CACHE_FRIENDLY_MIN_DEBT_GROUPS", "3")
         c = LCMConfig.from_env()
         assert c.fresh_tail_count == 32
         assert c.context_threshold == 0.80
@@ -54,6 +62,10 @@ class TestConfig:
         assert c.expansion_model == "openai/gpt-5.4-mini"
         assert c.summary_timeout_ms == 45_000
         assert c.expansion_timeout_ms == 90_000
+        assert c.dynamic_leaf_chunk_enabled is True
+        assert c.dynamic_leaf_chunk_max == 64_000
+        assert c.cache_friendly_condensation_enabled is True
+        assert c.cache_friendly_min_debt_groups == 3
 
     def test_from_env_invalid_numeric_values_fall_back_to_defaults(self, monkeypatch):
         monkeypatch.setenv("LCM_FRESH_TAIL_COUNT", "not-a-number")
@@ -448,6 +460,69 @@ class TestMessageStore:
         assert recency_results[0]["store_id"] == newer_weak
         assert relevance_results[0]["store_id"] == older_strong
 
+    def test_search_hyphenated_operator_queries_fall_back_cleanly(self, store):
+        target = store.append(
+            "sess1",
+            {
+                "role": "user",
+                "content": "hermes-lcm plugin-only external context-engine generic host support no vendoring stays external",
+            },
+        )
+        store.append(
+            "sess1",
+            {
+                "role": "assistant",
+                "content": "or or or filler words without the target concepts",
+            },
+        )
+
+        query = "8416 OR vendored OR vendoring OR plugin-only OR external context-engine OR generic host support OR hermes-lcm stays external OR no vendoring"
+        results = store.search(query, session_id="sess1", limit=5, sort="relevance")
+
+        assert len(results) == 1
+        assert results[0]["store_id"] == target
+        assert results[0]["snippet"]
+
+    def test_search_prefers_conversational_hits_over_tool_output_noise(self, store):
+        user_id = store.append(
+            "sess1",
+            {
+                "role": "user",
+                "content": "vendoring external plugin support should stay generic host support only",
+            },
+        )
+        tool_id = store.append(
+            "sess1",
+            {
+                "role": "tool",
+                "content": '{"vendoring":"vendoring vendoring vendoring","payload":"external plugin generic host support"}',
+            },
+        )
+
+        relevance_results = store.search("vendoring", session_id="sess1", limit=2, sort="relevance")
+        fallback_results = store.search("hermes-lcm", session_id="sess1", limit=2, sort="relevance")
+
+        assert relevance_results[0]["store_id"] == user_id
+        assert relevance_results[1]["store_id"] == tool_id
+
+        fallback_user_id = store.append(
+            "sess1",
+            {
+                "role": "assistant",
+                "content": "hermes-lcm should stay external and plugin-only in practice",
+            },
+        )
+        fallback_tool_id = store.append(
+            "sess1",
+            {
+                "role": "tool",
+                "content": '{"query":"hermes-lcm","matches":["hermes-lcm","hermes-lcm"]}',
+            },
+        )
+        fallback_results = store.search("hermes-lcm", session_id="sess1", limit=2, sort="relevance")
+        assert fallback_results[0]["store_id"] == fallback_user_id
+        assert fallback_results[1]["store_id"] == fallback_tool_id
+
     def test_pin_unpin(self, store):
         sid = store.append("sess1", {"role": "user", "content": "important"})
         store.pin(sid)
@@ -835,6 +910,30 @@ class TestSummaryDAG:
 
         assert recency_results[0].node_id == newer_weak
         assert relevance_results[0].node_id == older_strong
+
+    def test_search_hyphenated_operator_queries_fall_back_cleanly(self, dag):
+        target = dag.add_node(SummaryNode(
+            session_id="s1", depth=0,
+            summary="hermes-lcm plugin-only external context-engine generic host support no vendoring stays external",
+            token_count=10, source_ids=[1], source_type="messages",
+            created_at=1_700_000_000,
+            earliest_at=1_700_000_000,
+            latest_at=1_700_000_000,
+        ))
+        dag.add_node(SummaryNode(
+            session_id="s1", depth=0,
+            summary="or or or filler words without the target concepts",
+            token_count=10, source_ids=[2], source_type="messages",
+            created_at=1_800_000_000,
+            earliest_at=1_800_000_000,
+            latest_at=1_800_000_000,
+        ))
+
+        query = "8416 OR vendored OR vendoring OR plugin-only OR external context-engine OR generic host support OR hermes-lcm stays external OR no vendoring"
+        results = dag.search(query, session_id="s1", limit=5, sort="relevance")
+
+        assert len(results) == 1
+        assert results[0].node_id == target
 
     def test_describe_subtree(self, dag):
         c1 = dag.add_node(SummaryNode(

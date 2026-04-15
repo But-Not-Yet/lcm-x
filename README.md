@@ -140,10 +140,14 @@ Environment variables (all optional):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LCM_FRESH_TAIL_COUNT` | `64` | Recent messages protected from compaction |
-| `LCM_LEAF_CHUNK_TOKENS` | `20000` | Token threshold for leaf compaction |
+| `LCM_LEAF_CHUNK_TOKENS` | `20000` | Token threshold floor for leaf compaction |
+| `LCM_DYNAMIC_LEAF_CHUNK_ENABLED` | `false` | Opt-in dynamic oldest-chunk sizing instead of always compacting the full raw backlog outside the fresh tail |
+| `LCM_DYNAMIC_LEAF_CHUNK_MAX` | `50000` | Upper bound for dynamic leaf chunk sizing |
 | `LCM_CONTEXT_THRESHOLD` | `0.75` | Fraction of context window triggering compaction |
 | `LCM_INCREMENTAL_MAX_DEPTH` | `1` | Max condensation depth (`0` = disabled, `-1` = unlimited) |
 | `LCM_CONDENSATION_FANIN` | `4` | Same-depth nodes needed to trigger condensation |
+| `LCM_CACHE_FRIENDLY_CONDENSATION_ENABLED` | `false` | Opt-in suppression of low-value follow-on condensation after a leaf pass |
+| `LCM_CACHE_FRIENDLY_MIN_DEBT_GROUPS` | `2` | Debt threshold multiplier before cache-friendly gating allows a follow-on condensation pass |
 | `LCM_IGNORE_SESSION_PATTERNS` | *(empty)* | Comma-separated glob patterns for sessions to exclude from LCM storage entirely |
 | `LCM_STATELESS_SESSION_PATTERNS` | *(empty)* | Comma-separated glob patterns for sessions that stay read-only (`platform:session_id` matching supported) |
 | `LCM_SUMMARY_MODEL` | *(auxiliary)* | Override model for summarization |
@@ -152,6 +156,8 @@ Environment variables (all optional):
 | `LCM_EXPANSION_TIMEOUT_MS` | `120000` | Timeout for `lcm_expand_query` answer synthesis |
 | `LCM_DATABASE_PATH` | `~/.hermes/lcm.db` | SQLite database path (auto profile-scoped) |
 | `LCM_NEW_SESSION_RETAIN_DEPTH` | `2` | DAG depth retained after `/new` (`-1` = all, `0` = none, `2` = keep d2+) |
+
+The point-8 compaction knobs are intentionally opt-in. `cache_friendly_*` is a plugin-local prompt-stability heuristic, not a claim that Hermes currently passes true prompt-cache metrics into `hermes-lcm`.
 
 Pattern syntax matches `lossless-claw`:
 - `*` matches within one colon-delimited segment

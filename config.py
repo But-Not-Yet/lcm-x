@@ -27,6 +27,18 @@ def _parse_float_env(key: str, default: float) -> float:
         return default
 
 
+def _parse_bool_env(key: str, default: bool) -> bool:
+    raw = os.environ.get(key)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 @dataclass
 class LCMConfig:
     """All tunables for the LCM engine."""
@@ -43,6 +55,16 @@ class LCMConfig:
     incremental_max_depth: int = 1
     # How many same-depth summaries trigger condensation
     condensation_fanin: int = 4
+    # When enabled, leaf compaction may use a larger working chunk size based on backlog pressure
+    dynamic_leaf_chunk_enabled: bool = False
+    # Upper bound for the working dynamic leaf chunk threshold
+    dynamic_leaf_chunk_max: int = 40_000
+    # When enabled, suppress follow-on condensation after a leaf pass unless
+    # debt/pressure says the extra churn is worth it
+    cache_friendly_condensation_enabled: bool = False
+    # Minimum number of same-depth fanin groups before one follow-on
+    # condensation pass is allowed in cache-friendly mode
+    cache_friendly_min_debt_groups: int = 2
 
     # -- Escalation ---
     # L2 bullet budget as fraction of L1
@@ -94,6 +116,18 @@ class LCMConfig:
         c.context_threshold = _float("LCM_CONTEXT_THRESHOLD", c.context_threshold)
         c.incremental_max_depth = _int("LCM_INCREMENTAL_MAX_DEPTH", c.incremental_max_depth)
         c.condensation_fanin = _int("LCM_CONDENSATION_FANIN", c.condensation_fanin)
+        c.dynamic_leaf_chunk_enabled = _parse_bool_env(
+            "LCM_DYNAMIC_LEAF_CHUNK_ENABLED", c.dynamic_leaf_chunk_enabled
+        )
+        c.dynamic_leaf_chunk_max = _int("LCM_DYNAMIC_LEAF_CHUNK_MAX", c.dynamic_leaf_chunk_max)
+        c.cache_friendly_condensation_enabled = _parse_bool_env(
+            "LCM_CACHE_FRIENDLY_CONDENSATION_ENABLED",
+            c.cache_friendly_condensation_enabled,
+        )
+        c.cache_friendly_min_debt_groups = _int(
+            "LCM_CACHE_FRIENDLY_MIN_DEBT_GROUPS",
+            c.cache_friendly_min_debt_groups,
+        )
         c.l2_budget_ratio = _float("LCM_L2_BUDGET_RATIO", c.l2_budget_ratio)
         c.l3_truncate_tokens = _int("LCM_L3_TRUNCATE_TOKENS", c.l3_truncate_tokens)
         c.max_assembly_tokens = _int("LCM_MAX_ASSEMBLY_TOKENS", c.max_assembly_tokens)

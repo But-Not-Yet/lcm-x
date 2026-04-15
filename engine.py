@@ -101,6 +101,8 @@ class LCMEngine(ContextEngine):
         self.quiet_mode = False
         self.summary_model = self._config.summary_model
         self._last_overflow_recovery_failed = False
+        self._last_condensation_suppressed_reason = ""
+        self._logged_filter_config = False
 
     @property
     def name(self) -> str:
@@ -137,6 +139,119 @@ class LCMEngine(ContextEngine):
         if self._should_force_overflow_recovery(observed_tokens=rough):
             return True
         return rough >= self.threshold_tokens
+
+    def _working_leaf_chunk_tokens(self, raw_tokens_outside_tail: int) -> int:
+        base = max(1, self._config.leaf_chunk_tokens)
+        if not self._config.dynamic_leaf_chunk_enabled:
+            return base
+        ceiling = max(base, self._config.dynamic_leaf_chunk_max)
+        working = base
+        while working < ceiling and raw_tokens_outside_tail > working * 2:
+            working = min(ceiling, working * 2)
+        return working
+
+    def _select_oldest_leaf_chunk(
+        self,
+        candidate_raw: List[Dict[str, Any]],
+        working_leaf_chunk_tokens: int,
+    ) -> List[Dict[str, Any]]:
+        selected: list[Dict[str, Any]] = []
+        used = 0
+        for msg in candidate_raw:
+            msg_tokens = count_message_tokens(msg)
+            if used + msg_tokens > working_leaf_chunk_tokens and selected:
+                break
+            selected.append(msg)
+            used += msg_tokens
+        return selected
+
+    def _is_retry_worthy_leaf_summary_error(self, exc: Exception) -> bool:
+        if isinstance(exc, TimeoutError):
+            return True
+        message = str(exc).lower()
+        retry_markers = (
+            "context length",
+            "maximum context",
+            "max context",
+            "too many tokens",
+            "token limit",
+            "prompt is too long",
+            "input too long",
+            "request too large",
+            "timed out",
+            "timeout",
+        )
+        return any(marker in message for marker in retry_markers)
+
+    def _next_leaf_rescue_chunk(
+        self,
+        current_chunk: List[Dict[str, Any]],
+        current_source_tokens: int,
+    ) -> List[Dict[str, Any]]:
+        if len(current_chunk) <= 1:
+            return []
+
+        floor_tokens = max(1, self._config.leaf_chunk_tokens)
+        shrink_targets = [
+            max(floor_tokens, int(current_source_tokens * 0.75)),
+            max(floor_tokens, int(current_source_tokens * 0.50)),
+        ]
+
+        for target in shrink_targets:
+            if target >= current_source_tokens:
+                continue
+            smaller = self._select_oldest_leaf_chunk(current_chunk, target)
+            if smaller and len(smaller) < len(current_chunk):
+                return smaller
+
+        return current_chunk[:-1]
+
+    def _summarize_leaf_chunk_with_rescue(
+        self,
+        initial_chunk: List[Dict[str, Any]],
+        focus_topic: Optional[str] = None,
+    ) -> tuple[List[Dict[str, Any]], int, str, int, int]:
+        attempt_chunk = list(initial_chunk)
+        max_attempts = 3
+        attempt_number = 0
+
+        while attempt_chunk and attempt_number < max_attempts:
+            attempt_number += 1
+            source_tokens = count_messages_tokens(attempt_chunk)
+            serialized = self._serialize_messages(attempt_chunk)
+            token_budget = max(2000, int(source_tokens * 0.20))
+            token_budget = min(token_budget, 12000)
+
+            try:
+                summary_text, level = summarize_with_escalation(
+                    text=serialized,
+                    source_tokens=source_tokens,
+                    token_budget=token_budget,
+                    depth=0,
+                    model=self._config.summary_model,
+                    timeout=self._config.summary_timeout_ms / 1000,
+                    l2_budget_ratio=self._config.l2_budget_ratio,
+                    l3_truncate_tokens=self._config.l3_truncate_tokens,
+                    focus_topic=focus_topic or "",
+                )
+                return attempt_chunk, source_tokens, summary_text, level, attempt_number
+            except Exception as exc:
+                if attempt_number >= max_attempts or not self._is_retry_worthy_leaf_summary_error(exc):
+                    raise
+                smaller_chunk = self._next_leaf_rescue_chunk(attempt_chunk, source_tokens)
+                if not smaller_chunk or len(smaller_chunk) >= len(attempt_chunk):
+                    raise
+                logger.warning(
+                    "LCM leaf summarization retrying with smaller oldest chunk after retry-worthy failure: %s (attempt %d/%d, %d→%d messages)",
+                    exc,
+                    attempt_number,
+                    max_attempts,
+                    len(attempt_chunk),
+                    len(smaller_chunk),
+                )
+                attempt_chunk = smaller_chunk
+
+        raise RuntimeError("adaptive leaf rescue exhausted without a valid chunk")
 
     def compress(self, messages: List[Dict[str, Any]],
                  current_tokens: int = None,
@@ -177,13 +292,92 @@ class LCMEngine(ContextEngine):
         # Step 1: Ingest new messages into the immutable store
         self._ingest_messages(messages)
 
-        # Step 2: Identify fresh tail boundary
-        n = len(messages)
-        fresh_tail_start = max(0, n - self._config.fresh_tail_count)
+        working_messages = list(messages)
+        leaf_compacted_this_turn = False
+        leaf_passes = 0
+        max_leaf_passes = 4 if self._config.dynamic_leaf_chunk_enabled else 1
+        estimated_active_tokens = (
+            observed_prompt_tokens
+            if observed_prompt_tokens is not None and observed_prompt_tokens > 0
+            else count_messages_tokens(messages)
+        )
 
-        # Protect system prompt (always index 0)
-        if fresh_tail_start <= 1:
-            # Not enough messages to compact
+        while leaf_passes < max_leaf_passes:
+            n = len(working_messages)
+            fresh_tail_start = max(0, n - self._config.fresh_tail_count)
+
+            # Protect system prompt (always index 0)
+            if fresh_tail_start <= 1:
+                break
+
+            # Skip system prompt (index 0), candidate raw backlog is indices 1..fresh_tail_start
+            candidate_raw = working_messages[1:fresh_tail_start]
+            if not candidate_raw:
+                break
+
+            raw_tokens_outside_tail = count_messages_tokens(candidate_raw)
+            if self._config.dynamic_leaf_chunk_enabled:
+                working_leaf_chunk_tokens = self._working_leaf_chunk_tokens(raw_tokens_outside_tail)
+                if raw_tokens_outside_tail < working_leaf_chunk_tokens and not force_overflow:
+                    break
+                if force_overflow:
+                    to_compact = candidate_raw
+                else:
+                    to_compact = self._select_oldest_leaf_chunk(candidate_raw, working_leaf_chunk_tokens)
+            else:
+                if raw_tokens_outside_tail < self._config.leaf_chunk_tokens and not force_overflow:
+                    break
+                to_compact = candidate_raw
+
+            if not to_compact:
+                break
+
+            compacted_chunk, source_tokens, summary_text, _level, _rescue_attempts = self._summarize_leaf_chunk_with_rescue(
+                to_compact,
+                focus_topic=focus_topic,
+            )
+            remaining_messages = working_messages[1 + len(compacted_chunk):]
+
+            source_store_ids = self._get_store_ids_for_messages(compacted_chunk)
+            earliest_at, latest_at = self._store.get_time_bounds(source_store_ids)
+            summary_tokens = count_tokens(summary_text)
+
+            node = SummaryNode(
+                session_id=self._session_id,
+                depth=0,
+                summary=summary_text,
+                token_count=summary_tokens,
+                source_token_count=source_tokens,
+                source_ids=source_store_ids,
+                source_type="messages",
+                created_at=time.time(),
+                earliest_at=earliest_at,
+                latest_at=latest_at,
+                expand_hint=self._extract_expand_hint(summary_text),
+            )
+            self._dag.add_node(node)
+            self._last_compacted_store_id = max(source_store_ids) if source_store_ids else 0
+
+            working_messages = [working_messages[0]] + remaining_messages
+            leaf_compacted_this_turn = True
+            leaf_passes += 1
+            estimated_active_tokens = max(0, estimated_active_tokens - source_tokens + summary_tokens)
+
+            if not self._config.dynamic_leaf_chunk_enabled:
+                break
+
+            if not force_overflow:
+                if self.threshold_tokens > 0 and estimated_active_tokens < self.threshold_tokens:
+                    break
+                remaining_raw = working_messages[1:max(0, len(working_messages) - self._config.fresh_tail_count)]
+                if not remaining_raw:
+                    break
+                remaining_raw_tokens = count_messages_tokens(remaining_raw)
+                remaining_threshold = self._working_leaf_chunk_tokens(remaining_raw_tokens)
+                if remaining_raw_tokens < remaining_threshold:
+                    break
+
+        if not leaf_compacted_this_turn:
             if force_overflow and len(messages) >= 1:
                 compressed = self._assemble_overflow_recovery_context(
                     messages[0],
@@ -196,76 +390,18 @@ class LCMEngine(ContextEngine):
                     assembly_cap_override=recovery_assembly_cap,
                 )
             return messages
-
-        # Step 3: Identify messages to compact (between system prompt and fresh tail)
-        # Skip system prompt (index 0), compact indices 1..fresh_tail_start
-        to_compact = messages[1:fresh_tail_start]
-
-        if not to_compact:
-            if force_overflow and len(messages) >= 1:
-                compressed = self._assemble_overflow_recovery_context(
-                    messages[0],
-                    messages[1:],
-                    assembly_cap_override=recovery_assembly_cap,
-                )
-                return self._finalize_forced_overflow_result(
-                    messages,
-                    compressed,
-                    assembly_cap_override=recovery_assembly_cap,
-                )
-            return messages
-
-        # Calculate source tokens
-        source_tokens = count_messages_tokens(to_compact)
-        if source_tokens < self._config.leaf_chunk_tokens and not force_overflow:
-            # Not enough to justify compaction
-            return messages
-
-        # Step 4: Serialize and summarize
-        serialized = self._serialize_messages(to_compact)
-        token_budget = max(2000, int(source_tokens * 0.20))
-        token_budget = min(token_budget, 12000)
-
-        summary_text, level = summarize_with_escalation(
-            text=serialized,
-            source_tokens=source_tokens,
-            token_budget=token_budget,
-            depth=0,
-            model=self._config.summary_model,
-            timeout=self._config.summary_timeout_ms / 1000,
-            l2_budget_ratio=self._config.l2_budget_ratio,
-            l3_truncate_tokens=self._config.l3_truncate_tokens,
-            focus_topic=focus_topic or "",
-        )
-
-        # Step 5: Create DAG node
-        # Collect store_ids for source tracking
-        source_store_ids = self._get_store_ids_for_messages(to_compact)
-        earliest_at, latest_at = self._store.get_time_bounds(source_store_ids)
-
-        node = SummaryNode(
-            session_id=self._session_id,
-            depth=0,
-            summary=summary_text,
-            token_count=count_tokens(summary_text),
-            source_token_count=source_tokens,
-            source_ids=source_store_ids,
-            source_type="messages",
-            created_at=time.time(),
-            earliest_at=earliest_at,
-            latest_at=latest_at,
-            expand_hint=self._extract_expand_hint(summary_text),
-        )
-        self._dag.add_node(node)
-        self._last_compacted_store_id = max(source_store_ids) if source_store_ids else 0
 
         # Step 6: Check if condensation is needed
-        self._maybe_condense(focus_topic=focus_topic)
+        self._maybe_condense(
+            focus_topic=focus_topic,
+            leaf_compacted_this_turn=True,
+            force_overflow=force_overflow,
+        )
 
         # Step 7: Assemble new active context
         compressed = self._assemble_context(
-            messages[0],
-            messages[fresh_tail_start:],
+            working_messages[0],
+            working_messages[1:],
             assembly_cap_override=recovery_assembly_cap,
         )
         self.compression_count += 1
@@ -284,9 +420,14 @@ class LCMEngine(ContextEngine):
         self._ingest_cursor = len(compressed)
 
         logger.info(
-            "LCM compaction #%d: %d messages → %d (L%d, %d→%d tokens, %d DAG nodes%s)",
-            self.compression_count, n, len(compressed), level,
-            source_tokens, count_tokens(summary_text),
+            "LCM compaction #%d: %d messages → %d (%d leaf pass%s, %d→%d tokens, %d DAG nodes%s)",
+            self.compression_count,
+            len(messages),
+            len(compressed),
+            leaf_passes,
+            "es" if leaf_passes != 1 else "",
+            count_messages_tokens(messages),
+            count_messages_tokens(compressed),
             len(self._dag.get_session_nodes(self._session_id)),
             ", forced overflow recovery" if force_overflow else "",
         )
@@ -301,6 +442,7 @@ class LCMEngine(ContextEngine):
         self._ingest_cursor = 0
         self._last_compacted_store_id = 0
         self._last_overflow_recovery_failed = False
+        self._last_condensation_suppressed_reason = ""
         self._refresh_session_filters()
         if "hermes_home" in kwargs:
             self._hermes_home = kwargs["hermes_home"]
@@ -323,6 +465,7 @@ class LCMEngine(ContextEngine):
         self._context_probed = False
         self._context_probe_persistable = False
         self._last_overflow_recovery_failed = False
+        self._last_condensation_suppressed_reason = ""
 
         # Retain DAG nodes across sessions based on config.
         #   -1  → keep all nodes
@@ -416,6 +559,7 @@ class LCMEngine(ContextEngine):
             status["ignore_session_patterns_source"] = self._config.ignore_session_patterns_source
             status["stateless_session_patterns_source"] = self._config.stateless_session_patterns_source
             status["overflow_recovery_failed"] = self._last_overflow_recovery_failed
+            status["condensation_suppressed_reason"] = self._last_condensation_suppressed_reason
         return status
 
     def update_model(self, model: str, context_length: int,
@@ -443,18 +587,20 @@ class LCMEngine(ContextEngine):
         )
 
     def _log_session_filter_diagnostics(self) -> None:
-        if self._config.ignore_session_patterns:
-            logger.info(
-                "LCM ignore_session_patterns from %s: %s",
-                self._config.ignore_session_patterns_source,
-                ", ".join(self._config.ignore_session_patterns),
-            )
-        if self._config.stateless_session_patterns:
-            logger.info(
-                "LCM stateless_session_patterns from %s: %s",
-                self._config.stateless_session_patterns_source,
-                ", ".join(self._config.stateless_session_patterns),
-            )
+        if not self._logged_filter_config:
+            if self._config.ignore_session_patterns:
+                logger.info(
+                    "LCM ignore_session_patterns from %s: %s",
+                    self._config.ignore_session_patterns_source,
+                    ", ".join(self._config.ignore_session_patterns),
+                )
+            if self._config.stateless_session_patterns:
+                logger.info(
+                    "LCM stateless_session_patterns from %s: %s",
+                    self._config.stateless_session_patterns_source,
+                    ", ".join(self._config.stateless_session_patterns),
+                )
+            self._logged_filter_config = True
         if self._session_ignored:
             logger.info(
                 "LCM session %s matched ignore_session_patterns via %s — skipping writes and compaction",
@@ -578,8 +724,38 @@ class LCMEngine(ContextEngine):
 
     # -- Internal: condensation --------------------------------------------
 
-    def _maybe_condense(self, focus_topic: Optional[str] = None) -> None:
+    def _should_allow_follow_on_condensation(
+        self,
+        *,
+        uncondensed_count: int,
+        leaf_compacted_this_turn: bool,
+        force_overflow: bool,
+    ) -> tuple[bool, str]:
+        if not leaf_compacted_this_turn:
+            return True, ""
+        if not self._config.cache_friendly_condensation_enabled:
+            return True, ""
+        if force_overflow:
+            return True, ""
+
+        fanin = max(1, self._config.condensation_fanin)
+        debt_threshold = fanin * max(1, self._config.cache_friendly_min_debt_groups)
+        if uncondensed_count >= debt_threshold:
+            return True, ""
+        if uncondensed_count == fanin:
+            return False, "cache_friendly_single_group"
+        return False, "cache_friendly_low_debt"
+
+    def _maybe_condense(
+        self,
+        focus_topic: Optional[str] = None,
+        *,
+        leaf_compacted_this_turn: bool = False,
+        force_overflow: bool = False,
+    ) -> None:
         """Check if any depth level has enough nodes for condensation."""
+        self._last_condensation_suppressed_reason = ""
+
         max_depth = self._config.incremental_max_depth
         if max_depth == 0:
             return  # condensation disabled
@@ -593,11 +769,23 @@ class LCMEngine(ContextEngine):
         else:
             upper = max_depth
 
+        condensed_any = False
+        suppression_reason = ""
+
         for depth in range(upper):
             uncondensed = self._dag.get_uncondensed_at_depth(
                 self._session_id, depth
             )
             if len(uncondensed) < self._config.condensation_fanin:
+                continue
+
+            allow_condense, reason = self._should_allow_follow_on_condensation(
+                uncondensed_count=len(uncondensed),
+                leaf_compacted_this_turn=leaf_compacted_this_turn,
+                force_overflow=force_overflow,
+            )
+            if not allow_condense:
+                suppression_reason = reason or suppression_reason
                 continue
 
             # Take the first fanin nodes and condense
@@ -633,12 +821,19 @@ class LCMEngine(ContextEngine):
                 expand_hint=self._extract_expand_hint(summary_text),
             )
             self._dag.add_node(node)
+            condensed_any = True
 
             logger.info(
                 "LCM condensation: d%d × %d → d%d (L%d, %d→%d tokens)",
                 depth, len(to_condense), depth + 1, level,
                 source_tokens, count_tokens(summary_text),
             )
+
+            if leaf_compacted_this_turn and self._config.cache_friendly_condensation_enabled:
+                break
+
+        if not condensed_any and leaf_compacted_this_turn and self._config.cache_friendly_condensation_enabled:
+            self._last_condensation_suppressed_reason = suppression_reason
 
     # -- Internal: context assembly ----------------------------------------
 
