@@ -9,7 +9,7 @@ from agent.context_engine import ContextEngine
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.dag import SummaryNode
 from hermes_lcm.engine import LCMEngine
-from hermes_lcm.tokens import count_message_tokens
+from hermes_lcm.tokens import count_message_tokens, count_messages_tokens
 
 
 @pytest.fixture
@@ -393,6 +393,141 @@ class TestEngineCompress:
         assert candidate_raw[3]["content"] in compressed_contents
         assert messages[-1]["content"] in compressed_contents
         assert len(stored) == len(messages)
+
+    def test_adaptive_leaf_rescue_retries_with_smaller_oldest_chunk(self, tmp_path, monkeypatch):
+        config = LCMConfig(
+            fresh_tail_count=2,
+            leaf_chunk_tokens=50,
+            dynamic_leaf_chunk_enabled=True,
+            dynamic_leaf_chunk_max=120,
+            database_path=str(tmp_path / "lcm_dynamic_leaf_retry.db"),
+        )
+        engine = LCMEngine(config=config)
+        engine._session_id = "test-session"
+        engine.context_length = 200000
+        engine.threshold_tokens = int(200000 * config.context_threshold)
+
+        messages = [{"role": "system", "content": "You are a helpful assistant."}]
+        for i in range(6):
+            role = "user" if i % 2 == 0 else "assistant"
+            messages.append({
+                "role": role,
+                "content": f"Message {i}: " + ("chunk " * 35),
+            })
+
+        candidate_raw = messages[1:-config.fresh_tail_count]
+        initial_chunk = engine._select_oldest_leaf_chunk(
+            candidate_raw,
+            engine._working_leaf_chunk_tokens(count_messages_tokens(candidate_raw)),
+        )
+        assert len(initial_chunk) == 2
+        first_msg_tokens = count_message_tokens(candidate_raw[0])
+        assert count_messages_tokens(initial_chunk) > first_msg_tokens
+
+        import hermes_lcm.engine as engine_module
+
+        attempts: list[int] = []
+
+        def flaky_summary(**kwargs):
+            attempts.append(kwargs["source_tokens"])
+            if kwargs["source_tokens"] > first_msg_tokens:
+                raise RuntimeError("context length exceeded")
+            return "Recovered smaller leaf summary.\nExpand for details about: oldest raw chunk", 1
+
+        monkeypatch.setattr(engine_module, "summarize_with_escalation", flaky_summary)
+
+        compressed = engine.compress(messages)
+
+        assert len(attempts) == 2
+        assert attempts[0] > attempts[1]
+
+        nodes = engine._dag.get_session_nodes("test-session")
+        assert len(nodes) == 1
+        node = nodes[0]
+        selected_contents = [engine._store.get(store_id)["content"] for store_id in node.source_ids]
+        assert len(node.source_ids) == 1
+        assert selected_contents == [candidate_raw[0]["content"]]
+
+        compressed_contents = [msg.get("content") for msg in compressed]
+        assert candidate_raw[1]["content"] in compressed_contents
+        assert candidate_raw[2]["content"] in compressed_contents
+        assert candidate_raw[3]["content"] in compressed_contents
+
+    def test_adaptive_leaf_rescue_stops_after_bounded_retry_worthy_failures(self, tmp_path, monkeypatch):
+        config = LCMConfig(
+            fresh_tail_count=2,
+            leaf_chunk_tokens=50,
+            dynamic_leaf_chunk_enabled=True,
+            dynamic_leaf_chunk_max=120,
+            database_path=str(tmp_path / "lcm_dynamic_leaf_retry_fail.db"),
+        )
+        engine = LCMEngine(config=config)
+        engine._session_id = "test-session"
+        engine.context_length = 200000
+        engine.threshold_tokens = int(200000 * config.context_threshold)
+
+        messages = [{"role": "system", "content": "You are a helpful assistant."}]
+        for i in range(6):
+            role = "user" if i % 2 == 0 else "assistant"
+            messages.append({
+                "role": role,
+                "content": f"Message {i}: " + ("chunk " * 35),
+            })
+
+        import hermes_lcm.engine as engine_module
+
+        attempts: list[int] = []
+
+        def always_fails(**kwargs):
+            attempts.append(kwargs["source_tokens"])
+            raise RuntimeError("context length exceeded")
+
+        monkeypatch.setattr(engine_module, "summarize_with_escalation", always_fails)
+
+        with pytest.raises(RuntimeError, match="context length exceeded"):
+            engine.compress(messages)
+
+        assert len(attempts) == 2
+        assert attempts[0] > attempts[-1]
+        assert engine._dag.get_session_nodes("test-session") == []
+
+    def test_adaptive_leaf_rescue_does_not_retry_non_retry_worthy_errors(self, tmp_path, monkeypatch):
+        config = LCMConfig(
+            fresh_tail_count=2,
+            leaf_chunk_tokens=50,
+            dynamic_leaf_chunk_enabled=True,
+            dynamic_leaf_chunk_max=120,
+            database_path=str(tmp_path / "lcm_dynamic_leaf_retry_nonretry.db"),
+        )
+        engine = LCMEngine(config=config)
+        engine._session_id = "test-session"
+        engine.context_length = 200000
+        engine.threshold_tokens = int(200000 * config.context_threshold)
+
+        messages = [{"role": "system", "content": "You are a helpful assistant."}]
+        for i in range(6):
+            role = "user" if i % 2 == 0 else "assistant"
+            messages.append({
+                "role": role,
+                "content": f"Message {i}: " + ("chunk " * 35),
+            })
+
+        import hermes_lcm.engine as engine_module
+
+        call_count = 0
+
+        def bad_template(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("template exploded")
+
+        monkeypatch.setattr(engine_module, "summarize_with_escalation", bad_template)
+
+        with pytest.raises(RuntimeError, match="template exploded"):
+            engine.compress(messages)
+
+        assert call_count == 1
+        assert engine._dag.get_session_nodes("test-session") == []
 
 
 class TestPostCompactionIngestion:

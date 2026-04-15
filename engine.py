@@ -163,6 +163,94 @@ class LCMEngine(ContextEngine):
             used += msg_tokens
         return selected
 
+    def _is_retry_worthy_leaf_summary_error(self, exc: Exception) -> bool:
+        if isinstance(exc, TimeoutError):
+            return True
+        message = str(exc).lower()
+        retry_markers = (
+            "context length",
+            "maximum context",
+            "max context",
+            "too many tokens",
+            "token limit",
+            "prompt is too long",
+            "input too long",
+            "request too large",
+            "timed out",
+            "timeout",
+        )
+        return any(marker in message for marker in retry_markers)
+
+    def _next_leaf_rescue_chunk(
+        self,
+        current_chunk: List[Dict[str, Any]],
+        current_source_tokens: int,
+    ) -> List[Dict[str, Any]]:
+        if len(current_chunk) <= 1:
+            return []
+
+        floor_tokens = max(1, self._config.leaf_chunk_tokens)
+        shrink_targets = [
+            max(floor_tokens, int(current_source_tokens * 0.75)),
+            max(floor_tokens, int(current_source_tokens * 0.50)),
+        ]
+
+        for target in shrink_targets:
+            if target >= current_source_tokens:
+                continue
+            smaller = self._select_oldest_leaf_chunk(current_chunk, target)
+            if smaller and len(smaller) < len(current_chunk):
+                return smaller
+
+        return current_chunk[:-1]
+
+    def _summarize_leaf_chunk_with_rescue(
+        self,
+        initial_chunk: List[Dict[str, Any]],
+        focus_topic: Optional[str] = None,
+    ) -> tuple[List[Dict[str, Any]], int, str, int, int]:
+        attempt_chunk = list(initial_chunk)
+        max_attempts = 3
+        attempt_number = 0
+
+        while attempt_chunk and attempt_number < max_attempts:
+            attempt_number += 1
+            source_tokens = count_messages_tokens(attempt_chunk)
+            serialized = self._serialize_messages(attempt_chunk)
+            token_budget = max(2000, int(source_tokens * 0.20))
+            token_budget = min(token_budget, 12000)
+
+            try:
+                summary_text, level = summarize_with_escalation(
+                    text=serialized,
+                    source_tokens=source_tokens,
+                    token_budget=token_budget,
+                    depth=0,
+                    model=self._config.summary_model,
+                    timeout=self._config.summary_timeout_ms / 1000,
+                    l2_budget_ratio=self._config.l2_budget_ratio,
+                    l3_truncate_tokens=self._config.l3_truncate_tokens,
+                    focus_topic=focus_topic or "",
+                )
+                return attempt_chunk, source_tokens, summary_text, level, attempt_number
+            except Exception as exc:
+                if attempt_number >= max_attempts or not self._is_retry_worthy_leaf_summary_error(exc):
+                    raise
+                smaller_chunk = self._next_leaf_rescue_chunk(attempt_chunk, source_tokens)
+                if not smaller_chunk or len(smaller_chunk) >= len(attempt_chunk):
+                    raise
+                logger.warning(
+                    "LCM leaf summarization retrying with smaller oldest chunk after retry-worthy failure: %s (attempt %d/%d, %d→%d messages)",
+                    exc,
+                    attempt_number,
+                    max_attempts,
+                    len(attempt_chunk),
+                    len(smaller_chunk),
+                )
+                attempt_chunk = smaller_chunk
+
+        raise RuntimeError("adaptive leaf rescue exhausted without a valid chunk")
+
     def compress(self, messages: List[Dict[str, Any]],
                  current_tokens: int = None,
                  focus_topic: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -247,40 +335,24 @@ class LCMEngine(ContextEngine):
                 return messages
             if force_overflow:
                 to_compact = candidate_raw
-                remaining_messages = messages[fresh_tail_start:]
             else:
                 to_compact = self._select_oldest_leaf_chunk(candidate_raw, working_leaf_chunk_tokens)
-                remaining_messages = messages[1 + len(to_compact):]
         else:
             if raw_tokens_outside_tail < self._config.leaf_chunk_tokens and not force_overflow:
                 # Not enough to justify compaction
                 return messages
             to_compact = candidate_raw
-            remaining_messages = messages[fresh_tail_start:]
 
-        # Calculate source tokens
-        source_tokens = count_messages_tokens(to_compact)
-
-        # Step 4: Serialize and summarize
-        serialized = self._serialize_messages(to_compact)
-        token_budget = max(2000, int(source_tokens * 0.20))
-        token_budget = min(token_budget, 12000)
-
-        summary_text, level = summarize_with_escalation(
-            text=serialized,
-            source_tokens=source_tokens,
-            token_budget=token_budget,
-            depth=0,
-            model=self._config.summary_model,
-            timeout=self._config.summary_timeout_ms / 1000,
-            l2_budget_ratio=self._config.l2_budget_ratio,
-            l3_truncate_tokens=self._config.l3_truncate_tokens,
-            focus_topic=focus_topic or "",
+        # Step 4: Serialize and summarize, with bounded smaller-chunk rescue for retry-worthy failures
+        compacted_chunk, source_tokens, summary_text, level, rescue_attempts = self._summarize_leaf_chunk_with_rescue(
+            to_compact,
+            focus_topic=focus_topic,
         )
+        remaining_messages = messages[1 + len(compacted_chunk):]
 
         # Step 5: Create DAG node
         # Collect store_ids for source tracking
-        source_store_ids = self._get_store_ids_for_messages(to_compact)
+        source_store_ids = self._get_store_ids_for_messages(compacted_chunk)
         earliest_at, latest_at = self._store.get_time_bounds(source_store_ids)
 
         node = SummaryNode(
