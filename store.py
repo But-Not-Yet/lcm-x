@@ -19,8 +19,48 @@ from .db_bootstrap import (
     ensure_external_content_fts,
     run_versioned_migrations,
 )
+from .search_query import (
+    build_snippet,
+    count_term_matches,
+    escape_like,
+    extract_search_terms,
+    requires_like_fallback,
+)
 
 logger = logging.getLogger(__name__)
+
+AGE_DECAY_RATE = 0.001
+
+
+def _normalize_search_sort(sort: str | None) -> str:
+    normalized = (sort or "recency").strip().lower()
+    return normalized if normalized in {"recency", "relevance", "hybrid"} else "recency"
+
+
+def _build_search_order_by(sort: str | None, timestamp_expr: str) -> str:
+    normalized = _normalize_search_sort(sort)
+    if normalized == "relevance":
+        return f"rank ASC, {timestamp_expr} DESC"
+    if normalized == "hybrid":
+        return (
+            f"(rank / (1 + (((strftime('%s','now') - {timestamp_expr}) / 3600.0) * {AGE_DECAY_RATE}))) ASC, "
+            f"{timestamp_expr} DESC"
+        )
+    return f"{timestamp_expr} DESC"
+
+
+def _fallback_result_sort_key(result: Dict[str, Any], sort: str | None) -> tuple[float, float]:
+    normalized = _normalize_search_sort(sort)
+    score = float(result.get("_fallback_score") or 0.0)
+    timestamp = float(result.get("timestamp") or 0.0)
+
+    if normalized == "relevance":
+        return (-score, -timestamp)
+    if normalized == "hybrid":
+        age_hours = max(0.0, (time.time() - timestamp) / 3600.0)
+        blended = score / (1 + (age_hours * AGE_DECAY_RATE))
+        return (-blended, -timestamp)
+    return (-timestamp, -score)
 
 
 class MessageStore:
@@ -216,59 +256,96 @@ class MessageStore:
         ).fetchone()
         return row[0] if row else 0
 
+    def get_time_bounds(self, store_ids: List[int]) -> tuple[float | None, float | None]:
+        if not store_ids:
+            return None, None
+        placeholders = ",".join("?" * len(store_ids))
+        row = self._conn.execute(
+            f"SELECT MIN(timestamp), MAX(timestamp) FROM messages WHERE store_id IN ({placeholders})",
+            store_ids,
+        ).fetchone()
+        if not row:
+            return None, None
+        return row[0], row[1]
+
     # -- Search -------------------------------------------------------------
 
     def search(self, query: str, session_id: str | None = None,
-               limit: int = 20) -> List[Dict[str, Any]]:
+               limit: int = 20, sort: str | None = None) -> List[Dict[str, Any]]:
         """FTS5 search across messages. Returns matches with snippets."""
+        if requires_like_fallback(query):
+            return self._search_like(query, session_id=session_id, limit=limit, sort=sort)
+
+        order_by = _build_search_order_by(sort, "m.timestamp")
         try:
             if session_id:
                 rows = self._conn.execute(
-                    """SELECT m.*, snippet(messages_fts, 0, '>>>', '<<<', '...', 40) as snippet
+                    f"""SELECT m.*, rank as search_rank,
+                              snippet(messages_fts, 0, '>>>', '<<<', '...', 40) as snippet
                        FROM messages_fts fts
                        JOIN messages m ON m.store_id = fts.rowid
                        WHERE messages_fts MATCH ? AND m.session_id = ?
-                       ORDER BY rank LIMIT ?""",
+                       ORDER BY {order_by} LIMIT ?""",
                     (query, session_id, limit),
                 ).fetchall()
             else:
                 rows = self._conn.execute(
-                    """SELECT m.*, snippet(messages_fts, 0, '>>>', '<<<', '...', 40) as snippet
+                    f"""SELECT m.*, rank as search_rank,
+                              snippet(messages_fts, 0, '>>>', '<<<', '...', 40) as snippet
                        FROM messages_fts fts
                        JOIN messages m ON m.store_id = fts.rowid
                        WHERE messages_fts MATCH ?
-                       ORDER BY rank LIMIT ?""",
+                       ORDER BY {order_by} LIMIT ?""",
                     (query, limit),
                 ).fetchall()
-            results = []
-            for r in rows:
-                d = self._row_to_dict(r)
-                # snippet is the extra column
-                d["snippet"] = r[-1] if len(r) > 10 else ""
-                results.append(d)
-            return results
-        except sqlite3.DatabaseError:
-            like = f"%{query.strip().lower()}%"
-            if session_id:
-                rows = self._conn.execute(
-                    """SELECT * FROM messages
-                       WHERE session_id = ? AND LOWER(COALESCE(content, '')) LIKE ?
-                       ORDER BY store_id LIMIT ?""",
-                    (session_id, like, limit),
-                ).fetchall()
-            else:
-                rows = self._conn.execute(
-                    """SELECT * FROM messages
-                       WHERE LOWER(COALESCE(content, '')) LIKE ?
-                       ORDER BY store_id LIMIT ?""",
-                    (like, limit),
-                ).fetchall()
-            results = []
-            for r in rows:
-                d = self._row_to_dict(r)
-                d["snippet"] = d.get("content") or ""
-                results.append(d)
-            return results
+        except sqlite3.Error:
+            return self._search_like(query, session_id=session_id, limit=limit, sort=sort)
+        results = []
+        for r in rows:
+            d = self._row_to_dict(r)
+            d["search_rank"] = r[10] if len(r) > 10 else None
+            d["snippet"] = r[11] if len(r) > 11 else ""
+            results.append(d)
+        return results
+
+    def _search_like(self, query: str, session_id: str | None = None,
+                     limit: int = 20, sort: str | None = None) -> List[Dict[str, Any]]:
+        terms = extract_search_terms(query)
+        if not terms:
+            return []
+
+        where: list[str] = ["content IS NOT NULL"]
+        args: list[Any] = []
+        if session_id:
+            where.append("session_id = ?")
+            args.append(session_id)
+        like_clauses = []
+        for term in terms:
+            like_clauses.append("content LIKE ? ESCAPE '\\'")
+            args.append(f"%{escape_like(term)}%")
+        where.append("(" + " OR ".join(like_clauses) + ")")
+
+        rows = self._conn.execute(
+            f"SELECT * FROM messages WHERE {' AND '.join(where)}"
+            , args,
+        ).fetchall()
+
+        results: list[Dict[str, Any]] = []
+        for row in rows:
+            result = self._row_to_dict(row)
+            content = result.get("content") or ""
+            score = sum(count_term_matches(content, term) for term in terms)
+            if score <= 0:
+                continue
+            result["search_rank"] = -float(score)
+            result["snippet"] = build_snippet(content, terms)
+            result["_fallback_score"] = float(score)
+            results.append(result)
+
+        results.sort(key=lambda result: _fallback_result_sort_key(result, sort))
+        for result in results:
+            result.pop("_fallback_score", None)
+        return results[:limit]
 
     # -- Helpers ------------------------------------------------------------
 

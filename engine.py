@@ -241,6 +241,7 @@ class LCMEngine(ContextEngine):
         # Step 5: Create DAG node
         # Collect store_ids for source tracking
         source_store_ids = self._get_store_ids_for_messages(to_compact)
+        earliest_at, latest_at = self._store.get_time_bounds(source_store_ids)
 
         node = SummaryNode(
             session_id=self._session_id,
@@ -251,6 +252,8 @@ class LCMEngine(ContextEngine):
             source_ids=source_store_ids,
             source_type="messages",
             created_at=time.time(),
+            earliest_at=earliest_at,
+            latest_at=latest_at,
             expand_hint=self._extract_expand_hint(summary_text),
         )
         self._dag.add_node(node)
@@ -615,6 +618,7 @@ class LCMEngine(ContextEngine):
                 focus_topic=focus_topic or "",
             )
 
+            earliest_at, latest_at = self._dag.get_source_time_window([n.node_id for n in to_condense])
             node = SummaryNode(
                 session_id=self._session_id,
                 depth=depth + 1,
@@ -624,6 +628,8 @@ class LCMEngine(ContextEngine):
                 source_ids=[n.node_id for n in to_condense],
                 source_type="nodes",
                 created_at=time.time(),
+                earliest_at=earliest_at,
+                latest_at=latest_at,
                 expand_hint=self._extract_expand_hint(summary_text),
             )
             self._dag.add_node(node)
