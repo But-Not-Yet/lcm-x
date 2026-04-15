@@ -175,6 +175,17 @@ That means patterns like `cron:*` can catch Hermes cron sessions today, while pl
 | `lcm_status` | Quick health overview — compression count, store size, DAG depth distribution, context usage, and active config. |
 | `lcm_doctor` | Run diagnostics — database integrity, FTS index sync, orphaned nodes, config validation, context pressure. |
 
+## Gateway Slash Commands
+
+When Hermes host support for plugin slash commands is available, `hermes-lcm` also exposes a `/lcm` operator surface for quick read-only diagnostics from chat:
+
+- `/lcm` or `/lcm status` — current session/runtime status
+- `/lcm doctor` — SQLite + FTS health checks and store/node totals
+- `/lcm doctor clean` — best-effort read-only scan for obvious junk/noise sessions matched from stored session keys
+- `/lcm backup` — create a timestamped SQLite backup before any future cleanup workflow
+
+`/lcm doctor clean apply` is intentionally not implemented yet. This slice is diagnostics-first and backup-first.
+
 ## How It Works
 
 1. **Ingest** — every message persisted verbatim in an immutable SQLite store
@@ -195,10 +206,11 @@ hermes-lcm/
 ├── dag.py           # summary DAG with depth-aware nodes (FTS5)
 ├── escalation.py    # L1 → L2 → L3 guaranteed convergence
 ├── config.py        # LCMConfig + env var overrides
+├── command.py       # /lcm slash command handlers for gateway diagnostics
 ├── tokens.py        # tiktoken with char-based fallback
 ├── schemas.py       # tool schemas (what the LLM sees)
 ├── tools.py         # tool handlers (lcm_grep, lcm_describe, lcm_expand, lcm_expand_query)
-└── tests/           # 72 tests
+└── tests/           # standalone pytest coverage
 ```
 
 **Running tests:**
