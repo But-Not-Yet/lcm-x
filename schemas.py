@@ -16,7 +16,8 @@ LCM_GREP = {
                 "type": "string",
                 "description": (
                     "Search query (FTS5 syntax: keywords, phrases, OR/NOT). "
-                    "FTS5 defaults to AND matching, so prefer 1-3 distinctive terms or one quoted multi-word phrase."
+                    "FTS5 defaults to AND matching, so prefer 1-3 distinctive terms or one quoted multi-word phrase. "
+                    "Wrap exact phrases in quotes. Short CJK fragments and emoji-heavy queries may use substring fallback instead of plain FTS token matching."
                 ),
             },
             "limit": {

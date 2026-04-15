@@ -25,6 +25,12 @@ from .db_bootstrap import (
     ensure_external_content_fts,
     run_versioned_migrations,
 )
+from .search_query import (
+    count_term_matches,
+    escape_like,
+    extract_search_terms,
+    requires_like_fallback,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,16 +42,30 @@ def _normalize_search_sort(sort: str | None) -> str:
     return normalized if normalized in {"recency", "relevance", "hybrid"} else "recency"
 
 
-def _build_search_order_by(sort: str | None, created_at_expr: str) -> str:
+def _build_search_order_by(sort: str | None, recency_expr: str) -> str:
     normalized = _normalize_search_sort(sort)
     if normalized == "relevance":
-        return f"rank ASC, {created_at_expr} DESC"
+        return f"rank ASC, {recency_expr} DESC"
     if normalized == "hybrid":
         return (
-            f"(rank / (1 + (((strftime('%s','now') - {created_at_expr}) / 3600.0) * {AGE_DECAY_RATE}))) ASC, "
-            f"{created_at_expr} DESC"
+            f"(rank / (1 + (((strftime('%s','now') - {recency_expr}) / 3600.0) * {AGE_DECAY_RATE}))) ASC, "
+            f"{recency_expr} DESC"
         )
-    return f"{created_at_expr} DESC"
+    return f"{recency_expr} DESC"
+
+
+def _fallback_result_sort_key(node: "SummaryNode", sort: str | None) -> tuple[float, float]:
+    normalized = _normalize_search_sort(sort)
+    score = float(node.search_rank or 0.0) * -1.0
+    recency = float(node.latest_at or node.created_at or 0.0)
+
+    if normalized == "relevance":
+        return (-score, -recency)
+    if normalized == "hybrid":
+        age_hours = max(0.0, (time.time() - recency) / 3600.0)
+        blended = score / (1 + (age_hours * AGE_DECAY_RATE))
+        return (-blended, -recency)
+    return (-recency, -score)
 
 
 @dataclass
@@ -60,6 +80,8 @@ class SummaryNode:
     source_ids: List[int] = field(default_factory=list)  # store_ids or node_ids
     source_type: str = "messages"  # "messages" or "nodes"
     created_at: float = 0.0
+    earliest_at: float | None = None
+    latest_at: float | None = None
     expand_hint: str = ""  # "Expand for details about: ..."
     search_rank: float | None = None
 
@@ -86,6 +108,8 @@ class SummaryDAG:
                 source_ids TEXT NOT NULL DEFAULT '[]',
                 source_type TEXT NOT NULL DEFAULT 'messages',
                 created_at REAL NOT NULL,
+                earliest_at REAL,
+                latest_at REAL,
                 expand_hint TEXT DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_nodes_session_depth
@@ -122,7 +146,20 @@ class SummaryDAG:
             ),
         )
         run_versioned_migrations(self._conn)
+        self._ensure_source_window_columns()
         self._conn.commit()
+
+    def _ensure_source_window_columns(self) -> None:
+        columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(summary_nodes)").fetchall()
+        }
+        if "earliest_at" not in columns:
+            self._conn.execute("ALTER TABLE summary_nodes ADD COLUMN earliest_at REAL")
+        if "latest_at" not in columns:
+            self._conn.execute("ALTER TABLE summary_nodes ADD COLUMN latest_at REAL")
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_nodes_session_latest ON summary_nodes(session_id, latest_at, created_at)"
+        )
 
     # -- Write --------------------------------------------------------------
 
@@ -131,8 +168,8 @@ class SummaryDAG:
         cur = self._conn.execute(
             """INSERT INTO summary_nodes
                (session_id, depth, summary, token_count, source_token_count,
-                source_ids, source_type, created_at, expand_hint)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                source_ids, source_type, created_at, earliest_at, latest_at, expand_hint)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 node.session_id,
                 node.depth,
@@ -142,6 +179,8 @@ class SummaryDAG:
                 json.dumps(node.source_ids),
                 node.source_type,
                 node.created_at or time.time(),
+                node.earliest_at,
+                node.latest_at,
                 node.expand_hint,
             ),
         )
@@ -253,7 +292,10 @@ class SummaryDAG:
     def search(self, query: str, session_id: str | None = None,
                limit: int = 20, sort: str | None = None) -> List[SummaryNode]:
         """FTS5 search across all summary nodes."""
-        order_by = _build_search_order_by(sort, "n.created_at")
+        if requires_like_fallback(query):
+            return self._search_like(query, session_id=session_id, limit=limit, sort=sort)
+
+        order_by = _build_search_order_by(sort, "COALESCE(n.latest_at, n.created_at)")
         try:
             if session_id:
                 rows = self._conn.execute(
@@ -271,24 +313,42 @@ class SummaryDAG:
                        ORDER BY {order_by} LIMIT ?""",
                     (query, limit),
                 ).fetchall()
-            return [self._row_to_node(r) for r in rows]
-        except sqlite3.DatabaseError:
-            like = f"%{query.strip().lower()}%"
-            if session_id:
-                rows = self._conn.execute(
-                    """SELECT * FROM summary_nodes
-                       WHERE session_id = ? AND LOWER(COALESCE(summary, '')) LIKE ?
-                       ORDER BY created_at DESC LIMIT ?""",
-                    (session_id, like, limit),
-                ).fetchall()
-            else:
-                rows = self._conn.execute(
-                    """SELECT * FROM summary_nodes
-                       WHERE LOWER(COALESCE(summary, '')) LIKE ?
-                       ORDER BY created_at DESC LIMIT ?""",
-                    (like, limit),
-                ).fetchall()
-            return [self._row_to_node(r) for r in rows]
+        except sqlite3.Error:
+            return self._search_like(query, session_id=session_id, limit=limit, sort=sort)
+        return [self._row_to_node(r) for r in rows]
+
+    def _search_like(self, query: str, session_id: str | None = None,
+                     limit: int = 20, sort: str | None = None) -> List[SummaryNode]:
+        terms = extract_search_terms(query)
+        if not terms:
+            return []
+
+        where: list[str] = ["summary IS NOT NULL"]
+        args: list[Any] = []
+        if session_id:
+            where.append("session_id = ?")
+            args.append(session_id)
+        like_clauses = []
+        for term in terms:
+            like_clauses.append("summary LIKE ? ESCAPE '\\'")
+            args.append(f"%{escape_like(term)}%")
+        where.append("(" + " OR ".join(like_clauses) + ")")
+
+        rows = self._conn.execute(
+            f"SELECT * FROM summary_nodes WHERE {' AND '.join(where)}",
+            args,
+        ).fetchall()
+        nodes: list[SummaryNode] = []
+        for row in rows:
+            node = self._row_to_node(row)
+            score = sum(count_term_matches(node.summary, term) for term in terms)
+            if score <= 0:
+                continue
+            node.search_rank = -float(score)
+            nodes.append(node)
+
+        nodes.sort(key=lambda node: _fallback_result_sort_key(node, sort))
+        return nodes[:limit]
 
     # -- DAG traversal ------------------------------------------------------
 
@@ -304,6 +364,22 @@ class SummaryDAG:
             node.source_ids,
         ).fetchall()
         return [self._row_to_node(r) for r in rows]
+
+    def get_source_time_window(self, node_ids: List[int]) -> tuple[float | None, float | None]:
+        if not node_ids:
+            return None, None
+        placeholders = ",".join("?" * len(node_ids))
+        row = self._conn.execute(
+            f"""SELECT
+                    MIN(COALESCE(earliest_at, created_at)),
+                    MAX(COALESCE(latest_at, created_at))
+                FROM summary_nodes
+                WHERE node_id IN ({placeholders})""",
+            node_ids,
+        ).fetchone()
+        if not row:
+            return None, None
+        return row[0], row[1]
 
     def describe_subtree(self, node_id: int) -> Dict[str, Any]:
         """Return metadata about a node's subtree without loading content."""
@@ -329,6 +405,8 @@ class SummaryDAG:
             "source_token_count": node.source_token_count,
             "source_type": node.source_type,
             "num_sources": len(node.source_ids),
+            "earliest_at": node.earliest_at,
+            "latest_at": node.latest_at,
             "expand_hint": node.expand_hint,
             "children": children,
         }
@@ -346,8 +424,10 @@ class SummaryDAG:
             source_ids=json.loads(row[6]) if row[6] else [],
             source_type=row[7],
             created_at=row[8],
-            expand_hint=row[9] or "",
-            search_rank=row[10] if len(row) > 10 else None,
+            earliest_at=row[9],
+            latest_at=row[10],
+            expand_hint=row[11] or "",
+            search_rank=row[12] if len(row) > 12 else None,
         )
 
     def close(self):

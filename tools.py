@@ -209,7 +209,9 @@ def lcm_grep(args: Dict[str, Any], **kwargs) -> str:
                     "snippet": node.summary[:300],
                     "token_count": node.token_count,
                     "expand_hint": node.expand_hint,
-                    "_sort_ts": node.created_at,
+                    "earliest_at": node.earliest_at,
+                    "latest_at": node.latest_at,
+                    "_sort_ts": node.latest_at or node.created_at,
                     "_sort_rank": node.search_rank,
                 }
             )

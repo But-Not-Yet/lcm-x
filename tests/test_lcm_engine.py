@@ -275,6 +275,68 @@ class TestEngineCompress:
         finally:
             esc._call_llm_for_summary = original_fn
 
+    def test_compress_leaf_node_tracks_source_window_from_message_timestamps(self, engine):
+        messages = self._make_long_conversation(20)
+        engine._ingest_messages(messages)
+        all_rows = engine._store.get_session_messages("test-session")
+        expected_store_ids = [row["store_id"] for row in all_rows[1:-engine._config.fresh_tail_count]]
+        for idx, store_id in enumerate(expected_store_ids):
+            engine._store._conn.execute(
+                "UPDATE messages SET timestamp = ? WHERE store_id = ?",
+                (1_700_000_000 + idx, store_id),
+            )
+        engine._store._conn.commit()
+
+        import hermes_lcm.engine as engine_module
+        original_fn = engine_module.summarize_with_escalation
+
+        def mock_summary(**kwargs):
+            return "Leaf summary.\nExpand for details about: leaf window", 1
+
+        engine_module.summarize_with_escalation = mock_summary
+        try:
+            engine.compress(messages)
+            node = engine._dag.get_session_nodes("test-session")[0]
+            assert node.source_ids == expected_store_ids
+            assert node.earliest_at == 1_700_000_000
+            assert node.latest_at == 1_700_000_000 + len(expected_store_ids) - 1
+        finally:
+            engine_module.summarize_with_escalation = original_fn
+
+    def test_condensed_parent_node_tracks_child_source_window(self, engine, monkeypatch):
+        child_windows = [
+            (1_700_000_010, 1_700_000_020),
+            (1_700_000_030, 1_700_000_040),
+            (1_700_000_050, 1_700_000_060),
+            (1_700_000_070, 1_700_000_080),
+        ]
+        for idx, (earliest_at, latest_at) in enumerate(child_windows, start=1):
+            engine._dag.add_node(SummaryNode(
+                session_id="test-session",
+                depth=0,
+                summary=f"child {idx}",
+                token_count=10,
+                source_ids=[idx],
+                source_type="messages",
+                created_at=1_900_000_000 + idx,
+                earliest_at=earliest_at,
+                latest_at=latest_at,
+            ))
+
+        import hermes_lcm.engine as engine_module
+
+        def mock_summary(**kwargs):
+            return "Parent summary.\nExpand for details about: parent window", 1
+
+        monkeypatch.setattr(engine_module, "summarize_with_escalation", mock_summary)
+
+        engine._maybe_condense()
+
+        nodes = engine._dag.get_session_nodes("test-session")
+        parent = next(node for node in nodes if node.depth == 1)
+        assert parent.earliest_at == child_windows[0][0]
+        assert parent.latest_at == child_windows[-1][1]
+
 
 class TestPostCompactionIngestion:
     """Regression tests for issue #1 — messages must be persisted after
