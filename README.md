@@ -71,7 +71,7 @@ LCM compression:
 
 ## Why This Plugin
 
-~3,200 lines of Python. Zero external dependencies. 130 tests that run standalone in under a second. Full lossless context management — immutable store, hierarchical DAG, agent retrieval tools, guided compression, assembly guardrails, session filtering — in a single lightweight plugin that drops into Hermes with no build step, no runtime overhead, and nothing to configure beyond `context.engine: lcm`.
+~3,800 lines of Python. Zero external dependencies. 130 tests that run standalone in under a second. Full lossless context management — immutable store, hierarchical DAG, agent retrieval tools, guided compression, assembly guardrails, session filtering — in a single lightweight plugin that drops into Hermes with no build step, no runtime overhead, and nothing to configure beyond `context.engine: lcm`.
 
 ## What It Does
 
