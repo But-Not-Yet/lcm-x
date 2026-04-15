@@ -10,7 +10,7 @@ import sqlite3
 from typing import Iterable, Sequence
 
 SCHEMA_VERSION = 2
-SQLITE_BUSY_TIMEOUT_MS = 5_000
+SQLITE_BUSY_TIMEOUT_MS = 30_000
 
 
 class ExternalContentFtsSpec:
@@ -145,6 +145,19 @@ def _fts_needs_rebuild(conn: sqlite3.Connection, spec: ExternalContentFtsSpec) -
         column_names = {row[1] for row in columns if len(row) > 1}
         if spec.indexed_column not in column_names:
             return True
+
+        content_count = conn.execute(
+            f"SELECT COUNT(*) FROM {quote_sql_identifier(spec.content_table)}"
+        ).fetchone()[0]
+        fts_count = conn.execute(
+            f"SELECT COUNT(*) FROM {quote_sql_identifier(spec.table_name)}"
+        ).fetchone()[0]
+        if int(content_count or 0) != int(fts_count or 0):
+            return True
+
+        conn.execute(
+            f"INSERT INTO {quote_sql_identifier(spec.table_name)}({quote_sql_identifier(spec.table_name)}, rank) VALUES('integrity-check', 1)"
+        )
     except sqlite3.DatabaseError:
         return True
 

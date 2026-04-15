@@ -2,6 +2,8 @@
 
 import json
 import sqlite3
+import threading
+import time
 
 import pytest
 
@@ -259,6 +261,87 @@ class TestMessageStore:
         assert results[0]["content"] == "docker fallback search still works"
         assert "fallback" in results[0]["snippet"].lower()
 
+    def test_init_repairs_message_fts_drifted_row_count(self, tmp_path):
+        db_path = tmp_path / "message-fts-drift.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE messages (
+                store_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_estimate INTEGER DEFAULT 0,
+                pinned INTEGER DEFAULT 0
+            );
+            CREATE VIRTUAL TABLE messages_fts USING fts5(
+                content,
+                content=messages,
+                content_rowid=store_id
+            );
+            CREATE TRIGGER msg_fts_insert
+                AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts(rowid, content)
+                    VALUES (new.store_id, new.content);
+            END;
+            CREATE TABLE metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+            INSERT INTO metadata(key, value) VALUES ('schema_version', '2');
+            INSERT INTO messages(session_id, role, content, timestamp, token_estimate, pinned)
+            VALUES ('sess1', 'user', 'drifted search row', 1.0, 3, 0);
+            DELETE FROM messages_fts;
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        store = MessageStore(db_path)
+        results = store.search("drifted", session_id="sess1")
+
+        assert len(results) == 1
+        assert results[0]["content"] == "drifted search row"
+
+        fts_count = store._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+        assert fts_count == 1
+        store.close()
+
+    def test_store_waits_out_long_write_lock_with_extended_busy_timeout(self, tmp_path):
+        db_path = tmp_path / "busy-timeout.db"
+        store = MessageStore(db_path)
+
+        lock_conn = sqlite3.connect(db_path, timeout=1.0, check_same_thread=False)
+        lock_conn.execute("PRAGMA journal_mode=WAL")
+        lock_conn.execute("BEGIN IMMEDIATE")
+        lock_conn.execute(
+            "INSERT INTO messages(session_id, role, content, timestamp, token_estimate, pinned) VALUES (?, ?, ?, ?, ?, ?)",
+            ("hold", "user", "holding write lock", 1.0, 1, 0),
+        )
+
+        def release_lock():
+            time.sleep(6.2)
+            lock_conn.commit()
+            lock_conn.close()
+
+        releaser = threading.Thread(target=release_lock, daemon=True)
+        releaser.start()
+
+        start = time.monotonic()
+        store.append("sess1", {"role": "user", "content": "writer survives lock"})
+        elapsed = time.monotonic() - start
+        releaser.join(timeout=1.0)
+
+        assert elapsed >= 6.0
+        assert store.get_session_count("sess1") == 1
+        assert store._conn.execute("PRAGMA busy_timeout").fetchone()[0] >= 30000
+
+        store.close()
+
     def test_pin_unpin(self, store):
         sid = store.append("sess1", {"role": "user", "content": "important"})
         store.pin(sid)
@@ -453,6 +536,61 @@ class TestSummaryDAG:
 
         assert len(results) == 1
         assert results[0].summary == "dag fallback search still works"
+
+    def test_init_repairs_nodes_fts_drifted_row_count(self, tmp_path):
+        db_path = tmp_path / "nodes-fts-drift.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE summary_nodes (
+                node_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                depth INTEGER NOT NULL DEFAULT 0,
+                summary TEXT NOT NULL,
+                token_count INTEGER DEFAULT 0,
+                source_token_count INTEGER DEFAULT 0,
+                source_ids TEXT NOT NULL DEFAULT '[]',
+                source_type TEXT NOT NULL DEFAULT 'messages',
+                created_at REAL NOT NULL,
+                expand_hint TEXT DEFAULT ''
+            );
+            CREATE VIRTUAL TABLE nodes_fts USING fts5(
+                summary,
+                content=summary_nodes,
+                content_rowid=node_id
+            );
+            CREATE TRIGGER nodes_fts_insert
+                AFTER INSERT ON summary_nodes BEGIN
+                INSERT INTO nodes_fts(rowid, summary)
+                    VALUES (new.node_id, new.summary);
+            END;
+            CREATE TABLE metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+            INSERT INTO metadata(key, value) VALUES ('schema_version', '2');
+            INSERT INTO summary_nodes(
+                session_id, depth, summary, token_count, source_token_count,
+                source_ids, source_type, created_at, expand_hint
+            ) VALUES (
+                's1', 0, 'drifted dag row', 5, 10,
+                '[1]', 'messages', 1.0, ''
+            );
+            DELETE FROM nodes_fts;
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        dag = SummaryDAG(db_path)
+        results = dag.search("drifted", session_id="s1")
+
+        assert len(results) == 1
+        assert results[0].summary == "drifted dag row"
+
+        fts_count = dag._conn.execute("SELECT COUNT(*) FROM nodes_fts").fetchone()[0]
+        assert fts_count == 1
+        dag.close()
 
     def test_describe_subtree(self, dag):
         c1 = dag.add_node(SummaryNode(
