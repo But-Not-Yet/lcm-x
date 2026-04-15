@@ -9,6 +9,7 @@ from agent.context_engine import ContextEngine
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.dag import SummaryNode
 from hermes_lcm.engine import LCMEngine
+from hermes_lcm.tokens import count_message_tokens
 
 
 @pytest.fixture
@@ -336,6 +337,62 @@ class TestEngineCompress:
         parent = next(node for node in nodes if node.depth == 1)
         assert parent.earliest_at == child_windows[0][0]
         assert parent.latest_at == child_windows[-1][1]
+
+    def test_dynamic_leaf_chunk_sizing_compacts_only_oldest_bounded_raw_chunk(self, tmp_path, monkeypatch):
+        config = LCMConfig(
+            fresh_tail_count=2,
+            leaf_chunk_tokens=50,
+            dynamic_leaf_chunk_enabled=True,
+            dynamic_leaf_chunk_max=120,
+            database_path=str(tmp_path / "lcm_dynamic_leaf.db"),
+        )
+        engine = LCMEngine(config=config)
+        engine._session_id = "test-session"
+        engine.context_length = 200000
+        engine.threshold_tokens = int(200000 * config.context_threshold)
+
+        messages = [{"role": "system", "content": "You are a helpful assistant."}]
+        for i in range(6):
+            role = "user" if i % 2 == 0 else "assistant"
+            messages.append({
+                "role": role,
+                "content": f"Message {i}: " + ("chunk " * 35),
+            })
+
+        candidate_raw = messages[1:-config.fresh_tail_count]
+        candidate_tokens = [count_message_tokens(msg) for msg in candidate_raw]
+        assert len(candidate_raw) == 4
+        assert sum(candidate_tokens) > config.dynamic_leaf_chunk_max
+        assert sum(candidate_tokens[:2]) <= config.dynamic_leaf_chunk_max
+        assert sum(candidate_tokens[:3]) > config.dynamic_leaf_chunk_max
+
+        import hermes_lcm.engine as engine_module
+
+        def mock_summary(**kwargs):
+            return "Dynamic leaf summary.\nExpand for details about: oldest raw chunk", 1
+
+        monkeypatch.setattr(engine_module, "summarize_with_escalation", mock_summary)
+
+        compressed = engine.compress(messages)
+
+        nodes = engine._dag.get_session_nodes("test-session")
+        assert len(nodes) == 1
+        node = nodes[0]
+
+        stored = engine._store.get_session_messages("test-session")
+        selected_contents = [
+            engine._store.get(store_id)["content"]
+            for store_id in node.source_ids
+        ]
+
+        assert len(node.source_ids) == 2
+        assert selected_contents == [msg["content"] for msg in candidate_raw[:2]]
+
+        compressed_contents = [msg.get("content") for msg in compressed]
+        assert candidate_raw[2]["content"] in compressed_contents
+        assert candidate_raw[3]["content"] in compressed_contents
+        assert messages[-1]["content"] in compressed_contents
+        assert len(stored) == len(messages)
 
 
 class TestPostCompactionIngestion:

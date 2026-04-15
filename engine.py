@@ -138,6 +138,31 @@ class LCMEngine(ContextEngine):
             return True
         return rough >= self.threshold_tokens
 
+    def _working_leaf_chunk_tokens(self, raw_tokens_outside_tail: int) -> int:
+        base = max(1, self._config.leaf_chunk_tokens)
+        if not self._config.dynamic_leaf_chunk_enabled:
+            return base
+        ceiling = max(base, self._config.dynamic_leaf_chunk_max)
+        working = base
+        while working < ceiling and raw_tokens_outside_tail > working * 2:
+            working = min(ceiling, working * 2)
+        return working
+
+    def _select_oldest_leaf_chunk(
+        self,
+        candidate_raw: List[Dict[str, Any]],
+        working_leaf_chunk_tokens: int,
+    ) -> List[Dict[str, Any]]:
+        selected: list[Dict[str, Any]] = []
+        used = 0
+        for msg in candidate_raw:
+            msg_tokens = count_message_tokens(msg)
+            if used + msg_tokens > working_leaf_chunk_tokens and selected:
+                break
+            selected.append(msg)
+            used += msg_tokens
+        return selected
+
     def compress(self, messages: List[Dict[str, Any]],
                  current_tokens: int = None,
                  focus_topic: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -197,11 +222,11 @@ class LCMEngine(ContextEngine):
                 )
             return messages
 
-        # Step 3: Identify messages to compact (between system prompt and fresh tail)
-        # Skip system prompt (index 0), compact indices 1..fresh_tail_start
-        to_compact = messages[1:fresh_tail_start]
+        # Step 3: Identify messages eligible for leaf compaction
+        # Skip system prompt (index 0), candidate raw backlog is indices 1..fresh_tail_start
+        candidate_raw = messages[1:fresh_tail_start]
 
-        if not to_compact:
+        if not candidate_raw:
             if force_overflow and len(messages) >= 1:
                 compressed = self._assemble_overflow_recovery_context(
                     messages[0],
@@ -215,11 +240,26 @@ class LCMEngine(ContextEngine):
                 )
             return messages
 
+        raw_tokens_outside_tail = count_messages_tokens(candidate_raw)
+        if self._config.dynamic_leaf_chunk_enabled:
+            working_leaf_chunk_tokens = self._working_leaf_chunk_tokens(raw_tokens_outside_tail)
+            if raw_tokens_outside_tail < working_leaf_chunk_tokens and not force_overflow:
+                return messages
+            if force_overflow:
+                to_compact = candidate_raw
+                remaining_messages = messages[fresh_tail_start:]
+            else:
+                to_compact = self._select_oldest_leaf_chunk(candidate_raw, working_leaf_chunk_tokens)
+                remaining_messages = messages[1 + len(to_compact):]
+        else:
+            if raw_tokens_outside_tail < self._config.leaf_chunk_tokens and not force_overflow:
+                # Not enough to justify compaction
+                return messages
+            to_compact = candidate_raw
+            remaining_messages = messages[fresh_tail_start:]
+
         # Calculate source tokens
         source_tokens = count_messages_tokens(to_compact)
-        if source_tokens < self._config.leaf_chunk_tokens and not force_overflow:
-            # Not enough to justify compaction
-            return messages
 
         # Step 4: Serialize and summarize
         serialized = self._serialize_messages(to_compact)
@@ -265,7 +305,7 @@ class LCMEngine(ContextEngine):
         # Step 7: Assemble new active context
         compressed = self._assemble_context(
             messages[0],
-            messages[fresh_tail_start:],
+            remaining_messages,
             assembly_cap_override=recovery_assembly_cap,
         )
         self.compression_count += 1
