@@ -120,6 +120,21 @@ class TestSessionFiltering:
         assert "LCM ignore_session_patterns from env: cron:*" in caplog.text
         assert "matched ignore_session_patterns" in caplog.text
 
+    def test_filter_config_diagnostics_log_only_once_per_engine_instance(self, tmp_path, caplog):
+        config = LCMConfig(
+            database_path=str(tmp_path / "lcm_ignore_once.db"),
+            ignore_session_patterns=["cron:*"],
+            ignore_session_patterns_source="env",
+        )
+        instance = LCMEngine(config=config)
+
+        with caplog.at_level("INFO", logger="hermes_lcm.engine"):
+            instance.on_session_start("cron_123", platform="cron", context_length=1000)
+            instance.on_session_start("cron_456", platform="cron", context_length=1000)
+
+        assert caplog.text.count("LCM ignore_session_patterns from env: cron:*") == 1
+        assert caplog.text.count("matched ignore_session_patterns") == 2
+
     def test_on_session_start_marks_stateless_session_and_reports_status(self, tmp_path, caplog):
         config = LCMConfig(
             database_path=str(tmp_path / "lcm_stateless.db"),

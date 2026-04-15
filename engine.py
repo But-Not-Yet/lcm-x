@@ -102,6 +102,7 @@ class LCMEngine(ContextEngine):
         self.summary_model = self._config.summary_model
         self._last_overflow_recovery_failed = False
         self._last_condensation_suppressed_reason = ""
+        self._logged_filter_config = False
 
     @property
     def name(self) -> str:
@@ -563,18 +564,20 @@ class LCMEngine(ContextEngine):
         )
 
     def _log_session_filter_diagnostics(self) -> None:
-        if self._config.ignore_session_patterns:
-            logger.info(
-                "LCM ignore_session_patterns from %s: %s",
-                self._config.ignore_session_patterns_source,
-                ", ".join(self._config.ignore_session_patterns),
-            )
-        if self._config.stateless_session_patterns:
-            logger.info(
-                "LCM stateless_session_patterns from %s: %s",
-                self._config.stateless_session_patterns_source,
-                ", ".join(self._config.stateless_session_patterns),
-            )
+        if not self._logged_filter_config:
+            if self._config.ignore_session_patterns:
+                logger.info(
+                    "LCM ignore_session_patterns from %s: %s",
+                    self._config.ignore_session_patterns_source,
+                    ", ".join(self._config.ignore_session_patterns),
+                )
+            if self._config.stateless_session_patterns:
+                logger.info(
+                    "LCM stateless_session_patterns from %s: %s",
+                    self._config.stateless_session_patterns_source,
+                    ", ".join(self._config.stateless_session_patterns),
+                )
+            self._logged_filter_config = True
         if self._session_ignored:
             logger.info(
                 "LCM session %s matched ignore_session_patterns via %s — skipping writes and compaction",
