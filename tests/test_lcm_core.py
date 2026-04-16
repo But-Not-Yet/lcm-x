@@ -944,6 +944,24 @@ class TestLifecycleStateStore:
 
         state.close()
 
+    def test_record_reset_clears_pending_debt(self, tmp_path):
+        state = LifecycleStateStore(tmp_path / "lifecycle-reset-debt.db")
+        bound = state.bind_session("sess-1")
+
+        state.record_debt(bound.conversation_id, kind="raw_backlog", size_estimate=500)
+        with_debt = state.get_by_conversation(bound.conversation_id)
+        assert with_debt is not None
+        assert with_debt.debt_kind == "raw_backlog"
+        assert with_debt.debt_size_estimate == 500
+
+        after_reset = state.record_reset(bound.conversation_id)
+        assert after_reset is not None
+        assert after_reset.debt_kind is None
+        assert after_reset.debt_size_estimate == 0
+        assert after_reset.last_reset_at is not None
+
+        state.close()
+
 
 class TestSummaryDAG:
     @pytest.fixture

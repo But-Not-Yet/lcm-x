@@ -401,10 +401,13 @@ class LifecycleStateStore:
             """
             UPDATE lcm_lifecycle_state
             SET last_reset_at = ?,
+                debt_kind = NULL,
+                debt_size_estimate = 0,
+                debt_updated_at = ?,
                 updated_at = ?
             WHERE conversation_id = ?
             """,
-            (now, now, conversation_id),
+            (now, now, now, conversation_id),
         )
         self._conn.commit()
         return self.get_by_conversation(conversation_id)
