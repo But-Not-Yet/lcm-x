@@ -43,10 +43,12 @@ LCM_DESCRIBE = {
     "name": "lcm_describe",
     "description": (
         "Inspect a summary node's subtree metadata WITHOUT loading full "
-        "content. Returns token counts, child manifest, and expand hints. "
-        "Use this to plan retrieval strategy before spending tokens on "
-        "lcm_expand. If called with no node_id, returns the top-level "
-        "DAG overview for the current session."
+        "content, or inspect an externalized payload ref without opening the "
+        "full payload. Returns token counts, child manifest, expand hints, "
+        "or externalized payload metadata/preview. Use this to plan retrieval "
+        "strategy before spending tokens on lcm_expand. If called with no "
+        "node_id or externalized_ref, returns the top-level DAG overview for "
+        "the current session."
     ),
     "parameters": {
         "type": "object",
@@ -54,6 +56,10 @@ LCM_DESCRIBE = {
             "node_id": {
                 "type": "integer",
                 "description": "Summary node ID to inspect. Omit for session overview.",
+            },
+            "externalized_ref": {
+                "type": "string",
+                "description": "Optional externalized payload ref filename to inspect instead of a summary node.",
             },
         },
         "required": [],
@@ -63,10 +69,13 @@ LCM_DESCRIBE = {
 LCM_EXPAND = {
     "name": "lcm_expand",
     "description": (
-        "Recover the original detail behind a summary node. Given a node_id, "
-        "returns the source messages or lower-depth summaries that were "
-        "compacted into that node. Use after lcm_describe to drill into "
-        "specific parts of the conversation history."
+        "Recover the original detail behind a summary node, or open an "
+        "externalized payload ref directly. Given a node_id, returns the "
+        "source messages or lower-depth summaries that were compacted into "
+        "that node. Given externalized_ref, returns the stored payload "
+        "content plus metadata. Use after lcm_describe to drill into "
+        "specific parts of the conversation history or large externalized "
+        "tool output."
     ),
     "parameters": {
         "type": "object",
@@ -75,13 +84,17 @@ LCM_EXPAND = {
                 "type": "integer",
                 "description": "Summary node ID to expand",
             },
+            "externalized_ref": {
+                "type": "string",
+                "description": "Optional externalized payload ref filename to expand instead of a summary node.",
+            },
             "max_tokens": {
                 "type": "integer",
                 "description": "Token budget for returned content (default 4000)",
                 "default": 4000,
             },
         },
-        "required": ["node_id"],
+        "required": [],
     },
 }
 
