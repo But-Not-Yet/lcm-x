@@ -1,10 +1,11 @@
-"""Immutable message store — the source of truth.
+"""Immutable-first message store — the source of truth.
 
-Every message is persisted verbatim and never modified. The store is
-append-only with optional pruning of very old messages (configurable).
-
-Each message gets a monotonic store_id used as a stable reference.
+Every message is persisted durably in SQLite. The normal model is append-only,
+with one narrow opt-in exception: already-externalized summarized tool-result
+rows may be rewritten to compact GC tombstones while preserving the original
+row identity (`store_id`) for DAG/source lookup.
 """
+
 
 import json
 import logging
@@ -34,6 +35,7 @@ from .search_query import (
     AGE_DECAY_RATE,
     should_apply_directness_rank_adjustment,
 )
+from .tokens import count_message_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +195,15 @@ class MessageStore:
                             VALUES('delete', old.store_id, old.content);
                     END;
                     """,
+                    """
+                    CREATE TRIGGER IF NOT EXISTS msg_fts_update
+                        AFTER UPDATE OF content ON messages BEGIN
+                        INSERT INTO messages_fts(messages_fts, rowid, content)
+                            VALUES('delete', old.store_id, old.content);
+                        INSERT INTO messages_fts(rowid, content)
+                            VALUES (new.store_id, new.content);
+                    END;
+                    """,
                 ),
             ),
         )
@@ -280,12 +291,37 @@ class MessageStore:
             "DELETE FROM messages WHERE session_id = ?",
             (session_id,),
         )
-        deleted = cur.rowcount
-        if deleted:
-            self._conn.commit()
+        self._conn.commit()
+        deleted = cur.rowcount if cur.rowcount is not None else 0
         return deleted
 
+    def gc_externalized_tool_result(self, store_id: int, placeholder: str) -> bool:
+        """Rewrite one unpinned tool-result row to a compact GC placeholder."""
+        row = self._conn.execute(
+            "SELECT role, pinned, content, tool_call_id FROM messages WHERE store_id = ?",
+            (store_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        role, pinned, current_content, tool_call_id = row
+        if role != "tool" or bool(pinned) or current_content == placeholder:
+            return False
+        placeholder_tokens = count_message_tokens(
+            {
+                "role": "tool",
+                "content": placeholder,
+                "tool_call_id": tool_call_id,
+            }
+        )
+        self._conn.execute(
+            "UPDATE messages SET content = ?, token_estimate = ? WHERE store_id = ?",
+            (placeholder, placeholder_tokens, store_id),
+        )
+        self._conn.commit()
+        return True
+
     def pin(self, store_id: int) -> None:
+
         """Mark a message as pinned (protected from pruning)."""
         self._conn.execute(
             "UPDATE messages SET pinned = 1 WHERE store_id = ?", (store_id,)
