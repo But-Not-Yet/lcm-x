@@ -53,7 +53,6 @@ class TestEngineABC:
         assert "unknown" in grep_props["source"]["description"]
         assert "current session" in grep_schema["description"].lower()
         assert "session_search" in grep_schema["description"]
-        assert "session_scope='all'" in grep_schema["description"]
         assert "session_search" in grep_props["session_scope"]["description"]
 
         describe_schema = next(s for s in schemas if s["name"] == "lcm_describe")
@@ -1913,12 +1912,12 @@ class TestEngineTools:
         )
         assert result["sort"] == "relevance"
 
-    def test_handle_grep_source_filter_across_sessions_includes_only_matching_summaries(self, engine):
-        engine._store.append("s-discord", {"role": "user", "content": "docker logs from discord"}, source="discord")
+    def test_handle_grep_source_filter_in_current_session_includes_only_matching_summaries(self, engine):
+        engine._store.append("test-session", {"role": "user", "content": "docker logs from discord"}, source="discord")
         engine._store.append("s-telegram", {"role": "user", "content": "docker logs from telegram"}, source="telegram")
         engine._dag.add_node(
             SummaryNode(
-                session_id="s-discord",
+                session_id="test-session",
                 depth=0,
                 summary="discord summary about docker logs",
                 token_count=10,
@@ -1944,31 +1943,31 @@ class TestEngineTools:
         result = json.loads(
             engine.handle_tool_call(
                 "lcm_grep",
-                {"query": "docker", "session_scope": "all", "source": "discord", "limit": 10},
+                {"query": "docker", "session_scope": "current", "source": "discord", "limit": 10},
             )
         )
 
-        assert result["session_scope"] == "all"
+        assert result["session_scope"] == "current"
         assert result["source"] == "discord"
         assert any(item["type"] == "message" for item in result["results"])
         assert any(item["type"] == "summary" for item in result["results"])
-        assert all(item.get("session_id") == "s-discord" for item in result["results"])
+        assert all(item.get("session_id") == "test-session" for item in result["results"])
         assert all(item.get("source", "discord") == "discord" for item in result["results"] if item["type"] == "message")
 
     def test_handle_grep_source_filter_excludes_unrelated_summaries_in_mixed_source_session(self, engine):
         discord_store_id = engine._store.append(
-            "mixed-session",
+            "test-session",
             {"role": "user", "content": "docker logs from discord"},
             source="discord",
         )
         telegram_store_id = engine._store.append(
-            "mixed-session",
+            "test-session",
             {"role": "user", "content": "docker logs from telegram"},
             source="telegram",
         )
         engine._dag.add_node(
             SummaryNode(
-                session_id="mixed-session",
+                session_id="test-session",
                 depth=0,
                 summary="discord summary about docker logs",
                 token_count=10,
@@ -1980,7 +1979,7 @@ class TestEngineTools:
         )
         engine._dag.add_node(
             SummaryNode(
-                session_id="mixed-session",
+                session_id="test-session",
                 depth=0,
                 summary="telegram summary about docker logs",
                 token_count=10,
@@ -1994,13 +1993,13 @@ class TestEngineTools:
         result = json.loads(
             engine.handle_tool_call(
                 "lcm_grep",
-                {"query": "docker", "session_scope": "all", "source": "discord", "limit": 10},
+                {"query": "docker", "session_scope": "current", "source": "discord", "limit": 10},
             )
         )
 
         assert any(item["type"] == "message" for item in result["results"])
         assert any(item["type"] == "summary" for item in result["results"])
-        assert all(item.get("session_id") == "mixed-session" for item in result["results"])
+        assert all(item.get("session_id") == "test-session" for item in result["results"])
         assert all(
             "telegram summary" not in item.get("snippet", "")
             for item in result["results"]
@@ -2014,13 +2013,13 @@ class TestEngineTools:
 
     def test_handle_grep_unknown_source_filter_matches_unknown_messages_and_summaries(self, engine):
         unknown_store_id = engine._store.append(
-            "unknown-session",
+            "test-session",
             {"role": "user", "content": "docker logs from unknown source"},
             source="unknown",
         )
         engine._dag.add_node(
             SummaryNode(
-                session_id="unknown-session",
+                session_id="test-session",
                 depth=0,
                 summary="unknown summary about docker logs",
                 token_count=10,
@@ -2034,14 +2033,14 @@ class TestEngineTools:
         result = json.loads(
             engine.handle_tool_call(
                 "lcm_grep",
-                {"query": "docker", "session_scope": "all", "source": "unknown", "limit": 10},
+                {"query": "docker", "session_scope": "current", "source": "unknown", "limit": 10},
             )
         )
 
         assert result["source"] == "unknown"
         assert any(item["type"] == "message" for item in result["results"])
         assert any(item["type"] == "summary" for item in result["results"])
-        assert all(item.get("session_id") == "unknown-session" for item in result["results"])
+        assert all(item.get("session_id") == "test-session" for item in result["results"])
         assert all(item.get("source", "unknown") == "unknown" for item in result["results"] if item["type"] == "message")
         assert any(
             "unknown summary" in item.get("snippet", "")
