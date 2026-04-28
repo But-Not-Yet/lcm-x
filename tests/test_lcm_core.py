@@ -333,6 +333,20 @@ class TestTokens:
         msg = {"role": "user", "content": "hello world this is a test"}
         assert count_message_tokens(msg) > 0
 
+    def test_count_message_tokens_normalizes_content_parts(self):
+        content = [
+            {"type": "text", "text": "hello from content parts " * 50},
+            {"type": "image_url", "image_url": {"url": "file:///tmp/example.png"}},
+        ]
+        msg = {"role": "user", "content": content}
+        normalized_msg = {
+            "role": "user",
+            "content": json.dumps(content, ensure_ascii=False, sort_keys=True),
+        }
+
+        assert count_message_tokens(msg) == count_message_tokens(normalized_msg)
+        assert count_message_tokens(msg) > 100
+
     def test_count_messages_tokens(self):
         msgs = [
             {"role": "user", "content": "hello"},
@@ -362,6 +376,36 @@ class TestMessageStore:
         ids = store.append_batch("sess1", msgs, [1, 2, 3])
         assert len(ids) == 3
         assert ids[0] < ids[1] < ids[2]
+
+    def test_append_batch_accepts_content_parts(self, store):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hello from content parts"},
+                    {"type": "image_url", "image_url": {"url": "file:///tmp/example.png"}},
+                ],
+            }
+        ]
+
+        ids = store.append_batch("sess1", msgs, [7], source="telegram")
+
+        retrieved = store.get(ids[0])
+        assert isinstance(retrieved["content"], str)
+        assert "hello from content parts" in retrieved["content"]
+        results = store.search("hello", session_id="sess1")
+        assert [result["store_id"] for result in results] == ids
+
+    def test_append_accepts_content_parts(self, store):
+        sid = store.append(
+            "sess1",
+            {"role": "assistant", "content": [{"type": "text", "text": "assistant part text"}]},
+            token_estimate=3,
+        )
+
+        retrieved = store.get(sid)
+        assert isinstance(retrieved["content"], str)
+        assert "assistant part text" in retrieved["content"]
 
     def test_get_range(self, store):
         msgs = [{"role": "user", "content": f"msg {i}"} for i in range(10)]
@@ -1469,6 +1513,30 @@ class TestSummaryDAG:
     @pytest.fixture
     def dag(self, tmp_path):
         return SummaryDAG(tmp_path / "test.db")
+
+    def _assert_write_lock_obtainable(self, db_path):
+        conn = sqlite3.connect(db_path, timeout=0.1)
+        conn.execute("PRAGMA busy_timeout=100")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.rollback()
+        finally:
+            conn.close()
+
+    def test_noop_write_helpers_do_not_leave_database_locked(self, tmp_path):
+        db_path = tmp_path / "noop-write-lock.db"
+        dag = SummaryDAG(db_path)
+
+        assert dag.reassign_session_nodes("missing-old", "missing-new") == 0
+        self._assert_write_lock_obtainable(db_path)
+
+        assert dag.delete_session_nodes("missing-session") == 0
+        self._assert_write_lock_obtainable(db_path)
+
+        assert dag.delete_below_depth("missing-session", 1) == 0
+        self._assert_write_lock_obtainable(db_path)
+
+        dag.close()
 
     def test_add_and_get(self, dag):
         node = SummaryNode(

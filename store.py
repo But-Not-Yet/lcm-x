@@ -38,6 +38,7 @@ from .search_query import (
     AGE_DECAY_RATE,
     should_apply_directness_rank_adjustment,
 )
+from .message_content import normalize_content_value as _normalize_content_value
 from .tokens import count_message_tokens
 
 logger = logging.getLogger(__name__)
@@ -256,7 +257,7 @@ class MessageStore:
                 session_id,
                 _normalize_source_value(source),
                 msg.get("role", "unknown"),
-                msg.get("content"),
+                _normalize_content_value(msg.get("content")),
                 msg.get("tool_call_id"),
                 tc_json,
                 msg.get("tool_name"),
@@ -291,7 +292,7 @@ class MessageStore:
                         session_id,
                         _normalize_source_value(source),
                         msg.get("role", "unknown"),
-                        msg.get("content"),
+                        _normalize_content_value(msg.get("content")),
                         msg.get("tool_call_id"),
                         tc_json,
                         msg.get("tool_name"),
