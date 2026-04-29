@@ -522,15 +522,53 @@ def lcm_expand_query(args: Dict[str, Any], **kwargs) -> str:
     for node in nodes[:max_results]:
         context_blocks.extend(_collect_context_blocks_for_node(engine, node, max_tokens=max_tokens))
 
+    selected_nodes = nodes[:max_results]
+    matches = [
+        {
+            "node_id": node.node_id,
+            "depth": node.depth,
+            "summary": node.summary[:300],
+            "expand_hint": node.expand_hint,
+        }
+        for node in selected_nodes
+    ]
+    node_ids = [node.node_id for node in selected_nodes]
+
+    def _degraded_payload(reason: str, *, include_timeout: bool = False) -> str:
+        payload: Dict[str, Any] = {
+            "prompt": prompt,
+            "query": query,
+            "error": reason,
+            "degraded": True,
+            "model": model,
+            "node_ids": node_ids,
+            "matches": matches,
+        }
+        if include_timeout:
+            payload["timeout_seconds"] = timeout
+        return json.dumps(payload)
+
     model = engine._config.expansion_model or engine._config.summary_model or ""
     timeout = engine._config.expansion_timeout_ms / 1000
-    answer = _synthesize_expansion_answer(
-        prompt=prompt,
-        context_blocks=context_blocks,
-        model=model,
-        max_tokens=max_tokens,
-        timeout=timeout,
-    )
+    try:
+        answer = _synthesize_expansion_answer(
+            prompt=prompt,
+            context_blocks=context_blocks,
+            model=model,
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+    except TimeoutError:
+        logger.warning("LCM expand_query synthesis timed out after %.3fs", timeout)
+        return _degraded_payload(
+            f"lcm_expand_query synthesis timed out after {timeout:.3g}s",
+            include_timeout=True,
+        )
+
+    answer = str(answer).strip() if answer is not None else ""
+    if not answer:
+        logger.warning("LCM expand_query synthesis returned an empty answer")
+        return _degraded_payload("lcm_expand_query synthesis returned an empty answer")
 
     return json.dumps(
         {
@@ -538,16 +576,8 @@ def lcm_expand_query(args: Dict[str, Any], **kwargs) -> str:
             "query": query,
             "answer": answer,
             "model": model,
-            "node_ids": [node.node_id for node in nodes[:max_results]],
-            "matches": [
-                {
-                    "node_id": node.node_id,
-                    "depth": node.depth,
-                    "summary": node.summary[:300],
-                    "expand_hint": node.expand_hint,
-                }
-                for node in nodes[:max_results]
-            ],
+            "node_ids": node_ids,
+            "matches": matches,
         }
     )
 

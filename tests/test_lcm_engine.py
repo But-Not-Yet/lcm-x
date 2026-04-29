@@ -3992,6 +3992,130 @@ class TestEngineTools:
         assert seen["prompt"] == "What was the plan?"
         assert seen["context_blocks"]
 
+    def test_handle_expand_query_timeout_returns_explicit_degraded_error(self, engine, monkeypatch):
+        engine._config.expansion_timeout_ms = 2500
+        engine._store.append("test-session", {"role": "user", "content": "Discussed docker rollout plan"})
+        node_id = engine._dag.add_node(
+            SummaryNode(
+                session_id="test-session",
+                depth=0,
+                summary="Docker rollout summary",
+                token_count=10,
+                source_token_count=20,
+                source_ids=[1],
+                source_type="messages",
+                created_at=0,
+            )
+        )
+
+        def fake_synthesize(*, prompt, context_blocks, model, max_tokens, timeout):
+            raise TimeoutError("expansion timed out")
+
+        monkeypatch.setattr(lcm_tools, "_synthesize_expansion_answer", fake_synthesize)
+
+        result = json.loads(
+            engine.handle_tool_call(
+                "lcm_expand_query",
+                {"query": "docker", "prompt": "What was the plan?"},
+            )
+        )
+
+        assert result["degraded"] is True
+        assert "timed out" in result["error"]
+        assert result["timeout_seconds"] == 2.5
+        assert result["node_ids"] == [node_id]
+        assert result["matches"]
+        assert "answer" not in result
+
+    def test_handle_expand_query_unexpected_synthesis_error_is_not_degraded(self, engine, monkeypatch):
+        engine._store.append("test-session", {"role": "user", "content": "Discussed docker rollout plan"})
+        engine._dag.add_node(
+            SummaryNode(
+                session_id="test-session",
+                depth=0,
+                summary="Docker rollout summary",
+                token_count=10,
+                source_token_count=20,
+                source_ids=[1],
+                source_type="messages",
+                created_at=0,
+            )
+        )
+
+        def fake_synthesize(*, prompt, context_blocks, model, max_tokens, timeout):
+            raise RuntimeError("schema bug")
+
+        monkeypatch.setattr(lcm_tools, "_synthesize_expansion_answer", fake_synthesize)
+
+        with pytest.raises(RuntimeError, match="schema bug"):
+            engine.handle_tool_call(
+                "lcm_expand_query",
+                {"query": "docker", "prompt": "What was the plan?"},
+            )
+
+    def test_handle_expand_query_blank_synthesis_is_not_false_success(self, engine, monkeypatch):
+        engine._store.append("test-session", {"role": "user", "content": "Discussed docker rollout plan"})
+        node_id = engine._dag.add_node(
+            SummaryNode(
+                session_id="test-session",
+                depth=0,
+                summary="Docker rollout summary",
+                token_count=10,
+                source_token_count=20,
+                source_ids=[1],
+                source_type="messages",
+                created_at=0,
+            )
+        )
+        monkeypatch.setattr(lcm_tools, "_synthesize_expansion_answer", lambda **kwargs: "   ")
+
+        result = json.loads(
+            engine.handle_tool_call(
+                "lcm_expand_query",
+                {"query": "docker", "prompt": "What was the plan?"},
+            )
+        )
+
+        assert result["degraded"] is True
+        assert "empty answer" in result["error"]
+        assert result["node_ids"] == [node_id]
+        assert result["matches"]
+        assert "answer" not in result
+
+    def test_handle_expand_query_node_ids_timeout_preserves_requested_match(self, engine, monkeypatch):
+        engine._store.append("test-session", {"role": "user", "content": "Discussed docker rollout plan"})
+        node_id = engine._dag.add_node(
+            SummaryNode(
+                session_id="test-session",
+                depth=0,
+                summary="Docker rollout summary",
+                token_count=10,
+                source_token_count=20,
+                source_ids=[1],
+                source_type="messages",
+                created_at=0,
+            )
+        )
+
+        def fake_synthesize(*, prompt, context_blocks, model, max_tokens, timeout):
+            raise TimeoutError("expansion timed out")
+
+        monkeypatch.setattr(lcm_tools, "_synthesize_expansion_answer", fake_synthesize)
+
+        result = json.loads(
+            engine.handle_tool_call(
+                "lcm_expand_query",
+                {"node_ids": [node_id], "prompt": "What was the plan?"},
+            )
+        )
+
+        assert result["degraded"] is True
+        assert "timed out" in result["error"]
+        assert result["query"] == ""
+        assert result["node_ids"] == [node_id]
+        assert result["matches"][0]["node_id"] == node_id
+        assert "answer" not in result
+
     def test_handle_expand_query_hyphenated_operator_query_falls_back_cleanly(self, engine, monkeypatch):
         engine._store.append(
             "test-session",
