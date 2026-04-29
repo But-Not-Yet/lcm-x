@@ -1581,6 +1581,111 @@ class TestLifecycleStateStore:
 
         state.close()
 
+    def test_lifecycle_fragmentation_stats_compare_lifecycle_to_lcm_content_and_state_db(self, tmp_path):
+        db_path = tmp_path / "lifecycle-fragmentation.db"
+        state_db = tmp_path / "state.db"
+        # Initialize all shared LCM tables; fragmentation diagnostics compare
+        # lifecycle rows against raw-message and summary-DAG session coverage.
+        store = MessageStore(db_path)
+        dag = SummaryDAG(db_path)
+        state = LifecycleStateStore(db_path)
+        conn = state._conn
+        conn.execute(
+            """INSERT INTO messages
+               (session_id, source, role, content, tool_call_id, tool_calls, tool_name, timestamp, token_estimate, pinned)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("message-only", "cli", "user", "message only", None, None, None, 1.0, 5, 0),
+        )
+        conn.execute(
+            """INSERT INTO summary_nodes
+               (session_id, depth, summary, token_count, source_token_count, source_ids, source_type, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("node-only", 0, "node only", 5, 5, "[]", "messages", 1.0),
+        )
+        conn.execute(
+            """INSERT INTO lcm_lifecycle_state
+               (conversation_id, current_session_id, last_finalized_session_id, current_frontier_store_id, last_finalized_frontier_store_id, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ("conv-live", "message-only", "node-only", 0, 0, 1.0),
+        )
+        conn.execute(
+            """INSERT INTO lcm_lifecycle_state
+               (conversation_id, current_session_id, last_finalized_session_id, current_frontier_store_id, last_finalized_frontier_store_id, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ("conv-missing", "missing-current", "missing-final", 0, 0, 1.0),
+        )
+        conn.commit()
+        state_conn = sqlite3.connect(state_db)
+        state_conn.executescript(
+            """
+            CREATE TABLE sessions (id TEXT PRIMARY KEY);
+            INSERT INTO sessions(id) VALUES ('message-only');
+            INSERT INTO sessions(id) VALUES ('state-only');
+            """
+        )
+        state_conn.commit()
+        state_conn.close()
+
+        stats = state.get_fragmentation_stats(state_db_path=state_db)
+
+        assert stats["lifecycle_rows"] == 2
+        assert stats["distinct_message_sessions"] == 1
+        assert stats["distinct_node_sessions"] == 1
+        assert stats["lifecycle_current_missing_in_messages"] == 1
+        assert stats["lifecycle_current_missing_in_lcm_any"] == 1
+        assert stats["lifecycle_last_finalized_missing_in_lcm_any"] == 1
+        assert stats["lifecycle_current_missing_in_state"] == 1
+        assert stats["lifecycle_last_finalized_missing_in_state"] == 2
+        assert stats["lcm_message_sessions_missing_in_state"] == 0
+        assert stats["lcm_node_sessions_missing_in_state"] == 1
+        assert stats["state_sessions_missing_in_lcm_any"] == 1
+        assert stats["state_db_checked"] is True
+        assert stats["state_db_error"] == ""
+
+        # Read-only diagnostic: no lifecycle rows were mutated or removed.
+        assert state.row_count() == 2
+        assert state.get_by_conversation("conv-missing").current_session_id == "missing-current"
+
+        state.close()
+
+    def test_lifecycle_fragmentation_stats_treats_last_finalized_message_session_as_referenced(self, tmp_path):
+        db_path = tmp_path / "lifecycle-finalized-message-reference.db"
+        store = MessageStore(db_path)
+        SummaryDAG(db_path)
+        state = LifecycleStateStore(db_path)
+        store.append("previous-session", {"role": "user", "content": "previous"}, source="cli")
+        store.append("current-session", {"role": "user", "content": "current"}, source="cli")
+        state.record_rollover(
+            "conversation",
+            old_session_id="previous-session",
+            new_session_id="current-session",
+        )
+
+        stats = state.get_fragmentation_stats()
+
+        assert stats["message_sessions_without_lifecycle_current"] == 1
+        assert stats["message_sessions_without_lifecycle_reference"] == 0
+        assert stats["node_sessions_without_lifecycle_reference"] == 0
+
+        state.close()
+
+    def test_lifecycle_fragmentation_stats_reports_existing_malformed_state_db(self, tmp_path):
+        db_path = tmp_path / "lifecycle-malformed-state.db"
+        state_db = tmp_path / "state.db"
+        MessageStore(db_path)
+        SummaryDAG(db_path)
+        state = LifecycleStateStore(db_path)
+        state_db.write_text("not sqlite")
+
+        stats = state.get_fragmentation_stats(state_db_path=state_db)
+
+        assert stats["state_db_checked"] is True
+        assert stats["state_db_error"]
+        assert stats["read_only"] is True
+        assert state.row_count() == 0
+
+        state.close()
+
     def test_record_debt_and_clear_debt(self, tmp_path):
         state = LifecycleStateStore(tmp_path / "lifecycle-debt.db")
         bound = state.bind_session("sess-1")

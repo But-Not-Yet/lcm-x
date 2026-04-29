@@ -2,7 +2,7 @@
 
 import json
 import logging
-from pathlib import Path
+import sqlite3
 import time
 from pathlib import Path
 
@@ -29,6 +29,36 @@ def engine(tmp_path):
     e.context_length = 200000
     e.threshold_tokens = int(200000 * config.context_threshold)
     return e
+
+
+def test_lcm_tool_status_reports_lifecycle_fragmentation_summary(engine, tmp_path):
+    engine._hermes_home = str(tmp_path / "hermes_home")
+    state_db = tmp_path / "hermes_home" / "state.db"
+    state_db.parent.mkdir(parents=True, exist_ok=True)
+    state_conn = sqlite3.connect(state_db)
+    state_conn.executescript(
+        """
+        CREATE TABLE sessions (id TEXT PRIMARY KEY);
+        INSERT INTO sessions(id) VALUES ('covered-session');
+        """
+    )
+    state_conn.commit()
+    state_conn.close()
+    engine._store.append("covered-session", {"role": "user", "content": "covered"}, source="cli")
+    engine._lifecycle._conn.execute(
+        """INSERT INTO lcm_lifecycle_state
+           (conversation_id, current_session_id, last_finalized_session_id, current_frontier_store_id, last_finalized_frontier_store_id, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        ("conv-stale", "missing-current", None, 0, 0, 1.0),
+    )
+    engine._lifecycle._conn.commit()
+
+    payload = json.loads(lcm_tools.lcm_status({}, engine=engine))
+
+    assert payload["lifecycle_fragmentation"]["read_only"] is True
+    assert payload["lifecycle_fragmentation"]["lifecycle_rows"] == 1
+    assert payload["lifecycle_fragmentation"]["lifecycle_current_missing_in_lcm_any"] == 1
+    assert payload["lifecycle_fragmentation"]["lifecycle_current_missing_in_state"] == 1
 
 
 def test_lcm_tool_status_includes_optional_cache_usage_metrics(engine):
@@ -4448,6 +4478,136 @@ class TestEngineTools:
         assert lineage_check["status"] == "pass"
         assert lineage_check["detail"]["legacy_blank_source_messages"] == 4
         assert lineage_check["detail"]["effective_unknown_messages"] == 4
+
+    def test_handle_doctor_reports_lifecycle_fragmentation_without_mutating(self, engine, tmp_path):
+        engine._hermes_home = str(tmp_path / "hermes_home")
+        state_db = tmp_path / "hermes_home" / "state.db"
+        state_db.parent.mkdir(parents=True, exist_ok=True)
+        state_conn = sqlite3.connect(state_db)
+        state_conn.executescript(
+            """
+            CREATE TABLE sessions (id TEXT PRIMARY KEY);
+            INSERT INTO sessions(id) VALUES ('current-with-message');
+            INSERT INTO sessions(id) VALUES ('state-only');
+            """
+        )
+        state_conn.commit()
+        state_conn.close()
+        engine._store.append("current-with-message", {"role": "user", "content": "covered"}, source="cli")
+        engine._dag.add_node(
+            SummaryNode(
+                session_id="node-missing-in-state",
+                depth=0,
+                summary="summary-only coverage",
+                token_count=5,
+                source_token_count=5,
+                source_ids=[],
+                source_type="messages",
+                created_at=1.0,
+            )
+        )
+        engine._lifecycle._conn.execute(
+            """INSERT INTO lcm_lifecycle_state
+               (conversation_id, current_session_id, last_finalized_session_id, current_frontier_store_id, last_finalized_frontier_store_id, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ("conv-current", "current-with-message", "node-missing-in-state", 0, 0, 1.0),
+        )
+        engine._lifecycle._conn.execute(
+            """INSERT INTO lcm_lifecycle_state
+               (conversation_id, current_session_id, last_finalized_session_id, current_frontier_store_id, last_finalized_frontier_store_id, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ("conv-stale", "missing-current", "missing-final", 0, 0, 1.0),
+        )
+        engine._lifecycle._conn.commit()
+
+        result = json.loads(engine.handle_tool_call("lcm_doctor", {}))
+
+        lifecycle_check = next(c for c in result["checks"] if c["check"] == "lifecycle_fragmentation")
+        assert lifecycle_check["status"] == "warn"
+        assert lifecycle_check["detail"]["lifecycle_rows"] == 2
+        assert lifecycle_check["detail"]["lifecycle_current_missing_in_lcm_any"] == 1
+        assert lifecycle_check["detail"]["lifecycle_current_missing_in_state"] == 1
+        assert lifecycle_check["detail"]["lcm_node_sessions_missing_in_state"] == 1
+        assert lifecycle_check["detail"]["state_sessions_missing_in_lcm_any"] == 1
+        assert lifecycle_check["detail"]["read_only"] is True
+        assert engine._lifecycle.row_count() == 2
+
+    def test_handle_doctor_warns_when_existing_state_db_is_unreadable(self, engine, tmp_path):
+        engine._hermes_home = str(tmp_path / "hermes_home")
+        state_db = tmp_path / "hermes_home" / "state.db"
+        state_db.parent.mkdir(parents=True, exist_ok=True)
+        state_db.write_text("not sqlite")
+
+        result = json.loads(engine.handle_tool_call("lcm_doctor", {}))
+
+        assert result["overall"] == "warnings"
+        lifecycle_check = next(c for c in result["checks"] if c["check"] == "lifecycle_fragmentation")
+        assert lifecycle_check["status"] == "warn"
+        assert lifecycle_check["detail"]["state_db_checked"] is True
+        assert lifecycle_check["detail"]["state_db_error"]
+        assert lifecycle_check["detail"]["read_only"] is True
+
+    def test_handle_doctor_warns_on_message_session_without_lifecycle_current(self, engine):
+        engine.on_session_start("current-session", platform="cli", context_length=200000)
+        engine._store.append("current-session", {"role": "user", "content": "covered"}, source="cli")
+        engine._store.append("message-only-session", {"role": "user", "content": "missing lifecycle"}, source="cli")
+
+        result = json.loads(engine.handle_tool_call("lcm_doctor", {}))
+
+        assert result["overall"] == "warnings"
+        lifecycle_check = next(c for c in result["checks"] if c["check"] == "lifecycle_fragmentation")
+        assert lifecycle_check["status"] == "warn"
+        assert lifecycle_check["detail"]["message_sessions_without_lifecycle_current"] == 1
+        assert lifecycle_check["detail"]["message_sessions_without_lifecycle_reference"] == 1
+        assert lifecycle_check["detail"]["read_only"] is True
+
+    def test_handle_doctor_does_not_warn_on_last_finalized_message_session(self, engine):
+        engine.on_session_start(
+            "current-session",
+            platform="cli",
+            context_length=200000,
+            conversation_id="conversation",
+        )
+        engine._store.append("previous-session", {"role": "user", "content": "previous"}, source="cli")
+        engine._store.append("current-session", {"role": "user", "content": "current"}, source="cli")
+        engine._lifecycle.record_rollover(
+            "conversation",
+            old_session_id="previous-session",
+            new_session_id="current-session",
+        )
+
+        result = json.loads(engine.handle_tool_call("lcm_doctor", {}))
+
+        assert result["overall"] == "healthy"
+        lifecycle_check = next(c for c in result["checks"] if c["check"] == "lifecycle_fragmentation")
+        assert lifecycle_check["status"] == "pass"
+        assert lifecycle_check["detail"]["message_sessions_without_lifecycle_current"] == 1
+        assert lifecycle_check["detail"]["message_sessions_without_lifecycle_reference"] == 0
+        assert lifecycle_check["detail"]["read_only"] is True
+
+    def test_handle_doctor_warns_on_node_session_without_lifecycle_reference(self, engine):
+        engine.on_session_start("current-session", platform="cli", context_length=200000)
+        engine._store.append("current-session", {"role": "user", "content": "covered"}, source="cli")
+        engine._dag.add_node(
+            SummaryNode(
+                session_id="node-only-session",
+                depth=0,
+                summary="missing lifecycle reference",
+                token_count=5,
+                source_token_count=5,
+                source_ids=[],
+                source_type="messages",
+                created_at=1.0,
+            )
+        )
+
+        result = json.loads(engine.handle_tool_call("lcm_doctor", {}))
+
+        assert result["overall"] == "warnings"
+        lifecycle_check = next(c for c in result["checks"] if c["check"] == "lifecycle_fragmentation")
+        assert lifecycle_check["status"] == "warn"
+        assert lifecycle_check["detail"]["node_sessions_without_lifecycle_reference"] == 1
+        assert lifecycle_check["detail"]["read_only"] is True
 
     def test_handle_doctor_warns_on_bad_config(self, tmp_path):
         config = LCMConfig(

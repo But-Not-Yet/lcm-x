@@ -14,7 +14,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from .db_bootstrap import configure_connection, run_versioned_migrations
 
@@ -322,6 +322,97 @@ class LifecycleStateStore:
         updated = self.get_by_conversation(conversation_id)
         assert updated is not None
         return updated
+
+    def get_fragmentation_stats(self, state_db_path: str | Path | None = None) -> dict[str, Any]:
+        """Return read-only lifecycle/session fragmentation diagnostics.
+
+        This intentionally reports mismatches only. It does not infer that every
+        mismatch is corrupt, and it never rewrites lifecycle, message, DAG, or
+        Hermes host state. Repair/cleanup flows must stay explicit and separate.
+        """
+        conn = self._conn
+
+        def _count(query: str, params: tuple[Any, ...] = ()) -> int:
+            row = conn.execute(query, params).fetchone()
+            return int(row[0] if row else 0)
+
+        def _session_ids(query: str) -> set[str]:
+            return {
+                str(row[0])
+                for row in conn.execute(query).fetchall()
+                if row[0]
+            }
+
+        message_sessions = _session_ids("SELECT DISTINCT session_id FROM messages WHERE session_id IS NOT NULL")
+        node_sessions = _session_ids("SELECT DISTINCT session_id FROM summary_nodes WHERE session_id IS NOT NULL")
+        lcm_any_sessions = message_sessions | node_sessions
+        lifecycle_current_sessions = _session_ids(
+            "SELECT DISTINCT current_session_id FROM lcm_lifecycle_state WHERE current_session_id IS NOT NULL"
+        )
+        lifecycle_last_finalized_sessions = _session_ids(
+            "SELECT DISTINCT last_finalized_session_id FROM lcm_lifecycle_state WHERE last_finalized_session_id IS NOT NULL"
+        )
+        lifecycle_referenced_sessions = lifecycle_current_sessions | lifecycle_last_finalized_sessions
+
+        stats: dict[str, Any] = {
+            "read_only": True,
+            "lifecycle_rows": _count("SELECT COUNT(*) FROM lcm_lifecycle_state"),
+            "messages_total": _count("SELECT COUNT(*) FROM messages"),
+            "summary_nodes_total": _count("SELECT COUNT(*) FROM summary_nodes"),
+            "distinct_message_sessions": len(message_sessions),
+            "distinct_node_sessions": len(node_sessions),
+            "distinct_lcm_any_sessions": len(lcm_any_sessions),
+            "lifecycle_current_sessions": len(lifecycle_current_sessions),
+            "lifecycle_last_finalized_sessions": len(lifecycle_last_finalized_sessions),
+            "lifecycle_current_missing_in_messages": len(lifecycle_current_sessions - message_sessions),
+            "lifecycle_current_missing_in_nodes": len(lifecycle_current_sessions - node_sessions),
+            "lifecycle_current_missing_in_lcm_any": len(lifecycle_current_sessions - lcm_any_sessions),
+            "lifecycle_last_finalized_missing_in_messages": len(lifecycle_last_finalized_sessions - message_sessions),
+            "lifecycle_last_finalized_missing_in_nodes": len(lifecycle_last_finalized_sessions - node_sessions),
+            "lifecycle_last_finalized_missing_in_lcm_any": len(lifecycle_last_finalized_sessions - lcm_any_sessions),
+            "message_sessions_without_lifecycle_current": len(message_sessions - lifecycle_current_sessions),
+            "message_sessions_without_lifecycle_reference": len(message_sessions - lifecycle_referenced_sessions),
+            "node_sessions_without_lifecycle_reference": len(node_sessions - lifecycle_referenced_sessions),
+            "state_db_checked": False,
+            "state_db_error": "",
+            "state_sessions_total": 0,
+            "lifecycle_current_missing_in_state": 0,
+            "lifecycle_last_finalized_missing_in_state": 0,
+            "lcm_message_sessions_missing_in_state": 0,
+            "lcm_node_sessions_missing_in_state": 0,
+            "state_sessions_missing_in_lcm_messages": 0,
+            "state_sessions_missing_in_lcm_any": 0,
+        }
+
+        if state_db_path:
+            path = Path(state_db_path).expanduser()
+            if path.exists():
+                stats["state_db_checked"] = True
+                try:
+                    state_uri = path.resolve().as_uri() + "?mode=ro"
+                    state_conn = sqlite3.connect(state_uri, uri=True)
+                    try:
+                        state_rows = state_conn.execute("SELECT id FROM sessions WHERE id IS NOT NULL").fetchall()
+                    finally:
+                        state_conn.close()
+                    state_sessions = {str(row[0]) for row in state_rows if row[0]}
+                    stats.update({
+                        "state_sessions_total": len(state_sessions),
+                        "lifecycle_current_missing_in_state": len(lifecycle_current_sessions - state_sessions),
+                        "lifecycle_last_finalized_missing_in_state": len(
+                            lifecycle_last_finalized_sessions - state_sessions
+                        ),
+                        "lcm_message_sessions_missing_in_state": len(message_sessions - state_sessions),
+                        "lcm_node_sessions_missing_in_state": len(node_sessions - state_sessions),
+                        "state_sessions_missing_in_lcm_messages": len(state_sessions - message_sessions),
+                        "state_sessions_missing_in_lcm_any": len(state_sessions - lcm_any_sessions),
+                    })
+                except Exception as exc:  # pragma: no cover - defensive
+                    stats["state_db_error"] = str(exc)
+            else:
+                stats["state_db_error"] = f"state database not found: {path}"
+
+        return stats
 
     def record_debt(
         self,

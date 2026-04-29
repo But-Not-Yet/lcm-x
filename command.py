@@ -13,6 +13,38 @@ from .session_patterns import build_session_match_keys, matches_session_pattern
 from .store import build_message_fts_spec
 
 
+def _state_db_path_for_engine(engine) -> Path:
+    hermes_home = getattr(engine, "_hermes_home", "") or ""
+    if hermes_home:
+        return Path(hermes_home).expanduser() / "state.db"
+    db_path = Path(getattr(engine._store, "db_path", Path.home() / ".hermes" / "lcm.db"))
+    return db_path.parent / "state.db"
+
+
+def _has_lifecycle_fragmentation(stats: dict[str, Any]) -> bool:
+    direct_mismatch_keys = (
+        "lifecycle_current_missing_in_lcm_any",
+        "lifecycle_last_finalized_missing_in_lcm_any",
+        "lifecycle_current_missing_in_state",
+        "lifecycle_last_finalized_missing_in_state",
+        "lcm_message_sessions_missing_in_state",
+        "lcm_node_sessions_missing_in_state",
+    )
+    lifecycle_rows = int(stats.get("lifecycle_rows", 0) or 0)
+    missing_lifecycle_reference_keys = (
+        "message_sessions_without_lifecycle_reference",
+        "node_sessions_without_lifecycle_reference",
+    )
+    return (
+        any(int(stats.get(key, 0) or 0) > 0 for key in direct_mismatch_keys)
+        or (
+            lifecycle_rows > 0
+            and any(int(stats.get(key, 0) or 0) > 0 for key in missing_lifecycle_reference_keys)
+        )
+        or (bool(stats.get("state_db_checked")) and bool(stats.get("state_db_error")))
+    )
+
+
 def _fmt_bool(value: Any) -> str:
     return "yes" if bool(value) else "no"
 
@@ -714,6 +746,40 @@ def _doctor_text(engine) -> str:
         observations.append(
             "legacy blank-source rows are normalized as `source=unknown` for back-compat filters"
         )
+
+    try:
+        lifecycle_stats = engine._lifecycle.get_fragmentation_stats(
+            state_db_path=_state_db_path_for_engine(engine)
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        issues.append("lifecycle_fragmentation")
+        lifecycle_stats = {"error": str(exc)}
+    else:
+        observations.append(
+            "lifecycle_fragmentation: "
+            f"lifecycle_rows={lifecycle_stats['lifecycle_rows']} "
+            f"message_sessions={lifecycle_stats['distinct_message_sessions']} "
+            f"node_sessions={lifecycle_stats['distinct_node_sessions']} "
+            f"current_missing_in_lcm_any={lifecycle_stats['lifecycle_current_missing_in_lcm_any']} "
+            f"last_finalized_missing_in_lcm_any={lifecycle_stats['lifecycle_last_finalized_missing_in_lcm_any']} "
+            f"current_missing_in_state={lifecycle_stats['lifecycle_current_missing_in_state']} "
+            f"last_finalized_missing_in_state={lifecycle_stats['lifecycle_last_finalized_missing_in_state']} "
+            f"message_sessions_missing_in_state={lifecycle_stats['lcm_message_sessions_missing_in_state']} "
+            f"node_sessions_missing_in_state={lifecycle_stats['lcm_node_sessions_missing_in_state']} "
+            f"message_sessions_without_lifecycle_current={lifecycle_stats['message_sessions_without_lifecycle_current']} "
+            f"message_sessions_without_lifecycle_reference={lifecycle_stats['message_sessions_without_lifecycle_reference']} "
+            f"node_sessions_without_lifecycle_reference={lifecycle_stats['node_sessions_without_lifecycle_reference']} "
+            f"state_sessions_missing_in_lcm_any={lifecycle_stats['state_sessions_missing_in_lcm_any']}"
+        )
+        if lifecycle_stats.get("state_db_error"):
+            observations.append(f"lifecycle_fragmentation_state_db_error: {lifecycle_stats['state_db_error']}")
+        if _has_lifecycle_fragmentation(lifecycle_stats):
+            recommended_actions.append(
+                "inspect lifecycle fragmentation before any cleanup/repair behavior mutates state"
+            )
+            recommended_actions.append(
+                "treat this as read-only evidence; do not infer every mismatch is harmful"
+            )
 
     if clean_scan.get("protected_count"):
         observations.append(

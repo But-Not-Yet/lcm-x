@@ -260,6 +260,105 @@ def test_lcm_doctor_source_apply_is_backup_first_and_idempotent(tmp_path):
     assert stats_after["legacy_blank_source_messages"] == 0
 
 
+def test_lcm_doctor_reports_lifecycle_fragmentation_as_read_only_observation(engine):
+    state_db = Path(engine._hermes_home) / "state.db"
+    state_db.parent.mkdir(parents=True, exist_ok=True)
+    state_conn = sqlite3.connect(state_db)
+    state_conn.executescript(
+        """
+        CREATE TABLE sessions (id TEXT PRIMARY KEY);
+        INSERT INTO sessions(id) VALUES ('current-with-message');
+        INSERT INTO sessions(id) VALUES ('state-only');
+        """
+    )
+    state_conn.commit()
+    state_conn.close()
+    engine._store.append("current-with-message", {"role": "user", "content": "covered"}, source="cli")
+    engine._dag.add_node(SummaryNode(
+        session_id="node-missing-in-state",
+        depth=0,
+        summary="summary-only coverage",
+        token_count=5,
+        source_token_count=5,
+        source_ids=[],
+        source_type="messages",
+        created_at=1.0,
+    ))
+    engine._lifecycle._conn.execute(
+        """INSERT INTO lcm_lifecycle_state
+           (conversation_id, current_session_id, last_finalized_session_id, current_frontier_store_id, last_finalized_frontier_store_id, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        ("conv-current", "current-with-message", "node-missing-in-state", 0, 0, 1.0),
+    )
+    engine._lifecycle._conn.execute(
+        """INSERT INTO lcm_lifecycle_state
+           (conversation_id, current_session_id, last_finalized_session_id, current_frontier_store_id, last_finalized_frontier_store_id, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        ("conv-stale", "missing-current", "missing-final", 0, 0, 1.0),
+    )
+    engine._lifecycle._conn.commit()
+
+    result = handle_lcm_command("doctor", engine)
+
+    assert "status: action-recommended" in result
+    assert "lifecycle_fragmentation:" in result
+    assert "lifecycle_rows=2" in result
+    assert "current_missing_in_lcm_any=1" in result
+    assert "current_missing_in_state=1" in result
+    assert "node_sessions_missing_in_state=1" in result
+    assert "state_sessions_missing_in_lcm_any=1" in result
+    assert "inspect lifecycle fragmentation before any cleanup/repair behavior mutates state" in result
+    assert "read-only" in result
+    assert engine._lifecycle.row_count() == 2
+
+
+def test_lcm_doctor_warns_on_lcm_sessions_without_lifecycle_references(engine):
+    engine.on_session_start("current-session", platform="cli", context_length=200000)
+    engine._store.append("current-session", {"role": "user", "content": "covered"}, source="cli")
+    engine._store.append("message-only-session", {"role": "user", "content": "missing lifecycle"}, source="cli")
+    engine._dag.add_node(SummaryNode(
+        session_id="node-only-session",
+        depth=0,
+        summary="missing lifecycle reference",
+        token_count=5,
+        source_token_count=5,
+        source_ids=[],
+        source_type="messages",
+        created_at=1.0,
+    ))
+
+    result = handle_lcm_command("doctor", engine)
+
+    assert "status: action-recommended" in result
+    assert "message_sessions_without_lifecycle_current=1" in result
+    assert "message_sessions_without_lifecycle_reference=1" in result
+    assert "node_sessions_without_lifecycle_reference=1" in result
+    assert "inspect lifecycle fragmentation before any cleanup/repair behavior mutates state" in result
+
+
+def test_lcm_doctor_does_not_warn_on_last_finalized_message_session(engine):
+    engine.on_session_start(
+        "current-session",
+        platform="cli",
+        context_length=200000,
+        conversation_id="conversation",
+    )
+    engine._store.append("previous-session", {"role": "user", "content": "previous"}, source="cli")
+    engine._store.append("current-session", {"role": "user", "content": "current"}, source="cli")
+    engine._lifecycle.record_rollover(
+        "conversation",
+        old_session_id="previous-session",
+        new_session_id="current-session",
+    )
+
+    result = handle_lcm_command("doctor", engine)
+
+    assert "status: ok" in result
+    assert "message_sessions_without_lifecycle_current=1" in result
+    assert "message_sessions_without_lifecycle_reference=0" in result
+    assert "inspect lifecycle fragmentation before any cleanup/repair behavior mutates state" not in result
+
+
 def test_lcm_help_on_unknown_subcommand(engine):
     result = handle_lcm_command("wat", engine)
 

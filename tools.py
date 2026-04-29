@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from pathlib import Path
 from typing import Any, Dict, TYPE_CHECKING
 
 from .externalize import (
@@ -53,6 +54,38 @@ def _combined_result_sort_key(result: dict[str, Any], sort: str) -> tuple:
     if result.get("type") == "message":
         return (-sort_timestamp, type_bias, role_bias, rank_value, 0.0, float("inf"))
     return (-sort_timestamp, type_bias, 0, rank_value, 0.0, role_bias)
+
+
+def _state_db_path_for_engine(engine: "LCMEngine") -> Path:
+    hermes_home = getattr(engine, "_hermes_home", "") or ""
+    if hermes_home:
+        return Path(hermes_home).expanduser() / "state.db"
+    db_path = Path(getattr(engine._store, "db_path", Path.home() / ".hermes" / "lcm.db"))
+    return db_path.parent / "state.db"
+
+
+def _has_lifecycle_fragmentation(stats: dict[str, Any]) -> bool:
+    direct_mismatch_keys = (
+        "lifecycle_current_missing_in_lcm_any",
+        "lifecycle_last_finalized_missing_in_lcm_any",
+        "lifecycle_current_missing_in_state",
+        "lifecycle_last_finalized_missing_in_state",
+        "lcm_message_sessions_missing_in_state",
+        "lcm_node_sessions_missing_in_state",
+    )
+    lifecycle_rows = int(stats.get("lifecycle_rows", 0) or 0)
+    missing_lifecycle_reference_keys = (
+        "message_sessions_without_lifecycle_reference",
+        "node_sessions_without_lifecycle_reference",
+    )
+    return (
+        any(int(stats.get(key, 0) or 0) > 0 for key in direct_mismatch_keys)
+        or (
+            lifecycle_rows > 0
+            and any(int(stats.get(key, 0) or 0) > 0 for key in missing_lifecycle_reference_keys)
+        )
+        or (bool(stats.get("state_db_checked")) and bool(stats.get("state_db_error")))
+    )
 
 
 def _require_engine(kwargs: Dict[str, Any]) -> "LCMEngine | None":
@@ -615,6 +648,7 @@ def lcm_status(args: Dict[str, Any], **kwargs) -> str:
     compression_ratio = round(total_source_tokens / total_dag_tokens, 1) if total_dag_tokens > 0 else 0
     full_status = engine.get_status()
     lifecycle = full_status.get("lifecycle")
+    lifecycle_fragmentation = full_status.get("lifecycle_fragmentation")
     source_lineage = full_status.get("source_lineage")
     runtime_identity = full_status.get("runtime_identity")
 
@@ -665,6 +699,7 @@ def lcm_status(args: Dict[str, Any], **kwargs) -> str:
         "source_lineage": source_lineage,
         "runtime_identity": runtime_identity,
         "lifecycle": lifecycle,
+        "lifecycle_fragmentation": lifecycle_fragmentation,
     })
 
 
@@ -780,7 +815,24 @@ def lcm_doctor(args: Dict[str, Any], **kwargs) -> str:
             "detail": str(e),
         })
 
-    # 6. Context pressure
+    # 6. Lifecycle/session fragmentation
+    try:
+        lifecycle_fragmentation = engine._lifecycle.get_fragmentation_stats(
+            state_db_path=_state_db_path_for_engine(engine)
+        )
+        checks.append({
+            "check": "lifecycle_fragmentation",
+            "status": "warn" if _has_lifecycle_fragmentation(lifecycle_fragmentation) else "pass",
+            "detail": lifecycle_fragmentation,
+        })
+    except Exception as e:
+        checks.append({
+            "check": "lifecycle_fragmentation",
+            "status": "fail",
+            "detail": str(e),
+        })
+
+    # 7. Context pressure
     if engine.context_length > 0:
         usage_pct = round(engine.last_prompt_tokens / engine.context_length * 100, 1) if engine.context_length else 0
         threshold_pct = round(c.context_threshold * 100, 1)

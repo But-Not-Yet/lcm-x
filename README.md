@@ -338,8 +338,8 @@ That means patterns like `cron:*` can catch Hermes cron sessions today, while pl
 | `lcm_describe` | Inspect current-session DAG structure or an `externalized_ref` payload preview without loading full payload content. No node_id/externalized_ref = session overview. |
 | `lcm_expand` | Recover original content from a current-session summary node, or open a stored `externalized_ref` payload directly. |
 | `lcm_expand_query` | Answer a question from expanded LCM context for the active/current session using either a query or explicit node_ids. For cross-session recall, use `session_search` first. |
-| `lcm_status` | Quick health overview — compression count, store size, DAG depth distribution, context usage, and active config. |
-| `lcm_doctor` | Run diagnostics — database integrity, FTS index sync, orphaned nodes, config validation, context pressure. |
+| `lcm_status` | Quick health overview — compression count, store size, DAG depth distribution, context usage, active config, and read-only lifecycle/session fragmentation stats. |
+| `lcm_doctor` | Run diagnostics — database integrity, FTS index sync, orphaned nodes, lifecycle/session fragmentation, config validation, context pressure. |
 
 ### Operator slash commands
 
@@ -413,7 +413,7 @@ When Hermes host support for plugin slash commands is available, `hermes-lcm` ca
 This surface is **disabled by default** and requires `LCM_ENABLE_SLASH_COMMAND=1` (or `true/yes/on`) before registration.
 
 - `/lcm` or `/lcm status` — current session/runtime status
-- `/lcm doctor` — SQLite + FTS health checks and store/node totals
+- `/lcm doctor` — SQLite + FTS health checks, store/node totals, and read-only lifecycle/session fragmentation diagnostics
 - `/lcm doctor clean` — best-effort read-only scan for obvious junk/noise sessions matched from stored session keys
 - `/lcm doctor clean apply` — backup-first cleanup for safe pattern-matched junk/noise session candidates
 - `/lcm doctor repair` — read-only SQLite/FTS diagnostics for message and summary search indexes

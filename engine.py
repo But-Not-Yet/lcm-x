@@ -1040,6 +1040,17 @@ class LCMEngine(ContextEngine):
             status["source_lineage"] = self._store.get_source_stats(self._session_id or None)
         except Exception as exc:  # pragma: no cover - defensive
             status["source_lineage"] = {"error": str(exc)}
+        try:
+            state_db_path = (
+                Path(self._hermes_home).expanduser() / "state.db"
+                if self._hermes_home
+                else Path(self._store.db_path).parent / "state.db"
+            )
+            status["lifecycle_fragmentation"] = self._lifecycle.get_fragmentation_stats(
+                state_db_path=state_db_path
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            status["lifecycle_fragmentation"] = {"error": str(exc), "read_only": True}
         if self._session_id:
             status["store_messages"] = self._store.get_session_count(self._session_id)
             status["dag_nodes"] = len(self._dag.get_session_nodes(self._session_id))
