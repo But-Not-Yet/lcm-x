@@ -334,10 +334,10 @@ That means patterns like `cron:*` can catch Hermes cron sessions today, while pl
 
 | Tool | Description |
 |------|-------------|
-| `lcm_grep` | Search raw messages AND summaries for the active/current session. Use this for intra-session recall after compaction; if you intentionally want cross-session LCM store hits, use `session_scope='all'`; otherwise prefer `session_search` for earlier separate sessions. |
+| `lcm_grep` | Search raw messages AND summaries for the active/current session. Use this for intra-session recall after compaction. For earlier separate sessions or broad cross-session history, use `session_search`. |
 | `lcm_describe` | Inspect current-session DAG structure or an `externalized_ref` payload preview without loading full payload content. No node_id/externalized_ref = session overview. |
 | `lcm_expand` | Recover original content from a current-session summary node, or open a stored `externalized_ref` payload directly. |
-| `lcm_expand_query` | Answer a question from expanded LCM context for the active/current session using either a query or explicit node_ids. For cross-session recall, prefer `session_search` first. |
+| `lcm_expand_query` | Answer a question from expanded LCM context for the active/current session using either a query or explicit node_ids. For cross-session recall, use `session_search` first. |
 | `lcm_status` | Quick health overview — compression count, store size, DAG depth distribution, context usage, and active config. |
 | `lcm_doctor` | Run diagnostics — database integrity, FTS index sync, orphaned nodes, config validation, context pressure. |
 
@@ -350,10 +350,9 @@ If `LCM_ENABLE_SLASH_COMMAND=true`, trusted operator contexts can use `/lcm` sla
 
 ### Retrieval contract: `session_scope` × `source`
 
-`hermes-lcm` treats `session_scope` and `source` as independent filters:
+`hermes-lcm` retrieval tools are current-session tools. `session_scope` is kept for schema compatibility and currently accepts only `current`; unsupported values are ignored and reported in the tool result. Use Hermes `session_search` for earlier separate sessions or broad cross-session recall.
 
-- **`session_scope`** decides which sessions are eligible
-- **`source`** decides which content inside those eligible sessions is allowed to match
+Within that current session, `source` decides which content is allowed to match.
 
 That contract applies across:
 
@@ -366,15 +365,11 @@ That contract applies across:
 
 - `current` + no `source` → all raw rows in the current session
 - `current` + `source='discord'` → only current-session raw rows with source `discord`
-- `all` + no `source` → all raw rows across sessions
-- `all` + `source='discord'` → all raw rows across sessions with source `discord`
 
 #### DAG summaries
 
 - `current` + no `source` → all summaries eligible in the current session
 - `current` + `source='discord'` → only current-session summaries whose descendant raw-message lineage includes `discord`
-- `all` + no `source` → all eligible summaries across sessions
-- `all` + `source='discord'` → only summaries across sessions whose descendant raw-message lineage includes `discord`
 
 Mixed-source nodes may match more than one `source` filter if their descendant lineage is mixed. Filtering is based on actual descendant lineage, not on whether the surrounding session happens to contain some message from that source.
 
@@ -401,7 +396,7 @@ When both recall paths are available to the model:
 
 - prefer **LCM tools** for recall inside the active/current conversation, especially when the relevant turns were compacted into summary nodes
 - prefer **`session_search`** when the user is asking about an earlier separate conversation, prior work from another session, or broad cross-session history
-- if you explicitly want cross-session hits from the LCM store itself, use `lcm_grep(session_scope='all')` deliberately rather than treating it as the default recall path
+- if a caller sends an unsupported `session_scope`, `lcm_grep` stays on the current session and reports the ignored value in its response
 
 That split is intentional:
 

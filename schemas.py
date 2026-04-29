@@ -38,8 +38,8 @@ LCM_GREP = {
                 "type": "string",
                 "enum": ["current"],
                 "description": (
-                    "Whether to search only the current session. "
-                    "Cross-session recall should use session_search instead."
+                    "Current-session only. Cross-session recall should use session_search instead; "
+                    "unsupported values are ignored and reported in the tool result."
                 ),
                 "default": "current",
             },

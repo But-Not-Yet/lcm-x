@@ -3,6 +3,8 @@
 import json
 import logging
 import time
+from pathlib import Path
+
 import pytest
 
 import hermes_lcm.engine as lcm_engine
@@ -262,11 +264,13 @@ class TestEngineABC:
         grep_schema = next(s for s in schemas if s["name"] == "lcm_grep")
         grep_props = grep_schema["parameters"]["properties"]
         assert "session_scope" in grep_props
+        assert grep_props["session_scope"]["enum"] == ["current"]
         assert "source" in grep_props
         assert "descendant source lineage" in grep_props["source"]["description"]
         assert "unknown" in grep_props["source"]["description"]
         assert "current session" in grep_schema["description"].lower()
         assert "session_search" in grep_schema["description"]
+        assert "session_scope='all'" not in grep_schema["description"]
         assert "session_search" in grep_props["session_scope"]["description"]
 
         describe_schema = next(s for s in schemas if s["name"] == "lcm_describe")
@@ -279,6 +283,13 @@ class TestEngineABC:
         assert "session_search" in expand_schema["description"]
         assert "current session" in expand_query_schema["description"].lower()
         assert "session_search" in expand_query_schema["description"]
+
+    def test_readme_matches_current_session_retrieval_contract(self):
+        readme = Path(__file__).resolve().parents[1].joinpath("README.md").read_text()
+        assert "session_scope='all'" not in readme
+        assert "session_scope=\"all\"" not in readme
+        assert "current-session recall" in readme
+        assert "session_search" in readme
 
     def test_should_compress(self, engine):
         assert not engine.should_compress(1000)
@@ -2814,6 +2825,23 @@ class TestEngineTools:
             )
         )
         assert result["sort"] == "relevance"
+
+    def test_handle_grep_reports_unsupported_session_scope_and_stays_current(self, engine):
+        engine._store.append("test-session", {"role": "user", "content": "docker rollout current session"})
+        engine._store.append("old-session", {"role": "user", "content": "docker rollout old session"})
+
+        result = json.loads(
+            engine.handle_tool_call(
+                "lcm_grep",
+                {"query": "docker", "session_scope": "all", "limit": 10},
+            )
+        )
+
+        assert result["session_scope"] == "current"
+        assert result["ignored_session_scope"] == "all"
+        assert "session_search" in result["scope_note"]
+        assert result["total_results"] == 1
+        assert result["results"][0]["session_id"] == "test-session"
 
     def test_handle_grep_source_filter_in_current_session_includes_only_matching_summaries(self, engine):
         engine._store.append("test-session", {"role": "user", "content": "docker logs from discord"}, source="discord")

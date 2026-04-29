@@ -331,16 +331,18 @@ def lcm_grep(args: Dict[str, Any], **kwargs) -> str:
         result.pop("_sort_rank", None)
         result.pop("_sort_directness", None)
         result.pop("_hybrid_summary_override", None)
-    return json.dumps(
-        {
-            "query": query,
-            "sort": sort,
-            "session_scope": session_scope,
-            "source": source,
-            "total_results": len(results),
-            "results": results[:limit],
-        }
-    )
+    response = {
+        "query": query,
+        "sort": sort,
+        "session_scope": session_scope,
+        "source": source,
+        "total_results": len(results),
+        "results": results[:limit],
+    }
+    if requested_session_scope != "current":
+        response["ignored_session_scope"] = requested_session_scope
+        response["scope_note"] = "lcm_grep is current-session only; use session_search for broad cross-session recall."
+    return json.dumps(response)
 
 
 def lcm_describe(args: Dict[str, Any], **kwargs) -> str:
