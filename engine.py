@@ -42,6 +42,37 @@ from . import tools as lcm_tools
 
 logger = logging.getLogger(__name__)
 
+_PLUGIN_ROOT = Path(__file__).resolve().parent
+_PLUGIN_METADATA: dict[str, str] | None = None
+
+
+def _strip_metadata_scalar(value: str) -> str:
+    return value.strip().strip('"').strip("'")
+
+
+def _plugin_metadata() -> dict[str, str]:
+    """Return plugin identity from the loaded code tree."""
+    global _PLUGIN_METADATA
+    if _PLUGIN_METADATA is not None:
+        return dict(_PLUGIN_METADATA)
+
+    metadata = {"name": "hermes-lcm", "version": "unknown"}
+    manifest = _PLUGIN_ROOT / "plugin.yaml"
+    try:
+        for line in manifest.read_text(encoding="utf-8").splitlines():
+            key, sep, raw_value = line.partition(":")
+            if not sep:
+                continue
+            key = key.strip()
+            if key in {"name", "version"}:
+                metadata[key] = _strip_metadata_scalar(raw_value)
+    except OSError:
+        logger.debug("LCM plugin manifest not readable at %s", manifest)
+
+    _PLUGIN_METADATA = metadata
+    return dict(metadata)
+
+
 _SYNTHETIC_ASSISTANT_NOISE = {
     "ack",
     "acknowledged",
@@ -942,6 +973,49 @@ class LCMEngine(ContextEngine):
             return handler(args, engine=self)
         return json.dumps({"error": f"Unknown LCM tool: {name}"})
 
+    def _database_path_source(self) -> str:
+        if self._config.database_path:
+            return "config.database_path"
+        if self._hermes_home:
+            return "hermes_home"
+        return "default_home"
+
+    def get_runtime_identity(self) -> Dict[str, Any]:
+        """Return operator-facing identity for the loaded LCM runtime."""
+        metadata = _plugin_metadata()
+        lifecycle_state = None
+        lifecycle_error = ""
+        if self._conversation_id:
+            try:
+                lifecycle_state = self._lifecycle.get_by_conversation(self._conversation_id)
+            except Exception as exc:  # pragma: no cover - defensive
+                lifecycle_error = str(exc)
+
+        identity: Dict[str, Any] = {
+            "engine": self.name,
+            "plugin_name": metadata.get("name", "hermes-lcm"),
+            "plugin_version": metadata.get("version", "unknown"),
+            "plugin_path": str(_PLUGIN_ROOT),
+            "module_path": str(Path(__file__).resolve()),
+            "hermes_home": str(self._hermes_home or ""),
+            "database_path": str(self._store.db_path),
+            "database_path_source": self._database_path_source(),
+            "session_id": self._session_id,
+            "session_platform": self._session_platform,
+            "session_bound": bool(self._session_id),
+            "conversation_id": self._conversation_id,
+            "lifecycle_current_session_id": "",
+            "lifecycle_last_finalized_session_id": "",
+        }
+        if lifecycle_state is not None:
+            identity.update({
+                "lifecycle_current_session_id": lifecycle_state.current_session_id or "",
+                "lifecycle_last_finalized_session_id": lifecycle_state.last_finalized_session_id or "",
+            })
+        if lifecycle_error:
+            identity["lifecycle_error"] = lifecycle_error
+        return identity
+
     def get_status(self) -> Dict[str, Any]:
         status = super().get_status()
         status.update({
@@ -961,6 +1035,7 @@ class LCMEngine(ContextEngine):
         })
         lifecycle_state = self._lifecycle.get_by_conversation(self._conversation_id)
         status["engine"] = "lcm"
+        status["runtime_identity"] = self.get_runtime_identity()
         try:
             status["source_lineage"] = self._store.get_source_stats(self._session_id or None)
         except Exception as exc:  # pragma: no cover - defensive

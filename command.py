@@ -57,6 +57,7 @@ def _status_text(engine) -> str:
     db_size = db_path.stat().st_size if db_exists else 0
     session_bound = bool(engine._session_id)
     source_stats = status.get("source_lineage") or {}
+    runtime_identity = status.get("runtime_identity") or {}
     source_stats = {
         "messages_total": int(source_stats.get("messages_total", 0) or 0),
         "attributed_messages": int(source_stats.get("attributed_messages", 0) or 0),
@@ -70,9 +71,15 @@ def _status_text(engine) -> str:
     lines = [
         "LCM status",
         f"engine: {status.get('engine', engine.name)}",
+        f"plugin_name: {runtime_identity.get('plugin_name', '(unknown)')}",
+        f"plugin_version: {runtime_identity.get('plugin_version', '(unknown)')}",
+        f"plugin_path: {runtime_identity.get('plugin_path', '(unknown)')}",
+        f"module_path: {runtime_identity.get('module_path', '(unknown)')}",
+        f"hermes_home: {runtime_identity.get('hermes_home', '') or '(unset)'}",
         f"session_id: {engine._session_id or '(unbound)'}",
         f"session_platform: {status.get('session_platform') or ('(unbound)' if not session_bound else '(unknown)')}",
         f"database_path: {db_path}",
+        f"database_path_source: {runtime_identity.get('database_path_source', '(unknown)')}",
         f"database_exists: {_fmt_bool(db_exists)}",
         f"database_size: {_fmt_size(db_size) if db_exists else 'missing'}",
         f"compression_count: {engine.compression_count}",
@@ -86,6 +93,9 @@ def _status_text(engine) -> str:
         f"cache_read_ratio: {float(status.get('cache_read_ratio', 0.0) or 0.0) * 100:.1f}%",
         f"session_ignored: {_fmt_bool(status.get('session_ignored'))}",
         f"session_stateless: {_fmt_bool(status.get('session_stateless'))}",
+        f"conversation_id: {runtime_identity.get('conversation_id', '') or '(unbound)'}",
+        f"lifecycle_current_session_id: {runtime_identity.get('lifecycle_current_session_id', '') or '(none)'}",
+        f"lifecycle_last_finalized_session_id: {runtime_identity.get('lifecycle_last_finalized_session_id', '') or '(none)'}",
         f"source_messages_total: {source_stats['messages_total']}",
         f"source_attributed_messages: {source_stats['attributed_messages']}",
         f"source_unknown_messages: {source_stats['normalized_unknown_messages']}",

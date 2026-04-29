@@ -114,6 +114,19 @@ def test_lcm_status_explains_unbound_runtime_before_first_session(tmp_path):
     assert "note: no active Hermes session has initialized LCM in this process yet" in result
 
 
+def test_lcm_status_reports_runtime_identity(engine):
+    result = handle_lcm_command("status", engine)
+    repo_root = Path(__file__).resolve().parent.parent
+
+    assert "plugin_name: hermes-lcm" in result
+    assert "plugin_version: 0.7.1" in result
+    assert f"plugin_path: {repo_root}" in result
+    assert "module_path:" in result
+    assert "database_path_source: config.database_path" in result
+    assert f"hermes_home: {engine._hermes_home}" in result
+    assert "conversation_id:" in result
+
+
 def test_lcm_status_reports_source_lineage_breakdown(engine):
     engine._store.append("test-session", {"role": "user", "content": "cli message"}, source="cli")
     engine._store.append("test-session", {"role": "user", "content": "unknown message"})

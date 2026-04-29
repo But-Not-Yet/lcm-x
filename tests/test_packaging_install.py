@@ -103,6 +103,12 @@ def test_plugin_entrypoint_registers_lcm_context_engine():
 
     assert engine is not None
     assert engine.name == "lcm"
+    identity = engine.get_status()["runtime_identity"]
+    repo_root = Path(__file__).resolve().parent.parent
+    assert identity["plugin_name"] == "hermes-lcm"
+    assert identity["plugin_version"] == "0.7.1"
+    assert Path(identity["plugin_path"]) == repo_root
+    assert identity["database_path_source"] in {"config.database_path", "hermes_home", "default_home"}
 
     tool_names = {schema["name"] for schema in engine.get_tool_schemas()}
     assert {

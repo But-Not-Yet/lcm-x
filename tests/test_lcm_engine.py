@@ -2,6 +2,7 @@
 
 import json
 import logging
+from pathlib import Path
 import time
 from pathlib import Path
 
@@ -51,6 +52,52 @@ def test_lcm_tool_status_includes_optional_cache_usage_metrics(engine):
     assert payload["last_cache_write_tokens"] == 50
     assert payload["last_reasoning_tokens"] == 30
     assert payload["cache_read_ratio"] == 0.381
+    assert payload["runtime_identity"]["plugin_name"] == "hermes-lcm"
+    assert payload["runtime_identity"]["database_path_source"] == "config.database_path"
+
+
+def test_lcm_tool_status_reports_runtime_identity_before_session_binding(tmp_path):
+    config = LCMConfig(database_path=str(tmp_path / "unbound-tool-status.db"))
+    engine = LCMEngine(config=config, hermes_home=str(tmp_path / "hermes-home"))
+
+    payload = json.loads(lcm_tools.lcm_status({}, engine=engine))
+
+    assert payload["error"] == "No active session"
+    assert payload["runtime_identity"]["plugin_name"] == "hermes-lcm"
+    assert payload["runtime_identity"]["session_bound"] is False
+    assert payload["runtime_identity"]["database_path_source"] == "config.database_path"
+
+
+
+def test_get_status_exposes_runtime_identity_for_loaded_plugin_tree(tmp_path):
+    db_path = tmp_path / "identity.db"
+    hermes_home = tmp_path / "hermes-home"
+    config = LCMConfig(database_path=str(db_path))
+    engine = LCMEngine(config=config, hermes_home=str(hermes_home))
+    engine.on_session_start(
+        "telegram:chat-1:session-1",
+        platform="telegram",
+        context_length=200000,
+        conversation_id="telegram:chat-1",
+    )
+
+    status = engine.get_status()
+    identity = status["runtime_identity"]
+    repo_root = Path(__file__).resolve().parent.parent
+
+    assert identity["engine"] == "lcm"
+    assert identity["plugin_name"] == "hermes-lcm"
+    assert identity["plugin_version"] == "0.7.1"
+    assert Path(identity["plugin_path"]) == repo_root
+    assert Path(identity["module_path"]).name == "engine.py"
+    assert Path(identity["database_path"]) == db_path
+    assert identity["database_path_source"] == "config.database_path"
+    assert identity["hermes_home"] == str(hermes_home)
+    assert identity["session_id"] == "telegram:chat-1:session-1"
+    assert identity["session_platform"] == "telegram"
+    assert identity["conversation_id"] == "telegram:chat-1"
+    assert identity["lifecycle_current_session_id"] == "telegram:chat-1:session-1"
+    assert identity["lifecycle_last_finalized_session_id"] == ""
 
 
 class TestEscalationStripReasoning:
