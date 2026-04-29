@@ -347,6 +347,8 @@ If `LCM_ENABLE_SLASH_COMMAND=true`, trusted operator contexts can use `/lcm` sla
 
 - `/lcm doctor repair` — read-only SQLite/FTS diagnostics for message and summary search indexes. Reports whether `messages_fts` or `nodes_fts` need repair without rebuilding anything.
 - `/lcm doctor repair apply` — backup-first SQLite/FTS repair. Creates a timestamped database backup, then rebuilds/repairs the message and summary FTS indexes without deleting source `messages` or `summary_nodes` rows.
+- `/lcm doctor source` — read-only source-lineage scan. Reports legacy `NULL`, blank, or whitespace-only message sources that are treated as `unknown` for backward-compatible retrieval.
+- `/lcm doctor source apply` — backup-first source-lineage normalization. Creates a timestamped database backup, then rewrites only legacy blank-source message rows to explicit `unknown`. The operation is idempotent and does not delete rows.
 
 ### Retrieval contract: `session_scope` × `source`
 
@@ -414,9 +416,14 @@ This surface is **disabled by default** and requires `LCM_ENABLE_SLASH_COMMAND=1
 - `/lcm doctor` — SQLite + FTS health checks and store/node totals
 - `/lcm doctor clean` — best-effort read-only scan for obvious junk/noise sessions matched from stored session keys
 - `/lcm doctor clean apply` — backup-first cleanup for safe pattern-matched junk/noise session candidates
+- `/lcm doctor repair` — read-only SQLite/FTS diagnostics for message and summary search indexes
+- `/lcm doctor repair apply` — backup-first SQLite/FTS repair for message and summary search indexes
+- `/lcm doctor source` — read-only scan for legacy blank-source message rows
+- `/lcm doctor source apply` — backup-first normalization of legacy blank-source message rows to explicit `unknown`
+- `/lcm doctor retention` — read-only retention analysis for stored session footprint and age
 - `/lcm backup` — create a timestamped SQLite backup before any future cleanup workflow
 
-The cleanup path stays intentionally narrow and backup-first; broader retention/prune workflows should still start with diagnostics before any apply/delete step.
+The cleanup and source-normalization apply paths stay intentionally narrow and backup-first; broader retention/prune workflows should still start with diagnostics before any apply/delete step.
 
 ## How It Works
 

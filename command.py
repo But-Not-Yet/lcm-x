@@ -43,6 +43,8 @@ def _help_text(error: str | None = None) -> str:
         "- /lcm doctor clean apply: backup-first cleanup for safe pattern-matched candidates only",
         "- /lcm doctor repair: read-only scan for SQLite/FTS index repair needs",
         "- /lcm doctor repair apply: backup-first repair/rebuild of message and summary FTS indexes",
+        "- /lcm doctor source: read-only scan for legacy blank-source rows",
+        "- /lcm doctor source apply: backup-first normalization of legacy blank-source rows to unknown",
         "- /lcm doctor retention: read-only retention analysis for stored session footprint and age",
         "- /lcm backup: create a timestamped SQLite backup before any future cleanup workflow",
         "- /lcm help: show this help",
@@ -495,6 +497,105 @@ def _doctor_repair_apply_text(engine) -> str:
     ])
 
 
+def _doctor_source_text(engine) -> str:
+    try:
+        plan = engine._store.get_source_normalization_plan()
+    except Exception as exc:  # pragma: no cover - defensive
+        return "\n".join([
+            "LCM doctor source",
+            "status: error",
+            f"error: source-lineage scan failed: {exc}",
+            "note: read-only scan only — no source rows were updated",
+        ])
+
+    stats = plan["stats_before"]
+    would_update = int(plan["would_update_messages"])
+    lines = [
+        "LCM doctor source",
+        f"status: {'normalization-needed' if would_update else 'ok'}",
+        f"messages_total: {stats['messages_total']}",
+        f"attributed_messages: {stats['attributed_messages']}",
+        f"unknown_messages: {stats['normalized_unknown_messages']}",
+        f"legacy_blank_messages: {stats['legacy_blank_source_messages']}",
+        f"effective_unknown_messages: {stats['effective_unknown_messages']}",
+        f"target_source: {plan['target_source']}",
+        f"would_update_messages: {would_update}",
+        f"affected_sessions: {plan['affected_sessions']}",
+        "note: read-only scan only — no source rows were updated",
+    ]
+    if would_update:
+        lines.append(
+            "note: use `/lcm doctor source apply` to create a backup and normalize legacy blank-source rows"
+        )
+    else:
+        lines.append("note: no legacy blank-source rows need normalization")
+    return "\n".join(lines)
+
+
+def _doctor_source_apply_text(engine) -> str:
+    try:
+        plan = engine._store.get_source_normalization_plan()
+    except Exception as exc:  # pragma: no cover - defensive
+        return "\n".join([
+            "LCM doctor source apply",
+            "status: error",
+            f"error: source-lineage scan failed: {exc}",
+            "note: source normalization apply aborted before any rows were updated",
+        ])
+
+    if int(plan["would_update_messages"]) == 0:
+        stats = plan["stats_before"]
+        return "\n".join([
+            "LCM doctor source apply",
+            "status: ok",
+            f"target_source: {plan['target_source']}",
+            "updated_messages: 0",
+            f"legacy_blank_before: {stats['legacy_blank_source_messages']}",
+            f"legacy_blank_after: {stats['legacy_blank_source_messages']}",
+            "note: no legacy blank-source rows needed normalization",
+        ])
+
+    backup = _backup_database(engine)
+    if not backup["ok"]:
+        return "\n".join([
+            "LCM doctor source apply",
+            "status: error",
+            f"database_path: {backup['db_path']}",
+            f"error: backup failed: {backup['error']}",
+            "note: source normalization apply aborted before any rows were updated",
+        ])
+
+    try:
+        result = engine._store.normalize_legacy_blank_sources()
+    except sqlite3.Error as exc:
+        return "\n".join([
+            "LCM doctor source apply",
+            "status: error",
+            f"database_path: {backup['db_path']}",
+            f"backup_path: {backup['backup_path']}",
+            f"backup_size: {_fmt_size(int(backup['backup_size']))}",
+            f"error: source normalization failed: {exc}",
+            "note: backup was created before source normalization apply",
+        ])
+
+    before = result["stats_before"]
+    after = result["stats_after"]
+    return "\n".join([
+        "LCM doctor source apply",
+        "status: ok",
+        f"database_path: {backup['db_path']}",
+        f"backup_path: {backup['backup_path']}",
+        f"backup_size: {_fmt_size(int(backup['backup_size']))}",
+        f"target_source: {result['target_source']}",
+        f"updated_messages: {result['updated_messages']}",
+        f"legacy_blank_before: {before['legacy_blank_source_messages']}",
+        f"legacy_blank_after: {after['legacy_blank_source_messages']}",
+        f"unknown_before: {before['normalized_unknown_messages']}",
+        f"unknown_after: {after['normalized_unknown_messages']}",
+        "note: backup created before source normalization apply",
+    ])
+
+
 def _doctor_text(engine) -> str:
     db_path = Path(engine._store.db_path)
     store_conn = engine._store._conn
@@ -918,13 +1019,17 @@ def handle_lcm_command(raw_args: str | None, engine) -> str:
             return _doctor_clean_text(engine)
         if len(rest) == 1 and rest[0].lower() == "repair":
             return _doctor_repair_text(engine)
+        if len(rest) == 1 and rest[0].lower() == "source":
+            return _doctor_source_text(engine)
         if len(rest) == 1 and rest[0].lower() == "retention":
             return _doctor_retention_text(engine)
         if len(rest) == 2 and rest[0].lower() == "clean" and rest[1].lower() == "apply":
             return _doctor_clean_apply_text(engine)
         if len(rest) == 2 and rest[0].lower() == "repair" and rest[1].lower() == "apply":
             return _doctor_repair_apply_text(engine)
-        return _help_text("`/lcm doctor` currently supports `clean`, `clean apply`, `repair`, `repair apply`, and `retention` as extra subcommands.")
+        if len(rest) == 2 and rest[0].lower() == "source" and rest[1].lower() == "apply":
+            return _doctor_source_apply_text(engine)
+        return _help_text("`/lcm doctor` currently supports `clean`, `clean apply`, `repair`, `repair apply`, `source`, `source apply`, and `retention` as extra subcommands.")
 
     if head == "backup":
         if rest:

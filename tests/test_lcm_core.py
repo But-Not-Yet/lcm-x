@@ -495,6 +495,87 @@ class TestMessageStore:
 
         store.close()
 
+    def test_source_unknown_filter_matches_null_and_whitespace_legacy_source_rows(self, tmp_path):
+        db_path = tmp_path / "legacy-null-whitespace-source.db"
+        store = MessageStore(db_path)
+        for source in (None, "", "   ", "\t\n"):
+            store._conn.execute(
+                """INSERT INTO messages
+                   (session_id, source, role, content, tool_call_id, tool_calls, tool_name, timestamp, token_estimate, pinned)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ("legacy-session", source, "user", f"docker with {source!r} source", None, None, None, 1.0, 5, 0),
+            )
+        store._conn.commit()
+
+        results = store.search("docker", source="unknown")
+        fetched = [store.get(result["store_id"]) for result in results]
+
+        assert len(results) == 4
+        assert {result["source"] for result in results} == {"unknown"}
+        assert {item["source"] for item in fetched} == {"unknown"}
+
+        store.close()
+
+    def test_get_source_stats_treats_null_and_whitespace_as_legacy_blank(self, tmp_path):
+        db_path = tmp_path / "source-stats-legacy-shapes.db"
+        store = MessageStore(db_path)
+        store.append("sess-known", {"role": "user", "content": "cli message"}, source="cli")
+        store.append("sess-unknown", {"role": "user", "content": "unknown message"})
+        for source in (None, "", "   ", "\t\n"):
+            store._conn.execute(
+                """INSERT INTO messages
+                   (session_id, source, role, content, tool_call_id, tool_calls, tool_name, timestamp, token_estimate, pinned)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ("legacy-session", source, "user", "legacy source shape", None, None, None, 1.0, 5, 0),
+            )
+        store._conn.commit()
+
+        stats = store.get_source_stats()
+
+        assert stats["messages_total"] == 6
+        assert stats["attributed_messages"] == 1
+        assert stats["normalized_unknown_messages"] == 1
+        assert stats["legacy_blank_source_messages"] == 4
+        assert stats["effective_unknown_messages"] == 5
+
+        store.close()
+
+    def test_source_normalization_plan_and_apply_are_idempotent(self, tmp_path):
+        db_path = tmp_path / "source-normalization.db"
+        store = MessageStore(db_path)
+        store.append("sess-known", {"role": "user", "content": "cli message"}, source="cli")
+        store.append("sess-unknown", {"role": "user", "content": "unknown message"})
+        for session_id, source in (("legacy-a", None), ("legacy-a", ""), ("legacy-b", "   "), ("legacy-b", "\t\n")):
+            store._conn.execute(
+                """INSERT INTO messages
+                   (session_id, source, role, content, tool_call_id, tool_calls, tool_name, timestamp, token_estimate, pinned)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (session_id, source, "user", "legacy source shape", None, None, None, 1.0, 5, 0),
+            )
+        store._conn.commit()
+
+        plan = store.get_source_normalization_plan()
+
+        assert plan["target_source"] == "unknown"
+        assert plan["would_update_messages"] == 4
+        assert plan["affected_sessions"] == 2
+        assert plan["stats_before"]["legacy_blank_source_messages"] == 4
+
+        first = store.normalize_legacy_blank_sources()
+        second = store.normalize_legacy_blank_sources()
+        stats = store.get_source_stats()
+
+        assert first["updated_messages"] == 4
+        assert first["stats_before"]["legacy_blank_source_messages"] == 4
+        assert first["stats_after"]["legacy_blank_source_messages"] == 0
+        assert second["updated_messages"] == 0
+        assert stats["messages_total"] == 6
+        assert stats["attributed_messages"] == 1
+        assert stats["normalized_unknown_messages"] == 5
+        assert stats["effective_unknown_messages"] == 5
+
+        store.close()
+
     def test_gc_externalized_tool_result_rewrites_content_and_updates_fts(self, store):
         placeholder = "[GC'd externalized tool output: tool_call_id=call_gc; ref=payload.json]"
         store_id = store.append(

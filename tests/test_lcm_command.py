@@ -200,6 +200,66 @@ def test_lcm_doctor_reports_legacy_blank_source_as_observation_without_warning(e
     assert "review legacy blank-source rows before any destructive cleanup" not in result
 
 
+def test_lcm_doctor_source_reports_dry_run_without_mutating(engine):
+    engine._store.append("sess-known", {"role": "user", "content": "cli message"}, source="cli")
+    for source in (None, "", "   ", "\t\n"):
+        engine._store._conn.execute(
+            """INSERT INTO messages
+               (session_id, source, role, content, tool_call_id, tool_calls, tool_name, timestamp, token_estimate, pinned)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("legacy-session", source, "user", "legacy blank source", None, None, None, 1.0, 5, 0),
+        )
+    engine._store._conn.commit()
+
+    result = handle_lcm_command("doctor source", engine)
+    stats_after = engine._store.get_source_stats()
+
+    assert "LCM doctor source" in result
+    assert "status: normalization-needed" in result
+    assert "legacy_blank_messages: 4" in result
+    assert "would_update_messages: 4" in result
+    assert "affected_sessions: 1" in result
+    assert "target_source: unknown" in result
+    assert "note: read-only scan only — no source rows were updated" in result
+    assert "note: use `/lcm doctor source apply` to create a backup and normalize legacy blank-source rows" in result
+    assert stats_after["legacy_blank_source_messages"] == 4
+
+
+def test_lcm_doctor_source_apply_is_backup_first_and_idempotent(tmp_path):
+    config = LCMConfig(database_path=str(tmp_path / "lcm_source_apply.db"))
+    engine = LCMEngine(config=config, hermes_home=str(tmp_path / "hermes_home"))
+    engine._session_id = "live-session"
+    engine._session_platform = "telegram"
+    engine._conversation_id = "live-session"
+    engine._store.append("sess-known", {"role": "user", "content": "cli message"}, source="cli")
+    for source in (None, "", "   ", "\t\n"):
+        engine._store._conn.execute(
+            """INSERT INTO messages
+               (session_id, source, role, content, tool_call_id, tool_calls, tool_name, timestamp, token_estimate, pinned)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("legacy-session", source, "user", "legacy blank source", None, None, None, 1.0, 5, 0),
+        )
+    engine._store._conn.commit()
+
+    first = handle_lcm_command("doctor source apply", engine)
+    second = handle_lcm_command("doctor source apply", engine)
+    stats_after = engine._store.get_source_stats()
+
+    assert "LCM doctor source apply" in first
+    assert "status: ok" in first
+    assert "updated_messages: 4" in first
+    assert "legacy_blank_before: 4" in first
+    assert "legacy_blank_after: 0" in first
+    assert "note: backup created before source normalization apply" in first
+    backup_line = next(line for line in first.splitlines() if line.startswith("backup_path: "))
+    assert Path(backup_line.split(": ", 1)[1]).exists()
+    assert "updated_messages: 0" in second
+    assert stats_after["messages_total"] == 5
+    assert stats_after["attributed_messages"] == 1
+    assert stats_after["normalized_unknown_messages"] == 4
+    assert stats_after["legacy_blank_source_messages"] == 0
+
+
 def test_lcm_help_on_unknown_subcommand(engine):
     result = handle_lcm_command("wat", engine)
 
@@ -211,10 +271,12 @@ def test_lcm_help_on_unknown_subcommand(engine):
 def test_lcm_doctor_clean_rejects_unknown_extra_args(engine):
     result = handle_lcm_command("doctor clean foo", engine)
 
-    assert "currently supports `clean`, `clean apply`, `repair`, `repair apply`, and `retention`" in result
+    assert "currently supports `clean`, `clean apply`, `repair`, `repair apply`, `source`, `source apply`, and `retention`" in result
     assert "/lcm doctor clean apply" in result
     assert "/lcm doctor repair" in result
     assert "/lcm doctor repair apply" in result
+    assert "/lcm doctor source" in result
+    assert "/lcm doctor source apply" in result
     assert "/lcm doctor retention" in result
 
 

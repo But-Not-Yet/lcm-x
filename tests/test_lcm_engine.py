@@ -3026,6 +3026,45 @@ class TestEngineTools:
             if item["type"] == "summary"
         )
 
+    def test_handle_grep_unknown_source_filter_matches_whitespace_legacy_summary_lineage(self, engine):
+        cursor = engine._store._conn.execute(
+            """INSERT INTO messages
+               (session_id, source, role, content, tool_call_id, tool_calls, tool_name, timestamp, token_estimate, pinned)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("test-session", "\t\n", "user", "docker logs from whitespace legacy source", None, None, None, 1.0, 5, 0),
+        )
+        legacy_store_id = cursor.lastrowid
+        engine._store._conn.commit()
+        engine._dag.add_node(
+            SummaryNode(
+                session_id="test-session",
+                depth=0,
+                summary="whitespace legacy summary about docker logs",
+                token_count=10,
+                source_token_count=10,
+                source_ids=[legacy_store_id],
+                source_type="messages",
+                created_at=time.time(),
+            )
+        )
+
+        result = json.loads(
+            engine.handle_tool_call(
+                "lcm_grep",
+                {"query": "docker", "session_scope": "current", "source": "unknown", "limit": 10},
+            )
+        )
+
+        assert result["source"] == "unknown"
+        assert any(
+            item["type"] == "message" and item.get("source") == "unknown"
+            for item in result["results"]
+        )
+        assert any(
+            item["type"] == "summary" and "whitespace legacy summary" in item.get("snippet", "")
+            for item in result["results"]
+        )
+
     def test_handle_grep_prefers_conversational_hits_over_tool_output_noise(self, engine):
         engine._store.append(
             "test-session",
@@ -4393,12 +4432,13 @@ class TestEngineTools:
         assert all(c["status"] == "pass" for c in result["checks"])
 
     def test_handle_doctor_treats_legacy_blank_source_rows_as_healthy(self, engine):
-        engine._store._conn.execute(
-            """INSERT INTO messages
-               (session_id, source, role, content, tool_call_id, tool_calls, tool_name, timestamp, token_estimate, pinned)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            ("legacy-session", "", "user", "legacy blank source", None, None, None, 1.0, 5, 0),
-        )
+        for source in (None, "", "   ", "\t\n"):
+            engine._store._conn.execute(
+                """INSERT INTO messages
+                   (session_id, source, role, content, tool_call_id, tool_calls, tool_name, timestamp, token_estimate, pinned)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ("legacy-session", source, "user", "legacy blank source", None, None, None, 1.0, 5, 0),
+            )
         engine._store._conn.commit()
 
         result = json.loads(engine.handle_tool_call("lcm_doctor", {}))
@@ -4406,7 +4446,8 @@ class TestEngineTools:
         assert result["overall"] == "healthy"
         lineage_check = next(c for c in result["checks"] if c["check"] == "source_lineage_hygiene")
         assert lineage_check["status"] == "pass"
-        assert lineage_check["detail"]["legacy_blank_source_messages"] == 1
+        assert lineage_check["detail"]["legacy_blank_source_messages"] == 4
+        assert lineage_check["detail"]["effective_unknown_messages"] == 4
 
     def test_handle_doctor_warns_on_bad_config(self, tmp_path):
         config = LCMConfig(

@@ -42,7 +42,7 @@ from .search_query import (
     sanitize_fts5_query,
     should_apply_directness_rank_adjustment,
 )
-from .store import _normalize_source_value, _UNKNOWN_SOURCE
+from .store import _normalize_source_value, _UNKNOWN_SOURCE, _legacy_blank_source_clause
 
 
 logger = logging.getLogger(__name__)
@@ -484,8 +484,9 @@ class SummaryDAG:
         normalized_source = _normalize_source_value(source)
         if cache is not None and node_id in cache:
             return cache[node_id]
+        legacy_blank_clause = _legacy_blank_source_clause("m.source")
         row = self._conn.execute(
-            """
+            f"""
             WITH RECURSIVE source_walk(source_type, source_id) AS (
                 SELECT n.source_type, CAST(j.value AS INTEGER)
                 FROM summary_nodes n, json_each(n.source_ids) j
@@ -506,7 +507,7 @@ class SummaryDAG:
               ON walk.source_type = 'messages'
              AND m.store_id = walk.source_id
             WHERE CASE
-                    WHEN ? = ? THEN (m.source = ? OR m.source = '')
+                    WHEN ? = ? THEN (m.source = ? OR {legacy_blank_clause})
                     ELSE m.source = ?
                   END
             LIMIT 1
