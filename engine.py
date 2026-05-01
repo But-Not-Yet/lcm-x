@@ -13,8 +13,9 @@ import sqlite3
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from agent.context_engine import ContextEngine
 
@@ -48,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 _PLUGIN_ROOT = Path(__file__).resolve().parent
 _PLUGIN_METADATA: dict[str, str] | None = None
+_SESSION_END_BUSY_TIMEOUT_MS = 50
 
 
 def _strip_metadata_scalar(value: str) -> str:
@@ -115,6 +117,45 @@ def _git_runtime_identity(root: Path) -> dict[str, Any]:
         "plugin_git_dirty": None if dirty_output is None else bool(dirty_output),
         "plugin_git_remote": _git("config", "--get", "remote.origin.url") or "",
     }
+
+
+def _is_sqlite_locked_error(exc: BaseException) -> bool:
+    """Return True when an exception chain represents SQLite lock contention."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        message = str(current).lower()
+        if isinstance(current, sqlite3.Error) and "locked" in message:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _sqlite_busy_timeout_ms(conn: sqlite3.Connection) -> int:
+    row = conn.execute("PRAGMA busy_timeout").fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+@contextmanager
+def _temporary_sqlite_busy_timeout(
+    connections: List[sqlite3.Connection | None],
+    timeout_ms: int,
+) -> Iterator[None]:
+    """Temporarily bound SQLite lock waits for gateway-critical paths."""
+    bounded_timeout = max(0, int(timeout_ms))
+    originals: list[tuple[sqlite3.Connection, int]] = []
+    for conn in connections:
+        if conn is None:
+            continue
+        original = _sqlite_busy_timeout_ms(conn)
+        conn.execute(f"PRAGMA busy_timeout={bounded_timeout}")
+        originals.append((conn, original))
+    try:
+        yield
+    finally:
+        for conn, original in reversed(originals):
+            conn.execute(f"PRAGMA busy_timeout={original}")
 
 
 _SYNTHETIC_ASSISTANT_NOISE = {
@@ -1241,13 +1282,52 @@ class LCMEngine(ContextEngine):
             if current_thread_session_id == session_id:
                 self._clear_thread_context_stateless(session_id)
             return
-        # Ensure all messages are persisted
-        self._ingest_messages(messages)
-        self._lifecycle.finalize_session(
-            self._conversation_id,
-            session_id,
-            frontier_store_id=self._last_compacted_store_id,
-        )
+        try:
+            with _temporary_sqlite_busy_timeout(
+                [
+                    getattr(self._store, "_conn", None),
+                    getattr(self._lifecycle, "_conn", None),
+                ],
+                _SESSION_END_BUSY_TIMEOUT_MS,
+            ):
+                try:
+                    # Best-effort final flush. Keep this path bounded because
+                    # host gateways call session-end hooks from lifecycle paths
+                    # that must not wait through SQLite's normal busy timeout.
+                    self._ingest_messages(messages)
+                except Exception as exc:
+                    if _is_sqlite_locked_error(exc):
+                        logger.warning(
+                            "LCM session-end raw-message ingest skipped due to SQLite lock after short wait; "
+                            "final messages may be absent from the plugin-local store: %s",
+                            exc,
+                        )
+                        return
+                    raise
+
+                try:
+                    self._lifecycle.finalize_session(
+                        self._conversation_id,
+                        session_id,
+                        frontier_store_id=self._last_compacted_store_id,
+                    )
+                except Exception as exc:
+                    if _is_sqlite_locked_error(exc):
+                        logger.warning(
+                            "LCM session-end lifecycle finalization skipped due to SQLite lock after short wait; "
+                            "raw messages were ingested but lifecycle state may be finalized later: %s",
+                            exc,
+                        )
+                        return
+                    raise
+        except Exception as exc:
+            if _is_sqlite_locked_error(exc):
+                logger.warning(
+                    "LCM session-end ingest/finalize skipped due to SQLite lock before bounded flush: %s",
+                    exc,
+                )
+                return
+            raise
 
     def on_session_reset(self) -> None:
         self._pending_reset_session_id = self._session_id
