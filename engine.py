@@ -250,6 +250,19 @@ class LCMEngine(ContextEngine):
 
         self._session_id: str = ""
         self._session_platform: str = ""
+        # Tracks the most recent non-ignored, non-stateless binding so that
+        # user-facing tools (lcm_status, lcm_grep default scope, lcm_describe,
+        # lcm_expand_query, lcm_doctor) keep showing the foreground session
+        # even while a side-channel session (cron, debug) temporarily owns the
+        # engine's _session_id binding. Updated alongside _session_id only
+        # when _refresh_session_filters classifies the new session as a real
+        # foreground (neither ignored nor stateless). Read via the
+        # `current_session_id` / `current_session_platform` properties and
+        # `current_session_ignored` / `current_session_stateless` /
+        # `side_channel_active` companion predicates.
+        self._foreground_session_id: str = ""
+        self._foreground_session_platform: str = ""
+        self._foreground_conversation_id: str = ""
         self._conversation_id: str = ""
         self._session_match_keys: list[str] = []
         self._session_ignored = False
@@ -318,6 +331,73 @@ class LCMEngine(ContextEngine):
     @property
     def name(self) -> str:
         return "lcm"
+
+    @property
+    def current_session_id(self) -> str:
+        """User-facing "current session" id surfaced by LCM tools.
+
+        Returns the most recent foreground binding (the last session id that
+        ``_refresh_session_filters`` classified as neither ignored nor
+        stateless). Falls back to ``_session_id`` when no foreground has
+        ever been bound, so unattended cron-only or stateless-only processes
+        remain observable via ``lcm_status``.
+
+        Lifecycle paths (compress, ingest, on_session_end, etc.) must keep
+        reading ``_session_id`` directly because those paths must follow the
+        binding the engine is actually servicing. Only tool-surface code
+        paths that report a "current session" view to operators should read
+        this property.
+        """
+        return self._foreground_session_id or self._session_id
+
+    @property
+    def current_session_platform(self) -> str:
+        """Platform string paired with ``current_session_id``."""
+        if self._foreground_session_id:
+            return self._foreground_session_platform
+        return self._session_platform
+
+    @property
+    def current_conversation_id(self) -> str:
+        """Conversation id paired with ``current_session_id``."""
+        if self._foreground_session_id:
+            return self._foreground_conversation_id
+        return self._conversation_id
+
+    @property
+    def side_channel_active(self) -> bool:
+        """True when an ignored or stateless session has temporarily rebound
+        ``_session_id`` while a real foreground binding still exists.
+
+        Operators reading lcm_status during this window see the foreground
+        session id and counts (because tools read ``current_session_id``)
+        but the engine itself is servicing the side channel. This predicate
+        lets diagnostic surfaces (lcm_status, /lcm command) make the
+        divergence explicit without recomputing the underlying invariant.
+        """
+        return bool(self._foreground_session_id) and self._foreground_session_id != self._session_id
+
+    @property
+    def current_session_ignored(self) -> bool:
+        """``_session_ignored`` reported for ``current_session_id``.
+
+        When a side channel is in flight the foreground is by definition
+        non-ignored; otherwise this is the bound session's ignore flag.
+        """
+        if self.side_channel_active:
+            return False
+        return self._session_ignored
+
+    @property
+    def current_session_stateless(self) -> bool:
+        """``_session_stateless`` reported for ``current_session_id``.
+
+        When a side channel is in flight the foreground is by definition
+        non-stateless; otherwise this is the bound session's stateless flag.
+        """
+        if self.side_channel_active:
+            return False
+        return self._session_stateless
 
     # -- ContextEngine required methods ------------------------------------
 
@@ -695,6 +775,10 @@ class LCMEngine(ContextEngine):
         state = self._lifecycle.bind_session(session_id, conversation_id=conversation_id)
         self._conversation_id = state.conversation_id
         self._last_compacted_store_id = state.current_frontier_store_id
+        if not self._session_ignored and not self._session_stateless:
+            self._foreground_session_id = session_id
+            self._foreground_session_platform = self._session_platform
+            self._foreground_conversation_id = state.conversation_id
 
     def _persist_frontier_marker(self) -> None:
         if not self._session_id or not self._conversation_id:
@@ -1114,6 +1198,16 @@ class LCMEngine(ContextEngine):
         self._session_id = session_id
         self._session_platform = str(kwargs.get("platform") or "")
         self._refresh_session_filters()
+        # Hold the foreground view stable when the new binding is a side
+        # channel (cron tick inside the gateway process, debug probe, etc.).
+        # Tools that report "current session" to operators must keep pointing
+        # at the real foreground rather than the ignored/stateless session
+        # that just stole _session_id. Lifecycle paths still read _session_id
+        # directly so cron's compress short-circuits correctly via the
+        # _session_ignored / _session_stateless gates.
+        if not self._session_ignored and not self._session_stateless:
+            self._foreground_session_id = session_id
+            self._foreground_session_platform = self._session_platform
         if "hermes_home" in kwargs:
             self._hermes_home = kwargs["hermes_home"]
         # Pick up context_length from kwargs if provided
@@ -1499,14 +1593,21 @@ class LCMEngine(ContextEngine):
         return "default_home"
 
     def get_runtime_identity(self) -> Dict[str, Any]:
-        """Return operator-facing identity for the loaded LCM runtime."""
+        """Return operator-facing identity for the loaded LCM runtime.
+
+        The public identity follows the same foreground-session view as
+        ``lcm_status`` and other tools. When a side-channel session is bound,
+        the bound session details are still exposed separately for diagnostics.
+        """
         metadata = _plugin_metadata()
         git_identity = _git_runtime_identity(_PLUGIN_ROOT)
+        session_id = self.current_session_id
+        conversation_id = self.current_conversation_id
         lifecycle_state = None
         lifecycle_error = ""
-        if self._conversation_id:
+        if conversation_id:
             try:
-                lifecycle_state = self._lifecycle.get_by_conversation(self._conversation_id)
+                lifecycle_state = self._lifecycle.get_by_conversation(conversation_id)
             except Exception as exc:  # pragma: no cover - defensive
                 lifecycle_error = str(exc)
 
@@ -1519,13 +1620,19 @@ class LCMEngine(ContextEngine):
             "hermes_home": str(self._hermes_home or ""),
             "database_path": str(self._store.db_path),
             "database_path_source": self._database_path_source(),
-            "session_id": self._session_id,
-            "session_platform": self._session_platform,
-            "session_bound": bool(self._session_id),
-            "conversation_id": self._conversation_id,
+            "session_id": session_id,
+            "session_platform": self.current_session_platform,
+            "session_bound": bool(session_id),
+            "conversation_id": conversation_id,
             "lifecycle_current_session_id": "",
             "lifecycle_last_finalized_session_id": "",
         }
+        if self.side_channel_active:
+            identity.update({
+                "bound_session_id": self._session_id,
+                "bound_session_platform": self._session_platform,
+                "bound_conversation_id": self._conversation_id,
+            })
         identity.update(git_identity)
         if lifecycle_state is not None:
             identity.update({
@@ -1553,11 +1660,13 @@ class LCMEngine(ContextEngine):
             "context_length": self.context_length,
             "threshold_tokens": self.threshold_tokens,
         })
-        lifecycle_state = self._lifecycle.get_by_conversation(self._conversation_id)
+        session_id = self.current_session_id
+        conversation_id = self.current_conversation_id
+        lifecycle_state = self._lifecycle.get_by_conversation(conversation_id) if conversation_id else None
         status["engine"] = "lcm"
         status["runtime_identity"] = self.get_runtime_identity()
         try:
-            status["source_lineage"] = self._store.get_source_stats(self._session_id or None)
+            status["source_lineage"] = self._store.get_source_stats(session_id or None)
         except Exception as exc:  # pragma: no cover - defensive
             status["source_lineage"] = {"error": str(exc)}
         try:
@@ -1571,12 +1680,12 @@ class LCMEngine(ContextEngine):
             )
         except Exception as exc:  # pragma: no cover - defensive
             status["lifecycle_fragmentation"] = {"error": str(exc), "read_only": True}
-        if self._session_id:
-            status["store_messages"] = self._store.get_session_count(self._session_id)
-            status["dag_nodes"] = len(self._dag.get_session_nodes(self._session_id))
-            status["session_platform"] = self._session_platform
-            status["session_ignored"] = self._session_ignored
-            status["session_stateless"] = self._session_stateless
+        if session_id:
+            status["store_messages"] = self._store.get_session_count(session_id)
+            status["dag_nodes"] = len(self._dag.get_session_nodes(session_id))
+            status["session_platform"] = self.current_session_platform
+            status["session_ignored"] = self.current_session_ignored
+            status["session_stateless"] = self.current_session_stateless
             status["ignore_session_patterns"] = list(self._config.ignore_session_patterns)
             status["stateless_session_patterns"] = list(self._config.stateless_session_patterns)
             status["ignore_message_patterns"] = list(self._config.ignore_message_patterns)
@@ -1586,7 +1695,7 @@ class LCMEngine(ContextEngine):
             status["ignored_message_count"] = self._ignored_message_count
             status["overflow_recovery_failed"] = self._last_overflow_recovery_failed
             status["condensation_suppressed_reason"] = self._last_condensation_suppressed_reason
-            status["conversation_id"] = self._conversation_id
+            status["conversation_id"] = conversation_id
             if lifecycle_state is not None:
                 status["lifecycle"] = {
                     "conversation_id": lifecycle_state.conversation_id,
