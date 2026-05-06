@@ -6402,6 +6402,347 @@ class TestAssemblyGuardrails:
         assert result == messages
 
 
+class TestAssemblyToolPairGuardrail:
+    """Regression: active context must return provider-valid tool sequences."""
+
+    def _make_engine(self, tmp_path, db_name="lcm_tool_pairs.db"):
+        config = LCMConfig(
+            fresh_tail_count=10,
+            database_path=str(tmp_path / db_name),
+        )
+        instance = LCMEngine(config=config)
+        instance._session_id = "tool-pair-test"
+        instance.compression_count = 1
+        instance.context_length = 200000
+        return instance
+
+    def _assert_provider_tool_sequence_valid(self, messages):
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
+            if msg.get("role") == "tool":
+                raise AssertionError(f"bare/late tool result at index {i}: {msg!r}")
+
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                expected_ids = [
+                    str((tool_call or {}).get("id") or (tool_call or {}).get("tool_call_id") or "").strip()
+                    for tool_call in (msg.get("tool_calls") or [])
+                    if isinstance(tool_call, dict)
+                ]
+                expected_ids = [call_id for call_id in expected_ids if call_id]
+
+                for offset, expected_id in enumerate(expected_ids, start=1):
+                    assert i + offset < len(messages), (
+                        f"missing direct tool result for {expected_id} after assistant index {i}"
+                    )
+                    tool_msg = messages[i + offset]
+                    assert tool_msg.get("role") == "tool", (
+                        f"expected tool result for {expected_id} at index {i + offset}, got {tool_msg!r}"
+                    )
+                    assert str(tool_msg.get("tool_call_id") or "").strip() == expected_id
+
+                i += 1 + len(expected_ids)
+                continue
+
+            i += 1
+
+    def test_assemble_removes_orphan_tool_result(self, tmp_path):
+        """When a tool result references a call_id whose assistant tool_call
+        was removed (e.g., compacted by LCM), the assembled active context
+        must not contain that orphan tool result."""
+        config = LCMConfig(
+            fresh_tail_count=10,
+            database_path=str(tmp_path / "lcm_orphan.db"),
+        )
+        instance = LCMEngine(config=config)
+        instance._session_id = "orphan-test"
+        instance.compression_count = 1
+        instance.context_length = 200000
+
+        sys_msg = {"role": "system", "content": "You are helpful."}
+        # Simulate real-world shape: assistant summary replaced the original
+        # tool_call, leaving an orphan tool result in the fresh tail.
+        tail_messages = [
+            {"role": "assistant", "content": "[Session Arc Summary] ..."},
+            {"role": "tool", "tool_call_id": "call_orphan_x", "content": "orphan result"},
+            {"role": "assistant", "tool_calls": [{"id": "call_ok", "function": {"name": "patch", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_ok", "content": "patch result"},
+            {"role": "assistant", "content": "Done."},
+        ]
+
+        result = instance._assemble_context(sys_msg, tail_messages)
+
+        # The orphan tool result (call_orphan_x) must be removed
+        orphan_ids = [
+            m.get("tool_call_id") for m in result
+            if m.get("role") == "tool" and m.get("tool_call_id") == "call_orphan_x"
+        ]
+        assert len(orphan_ids) == 0, f"Orphan tool result still present: {orphan_ids}"
+
+    def test_assemble_inserts_stub_for_missing_tool_result(self, tmp_path):
+        """When an assistant tool_call has no matching tool result in the
+        assembled context, a stub result must be inserted."""
+        config = LCMConfig(
+            fresh_tail_count=10,
+            database_path=str(tmp_path / "lcm_stub.db"),
+        )
+        instance = LCMEngine(config=config)
+        instance._session_id = "stub-test"
+        instance.compression_count = 1
+        instance.context_length = 200000
+
+        sys_msg = {"role": "system", "content": "You are helpful."}
+        tail_messages = [
+            {"role": "assistant", "tool_calls": [{"id": "call_no_result", "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "assistant", "content": "Continuing..."},
+        ]
+
+        result = instance._assemble_context(sys_msg, tail_messages)
+
+        # There must be a stub tool result for call_no_result
+        stub_ids = [
+            m.get("tool_call_id") for m in result
+            if m.get("role") == "tool" and m.get("tool_call_id") == "call_no_result"
+        ]
+        assert len(stub_ids) >= 1, f"No stub result for assistant tool_call: {stub_ids}"
+
+    def test_compress_output_is_valid_tool_pair_sequence(self, tmp_path, monkeypatch):
+        """Full compress() output must not contain orphan tool results
+        and must include stubs for missing results."""
+        import importlib
+        esc_module = importlib.import_module("hermes_lcm.escalation")
+        engine_module = importlib.import_module("hermes_lcm.engine")
+
+        config = LCMConfig(
+            fresh_tail_count=4,
+            database_path=str(tmp_path / "lcm_compress_pair.db"),
+            leaf_chunk_tokens=200,
+        )
+        instance = LCMEngine(config=config)
+        instance._session_id = "compress-pair-test"
+        instance.context_length = 200000
+        instance.threshold_tokens = 500
+
+        def mock_summary(**kwargs):
+            return "Leaf summary.\nExpand for details about: test", 1
+
+        monkeypatch.setattr(esc_module, "summarize_with_escalation", mock_summary)
+
+        messages = [{"role": "system", "content": "You are helpful."}]
+        # Build a conversation where an assistant tool_call gets compacted
+        # but its tool result might survive into the fresh tail.
+        messages.append({"role": "user", "content": "Q0: " + "x" * 200})
+        # This assistant tool_call + result pair will be compacted:
+        messages.append({"role": "assistant", "tool_calls": [{"id": "call_compacted", "function": {"name": "terminal", "arguments": "{}"}}]})
+        messages.append({"role": "tool", "tool_call_id": "call_compacted", "content": "result that gets compacted"})
+        # More filler to push the pair into the raw backlog:
+        for i in range(1, 10):
+            messages.append({"role": "user", "content": f"Q{i}: " + "y" * 200})
+            messages.append({"role": "assistant", "content": f"A{i}: " + "z" * 200})
+
+        result = instance.compress(messages)
+
+        # After compression, no orphan tool results
+        assistant_ids = set()
+        for m in result:
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                for tc in m.get("tool_calls") or []:
+                    cid = tc.get("id") if isinstance(tc, dict) else ""
+                    if cid:
+                        assistant_ids.add(cid)
+        result_ids = set()
+        for m in result:
+            if m.get("role") == "tool" and m.get("tool_call_id"):
+                result_ids.add(m.get("tool_call_id"))
+        orphaned = result_ids - assistant_ids
+        assert len(orphaned) == 0, f"Orphan tool results after compress: {orphaned}"
+        # And no missing results (every assistant call has a result or stub)
+        missing = assistant_ids - result_ids
+        # Missing results should have stubs — verify they exist
+        for cid in missing:
+            stub_found = any(
+                m.get("role") == "tool" and m.get("tool_call_id") == cid
+                for m in result
+            )
+            assert stub_found, f"Missing stub for tool_call_id {cid}"
+
+    def test_overflow_recovery_fallback_removes_orphan_tool_result(self, tmp_path):
+        """Overflow recovery fallback must not return a bare orphan tool result."""
+        config = LCMConfig(
+            fresh_tail_count=10,
+            database_path=str(tmp_path / "lcm_overflow_orphan.db"),
+        )
+        instance = LCMEngine(config=config)
+        instance._session_id = "overflow-orphan-test"
+        instance.compression_count = 1
+        instance.context_length = 200000
+
+        sys_msg = {"role": "system", "content": "sys"}
+        tail_messages = [
+            {"role": "user", "content": "u" * 200},
+            {"role": "tool", "tool_call_id": "call_orphan", "content": "orphan tool result"},
+        ]
+
+        result = instance._assemble_overflow_recovery_context(
+            sys_msg,
+            tail_messages,
+            assembly_cap_override=1,
+        )
+
+        orphan_ids = [
+            m.get("tool_call_id") for m in result
+            if m.get("role") == "tool" and m.get("tool_call_id") == "call_orphan"
+        ]
+        assert len(orphan_ids) == 0, f"Overflow fallback leaked orphan tool result: {orphan_ids}"
+
+    def test_overflow_recovery_fallback_inserts_stub_for_missing_tool_result(self, tmp_path):
+        """Overflow recovery fallback must sanitize an assistant tool_call-only tail."""
+        config = LCMConfig(
+            fresh_tail_count=10,
+            database_path=str(tmp_path / "lcm_overflow_stub.db"),
+        )
+        instance = LCMEngine(config=config)
+        instance._session_id = "overflow-stub-test"
+        instance.compression_count = 1
+        instance.context_length = 200000
+
+        sys_msg = {"role": "system", "content": "sys"}
+        tail_messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "call_missing", "function": {"name": "terminal", "arguments": "{}"}}],
+            },
+        ]
+
+        result = instance._assemble_overflow_recovery_context(
+            sys_msg,
+            tail_messages,
+            assembly_cap_override=1,
+        )
+
+        stub_ids = [
+            m.get("tool_call_id") for m in result
+            if m.get("role") == "tool" and m.get("tool_call_id") == "call_missing"
+        ]
+        assert len(stub_ids) >= 1, f"Overflow fallback missing stub tool result: {stub_ids}"
+
+    def test_sanitize_tool_pairs_is_idempotent(self, tmp_path):
+        """Applying the helper twice must not change the result again."""
+        config = LCMConfig(
+            fresh_tail_count=10,
+            database_path=str(tmp_path / "lcm_idempotent.db"),
+        )
+        instance = LCMEngine(config=config)
+        instance._session_id = "idempotent-test"
+        instance.compression_count = 1
+        instance.context_length = 200000
+
+        messages = [
+            {"role": "system", "content": "sys"},
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "call_once", "function": {"name": "terminal", "arguments": "{}"}}],
+            },
+            {"role": "assistant", "content": "after"},
+        ]
+
+        once = instance._sanitize_tool_pairs([dict(m) for m in messages])
+        twice = instance._sanitize_tool_pairs([dict(m) for m in once])
+        assert once == twice
+
+    def test_sanitize_tool_pairs_keeps_valid_sequence_unchanged(self, tmp_path):
+        """A valid tool-call/result sequence must be preserved as-is."""
+        config = LCMConfig(
+            fresh_tail_count=10,
+            database_path=str(tmp_path / "lcm_valid_unchanged.db"),
+        )
+        instance = LCMEngine(config=config)
+        instance._session_id = "valid-unchanged-test"
+        instance.compression_count = 1
+        instance.context_length = 200000
+
+        messages = [
+            {"role": "system", "content": "sys"},
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "call_ok", "function": {"name": "terminal", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "call_ok", "content": "ok"},
+            {"role": "assistant", "content": "done"},
+        ]
+
+        result = instance._sanitize_tool_pairs([dict(m) for m in messages])
+        assert result == messages
+        self._assert_provider_tool_sequence_valid(result)
+
+    def test_sanitize_tool_pairs_drops_late_tool_result_after_intervening_message(self, tmp_path):
+        instance = self._make_engine(tmp_path, "lcm_late_tool_result.db")
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "call_late", "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "user", "content": "intervening turn"},
+            {"role": "tool", "tool_call_id": "call_late", "content": "late result"},
+        ]
+
+        result = instance._sanitize_tool_pairs([dict(m) for m in messages])
+
+        self._assert_provider_tool_sequence_valid(result)
+        assert result[1]["role"] == "tool"
+        assert result[1]["tool_call_id"] == "call_late"
+        assert "earlier conversation" in result[1]["content"]
+        assert all(msg.get("content") != "late result" for msg in result)
+
+    def test_sanitize_tool_pairs_drops_duplicate_late_result(self, tmp_path):
+        instance = self._make_engine(tmp_path, "lcm_duplicate_tool_result.db")
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "call_dup", "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_dup", "content": "direct result"},
+            {"role": "assistant", "content": "done"},
+            {"role": "tool", "tool_call_id": "call_dup", "content": "duplicate late result"},
+        ]
+
+        result = instance._sanitize_tool_pairs([dict(m) for m in messages])
+
+        self._assert_provider_tool_sequence_valid(result)
+        assert [msg.get("content") for msg in result].count("direct result") == 1
+        assert all(msg.get("content") != "duplicate late result" for msg in result)
+
+    def test_sanitize_tool_pairs_keeps_ordered_parallel_results(self, tmp_path):
+        instance = self._make_engine(tmp_path, "lcm_parallel_ordered.db")
+        messages = [
+            {"role": "assistant", "tool_calls": [
+                {"id": "call_a", "function": {"name": "read_file", "arguments": "{}"}},
+                {"id": "call_b", "function": {"name": "terminal", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "call_a", "content": "A"},
+            {"role": "tool", "tool_call_id": "call_b", "content": "B"},
+            {"role": "assistant", "content": "done"},
+        ]
+
+        result = instance._sanitize_tool_pairs([dict(m) for m in messages])
+
+        assert result == messages
+        self._assert_provider_tool_sequence_valid(result)
+
+    def test_sanitize_tool_pairs_replaces_out_of_order_parallel_results_with_stubs(self, tmp_path):
+        instance = self._make_engine(tmp_path, "lcm_parallel_out_of_order.db")
+        messages = [
+            {"role": "assistant", "tool_calls": [
+                {"id": "call_a", "function": {"name": "read_file", "arguments": "{}"}},
+                {"id": "call_b", "function": {"name": "terminal", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "call_b", "content": "B out of order"},
+            {"role": "tool", "tool_call_id": "call_a", "content": "A out of order"},
+        ]
+
+        result = instance._sanitize_tool_pairs([dict(m) for m in messages])
+
+        self._assert_provider_tool_sequence_valid(result)
+        assert [msg.get("tool_call_id") for msg in result[1:3]] == ["call_a", "call_b"]
+        assert result[1]["content"] == "A out of order"
+        assert "earlier conversation" in result[2]["content"]
+        assert all(msg.get("content") != "B out of order" for msg in result)
+
+
 class TestEngineTools:
     def test_handle_grep(self, engine):
         # Add some data

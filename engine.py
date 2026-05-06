@@ -766,6 +766,11 @@ class LCMEngine(ContextEngine):
             ", forced overflow recovery" if force_overflow else "",
         )
 
+        # ── Tool-pair guardrail (same as _assemble_context) ──
+        # compress() output is consumed directly by the main loop in some
+        # edge cases (e.g. forced overflow recovery bypassing _assemble_context).
+        compressed = self._sanitize_tool_pairs(compressed)
+
         return compressed
 
     # -- ContextEngine optional methods ------------------------------------
@@ -2138,6 +2143,79 @@ class LCMEngine(ContextEngine):
 
         return "\n\n".join(parts)
 
+    # -- Internal: tool-pair sanitization ------------------------------------
+
+    def _sanitize_tool_pairs(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Return provider-safe active-context tool-call/result sequencing.
+
+        Raw store and DAG history remain lossless. This guardrail only sanitizes
+        the active context emitted back to providers, where assistant tool calls
+        must be followed immediately by their contiguous tool results. Late,
+        duplicate, out-of-order, and orphan tool results are dropped; missing
+        direct results get synthetic stubs.
+        """
+        sanitized: List[Dict[str, Any]] = []
+        dropped_tool_results = 0
+        inserted_stub_results = 0
+
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
+
+            if msg.get("role") == "tool":
+                dropped_tool_results += 1
+                i += 1
+                continue
+
+            sanitized.append(msg)
+
+            if msg.get("role") == "assistant":
+                expected_ids = [
+                    call_id
+                    for call_id in (_tool_call_id(tool_call) for tool_call in (msg.get("tool_calls") or []))
+                    if call_id
+                ]
+
+                for expected_id in expected_ids:
+                    matched_direct_result = False
+                    while i + 1 < len(messages) and messages[i + 1].get("role") == "tool":
+                        next_msg = messages[i + 1]
+                        next_id = str(next_msg.get("tool_call_id") or "").strip()
+                        if next_id == expected_id:
+                            sanitized.append(next_msg)
+                            i += 1
+                            matched_direct_result = True
+                            break
+                        dropped_tool_results += 1
+                        i += 1
+
+                    if not matched_direct_result:
+                        sanitized.append({
+                            "role": "tool",
+                            "content": "[Result from earlier conversation — see context summary above]",
+                            "tool_call_id": expected_id,
+                        })
+                        inserted_stub_results += 1
+
+                while i + 1 < len(messages) and messages[i + 1].get("role") == "tool":
+                    dropped_tool_results += 1
+                    i += 1
+
+            i += 1
+
+        if dropped_tool_results:
+            logger.info(
+                "LCM tool-pair guardrail: dropped %d late/orphan/duplicate tool result(s)",
+                dropped_tool_results,
+            )
+        if inserted_stub_results:
+            logger.info(
+                "LCM tool-pair guardrail: inserted %d missing tool-result stub(s)",
+                inserted_stub_results,
+            )
+
+        return sanitized
+
     # -- Internal: condensation --------------------------------------------
 
     def _should_allow_follow_on_condensation(
@@ -2346,6 +2424,13 @@ class LCMEngine(ContextEngine):
         # Fresh tail
         result.extend(tail_selected)
 
+        # ── Tool-pair guardrail ──
+        # Regression fix: after LCM compression, the assembled active context
+        # may contain orphan tool results (call_id with no matching assistant
+        # tool_call) or assistant tool_calls with missing results. Both violate
+        # the OpenAI message format contract and cause 400 errors from providers.
+        result = self._sanitize_tool_pairs(result)
+
         return result
 
     def _finalize_forced_overflow_result(
@@ -2486,7 +2571,7 @@ class LCMEngine(ContextEngine):
             include_lcm_note=False,
         )
         if len(candidate) == 1 and tail_messages:
-            return [system_msg, tail_messages[-1]]
+            return self._sanitize_tool_pairs([system_msg, tail_messages[-1]])
         return candidate
 
     @staticmethod
