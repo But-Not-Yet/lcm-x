@@ -1447,6 +1447,7 @@ def lcm_status(args: Dict[str, Any], **kwargs) -> str:
     lifecycle_fragmentation = full_status.get("lifecycle_fragmentation")
     source_lineage = full_status.get("source_lineage")
     runtime_identity = full_status.get("runtime_identity")
+    ingest_reconciliation = full_status.get("ingest_reconciliation")
 
     # Filter classification for the session lcm_status is reporting on.
     # The engine encapsulates the foreground vs bound divergence; this tool
@@ -1511,6 +1512,7 @@ def lcm_status(args: Dict[str, Any], **kwargs) -> str:
             ),
         },
         "source_lineage": source_lineage,
+        "ingest_reconciliation": ingest_reconciliation,
         "runtime_identity": runtime_identity,
         "lifecycle": lifecycle,
         "lifecycle_fragmentation": lifecycle_fragmentation,
