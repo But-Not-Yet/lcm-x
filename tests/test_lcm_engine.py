@@ -1125,6 +1125,122 @@ class TestEngineABC:
         assert [row["content"] for row in rows[-3:]] == ["retry", "retry", "next answer"]
         assert after_restart._ingest_cursor == len(active_context)
 
+    def test_existing_session_restart_persists_cleanup_sensitive_scaffolded_repeated_tail(self, tmp_path):
+        db_path = tmp_path / "restart-cleanup-sensitive-scaffold-repeat-tail.db"
+        config = LCMConfig(database_path=str(db_path))
+        before_restart = LCMEngine(config=config)
+        before_restart.on_session_start(
+            "cleanup-sensitive-scaffold-repeat-tail-session",
+            platform="cli",
+            conversation_id="cleanup-sensitive-scaffold-repeat-tail-conversation",
+            context_length=200000,
+        )
+        literal_json_text = json.dumps(
+            [{"type": "thinking", "text": "visible literal JSON payload"}],
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        persisted_messages = [
+            {"role": "user", "content": "older question"},
+            {"role": "assistant", "content": "older answer"},
+            {"role": "user", "content": "retry"},
+            {"role": "assistant", "content": literal_json_text},
+        ]
+        before_restart._ingest_messages(persisted_messages)
+        before_restart.shutdown()
+
+        after_restart = LCMEngine(config=config)
+        after_restart.on_session_start(
+            "cleanup-sensitive-scaffold-repeat-tail-session",
+            platform="cli",
+            conversation_id="cleanup-sensitive-scaffold-repeat-tail-conversation",
+            context_length=200000,
+        )
+        active_context = [
+            {
+                "role": "system",
+                "content": "You are concise.\n\n[Note: This conversation uses Lossless Context Management (LCM). Earlier turns have been compacted into hierarchical summaries below.]",
+            },
+            {"role": "user", "content": "retry"},
+            {"role": "assistant", "content": literal_json_text},
+        ]
+
+        after_restart._ingest_messages(active_context)
+
+        rows = after_restart._store.get_session_messages(
+            "cleanup-sensitive-scaffold-repeat-tail-session",
+            limit=len(persisted_messages) + 2,
+        )
+        assert len(rows) == len(persisted_messages) + 2
+        assert [row["content"] for row in rows[-4:]] == [
+            "retry",
+            literal_json_text,
+            "retry",
+            literal_json_text,
+        ]
+        assert after_restart._last_ingest_reconciliation["action"] == "advanced cursor"
+        assert after_restart._last_ingest_reconciliation["reason"] == "skipped scaffold-only prefix"
+        assert after_restart._ingest_cursor == len(active_context)
+
+    def test_existing_session_restart_persists_cleanup_sensitive_scaffolded_repeated_tail_with_followup(self, tmp_path):
+        db_path = tmp_path / "restart-cleanup-sensitive-scaffold-repeat-tail-followup.db"
+        config = LCMConfig(database_path=str(db_path))
+        before_restart = LCMEngine(config=config)
+        before_restart.on_session_start(
+            "cleanup-sensitive-scaffold-repeat-tail-followup-session",
+            platform="cli",
+            conversation_id="cleanup-sensitive-scaffold-repeat-tail-followup-conversation",
+            context_length=200000,
+        )
+        literal_json_text = json.dumps(
+            [{"type": "thinking", "text": "visible literal JSON payload"}],
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        persisted_messages = [
+            {"role": "user", "content": "older question"},
+            {"role": "assistant", "content": "older answer"},
+            {"role": "user", "content": "retry"},
+            {"role": "assistant", "content": literal_json_text},
+        ]
+        before_restart._ingest_messages(persisted_messages)
+        before_restart.shutdown()
+
+        after_restart = LCMEngine(config=config)
+        after_restart.on_session_start(
+            "cleanup-sensitive-scaffold-repeat-tail-followup-session",
+            platform="cli",
+            conversation_id="cleanup-sensitive-scaffold-repeat-tail-followup-conversation",
+            context_length=200000,
+        )
+        active_context = [
+            {
+                "role": "system",
+                "content": "You are concise.\n\n[Note: This conversation uses Lossless Context Management (LCM). Earlier turns have been compacted into hierarchical summaries below.]",
+            },
+            {"role": "user", "content": "retry"},
+            {"role": "assistant", "content": literal_json_text},
+            {"role": "user", "content": "new follow-up"},
+        ]
+
+        after_restart._ingest_messages(active_context)
+
+        rows = after_restart._store.get_session_messages(
+            "cleanup-sensitive-scaffold-repeat-tail-followup-session",
+            limit=len(persisted_messages) + 3,
+        )
+        assert len(rows) == len(persisted_messages) + 3
+        assert [row["content"] for row in rows[-5:]] == [
+            "retry",
+            literal_json_text,
+            "retry",
+            literal_json_text,
+            "new follow-up",
+        ]
+        assert after_restart._last_ingest_reconciliation["action"] == "advanced cursor"
+        assert after_restart._last_ingest_reconciliation["reason"] == "skipped scaffold-only prefix"
+        assert after_restart._ingest_cursor == len(active_context)
+
     def test_existing_session_restart_persists_new_system_message(self, tmp_path):
         db_path = tmp_path / "restart-new-system.db"
         config = LCMConfig(database_path=str(db_path))
@@ -7704,6 +7820,593 @@ class TestAssemblyToolPairGuardrail:
             if m.get("role") == "tool" and m.get("tool_call_id") == "call_no_result"
         ]
         assert len(stub_ids) >= 1, f"No stub result for assistant tool_call: {stub_ids}"
+
+    def test_assemble_drops_structured_blank_and_thinking_only_assistant_messages(self, tmp_path):
+        instance = self._make_engine(tmp_path, "lcm_blank_thinking_cleanup.db")
+        sys_msg = {"role": "system", "content": "sys"}
+        blank_content = [{"type": "text", "text": ""}]
+        thinking_content = [{"type": "thinking", "thinking": "private chain of thought"}]
+        visible_content = [{"type": "text", "text": "Visible answer"}]
+        tail_messages = [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": blank_content},
+            {"role": "assistant", "content": thinking_content},
+            {"role": "assistant", "content": visible_content},
+        ]
+
+        result = instance._assemble_context(sys_msg, tail_messages)
+
+        assert {"role": "assistant", "content": blank_content} not in result
+        assert {"role": "assistant", "content": thinking_content} not in result
+        assert {"role": "assistant", "content": visible_content} in result
+        self._assert_provider_tool_sequence_valid(result)
+
+    def test_assemble_cleanup_preserves_valid_tool_call_adjacency(self, tmp_path):
+        instance = self._make_engine(tmp_path, "lcm_tool_call_cleanup_preserve.db")
+        sys_msg = {"role": "system", "content": "sys"}
+        tool_call_msg = {
+            "role": "assistant",
+            "content": [{"type": "thinking", "thinking": "deciding which tool to call"}],
+            "tool_calls": [{"id": "call_keep", "function": {"name": "terminal", "arguments": "{}"}}],
+        }
+        tool_result_msg = {"role": "tool", "tool_call_id": "call_keep", "content": "tool output"}
+        tail_messages = [
+            {"role": "user", "content": "run it"},
+            tool_call_msg,
+            tool_result_msg,
+            {"role": "assistant", "content": "Done."},
+        ]
+
+        result = instance._assemble_context(sys_msg, tail_messages)
+
+        expected_tool_call_msg = dict(tool_call_msg)
+        expected_tool_call_msg["content"] = ""
+        assert expected_tool_call_msg in result
+        assert tool_result_msg in result
+        call_index = result.index(expected_tool_call_msg)
+        assert result[call_index + 1] == tool_result_msg
+        self._assert_provider_tool_sequence_valid(result)
+
+    def test_assemble_cleanup_repairs_tool_sequence_after_dropping_blank_turn(self, tmp_path):
+        instance = self._make_engine(tmp_path, "lcm_tool_call_cleanup_repair.db")
+        sys_msg = {"role": "system", "content": "sys"}
+        tool_call_msg = {
+            "role": "assistant",
+            "tool_calls": [{"id": "call_repair", "function": {"name": "terminal", "arguments": "{}"}}],
+        }
+        blank_content = [{"type": "text", "text": ""}]
+        real_tool_result = {"role": "tool", "tool_call_id": "call_repair", "content": "real output"}
+        tail_messages = [
+            {"role": "user", "content": "run it"},
+            tool_call_msg,
+            {"role": "assistant", "content": blank_content},
+            real_tool_result,
+            {"role": "assistant", "content": "Done."},
+        ]
+
+        result = instance._assemble_context(sys_msg, tail_messages)
+
+        assert {"role": "assistant", "content": blank_content} not in result
+        call_index = result.index(tool_call_msg)
+        assert result[call_index + 1] == real_tool_result
+        self._assert_provider_tool_sequence_valid(result)
+
+    def test_compress_drops_unsafe_assistant_content_without_mutating_store(self, tmp_path, monkeypatch):
+        def mock_summary(**kwargs):
+            return "Leaf summary.\nExpand for details about: cleanup", 1
+
+        monkeypatch.setattr(lcm_engine, "summarize_with_escalation", mock_summary)
+        config = LCMConfig(
+            fresh_tail_count=4,
+            database_path=str(tmp_path / "lcm_compress_cleanup.db"),
+            leaf_chunk_tokens=80,
+        )
+        instance = LCMEngine(config=config)
+        instance._session_id = "compress-cleanup-test"
+        instance.compression_count = 1
+        instance.context_length = 200000
+        instance.threshold_tokens = 1
+
+        blank_content = [{"type": "text", "text": ""}]
+        thinking_content = [{"type": "reasoning", "text": "internal reasoning only"}]
+        visible_content = [{"type": "text", "text": "Visible final answer"}]
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "old question " + "x" * 200},
+            {"role": "assistant", "content": "old answer " + "y" * 200},
+            {"role": "user", "content": "current question"},
+            {"role": "assistant", "content": blank_content},
+            {"role": "assistant", "content": thinking_content},
+            {"role": "assistant", "content": visible_content},
+        ]
+
+        result = instance.compress(messages)
+
+        assert {"role": "assistant", "content": blank_content} not in result
+        assert {"role": "assistant", "content": thinking_content} not in result
+        assert {"role": "assistant", "content": visible_content} in result
+        assert instance._store.get_session_count("compress-cleanup-test") == len(messages)
+        stored_contents = [
+            row.get("content")
+            for row in instance._store.get_range("compress-cleanup-test", limit=20)
+        ]
+        assert json.dumps(blank_content, ensure_ascii=False, sort_keys=True) in stored_contents
+        assert json.dumps(thinking_content, ensure_ascii=False, sort_keys=True) in stored_contents
+        self._assert_provider_tool_sequence_valid(result)
+
+    def test_no_compaction_cleanup_resets_cursor_for_next_turn(self, tmp_path):
+        config = LCMConfig(
+            fresh_tail_count=10,
+            database_path=str(tmp_path / "lcm_no_compaction_cursor_cleanup.db"),
+            leaf_chunk_tokens=10_000,
+            context_threshold=0.95,
+        )
+        instance = LCMEngine(config=config)
+        instance._session_id = "cursor-cleanup-test"
+        instance.context_length = 200000
+        instance.threshold_tokens = 190000
+
+        blank_content = [{"type": "text", "text": ""}]
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": blank_content},
+            {"role": "assistant", "content": "visible answer"},
+        ]
+
+        sanitized = instance.compress(messages)
+        assert len(sanitized) == len(messages) - 1
+        assert instance._ingest_cursor == len(sanitized)
+        assert instance._store.get_session_count("cursor-cleanup-test") == len(messages)
+
+        next_messages = sanitized + [{"role": "user", "content": "new follow-up"}]
+        instance.compress(next_messages)
+
+        rows = instance._store.get_session_messages("cursor-cleanup-test")
+        assert len(rows) == len(messages) + 1
+        assert rows[-1]["content"] == "new follow-up"
+
+    def test_rebind_reconciliation_tolerates_sanitized_active_context_cleanup(self, tmp_path):
+        db_path = str(tmp_path / "lcm_rebind_sanitized_active_cleanup.db")
+        config = LCMConfig(
+            fresh_tail_count=10,
+            database_path=db_path,
+            leaf_chunk_tokens=10_000,
+            context_threshold=0.95,
+        )
+        session_id = "rebind-cleanup-test"
+        blank_content = [{"type": "text", "text": ""}]
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": blank_content},
+            {"role": "assistant", "content": "visible answer"},
+        ]
+
+        first = LCMEngine(config=config)
+        first.on_session_start(session_id, context_length=200000)
+        sanitized = first.compress(messages)
+
+        assert len(sanitized) == 3
+        assert first._store.get_session_count(session_id) == 4
+        first.shutdown()
+
+        rebound = LCMEngine(config=LCMConfig(
+            fresh_tail_count=10,
+            database_path=db_path,
+            leaf_chunk_tokens=10_000,
+            context_threshold=0.95,
+        ))
+        rebound.on_session_start(session_id, context_length=200000)
+        rebound.compress(sanitized + [{"role": "user", "content": "new follow-up"}])
+
+        rows = rebound._store.get_session_messages(session_id)
+        assert len(rows) == 5
+        assert [row["role"] for row in rows] == [
+            "system",
+            "user",
+            "assistant",
+            "assistant",
+            "user",
+        ]
+        assert [row["content"] for row in rows] == [
+            "sys",
+            "question",
+            json.dumps(blank_content, ensure_ascii=False, sort_keys=True),
+            "visible answer",
+            "new follow-up",
+        ]
+        assert rebound._last_ingest_reconciliation["action"] == "advanced cursor"
+        assert rebound._last_ingest_reconciliation["cursor"] == len(sanitized)
+
+    def test_no_compaction_cleanup_does_not_return_untracked_tool_stubs_after_rebind(self, tmp_path):
+        db_path = str(tmp_path / "lcm_no_compaction_pending_tool_stub.db")
+        config = LCMConfig(
+            fresh_tail_count=10,
+            database_path=db_path,
+            leaf_chunk_tokens=10_000,
+            context_threshold=0.95,
+        )
+        session_id = "pending-tool-stub-test"
+        pending_call = {
+            "id": "call_pending",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": "{}"},
+        }
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "tool_calls": [pending_call]},
+        ]
+
+        first = LCMEngine(config=config)
+        first.on_session_start(session_id, context_length=200000)
+        active_context = first.compress(messages)
+
+        assert active_context == messages
+        assert all(msg.get("role") != "tool" for msg in active_context)
+        assert first._store.get_session_count(session_id) == 3
+        first.shutdown()
+
+        rebound = LCMEngine(config=LCMConfig(
+            fresh_tail_count=10,
+            database_path=db_path,
+            leaf_chunk_tokens=10_000,
+            context_threshold=0.95,
+        ))
+        rebound.on_session_start(session_id, context_length=200000)
+        rebound.compress(active_context + [{"role": "user", "content": "new follow-up"}])
+
+        rows = rebound._store.get_session_messages(session_id)
+        assert len(rows) == 4
+        assert [row["role"] for row in rows] == ["system", "user", "assistant", "user"]
+        assert rows[-1]["content"] == "new follow-up"
+        assert rebound._last_ingest_reconciliation["action"] == "advanced cursor"
+
+    def test_active_context_cleanup_strips_internal_parts_from_mixed_assistant_content(self, tmp_path):
+        config = LCMConfig(
+            fresh_tail_count=10,
+            database_path=str(tmp_path / "lcm_mixed_internal_cleanup.db"),
+            leaf_chunk_tokens=10_000,
+            context_threshold=0.95,
+        )
+        instance = LCMEngine(config=config)
+        instance.on_session_start("mixed-internal-cleanup-test", context_length=200000)
+        mixed_content = [
+            {"type": "thinking", "text": "secret chain of thought"},
+            {"type": "text", "text": "visible final"},
+        ]
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": mixed_content},
+            {"role": "assistant", "content": "<think>hidden</think>string final"},
+        ]
+
+        active_context = instance.compress(messages)
+
+        assert active_context[2] == {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "visible final"}],
+        }
+        assert active_context[3] == {"role": "assistant", "content": "string final"}
+        rows = instance._store.get_session_messages("mixed-internal-cleanup-test")
+        assert rows[2]["content"] == json.dumps(mixed_content, ensure_ascii=False, sort_keys=True)
+        assert rows[3]["content"] == "<think>hidden</think>string final"
+
+    def test_rebind_reconciliation_tolerates_stripped_active_assistant_content(self, tmp_path):
+        db_path = str(tmp_path / "lcm_rebind_stripped_active_cleanup.db")
+        config = LCMConfig(
+            fresh_tail_count=10,
+            database_path=db_path,
+            leaf_chunk_tokens=10_000,
+            context_threshold=0.95,
+        )
+        session_id = "rebind-stripped-cleanup-test"
+        mixed_content = [
+            {"type": "thinking", "text": "secret chain of thought"},
+            {"type": "text", "text": "visible final"},
+        ]
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": mixed_content},
+        ]
+
+        first = LCMEngine(config=config)
+        first.on_session_start(session_id, context_length=200000)
+        active_context = first.compress(messages)
+
+        assert active_context == [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": [{"type": "text", "text": "visible final"}]},
+        ]
+        assert first._store.get_session_count(session_id) == 3
+        first.shutdown()
+
+        rebound = LCMEngine(config=LCMConfig(
+            fresh_tail_count=10,
+            database_path=db_path,
+            leaf_chunk_tokens=10_000,
+            context_threshold=0.95,
+        ))
+        rebound.on_session_start(session_id, context_length=200000)
+        rebound.compress(active_context + [{"role": "user", "content": "new follow-up"}])
+
+        rows = rebound._store.get_session_messages(session_id)
+        assert len(rows) == 4
+        assert [row["role"] for row in rows] == ["system", "user", "assistant", "user"]
+        assert rows[2]["content"] == json.dumps(mixed_content, ensure_ascii=False, sort_keys=True)
+        assert rows[3]["content"] == "new follow-up"
+        assert rebound._last_ingest_reconciliation["action"] == "advanced cursor"
+        assert rebound._last_ingest_reconciliation["cursor"] == len(active_context)
+
+    def test_active_context_cleanup_strips_internal_content_from_assistant_tool_calls(self, tmp_path):
+        config = LCMConfig(
+            fresh_tail_count=10,
+            database_path=str(tmp_path / "lcm_tool_call_internal_cleanup.db"),
+            leaf_chunk_tokens=10_000,
+            context_threshold=0.95,
+        )
+        instance = LCMEngine(config=config)
+        session_id = "tool-call-internal-cleanup-test"
+        instance.on_session_start(session_id, context_length=200000)
+        tool_call = {
+            "id": "call_lookup",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": "{}"},
+        }
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "<think>hidden</think>", "tool_calls": [tool_call]},
+            {"role": "tool", "tool_call_id": "call_lookup", "content": "result"},
+        ]
+
+        active_context = instance.compress(messages)
+
+        assert active_context[2] == {"role": "assistant", "content": "", "tool_calls": [tool_call]}
+        assert active_context[3] == {"role": "tool", "tool_call_id": "call_lookup", "content": "result"}
+        rows = instance._store.get_session_messages(session_id)
+        assert rows[2]["content"] == "<think>hidden</think>"
+        assert rows[2]["tool_calls"] == [tool_call]
+
+    def test_rebind_reconciliation_tolerates_stripped_assistant_tool_call_content(self, tmp_path):
+        db_path = str(tmp_path / "lcm_rebind_tool_call_internal_cleanup.db")
+        config = LCMConfig(
+            fresh_tail_count=10,
+            database_path=db_path,
+            leaf_chunk_tokens=10_000,
+            context_threshold=0.95,
+        )
+        session_id = "rebind-tool-call-internal-cleanup-test"
+        tool_call = {
+            "id": "call_lookup",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": "{}"},
+        }
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "<think>hidden</think>", "tool_calls": [tool_call]},
+            {"role": "tool", "tool_call_id": "call_lookup", "content": "result"},
+        ]
+
+        first = LCMEngine(config=config)
+        first.on_session_start(session_id, context_length=200000)
+        active_context = first.compress(messages)
+        assert active_context[2]["content"] == ""
+        assert first._store.get_session_count(session_id) == 4
+        first.shutdown()
+
+        rebound = LCMEngine(config=LCMConfig(
+            fresh_tail_count=10,
+            database_path=db_path,
+            leaf_chunk_tokens=10_000,
+            context_threshold=0.95,
+        ))
+        rebound.on_session_start(session_id, context_length=200000)
+        rebound.compress(active_context + [{"role": "user", "content": "new follow-up"}])
+
+        rows = rebound._store.get_session_messages(session_id)
+        assert len(rows) == 5
+        assert [row["role"] for row in rows] == ["system", "user", "assistant", "tool", "user"]
+        assert rows[2]["content"] == "<think>hidden</think>"
+        assert rows[4]["content"] == "new follow-up"
+        assert rebound._last_ingest_reconciliation["action"] == "advanced cursor"
+        assert rebound._last_ingest_reconciliation["cursor"] == len(active_context)
+
+    def test_rebind_reconciliation_keeps_literal_json_string_assistant_content(self, tmp_path):
+        db_path = str(tmp_path / "lcm_rebind_literal_json_string_cleanup.db")
+        config = LCMConfig(
+            fresh_tail_count=10,
+            database_path=db_path,
+            leaf_chunk_tokens=10_000,
+            context_threshold=0.95,
+        )
+        session_id = "rebind-literal-json-string-test"
+        literal_json_text = json.dumps(
+            [{"type": "thinking", "text": "this is user-visible literal JSON text"}],
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": literal_json_text},
+        ]
+
+        first = LCMEngine(config=config)
+        first.on_session_start(session_id, context_length=200000)
+        active_context = first.compress(messages)
+
+        assert active_context == messages
+        assert first._store.get_session_count(session_id) == 3
+        first.shutdown()
+
+        rebound = LCMEngine(config=LCMConfig(
+            fresh_tail_count=10,
+            database_path=db_path,
+            leaf_chunk_tokens=10_000,
+            context_threshold=0.95,
+        ))
+        rebound.on_session_start(session_id, context_length=200000)
+        rebound.compress(active_context + [{"role": "user", "content": "new follow-up"}])
+
+        rows = rebound._store.get_session_messages(session_id)
+        assert len(rows) == 4
+        assert [row["role"] for row in rows] == ["system", "user", "assistant", "user"]
+        assert [row["content"] for row in rows].count(literal_json_text) == 1
+        assert rows[-1]["content"] == "new follow-up"
+        assert rebound._last_ingest_reconciliation["action"] == "advanced cursor"
+        assert rebound._last_ingest_reconciliation["cursor"] == len(active_context)
+
+    def test_compacted_rebind_keeps_literal_json_string_assistant_content(self, tmp_path, monkeypatch):
+        db_path = str(tmp_path / "lcm_rebind_compacted_literal_json_string_cleanup.db")
+        config = LCMConfig(
+            fresh_tail_count=2,
+            database_path=db_path,
+            leaf_chunk_tokens=1,
+            context_threshold=0.95,
+        )
+        session_id = "rebind-compacted-literal-json-string-test"
+        literal_json_text = json.dumps(
+            [{"type": "thinking", "text": "this is still visible literal JSON"}],
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+        def mock_summary(**kwargs):
+            return "Older literal-json replay setup summary", 1
+
+        monkeypatch.setattr(lcm_engine, "summarize_with_escalation", mock_summary)
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "older question"},
+            {"role": "assistant", "content": "older answer"},
+            {"role": "user", "content": "fresh question"},
+            {"role": "assistant", "content": literal_json_text},
+        ]
+
+        first = LCMEngine(config=config)
+        first.on_session_start(session_id, context_length=200000)
+        active_context = first.compress(messages)
+        assert any("Older literal-json replay setup summary" in (msg.get("content") or "") for msg in active_context)
+        assert active_context[-2:] == messages[-2:]
+        assert first._store.get_session_count(session_id) == len(messages)
+        first.shutdown()
+
+        rebound = LCMEngine(config=LCMConfig(
+            fresh_tail_count=2,
+            database_path=db_path,
+            leaf_chunk_tokens=1,
+            context_threshold=0.95,
+        ))
+        rebound.on_session_start(session_id, context_length=200000)
+        rebound.compress(active_context + [{"role": "user", "content": "new follow-up"}])
+
+        rows = rebound._store.get_session_messages(session_id)
+        assert len(rows) == len(messages) + 1
+        assert [row["content"] for row in rows].count(literal_json_text) == 1
+        assert rows[-1]["content"] == "new follow-up"
+        assert rebound._last_ingest_reconciliation["action"] == "advanced cursor"
+        assert rebound._last_ingest_reconciliation["cursor"] == len(active_context)
+
+    def test_source_id_mapping_matches_stripped_assistant_active_context(self, tmp_path):
+        config = LCMConfig(
+            fresh_tail_count=10,
+            database_path=str(tmp_path / "lcm_source_id_stripped_cleanup.db"),
+            leaf_chunk_tokens=10_000,
+            context_threshold=0.95,
+        )
+        instance = LCMEngine(config=config)
+        session_id = "source-id-stripped-cleanup-test"
+        instance.on_session_start(session_id, context_length=200000)
+        mixed_content = [
+            {"type": "thinking", "text": "secret chain of thought"},
+            {"type": "text", "text": "visible final"},
+        ]
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": mixed_content},
+        ]
+
+        active_context = instance.compress(messages)
+        rows = instance._store.get_session_messages(session_id)
+
+        assert active_context[2]["content"] == [{"type": "text", "text": "visible final"}]
+        assert rows[2]["content"] == json.dumps(mixed_content, ensure_ascii=False, sort_keys=True)
+        assert instance._get_store_ids_for_messages([active_context[2]]) == [rows[2]["store_id"]]
+
+    def test_source_id_mapping_matches_stripped_tool_call_active_context(self, tmp_path):
+        config = LCMConfig(
+            fresh_tail_count=10,
+            database_path=str(tmp_path / "lcm_source_id_tool_call_cleanup.db"),
+            leaf_chunk_tokens=10_000,
+            context_threshold=0.95,
+        )
+        instance = LCMEngine(config=config)
+        session_id = "source-id-tool-call-cleanup-test"
+        instance.on_session_start(session_id, context_length=200000)
+        tool_call = {
+            "id": "call_lookup",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": "{}"},
+        }
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "<think>hidden</think>", "tool_calls": [tool_call]},
+            {"role": "tool", "tool_call_id": "call_lookup", "content": "result"},
+        ]
+
+        active_context = instance.compress(messages)
+        rows = instance._store.get_session_messages(session_id)
+
+        assert active_context[2]["content"] == ""
+        assert rows[2]["content"] == "<think>hidden</think>"
+        assert instance._get_store_ids_for_messages([active_context[2]]) == [rows[2]["store_id"]]
+
+    def test_rebind_reconciliation_preserves_visible_suffix_delta_when_sanitized_tail_collapsed(self, tmp_path):
+        db_path = str(tmp_path / "lcm_rebind_collapsed_tail_delta.db")
+        config = LCMConfig(
+            fresh_tail_count=10,
+            database_path=db_path,
+            leaf_chunk_tokens=10_000,
+            context_threshold=0.95,
+        )
+        session_id = "collapsed-tail-delta-test"
+        stored_messages = [
+            {"role": "assistant", "content": [{"type": "thinking", "text": "hidden"}]},
+            {"role": "user", "content": "ping"},
+            {"role": "assistant", "content": "pong"},
+        ]
+
+        first = LCMEngine(config=config)
+        first.on_session_start(session_id, context_length=200000)
+        first.compress(stored_messages)
+        assert first._store.get_session_count(session_id) == 3
+        first.shutdown()
+
+        rebound = LCMEngine(config=LCMConfig(
+            fresh_tail_count=10,
+            database_path=db_path,
+            leaf_chunk_tokens=10_000,
+            context_threshold=0.95,
+        ))
+        rebound.on_session_start(session_id, context_length=200000)
+        rebound.compress([
+            {"role": "user", "content": "ping"},
+            {"role": "assistant", "content": "pong"},
+        ])
+
+        rows = rebound._store.get_session_messages(session_id)
+        assert len(rows) == 5
+        assert [row["role"] for row in rows] == ["assistant", "user", "assistant", "user", "assistant"]
+        assert [row["content"] for row in rows[-2:]] == ["ping", "pong"]
+        assert rebound._last_ingest_reconciliation["action"] == "persisted batch"
 
     def test_compress_output_is_valid_tool_pair_sequence(self, tmp_path, monkeypatch):
         """Full compress() output must not contain orphan tool results

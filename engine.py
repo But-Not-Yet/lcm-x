@@ -21,7 +21,7 @@ from agent.context_engine import ContextEngine
 
 from .config import LCMConfig
 from .dag import SummaryDAG, SummaryNode
-from .escalation import summarize_with_escalation
+from .escalation import _strip_reasoning_blocks, summarize_with_escalation
 from .externalize import (
     build_transcript_gc_placeholder,
     extract_externalized_ref,
@@ -66,6 +66,17 @@ logger = logging.getLogger(__name__)
 _PLUGIN_ROOT = Path(__file__).resolve().parent
 _PLUGIN_METADATA: dict[str, str] | None = None
 _SESSION_END_BUSY_TIMEOUT_MS = 50
+_VISIBLE_TEXT_PART_TYPES = {"text", "input_text", "output_text"}
+_INTERNAL_ASSISTANT_PART_TYPES = {
+    "analysis",
+    "chain_of_thought",
+    "internal",
+    "reasoning",
+    "redacted_thinking",
+    "scratchpad",
+    "thought",
+    "thinking",
+}
 
 
 def _strip_metadata_scalar(value: str) -> str:
@@ -752,7 +763,17 @@ class LCMEngine(ContextEngine):
                     compressed,
                     assembly_cap_override=recovery_assembly_cap,
                 )
-            return messages
+            sanitized_messages = self._sanitize_active_context_messages(
+                messages,
+                insert_missing_tool_stubs=False,
+            )
+            if len(sanitized_messages) != len(messages):
+                # _ingest_messages() already advanced the cursor to the original
+                # active-context length. If the host continues from the shorter
+                # sanitized context, keeping the old cursor would make the next
+                # appended messages look already ingested.
+                self._ingest_cursor = len(sanitized_messages)
+            return sanitized_messages
 
         # Step 6: Check if condensation is needed
         self._maybe_condense(
@@ -805,10 +826,10 @@ class LCMEngine(ContextEngine):
             ", forced overflow recovery" if force_overflow else "",
         )
 
-        # ── Tool-pair guardrail (same as _assemble_context) ──
+        # ── Active-context cleanup / tool-pair guardrail (same as _assemble_context) ──
         # compress() output is consumed directly by the main loop in some
         # edge cases (e.g. forced overflow recovery bypassing _assemble_context).
-        compressed = self._sanitize_tool_pairs(compressed)
+        compressed = self._sanitize_active_context_messages(compressed)
 
         return compressed
 
@@ -1990,6 +2011,81 @@ class LCMEngine(ContextEngine):
             return False
         return stored_tail[-len(candidate_prefix) :] == candidate_prefix
 
+    @classmethod
+    def _identity_content_for_active_cleanup(cls, content: str) -> Any:
+        """Decode canonical stored JSON content before active-cleanup checks.
+
+        Structured assistant content is persisted as deterministic JSON. Active
+        replay cleanup sees the original list/dict shape, so restart
+        reconciliation has to decode the stored identity before deciding whether
+        a durable assistant row could be absent from sanitized active context.
+        """
+        if not isinstance(content, str):
+            return content
+        try:
+            decoded = json.loads(content)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return content
+        if isinstance(decoded, (list, dict)) and normalize_content_value(decoded) == content:
+            return decoded
+        return content
+
+    @classmethod
+    def _is_active_context_droppable_identity(cls, identity: tuple[str, str, str, str]) -> bool:
+        """Return true for durable rows sanitized out of active replay only."""
+        role, content, _tool_call_id, tool_calls = identity
+        if role != "assistant" or tool_calls:
+            return False
+        return cls._should_drop_active_assistant_message({
+            "role": role,
+            "content": cls._identity_content_for_active_cleanup(content),
+        })
+
+    @classmethod
+    def _active_cleanup_replay_identity(
+        cls,
+        identity: tuple[str, str, str, str],
+    ) -> tuple[str, str, str, str] | None:
+        role, content, tool_call_id, tool_calls = identity
+        if role != "assistant":
+            return identity
+        msg: dict[str, Any] = {
+            "role": role,
+            "content": cls._identity_content_for_active_cleanup(content),
+        }
+        if tool_calls:
+            try:
+                decoded_tool_calls = json.loads(tool_calls)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                decoded_tool_calls = tool_calls
+            msg["tool_calls"] = decoded_tool_calls
+        cleaned = cls._clean_active_assistant_message(msg)
+        if cleaned is None:
+            return None
+        return (
+            role,
+            normalize_content_value(cleaned.get("content")) or "",
+            tool_call_id,
+            tool_calls,
+        )
+
+    def _stored_tail_for_sanitized_active_replay(
+        self,
+        stored_tail: list[tuple[str, str, str, str]],
+    ) -> list[tuple[str, str, str, str]]:
+        """Mirror active-context cleanup for restart replay reconciliation.
+
+        Raw storage remains lossless. This view is used only to reconcile a
+        restarted process when the host replays sanitized active context where
+        assistant rows may be removed or have internal content stripped.
+        """
+        sanitized_tail: list[tuple[str, str, str, str]] = []
+        for identity in stored_tail:
+            cleaned_identity = self._active_cleanup_replay_identity(identity)
+            if cleaned_identity is not None:
+                sanitized_tail.append(cleaned_identity)
+        return sanitized_tail
+
     def _find_reconciled_cursor_for_store_tail(
         self,
         messages: List[Dict[str, Any]],
@@ -1999,6 +2095,9 @@ class LCMEngine(ContextEngine):
         session_count: int,
         raw_session_count: int,
     ) -> int | None:
+        sanitized_replay_tail = self._stored_tail_for_sanitized_active_replay(stored_tail)
+        effective_session_count = len(sanitized_replay_tail)
+        sanitized_tail_collapsed = len(sanitized_replay_tail) < len(stored_tail)
         empty_prefix_cursor: int | None = None
         for cursor in range(len(messages), -1, -1):
             candidate_messages = messages[:cursor]
@@ -2013,9 +2112,18 @@ class LCMEngine(ContextEngine):
                 if allow_empty_prefix:
                     return cursor
                 continue
-            if len(candidate_prefix) > len(stored_tail):
-                continue
-            if not self._matches_store_tail_suffix(stored_tail, candidate_prefix):
+
+            matches_sanitized_tail = (
+                len(candidate_prefix) <= len(sanitized_replay_tail)
+                and self._matches_store_tail_suffix(sanitized_replay_tail, candidate_prefix)
+            )
+            matches_raw_tail = self._matches_store_tail_suffix(stored_tail, candidate_prefix)
+            raw_tail_suffix = stored_tail[-len(candidate_prefix) :] if matches_raw_tail else []
+            raw_suffix_needs_cleanup_equivalence = any(
+                self._active_cleanup_replay_identity(identity) != identity
+                for identity in raw_tail_suffix
+            )
+            if not matches_sanitized_tail and not matches_raw_tail:
                 continue
 
             # Matching a stored suffix is not enough evidence by itself.  A
@@ -2023,23 +2131,32 @@ class LCMEngine(ContextEngine):
             # the first delta happens to repeat the durable tail, treating that
             # row as replay silently loses it.  Only advance the cursor when the
             # incoming prefix proves replay by covering the full durable session.
-            # A system prompt is a strong anchor, but older/minimal transcripts
-            # can start directly with user/assistant turns, so multi-row full
-            # replay is also accepted.  Singleton full replay remains ambiguous
-            # with a one-message delta that repeats the tail, so it is persisted
-            # rather than risk data loss.
-            has_effective_full_replay = len(candidate_prefix) >= session_count and (
-                session_count > 1 or any(identity[0] == "system" for identity in candidate_prefix)
+            # A system prompt is a strong anchor. Older/minimal transcripts can
+            # start directly with user/assistant turns, so multi-row full replay
+            # is accepted only when active cleanup did not collapse the durable
+            # tail; otherwise a fresh delta can repeat the remaining visible
+            # suffix and must be preserved.
+            candidate_has_system = any(identity[0] == "system" for identity in candidate_prefix)
+            has_effective_full_replay = matches_sanitized_tail and len(candidate_prefix) >= effective_session_count and (
+                candidate_has_system or (effective_session_count > 1 and not sanitized_tail_collapsed)
             )
             has_scaffold_evidence = any(
                 self._is_replayed_context_scaffold_message(msg) for msg in candidate_messages
             )
             has_raw_full_replay = (
-                not has_scaffold_evidence
+                matches_raw_tail
+                and not has_scaffold_evidence
                 and len(candidate_messages) >= raw_session_count
                 and raw_session_count > 1
             )
-            if has_effective_full_replay or has_raw_full_replay:
+            has_raw_cleanup_replay = (
+                matches_raw_tail
+                and has_scaffold_evidence
+                and cursor < len(messages)
+                and len(candidate_prefix) >= max(1, self._config.fresh_tail_count)
+                and raw_suffix_needs_cleanup_equivalence
+            )
+            if has_effective_full_replay or has_raw_full_replay or has_raw_cleanup_replay:
                 return cursor
         return empty_prefix_cursor if allow_empty_prefix else None
 
@@ -2296,12 +2413,21 @@ class LCMEngine(ContextEngine):
                 hermes_home=self._hermes_home,
             )
             wanted_identity = self._message_replay_identity(msg)
+            wanted_cleanup_identity = self._active_cleanup_replay_identity(wanted_identity)
             role = protected_msg.get("role", "")
             content = normalize_content_value(protected_msg.get("content")) or ""
             probe_idx = store_idx
             while probe_idx < len(candidates):
                 stored = candidates[probe_idx]
-                if self._message_replay_identity(stored) == wanted_identity:
+                stored_identity = self._message_replay_identity(stored)
+                if stored_identity == wanted_identity:
+                    ids.append(stored["store_id"])
+                    store_idx = probe_idx + 1
+                    break
+                if (
+                    wanted_cleanup_identity is not None
+                    and self._active_cleanup_replay_identity(stored_identity) == wanted_cleanup_identity
+                ):
                     ids.append(stored["store_id"])
                     store_idx = probe_idx + 1
                     break
@@ -2452,7 +2578,188 @@ class LCMEngine(ContextEngine):
 
     # -- Internal: tool-pair sanitization ------------------------------------
 
-    def _sanitize_tool_pairs(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _structured_part_text(part: Dict[str, Any]) -> str:
+        for key in ("text", "content", "value"):
+            value = part.get(key)
+            if isinstance(value, str):
+                return value
+            if isinstance(value, dict):
+                nested = value.get("value")
+                if isinstance(nested, str):
+                    return nested
+                nested = value.get("content")
+                if isinstance(nested, str):
+                    return nested
+        return ""
+
+    @classmethod
+    def _structured_part_has_visible_assistant_content(cls, part: Any) -> bool:
+        if part is None:
+            return False
+        if isinstance(part, str):
+            return bool(_strip_reasoning_blocks(part).strip())
+        if not isinstance(part, dict):
+            return bool(str(part).strip())
+
+        part_type = str(part.get("type") or "").strip().lower()
+        if part_type in _INTERNAL_ASSISTANT_PART_TYPES:
+            return False
+        if part_type in _VISIBLE_TEXT_PART_TYPES:
+            return bool(_strip_reasoning_blocks(cls._structured_part_text(part)).strip())
+
+        # Unknown non-internal content blocks may be visible (for example
+        # images/audio/annotations in provider-specific formats).  Preserve
+        # them rather than risk dropping a legitimate assistant turn.
+        return True
+
+    @classmethod
+    def _assistant_message_has_visible_content(cls, msg: Dict[str, Any]) -> bool:
+        content = msg.get("content")
+        if content is None:
+            return False
+        if isinstance(content, str):
+            return bool(_strip_reasoning_blocks(content).strip())
+        if isinstance(content, list):
+            return any(cls._structured_part_has_visible_assistant_content(part) for part in content)
+        if isinstance(content, dict):
+            return cls._structured_part_has_visible_assistant_content(content)
+        return bool(str(content).strip())
+
+    @classmethod
+    def _strip_structured_text_part(cls, part: Dict[str, Any]) -> Dict[str, Any] | None:
+        cleaned = dict(part)
+        for key in ("text", "content", "value"):
+            value = cleaned.get(key)
+            if isinstance(value, str):
+                stripped = _strip_reasoning_blocks(value)
+                if not stripped.strip():
+                    return None
+                cleaned[key] = stripped
+                return cleaned
+            if isinstance(value, dict):
+                nested = dict(value)
+                for nested_key in ("value", "content", "text"):
+                    nested_value = nested.get(nested_key)
+                    if isinstance(nested_value, str):
+                        stripped = _strip_reasoning_blocks(nested_value)
+                        if not stripped.strip():
+                            return None
+                        nested[nested_key] = stripped
+                        cleaned[key] = nested
+                        return cleaned
+        return cleaned if cls._structured_part_has_visible_assistant_content(cleaned) else None
+
+    @classmethod
+    def _sanitize_active_assistant_content(cls, content: Any) -> Any | None:
+        if content is None:
+            return None
+        if isinstance(content, str):
+            stripped = _strip_reasoning_blocks(content)
+            return stripped if stripped.strip() else None
+        if isinstance(content, list):
+            cleaned_parts: list[Any] = []
+            for part in content:
+                if isinstance(part, str):
+                    stripped = _strip_reasoning_blocks(part)
+                    if stripped.strip():
+                        cleaned_parts.append(stripped)
+                    continue
+                if isinstance(part, dict):
+                    part_type = str(part.get("type") or "").strip().lower()
+                    if part_type in _INTERNAL_ASSISTANT_PART_TYPES:
+                        continue
+                    if part_type in _VISIBLE_TEXT_PART_TYPES:
+                        cleaned_part = cls._strip_structured_text_part(part)
+                        if cleaned_part is not None:
+                            cleaned_parts.append(cleaned_part)
+                        continue
+                if cls._structured_part_has_visible_assistant_content(part):
+                    cleaned_parts.append(part)
+            return cleaned_parts or None
+        if isinstance(content, dict):
+            part_type = str(content.get("type") or "").strip().lower()
+            if part_type in _INTERNAL_ASSISTANT_PART_TYPES:
+                return None
+            if part_type in _VISIBLE_TEXT_PART_TYPES:
+                return cls._strip_structured_text_part(content)
+            return content if cls._structured_part_has_visible_assistant_content(content) else None
+        return content if str(content).strip() else None
+
+    @classmethod
+    def _clean_active_assistant_message(cls, msg: Dict[str, Any]) -> Dict[str, Any] | None:
+        if msg.get("role") != "assistant":
+            return msg
+        if "content" not in msg:
+            return msg
+        cleaned_content = cls._sanitize_active_assistant_content(msg.get("content"))
+        if cleaned_content is None:
+            if not msg.get("tool_calls"):
+                return None
+            cleaned_content = ""
+        if cleaned_content == msg.get("content"):
+            return msg
+        cleaned = dict(msg)
+        cleaned["content"] = cleaned_content
+        return cleaned
+
+    @classmethod
+    def _should_drop_active_assistant_message(cls, msg: Dict[str, Any]) -> bool:
+        if msg.get("role") != "assistant":
+            return False
+        if msg.get("tool_calls"):
+            return False
+        return cls._clean_active_assistant_message(msg) is None
+
+    def _sanitize_active_context_messages(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        insert_missing_tool_stubs: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Drop unsafe assistant-only noise, then repair tool sequencing.
+
+        This is intentionally active-context-only: callers pass the selected
+        provider replay context, and this helper never mutates stored rows,
+        source mappings, or DAG nodes.
+        """
+        cleaned: list[Dict[str, Any]] = []
+        dropped_assistant_messages = 0
+        stripped_assistant_messages = 0
+        for msg in messages:
+            if msg.get("role") == "assistant":
+                cleaned_msg = self._clean_active_assistant_message(msg)
+                if cleaned_msg is None:
+                    dropped_assistant_messages += 1
+                    continue
+                if cleaned_msg is not msg:
+                    stripped_assistant_messages += 1
+                cleaned.append(cleaned_msg)
+                continue
+            cleaned.append(msg)
+
+        if dropped_assistant_messages:
+            logger.info(
+                "LCM active-context cleanup: dropped %d assistant message(s) with no visible content",
+                dropped_assistant_messages,
+            )
+        if stripped_assistant_messages:
+            logger.info(
+                "LCM active-context cleanup: stripped internal content from %d assistant message(s)",
+                stripped_assistant_messages,
+            )
+
+        return self._sanitize_tool_pairs(
+            cleaned,
+            insert_missing_tool_stubs=insert_missing_tool_stubs,
+        )
+
+    def _sanitize_tool_pairs(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        insert_missing_tool_stubs: bool = True,
+    ) -> List[Dict[str, Any]]:
         """Return provider-safe active-context tool-call/result sequencing.
 
         Raw store and DAG history remain lossless. This guardrail only sanitizes
@@ -2496,7 +2803,7 @@ class LCMEngine(ContextEngine):
                         dropped_tool_results += 1
                         i += 1
 
-                    if not matched_direct_result:
+                    if not matched_direct_result and insert_missing_tool_stubs:
                         sanitized.append({
                             "role": "tool",
                             "content": "[Result from earlier conversation — see context summary above]",
@@ -2820,12 +3127,10 @@ class LCMEngine(ContextEngine):
         # Fresh tail
         result.extend(tail_selected)
 
-        # ── Tool-pair guardrail ──
-        # Regression fix: after LCM compression, the assembled active context
-        # may contain orphan tool results (call_id with no matching assistant
-        # tool_call) or assistant tool_calls with missing results. Both violate
-        # the OpenAI message format contract and cause 400 errors from providers.
-        result = self._sanitize_tool_pairs(result)
+        # ── Active-context cleanup / tool-pair guardrail ──
+        # Drop assistant turns that carry only blank/internal structured content,
+        # then ensure provider-valid tool-call/result sequencing.
+        result = self._sanitize_active_context_messages(result)
         if (
             assembly_cap is not None
             and anchor_part is not None
@@ -2845,7 +3150,7 @@ class LCMEngine(ContextEngine):
                     trimmed = msg.copy()
                     trimmed["content"] = "\n\n---\n\n".join(parts)
                     trimmed_result.append(trimmed)
-            result = self._sanitize_tool_pairs(trimmed_result)
+            result = self._sanitize_active_context_messages(trimmed_result)
 
         return result
 
@@ -2987,7 +3292,7 @@ class LCMEngine(ContextEngine):
             include_lcm_note=False,
         )
         if len(candidate) == 1 and tail_messages:
-            return self._sanitize_tool_pairs([system_msg, tail_messages[-1]])
+            return self._sanitize_active_context_messages([system_msg, tail_messages[-1]])
         return candidate
 
     @staticmethod
