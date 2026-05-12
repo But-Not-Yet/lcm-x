@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import os
 import sqlite3
 from typing import Any
 
@@ -17,7 +18,18 @@ from .store import build_message_fts_spec
 def _state_db_path_for_engine(engine) -> Path:
     hermes_home = getattr(engine, "_hermes_home", "") or ""
     if hermes_home:
-        return Path(hermes_home).expanduser() / "state.db"
+        resolved = Path(hermes_home).expanduser().resolve() / "state.db"
+        # Check containment within allowed base only when restriction is active
+        env_base = os.environ.get("LCM_HERMES_BASE_DIR")
+        if env_base:
+            allowed_base = Path(env_base).expanduser().resolve()
+            try:
+                resolved.relative_to(allowed_base)
+            except ValueError:
+                raise ValueError(
+                    f"hermes_home {hermes_home} resolves to {resolved} which is not within allowed base {allowed_base}"
+                )
+        return resolved
     db_path = Path(getattr(engine._store, "db_path", Path.home() / ".hermes" / "lcm.db"))
     return db_path.parent / "state.db"
 

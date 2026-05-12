@@ -957,11 +957,29 @@ class LCMEngine(ContextEngine):
             self._auxiliary_session_ids.discard(session_id)
         self._clear_thread_context_stateless(session_id)
 
+    def _get_allowed_hermes_base(self) -> Path | None:
+        """Get the allowed base directory for hermes_home, or None if not restricted."""
+        env_base = os.environ.get("LCM_HERMES_BASE_DIR")
+        if env_base:
+            return Path(env_base).expanduser().resolve()
+        return None  # No restriction when env var not set
+
     def _state_db_path(self, kwargs: Dict[str, Any] | None = None) -> Path:
         kwargs = kwargs or {}
         hermes_home = str(kwargs.get("hermes_home") or self._hermes_home or "")
         if hermes_home:
-            return Path(hermes_home).expanduser() / "state.db"
+            # Prevent directory traversal by resolving the path
+            path = Path(hermes_home).expanduser().resolve()
+            # Check containment within allowed base only when restriction is active
+            allowed_base = self._get_allowed_hermes_base()
+            if allowed_base is not None:
+                try:
+                    path.relative_to(allowed_base)
+                except ValueError:
+                    raise ValueError(
+                        f"hermes_home {hermes_home} resolves to {path} which is not within allowed base {allowed_base}"
+                    )
+            return path / "state.db"
         return Path(self._store.db_path).parent / "state.db"
 
     def _caller_is_auxiliary_agent_frame(self, caller_self: Any) -> bool:

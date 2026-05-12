@@ -2,7 +2,7 @@
 
 Externalization started as a pre-compaction serializer guard for oversized tool
 outputs. The same durable payload format is also used by the ingest path so
-obvious oversized content can be kept out of SQLite/FTS while remaining
+obvious oversized content can be kept out of SQLite/FTS while still being
 recoverable through the LCM inspection and expansion tools.
 """
 
@@ -48,10 +48,27 @@ def _content_digest_prefix(content: str) -> str:
 def get_large_output_storage_dir(config, hermes_home: str = "", *, create: bool) -> Path:
     configured = getattr(config, "large_output_externalization_path", "") or ""
     if configured:
-        path = Path(configured).expanduser()
+        path = Path(configured).expanduser().resolve()
+        # Check containment for configured paths when LCM_HERMES_BASE_DIR is set
+        env_base = os.environ.get("LCM_HERMES_BASE_DIR")
+        if env_base:
+            allowed_base = Path(env_base).expanduser().resolve()
+            try:
+                path.relative_to(allowed_base)
+            except ValueError:
+                raise ValueError(f"Path {path} is not within allowed base {allowed_base}")
     else:
-        base = Path(hermes_home).expanduser() if hermes_home else Path("~/.hermes").expanduser()
+        base = Path(hermes_home).expanduser().resolve() if hermes_home else Path("~/.hermes").expanduser().resolve()
         path = base / DEFAULT_LARGE_OUTPUT_DIRNAME
+        # Check containment within allowed base for default/hermes_home-based paths
+        # Only enforced when LCM_HERMES_BASE_DIR is explicitly set
+        env_base = os.environ.get("LCM_HERMES_BASE_DIR")
+        if env_base:
+            allowed_base = Path(env_base).expanduser().resolve()
+            try:
+                path.relative_to(allowed_base)
+            except ValueError:
+                raise ValueError(f"Path {path} is not within allowed base {allowed_base}")
     if create:
         path.mkdir(parents=True, exist_ok=True)
         try:

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Immutable-first message store — the source of truth.
 
 Every message is persisted durably in SQLite. The normal model is append-only,
@@ -9,7 +11,9 @@ row identity (`store_id`) for DAG/source lookup.
 
 import json
 import logging
+import os
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
