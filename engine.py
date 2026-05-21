@@ -534,9 +534,56 @@ class LCMEngine(ContextEngine):
         if self._should_force_overflow_recovery(observed_tokens=rough):
             return True
         if self.threshold_tokens > 0 and rough >= self.threshold_tokens:
-            return True
+            eligible, reason = self._leaf_compaction_candidate_status(messages)
+            if eligible:
+                return True
+            if self._should_run_deferred_maintenance(messages, observed_tokens=rough):
+                return True
+            self._last_compression_status = "noop"
+            self._last_compression_noop_reason = reason
+            logger.info("LCM preflight compression no-op: %s", reason)
+            return False
         self._refresh_raw_backlog_debt(messages, observed_tokens=rough)
         return self._should_run_deferred_maintenance(messages, observed_tokens=rough)
+
+    def _leaf_compaction_candidate_status(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        force_overflow: bool = False,
+    ) -> tuple[bool, str]:
+        """Return whether a normal leaf compaction pass can actually run.
+
+        The host asks ``should_compress_preflight`` before it emits user-visible
+        compression status. A session can be over the global context threshold
+        while all pressure sits in the protected fresh tail, or while the raw
+        backlog outside that tail is still smaller than the configured leaf
+        chunk. In that case ``compress()`` would immediately no-op, so preflight
+        should not advertise a compaction attempt yet.
+        """
+        if not messages:
+            return False, "empty message list"
+        n = len(messages)
+        fresh_tail_start = max(0, n - self._config.fresh_tail_count)
+        leading_anchor_count = self._leading_anchor_count(messages)
+        if fresh_tail_start <= leading_anchor_count:
+            return False, "no eligible raw backlog outside fresh tail"
+
+        candidate_raw = messages[leading_anchor_count:fresh_tail_start]
+        if not candidate_raw:
+            return False, "no eligible raw backlog outside fresh tail"
+
+        if force_overflow:
+            return True, "forced overflow recovery"
+
+        raw_tokens_outside_tail = count_messages_tokens(candidate_raw)
+        if self._config.dynamic_leaf_chunk_enabled:
+            working_leaf_chunk_tokens = self._working_leaf_chunk_tokens(raw_tokens_outside_tail)
+        else:
+            working_leaf_chunk_tokens = self._config.leaf_chunk_tokens
+        if raw_tokens_outside_tail < working_leaf_chunk_tokens:
+            return False, "raw backlog outside fresh tail is below leaf chunk threshold"
+        return True, "eligible raw backlog outside fresh tail"
 
     def _working_leaf_chunk_tokens(self, raw_tokens_outside_tail: int) -> int:
         base = max(1, self._config.leaf_chunk_tokens)

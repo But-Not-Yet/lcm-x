@@ -925,6 +925,92 @@ class TestEngineABC:
 
         assert instance.should_compress(90)
 
+    def test_preflight_does_not_request_compaction_when_only_fresh_tail_is_over_threshold(self, tmp_path):
+        config = LCMConfig(
+            database_path=str(tmp_path / "lcm_preflight_fresh_tail.db"),
+            fresh_tail_count=4,
+            leaf_chunk_tokens=100,
+        )
+        instance = LCMEngine(config=config)
+        instance._session_id = "test-session"
+        instance.context_length = 1000
+        instance.threshold_tokens = 100
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "tiny old backlog"},
+            {"role": "assistant", "content": "tiny old answer"},
+            {"role": "user", "content": "fresh " + "x" * 500},
+            {"role": "assistant", "content": "fresh " + "y" * 500},
+            {"role": "user", "content": "fresh " + "z" * 500},
+        ]
+        try:
+            assert count_messages_tokens(messages) >= instance.threshold_tokens
+            assert not instance.should_compress_preflight(messages)
+            assert instance._last_compression_status == "noop"
+            assert "below leaf chunk threshold" in instance._last_compression_noop_reason
+        finally:
+            instance.shutdown()
+
+    def test_preflight_requests_compaction_for_deferred_maintenance_under_critical_pressure(self, tmp_path):
+        config = LCMConfig(
+            database_path=str(tmp_path / "lcm_preflight_deferred_critical.db"),
+            fresh_tail_count=4,
+            leaf_chunk_tokens=100,
+            deferred_maintenance_enabled=True,
+            critical_budget_pressure_ratio=0.50,
+        )
+        instance = LCMEngine(config=config)
+        instance._bind_lifecycle_state("test-session")
+        instance.context_length = 200
+        instance.threshold_tokens = 100
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "tiny old backlog"},
+            {"role": "assistant", "content": "tiny old answer"},
+            {"role": "user", "content": "fresh " + "x" * 500},
+            {"role": "assistant", "content": "fresh " + "y" * 500},
+            {"role": "user", "content": "fresh " + "z" * 500},
+        ]
+        try:
+            rough = count_messages_tokens(messages)
+            assert rough >= instance.threshold_tokens
+            eligible, reason = instance._leaf_compaction_candidate_status(messages)
+            assert not eligible
+            assert "below leaf chunk threshold" in reason
+            instance._lifecycle.record_debt(
+                instance._conversation_id,
+                kind="raw_backlog",
+                size_estimate=instance._raw_backlog_tokens(messages),
+            )
+            assert instance._should_run_deferred_maintenance(messages, observed_tokens=rough)
+            assert instance.should_compress_preflight(messages)
+        finally:
+            instance.shutdown()
+
+    def test_preflight_requests_compaction_when_old_backlog_has_leaf_chunk(self, tmp_path):
+        config = LCMConfig(
+            database_path=str(tmp_path / "lcm_preflight_leaf_chunk.db"),
+            fresh_tail_count=4,
+            leaf_chunk_tokens=20,
+        )
+        instance = LCMEngine(config=config)
+        instance._session_id = "test-session"
+        instance.context_length = 1000
+        instance.threshold_tokens = 100
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "old backlog " + "x" * 200},
+            {"role": "assistant", "content": "old answer " + "y" * 200},
+            {"role": "user", "content": "fresh " + "a" * 200},
+            {"role": "assistant", "content": "fresh " + "b" * 200},
+            {"role": "user", "content": "fresh " + "c" * 200},
+        ]
+        try:
+            assert count_messages_tokens(messages) >= instance.threshold_tokens
+            assert instance.should_compress_preflight(messages)
+        finally:
+            instance.shutdown()
+
     def test_update_from_response(self, engine):
         engine.update_from_response({
             "prompt_tokens": 5000,
