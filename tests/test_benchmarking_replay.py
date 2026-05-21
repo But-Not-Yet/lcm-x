@@ -6,7 +6,7 @@ from pathlib import Path
 import hermes_lcm.engine as lcm_engine
 
 from benchmarking.fixtures import make_synthetic_fixture
-from benchmarking.replay import run_replay
+from benchmarking.replay import run_replay, run_replays
 from benchmarking.types import Canary, LCMPolicy, ReplayFixture
 
 
@@ -95,6 +95,27 @@ def test_replay_uses_output_directory_for_state_and_not_home(tmp_path, monkeypat
     assert not (fake_home / ".hermes" / "lcm.db").exists()
 
 
+def test_run_replays_isolates_same_name_policy_versions(tmp_path):
+    fixture = ReplayFixture(
+        name="versioned_fixture",
+        messages=[
+            {"role": "system", "content": "You are a test agent."},
+            {"role": "user", "content": "small hello"},
+        ],
+    )
+    policies = [
+        _small_policy(name="candidate", policy_version="1", context_length=10_000, context_threshold=0.90),
+        _small_policy(name="candidate", policy_version="2", context_length=10_000, context_threshold=0.90),
+    ]
+
+    metrics = run_replays([fixture], policies, output_dir=tmp_path)
+
+    assert [row.policy_version for row in metrics] == ["1", "2"]
+    assert len({row.database_path for row in metrics}) == 2
+    assert (tmp_path / "versioned_fixture__candidate__v1" / "metrics.json").exists()
+    assert (tmp_path / "versioned_fixture__candidate__v2" / "metrics.json").exists()
+
+
 def test_replay_retrieval_expands_raw_hits(tmp_path):
     fixture = ReplayFixture(
         name="raw_hit",
@@ -107,8 +128,30 @@ def test_replay_retrieval_expands_raw_hits(tmp_path):
     )
 
     metrics = run_replay(fixture, _small_policy(), output_dir=tmp_path)
-    raw_metrics = json.loads((tmp_path / "raw_hit" / "metrics.json").read_text())
+    raw_metrics = json.loads((tmp_path / "raw_hit__small_policy__v1" / "metrics.json").read_text())
 
     assert metrics.retrieval_canaries_found == 1
     assert raw_metrics["retrieval_canaries_found"] == 1
     assert raw_metrics["database_path"] == metrics.database_path
+
+
+def test_replay_reports_headroom_fresh_tail_and_chatter_risk_metrics(tmp_path):
+    fixture = make_synthetic_fixture(
+        name="pressure_metrics",
+        message_pairs=8,
+        canary_count=2,
+        filler_words=80,
+    )
+
+    metrics = run_replay(fixture, _small_policy(), output_dir=tmp_path)
+    raw_metrics = json.loads((tmp_path / "pressure_metrics__small_policy__v1" / "metrics.json").read_text())
+
+    assert metrics.fresh_tail_message_count == 1
+    assert metrics.fresh_tail_tokens > 0
+    assert metrics.fresh_tail_pressure_ratio > 0
+    assert metrics.estimated_next_turn_tokens > 0
+    assert metrics.post_compaction_headroom_ratio == metrics.post_compaction_headroom_tokens / metrics.threshold_tokens
+    assert metrics.active_canary_recall == metrics.active_canaries_found / metrics.total_canaries
+    assert metrics.retrieval_canary_recall == 1.0
+    assert metrics.repeated_compaction_risk is True
+    assert raw_metrics["repeated_compaction_risk"] is True

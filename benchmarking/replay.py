@@ -41,6 +41,10 @@ def _safe_name(value: str) -> str:
     return safe or "replay"
 
 
+def _policy_run_key(policy: LCMPolicy) -> str:
+    return f"{_safe_name(policy.name)}__v{_safe_name(policy.policy_version)}"
+
+
 def deterministic_summary(
     *,
     text: str,
@@ -110,13 +114,14 @@ def _new_engine(policy: LCMPolicy, run_dir: Path):
     _ensure_hermes_lcm_package()
     from hermes_lcm.engine import LCMEngine
 
-    db_path = run_dir / f"{_safe_name(policy.name)}.lcm.db"
+    policy_key = _policy_run_key(policy)
+    db_path = run_dir / f"{policy_key}.lcm.db"
     hermes_home = run_dir / "hermes-home"
     hermes_home.mkdir(parents=True, exist_ok=True)
     config = _config_from_policy(policy, db_path)
     engine = LCMEngine(config=config, hermes_home=str(hermes_home))
-    session_id = f"bench-{_safe_name(policy.name)}"
-    conversation_id = f"bench-{_safe_name(policy.name)}"
+    session_id = f"bench-{policy_key}"
+    conversation_id = f"bench-{policy_key}"
     engine.on_session_start(
         session_id,
         platform="benchmark",
@@ -167,6 +172,12 @@ def _count_retrieval_canaries(engine: Any, fixture: ReplayFixture) -> int:
     return sum(1 for canary in fixture.canaries if _grep_canary(engine, canary))
 
 
+def _ratio(numerator: int | float, denominator: int | float) -> float:
+    if not denominator:
+        return 0.0
+    return numerator / denominator
+
+
 def run_replay(
     fixture: ReplayFixture,
     policy: LCMPolicy,
@@ -179,7 +190,7 @@ def run_replay(
     from hermes_lcm.tokens import count_messages_tokens
 
     root_dir = Path(output_dir)
-    run_dir = root_dir / _safe_name(fixture.name)
+    run_dir = root_dir / f"{_safe_name(fixture.name)}__{_policy_run_key(policy)}"
     run_dir.mkdir(parents=True, exist_ok=True)
     engine = _new_engine(policy, run_dir)
     start = time.perf_counter()
@@ -197,19 +208,34 @@ def run_replay(
         after = count_messages_tokens(compressed_messages)
         active_canaries = count_active_canaries(compressed_messages, fixture.canaries)
         retrieval_canaries = _count_retrieval_canaries(engine, fixture)
+        tail_count = min(max(policy.fresh_tail_count, 0), len(compressed_messages))
+        fresh_tail = compressed_messages[-tail_count:] if tail_count else []
+        fresh_tail_tokens = count_messages_tokens(fresh_tail)
+        estimated_next_turn_tokens = count_messages_tokens(messages[-2:]) if messages else 0
+        headroom_tokens = engine.threshold_tokens - after
         status = engine.get_status()
         metrics = ReplayMetrics(
             policy_name=policy.name,
+            policy_version=policy.policy_version,
             fixture_name=fixture.name,
+            fixture_tags=list(fixture.tags),
             prompt_tokens_before=before,
             prompt_tokens_after=after,
             threshold_tokens=engine.threshold_tokens,
             compression_count=engine.compression_count,
             compaction_attempts=compaction_attempts,
-            post_compaction_headroom_tokens=engine.threshold_tokens - after,
+            post_compaction_headroom_tokens=headroom_tokens,
+            post_compaction_headroom_ratio=_ratio(headroom_tokens, engine.threshold_tokens),
+            fresh_tail_message_count=tail_count,
+            fresh_tail_tokens=fresh_tail_tokens,
+            fresh_tail_pressure_ratio=_ratio(fresh_tail_tokens, engine.threshold_tokens),
+            estimated_next_turn_tokens=estimated_next_turn_tokens,
+            repeated_compaction_risk=bool(compaction_attempts and headroom_tokens <= estimated_next_turn_tokens),
             active_canaries_found=active_canaries,
             retrieval_canaries_found=retrieval_canaries,
             total_canaries=len(fixture.canaries),
+            active_canary_recall=_ratio(active_canaries, len(fixture.canaries)) if fixture.canaries else 1.0,
+            retrieval_canary_recall=_ratio(retrieval_canaries, len(fixture.canaries)) if fixture.canaries else 1.0,
             failures=failures,
             database_path=str(engine._store.db_path),
             hermes_home=str(engine._hermes_home),
@@ -221,18 +247,33 @@ def run_replay(
     except Exception as exc:
         failures.append(f"{type(exc).__name__}: {exc}")
         after = count_messages_tokens(compressed_messages)
+        tail_count = min(max(policy.fresh_tail_count, 0), len(compressed_messages))
+        fresh_tail = compressed_messages[-tail_count:] if tail_count else []
+        fresh_tail_tokens = count_messages_tokens(fresh_tail)
+        estimated_next_turn_tokens = count_messages_tokens(messages[-2:]) if messages else 0
+        headroom_tokens = engine.threshold_tokens - after
         metrics = ReplayMetrics(
             policy_name=policy.name,
+            policy_version=policy.policy_version,
             fixture_name=fixture.name,
+            fixture_tags=list(fixture.tags),
             prompt_tokens_before=before,
             prompt_tokens_after=after,
             threshold_tokens=engine.threshold_tokens,
             compression_count=engine.compression_count,
             compaction_attempts=compaction_attempts,
-            post_compaction_headroom_tokens=engine.threshold_tokens - after,
+            post_compaction_headroom_tokens=headroom_tokens,
+            post_compaction_headroom_ratio=_ratio(headroom_tokens, engine.threshold_tokens),
+            fresh_tail_message_count=tail_count,
+            fresh_tail_tokens=fresh_tail_tokens,
+            fresh_tail_pressure_ratio=_ratio(fresh_tail_tokens, engine.threshold_tokens),
+            estimated_next_turn_tokens=estimated_next_turn_tokens,
+            repeated_compaction_risk=bool(compaction_attempts and headroom_tokens <= estimated_next_turn_tokens),
             active_canaries_found=0,
             retrieval_canaries_found=0,
             total_canaries=len(fixture.canaries),
+            active_canary_recall=0.0 if fixture.canaries else 1.0,
+            retrieval_canary_recall=0.0 if fixture.canaries else 1.0,
             failures=failures,
             database_path=str(engine._store.db_path),
             hermes_home=str(engine._hermes_home),
@@ -257,6 +298,5 @@ def run_replays(
     root = Path(output_dir)
     for fixture in fixtures:
         for policy in policies:
-            suite_dir = root / f"{_safe_name(fixture.name)}__{_safe_name(policy.name)}"
-            metrics.append(run_replay(fixture, policy, output_dir=suite_dir))
+            metrics.append(run_replay(fixture, policy, output_dir=root))
     return metrics
