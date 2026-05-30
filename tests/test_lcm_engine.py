@@ -5045,6 +5045,92 @@ class TestSessionRollover:
         assert engine._dag.get_session_nodes("attacker-new") == []
         assert engine._session_id == "attacker-new"
 
+    def test_compression_boundary_skip_uses_new_session_cursor_for_fresh_messages(self, engine):
+        """Unproven boundary skips must not trust stale cursor/frontier state.
+
+        If the bound session cannot be proven to be the carry-over source, the
+        new session must persist its own fresh messages rather than inheriting a
+        cursor that makes them look already ingested.
+        """
+        engine.on_session_start("session-a", platform="telegram", context_length=200000)
+        engine._last_compacted_store_id = 42
+        engine._ingest_cursor = 3
+
+        engine.on_session_start(
+            "session-b",
+            old_session_id="session-c",
+            boundary_reason="compression",
+            platform="telegram",
+            context_length=200000,
+        )
+
+        fresh_messages = [
+            {"role": "user", "content": "fresh session-b question"},
+            {"role": "assistant", "content": "fresh session-b answer"},
+        ]
+        replay = engine._ingest_messages(fresh_messages)
+
+        assert replay == fresh_messages
+        assert engine._session_id == "session-b"
+        assert engine._last_compacted_store_id == 0
+        assert engine._ingest_cursor == len(fresh_messages)
+        assert engine._store.get_session_count("session-b") == len(fresh_messages)
+        assert [row["content"] for row in engine._store.get_session_messages("session-b")] == [
+            "fresh session-b question",
+            "fresh session-b answer",
+        ]
+
+    def test_compression_boundary_skip_preflight_cooldown_is_lossless(self, engine):
+        """Preflight should ingest fresh messages but not request compression during cooldown."""
+        engine.on_session_start("session-a", platform="telegram", context_length=200000)
+        engine._last_compacted_store_id = 42
+        engine._ingest_cursor = 3
+        engine.on_session_start(
+            "session-b",
+            old_session_id="session-c",
+            boundary_reason="compression",
+            platform="telegram",
+            context_length=200000,
+        )
+        engine.threshold_tokens = 1
+        engine._config.leaf_chunk_tokens = 1
+        engine._config.dynamic_leaf_chunk_enabled = False
+        engine._config.fresh_tail_count = 1
+
+        fresh_messages = [
+            {"role": "user", "content": f"fresh preflight payload {idx}"}
+            for idx in range(6)
+        ]
+
+        assert engine.should_compress_preflight(fresh_messages) is False
+        assert engine._store.get_session_count("session-b") == len(fresh_messages)
+        assert engine._ingest_cursor == len(fresh_messages)
+
+    def test_compression_boundary_skip_preflight_cooldown_blocks_replay_diff(self, engine, monkeypatch):
+        engine.on_session_start("session-a", platform="telegram", context_length=200000)
+        engine.on_session_start(
+            "session-b",
+            old_session_id="session-c",
+            boundary_reason="compression",
+            platform="telegram",
+            context_length=200000,
+        )
+        messages = [{"role": "assistant", "content": "raw assistant output"}]
+
+        def replay_diff(_messages):
+            return [{"role": "assistant", "content": "sanitized assistant output"}]
+
+        monkeypatch.setattr(engine, "_ingest_messages", replay_diff)
+
+        assert engine.should_compress_preflight(messages) is False
+
+    def test_compression_cooldown_prevents_cascade_after_boundary_skip(self, engine):
+        engine.on_session_start("session-a", platform="telegram", context_length=200000)
+        engine.threshold_tokens = 100000
+        engine._last_boundary_skip_time = time.time()
+
+        assert not engine.should_compress(200000)
+
     def test_live_auxiliary_child_session_does_not_rebind_shared_engine(self, tmp_path):
         hermes_home = tmp_path / "hermes-home"
         hermes_home.mkdir()
