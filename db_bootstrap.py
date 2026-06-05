@@ -7,9 +7,11 @@ same schema-version marker, PRAGMA settings, and FTS repair behavior.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import sqlite3
+import time
 from typing import Iterable, Sequence
 
 logger = logging.getLogger(__name__)
@@ -269,8 +271,14 @@ def _fts_needs_rebuild_structural(conn: sqlite3.Connection, spec: ExternalConten
         content_count = conn.execute(
             f"SELECT COUNT(*) FROM {quote_sql_identifier(spec.content_table)}"
         ).fetchone()[0]
+        # For an external-content FTS5 table, ``COUNT(*) FROM <fts>`` reads
+        # through to the content table (so it can never reveal a lagging index)
+        # and is O(index size). The ``<fts>_docsize`` shadow table holds the
+        # true indexed-document count and is a cheap ordinary-table count. Its
+        # existence is already guaranteed by the shadow-table check above.
+        docsize_table = f"{spec.table_name}_docsize"
         fts_count = conn.execute(
-            f"SELECT COUNT(*) FROM {quote_sql_identifier(spec.table_name)}"
+            f"SELECT COUNT(*) FROM {quote_sql_identifier(docsize_table)}"
         ).fetchone()[0]
         if int(content_count or 0) != int(fts_count or 0):
             return True
@@ -280,10 +288,101 @@ def _fts_needs_rebuild_structural(conn: sqlite3.Connection, spec: ExternalConten
     return False
 
 
-def _fts_needs_rebuild(conn: sqlite3.Connection, spec: ExternalContentFtsSpec) -> bool:
+INTEGRITY_CHECK_INTERVAL_ENV = "LCM_FTS_INTEGRITY_CHECK_INTERVAL_HOURS"
+DEFAULT_INTEGRITY_CHECK_INTERVAL_HOURS = 24.0
+
+
+def _integrity_check_interval_hours() -> float:
+    """Hours between startup FTS deep integrity-checks.
+
+    ``0`` checks on every startup (previous behavior); a negative value never
+    checks on startup (relies on structural checks + LIKE fallback + doctor).
+    """
+    raw = os.environ.get(INTEGRITY_CHECK_INTERVAL_ENV)
+    if raw is None:
+        return DEFAULT_INTEGRITY_CHECK_INTERVAL_HOURS
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_INTEGRITY_CHECK_INTERVAL_HOURS
+    if not math.isfinite(value):
+        # nan/inf would suppress startup checks indefinitely once a marker
+        # exists; treat non-finite values as invalid.
+        return DEFAULT_INTEGRITY_CHECK_INTERVAL_HOURS
+    return value
+
+
+def _integrity_marker_key(spec: ExternalContentFtsSpec) -> str:
+    return f"fts_integrity_checked_at:{spec.table_name}"
+
+
+def _load_integrity_checked_at(
+    conn: sqlite3.Connection, spec: ExternalContentFtsSpec
+) -> float | None:
+    ensure_metadata_table(conn)
+    row = conn.execute(
+        "SELECT value FROM metadata WHERE key = ?",
+        (_integrity_marker_key(spec),),
+    ).fetchone()
+    if not row or row[0] is None:
+        return None
+    try:
+        return float(row[0])
+    except (TypeError, ValueError):
+        return None
+
+
+def _record_integrity_checked(
+    conn: sqlite3.Connection, spec: ExternalContentFtsSpec, *, now: float | None = None
+) -> None:
+    ensure_metadata_table(conn)
+    current = time.time() if now is None else now
+    conn.execute(
+        """
+        INSERT INTO metadata(key, value)
+        VALUES(?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (_integrity_marker_key(spec), str(current)),
+    )
+
+
+def _should_run_integrity_check(
+    conn: sqlite3.Connection, spec: ExternalContentFtsSpec, *, now: float | None = None
+) -> bool:
+    hours = _integrity_check_interval_hours()
+    if hours == 0:
+        return True
+    if hours < 0:
+        return False
+    last = _load_integrity_checked_at(conn, spec)
+    if last is None:
+        return True
+    current = time.time() if now is None else now
+    return (current - last) >= hours * 3600.0
+
+
+def _fts_needs_rebuild(
+    conn: sqlite3.Connection,
+    spec: ExternalContentFtsSpec,
+    *,
+    now: float | None = None,
+    throttle: bool = False,
+) -> bool:
     if _fts_needs_rebuild_structural(conn, spec):
         return True
-    return check_external_content_fts_integrity(conn, spec)["status"] == "fail"
+    # Structurally sound: the FTS5 integrity-check is O(index size) and was the
+    # dominant startup cost on large databases (issue #235). On the startup path
+    # (``throttle=True``) skip it when already checked within the interval.
+    # Explicit repair (e.g. ``/lcm doctor repair apply``) uses ``throttle=False``
+    # so it always runs the deep check and can fix same-row-count drift that the
+    # structural checks cannot see.
+    if throttle and not _should_run_integrity_check(conn, spec, now=now):
+        return False
+    result = check_external_content_fts_integrity(conn, spec)
+    if result["status"] == "pass":
+        _record_integrity_checked(conn, spec, now=now)
+    return result["status"] == "fail"
 
 
 def check_external_content_fts_integrity(
@@ -387,10 +486,16 @@ def external_content_fts_needs_repair(conn: sqlite3.Connection, spec: ExternalCo
     return _fts_needs_rebuild_structural(conn, spec) or _fts_missing_triggers(conn, spec)
 
 
-def repair_external_content_fts(conn: sqlite3.Connection, spec: ExternalContentFtsSpec) -> dict[str, bool]:
+def repair_external_content_fts(
+    conn: sqlite3.Connection,
+    spec: ExternalContentFtsSpec,
+    *,
+    now: float | None = None,
+    throttle: bool = False,
+) -> dict[str, bool]:
     rebuilt = False
     degraded = False
-    if _fts_needs_rebuild(conn, spec):
+    if _fts_needs_rebuild(conn, spec, now=now, throttle=throttle):
         db_path = conn.execute("PRAGMA database_list").fetchone()
         if db_path:
             db_file = db_path[2]
@@ -421,12 +526,20 @@ def repair_external_content_fts(conn: sqlite3.Connection, spec: ExternalContentF
     triggers_were_missing = _fts_missing_triggers(conn, spec)
     for trigger_sql in spec.trigger_sqls:
         conn.execute(trigger_sql)
+    if rebuilt:
+        # A freshly rebuilt index is known-consistent; record the marker so the
+        # next startup can skip the deep integrity-check within the interval.
+        _record_integrity_checked(conn, spec, now=now)
     conn.commit()
     return {"rebuilt": rebuilt, "degraded": degraded, "triggers_recreated": triggers_were_missing}
 
 
-def ensure_external_content_fts(conn: sqlite3.Connection, spec: ExternalContentFtsSpec) -> None:
-    repair_external_content_fts(conn, spec)
+def ensure_external_content_fts(
+    conn: sqlite3.Connection, spec: ExternalContentFtsSpec, *, now: float | None = None
+) -> None:
+    # Startup path: throttle the deep integrity-check. Explicit repair callers
+    # use ``repair_external_content_fts(..., throttle=False)`` for a forced check.
+    repair_external_content_fts(conn, spec, now=now, throttle=True)
 
 
 def run_versioned_migrations(conn: sqlite3.Connection) -> None:
