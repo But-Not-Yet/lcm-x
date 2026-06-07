@@ -49,8 +49,43 @@ class ExternalContentFtsSpec:
 
 
 def configure_connection(conn: sqlite3.Connection) -> None:
+    """Configure SQLite connection for WAL durability and hygiene.
+
+    In a multi-agent deployment (gateway process + CLI sessions + sub-agents),
+    every process opens its own sqlite3.Connection pointing at the same
+    lcm.db file.  These settings improve committed-write durability and WAL
+    hygiene, but do NOT make sibling processes safe from an unexpected process
+    death.  Abnormal exit still depends on normal SQLite WAL recovery;
+    application-level checkpoints only run during graceful shutdown (see
+    ``MessageStore.close()`` etc.).
+
+    Key design decisions:
+    - journal_mode=WAL  : writes go to a separate log; readers never block.
+    - synchronous=FULL  : fsync both the WAL and the WAL index before every
+                          write transaction commit.  WAL + FULL is the only
+                          combination SQLite guarantees survives power loss
+                          without data loss (NORMAL may lose the WAL index).
+    - wal_autocheckpoint=500 : after 500 WAL pages (~2 MB) SQLite will try
+                               an automatic passive checkpoint.  This is a
+                               best-effort hint — it is silently skipped when
+                               another connection holds a read transaction.
+                               Under checkpoint starvation WAL can grow well
+                               beyond this trigger.
+    - journal_size_limit=67108864 (64 MiB) : limits the WAL file size after
+                                             a successful checkpoint or reset.
+                                             It does NOT force a checkpoint
+                                             or cap growth while another
+                                             connection holds an old WAL
+                                             end mark.
+    - mmap_size=268435456 (256 MiB)        : memory-map reads so concurrent
+                                              readers cache WAL pages in RAM.
+    """
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=FULL")
     conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA wal_autocheckpoint=500")
+    conn.execute("PRAGMA journal_size_limit=67108864")
+    conn.execute("PRAGMA mmap_size=268435456")
 
 
 def ensure_metadata_table(conn: sqlite3.Connection) -> None:
