@@ -47,6 +47,7 @@ from .ingest_protection import (
     protect_inline_payloads_in_text,
     protect_messages_for_ingest,
     quarantine_suspicious_assistant_messages,
+    redact_sensitive_text,
     redact_sensitive_value,
     restore_ingest_payload_placeholders,
     sensitive_pattern_status,
@@ -81,6 +82,13 @@ logger = logging.getLogger(__name__)
 _PLUGIN_ROOT = Path(__file__).resolve().parent
 _PLUGIN_METADATA: dict[str, str] | None = None
 _SESSION_END_BUSY_TIMEOUT_MS = 50
+
+# Auto-focus topic derivation: infer a compact focus hint from the most recent
+# real user turns so that summarization can prioritise current user intent.
+# Mirrors Hermes upstream fix/compression-auto-focus-topic (#44674 branch).
+_AUTO_FOCUS_MAX_TURNS = 3
+_AUTO_FOCUS_TURN_MAX_CHARS = 260
+_AUTO_FOCUS_MAX_CHARS = 700
 _VISIBLE_TEXT_PART_TYPES = {"text", "input_text", "output_text"}
 _INTERNAL_ASSISTANT_PART_TYPES = {
     "analysis",
@@ -921,6 +929,14 @@ class LCMEngine(ContextEngine):
             if observed_prompt_tokens is not None and observed_prompt_tokens > 0
             else count_messages_tokens(messages)
         )
+
+        # Auto-derive focus topic from recent user turns when not explicitly
+        # provided.  Uses already-redacted ``working_messages`` so that the
+        # same configured redaction path covers derived focus text — preventing
+        # sensitive-value leakage from structured content or bearer-style text.
+        if focus_topic is None:
+            focus_topic = self._derive_auto_focus_topic(working_messages)
+
         noop_reason = "no eligible raw backlog outside fresh tail"
 
         while leaf_passes < max_leaf_passes:
@@ -4320,6 +4336,83 @@ class LCMEngine(ContextEngine):
         )
         pattern = rf"^{block}(?:\n\n---\n\n{block})*$"
         return re.fullmatch(pattern, content, flags=re.DOTALL) is not None
+
+    def _derive_auto_focus_topic(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Infer a compact focus hint from the most recent real user turns.
+
+        Walks the message list backwards, collecting up to
+        ``_AUTO_FOCUS_MAX_TURNS`` user messages (skipping context summaries
+        and empty turns).  Returns a brief text block suitable for injection
+        into the summarizer prompt as ``focus_topic``.
+
+        IMPORTANT: The ``messages`` parameter must be ``working_messages``
+        (output of ``_ingest_messages``), not raw messages.  ``working_messages``
+        has already been redacted by ``_redact_active_replay_messages``.
+
+        As an additional safety layer, text extracted by
+        ``text_content_for_pattern_matching`` is run through
+        ``redact_sensitive_text`` with the active config.  This covers
+        sensitive values that ``_redact_active_replay_messages`` misses
+        (e.g., dict/JSON token content deserialized into text,
+        bearer-style auth text that survived structured-content flattening).
+
+        Mirrors Hermes upstream ``ContextCompressor._derive_auto_focus_topic``
+        from ``fix/compression-auto-focus-topic``.
+        """
+        candidates: list[str] = []
+        for idx in range(len(messages) - 1, -1, -1):
+            msg = messages[idx]
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            # Skip context compaction summaries — they are synthetic, not
+            # real user intent.
+            if self._is_context_summary_content(content):
+                continue
+            text = (text_content_for_pattern_matching(content) or "").strip()
+            # Additional redaction safety net: run extracted text through the
+            # configured redaction path.  _redact_active_replay_messages uses
+            # parse_json_strings=False for content, so structured content
+            # (dict/JSON tokens, bearer-style auth text) may not be fully
+            # covered.  This extra pass ensures the same redaction rules apply
+            # to whatever text is extracted for the focus topic.
+            text = redact_sensitive_text(text, self._config)
+            if not text:
+                continue
+            text = " ".join(text.split())
+            if len(text) > _AUTO_FOCUS_TURN_MAX_CHARS:
+                text = text[: _AUTO_FOCUS_TURN_MAX_CHARS - 1].rstrip() + "…"
+            candidates.append(text)
+            if len(candidates) >= _AUTO_FOCUS_MAX_TURNS:
+                break
+
+        if not candidates:
+            return None
+
+        candidates.reverse()
+        focus = "Recent user focus:\n" + "\n".join(f"- {item}" for item in candidates)
+        if len(focus) > _AUTO_FOCUS_MAX_CHARS:
+            focus = focus[: _AUTO_FOCUS_MAX_CHARS - 1].rstrip() + "…"
+        return focus
+
+    @staticmethod
+    def _is_context_summary_content(content: Any) -> bool:
+        """Check whether message content is a synthetic context summary.
+
+        Only checks string content — LCM/ Hermes compression summaries are
+        always stored as plain strings, never as structured multimodal parts.
+        """
+        if not isinstance(content, str):
+            return False
+        return (
+            "CONTEXT COMPACTION" in content
+            or "CONTEXT SUMMARY" in content
+            or "Earlier turns have been compacted" in content
+            or "Earlier turns were compacted" in content
+        )
 
     @staticmethod
     def _extract_expand_hint(summary: str) -> str:
