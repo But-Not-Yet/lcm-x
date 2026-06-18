@@ -12233,6 +12233,491 @@ class TestEngineTools:
         assert second["expanded"][0]["content_offset"] == 1
         assert second["pagination"]["next_content_offset"] == 2
 
+    def test_handle_expand_query_recursively_descends_parent_nodes_to_leaf_messages(self, engine, monkeypatch):
+        captured = {}
+
+        def fake_synthesize(*, prompt, context_blocks, model, max_tokens, timeout):
+            captured["context_blocks"] = context_blocks
+            return "recursive answer"
+
+        monkeypatch.setattr(lcm_tools, "_synthesize_expansion_answer", fake_synthesize)
+        store_id = engine._store.append(
+            "test-session",
+            {"role": "user", "content": "LEAF RAW SECRET zeta detail"},
+        )
+        leaf_id = engine._dag.add_node(
+            SummaryNode(
+                session_id="test-session",
+                depth=0,
+                summary="leaf summary mentions broad topic only",
+                token_count=10,
+                source_token_count=10,
+                source_ids=[store_id],
+                source_type="messages",
+                created_at=1,
+            )
+        )
+        middle_id = engine._dag.add_node(
+            SummaryNode(
+                session_id="test-session",
+                depth=1,
+                summary="middle summary points at leaf",
+                token_count=10,
+                source_token_count=20,
+                source_ids=[leaf_id],
+                source_type="nodes",
+                created_at=2,
+            )
+        )
+        parent_id = engine._dag.add_node(
+            SummaryNode(
+                session_id="test-session",
+                depth=2,
+                summary="parent summary points at middle",
+                token_count=10,
+                source_token_count=30,
+                source_ids=[middle_id],
+                source_type="nodes",
+                created_at=3,
+            )
+        )
+
+        result = json.loads(
+            engine.handle_tool_call(
+                "lcm_expand_query",
+                {
+                    "prompt": "What exact leaf detail is present?",
+                    "node_ids": [parent_id],
+                    "max_tokens": 20,
+                    "context_max_tokens": 1000,
+                },
+            )
+        )
+
+        assert result["answer"] == "recursive answer"
+        serialized_context = json.dumps(captured["context_blocks"])
+        assert "LEAF RAW SECRET zeta detail" in serialized_context
+        assert any(block.get("type") == "child_messages" for block in captured["context_blocks"])
+
+    def test_handle_expand_query_deep_parent_reaches_leaf_messages(self, engine, monkeypatch):
+        captured = {}
+
+        def fake_synthesize(*, prompt, context_blocks, model, max_tokens, timeout):
+            captured["context_blocks"] = context_blocks
+            return "deep recursive answer"
+
+        monkeypatch.setattr(lcm_tools, "_synthesize_expansion_answer", fake_synthesize)
+        store_id = engine._store.append(
+            "test-session",
+            {"role": "user", "content": "DEEP LEAF RAW SECRET omega detail"},
+        )
+        child_id = engine._dag.add_node(
+            SummaryNode(
+                session_id="test-session",
+                depth=0,
+                summary="leaf summary",
+                token_count=5,
+                source_token_count=5,
+                source_ids=[store_id],
+                source_type="messages",
+                created_at=1,
+            )
+        )
+        for depth in range(1, 7):
+            child_id = engine._dag.add_node(
+                SummaryNode(
+                    session_id="test-session",
+                    depth=depth,
+                    summary=f"depth {depth} summary",
+                    token_count=5,
+                    source_token_count=5 * (depth + 1),
+                    source_ids=[child_id],
+                    source_type="nodes",
+                    created_at=depth + 1,
+                )
+            )
+
+        result = json.loads(
+            engine.handle_tool_call(
+                "lcm_expand_query",
+                {
+                    "prompt": "What exact deep leaf detail is present?",
+                    "node_ids": [child_id],
+                    "max_tokens": 20,
+                    "context_max_tokens": 1000,
+                },
+            )
+        )
+
+        serialized_context = json.dumps(captured["context_blocks"])
+        assert result["answer"] == "deep recursive answer"
+        assert "DEEP LEAF RAW SECRET omega detail" in serialized_context
+        assert sum(block.get("type") == "descendant_child_nodes" for block in captured["context_blocks"]) >= 5
+        assert any(block.get("type") == "child_messages" for block in captured["context_blocks"])
+
+    def test_expand_query_descendant_collection_handles_zero_token_deep_chain_without_recursion(self, engine):
+        store_id = engine._store.append(
+            "test-session",
+            {"role": "user", "content": "ZERO TOKEN DEEP LEAF evidence"},
+        )
+        child_id = engine._dag.add_node(
+            SummaryNode(
+                session_id="test-session",
+                depth=0,
+                summary="",
+                token_count=0,
+                source_token_count=0,
+                source_ids=[store_id],
+                source_type="messages",
+                created_at=1,
+            )
+        )
+        for depth in range(1, 1105):
+            child_id = engine._dag.add_node(
+                SummaryNode(
+                    session_id="test-session",
+                    depth=depth,
+                    summary="",
+                    token_count=0,
+                    source_token_count=0,
+                    source_ids=[child_id],
+                    source_type="nodes",
+                    created_at=depth + 1,
+                )
+            )
+
+        root = engine._dag.get_node(child_id)
+        blocks = lcm_tools._collect_context_blocks_for_node(engine, root, max_tokens=32000)
+
+        serialized_context = json.dumps(blocks)
+        assert "ZERO TOKEN DEEP LEAF evidence" not in serialized_context
+        assert len(blocks) < 1105
+        assert lcm_tools._context_content_token_count(blocks) <= 33000
+        path_blocks = [block for block in blocks if "source_path" in block]
+        assert path_blocks
+        assert max(len(block["source_path"]) for block in path_blocks) <= 8
+        assert any(block.get("source_path_truncated") is True for block in path_blocks)
+        assert any(block.get("source_path_depth", 0) > len(block["source_path"]) for block in path_blocks)
+
+    def test_handle_expand_query_uses_raw_hits_when_summary_search_misses(self, engine, monkeypatch):
+        captured = {}
+
+        def fake_synthesize(*, prompt, context_blocks, model, max_tokens, timeout):
+            captured["context_blocks"] = context_blocks
+            return "raw bridge answer"
+
+        monkeypatch.setattr(lcm_tools, "_synthesize_expansion_answer", fake_synthesize)
+        store_id = engine._store.append(
+            "test-session",
+            {"role": "user", "content": "PHOENIXRAWONLY appears only in the raw message"},
+        )
+        engine._dag.add_node(
+            SummaryNode(
+                session_id="test-session",
+                depth=0,
+                summary="summary deliberately omits the distinctive raw identifier",
+                token_count=10,
+                source_token_count=10,
+                source_ids=[store_id],
+                source_type="messages",
+                created_at=1,
+            )
+        )
+
+        result = json.loads(
+            engine.handle_tool_call(
+                "lcm_expand_query",
+                {
+                    "prompt": "What mentions PHOENIX?",
+                    "query": "PHOENIXRAWONLY",
+                    "max_tokens": 20,
+                    "context_max_tokens": 1000,
+                },
+            )
+        )
+
+        assert result["answer"] == "raw bridge answer"
+        assert result["raw_matches"]
+        serialized_context = json.dumps(captured["context_blocks"])
+        assert "PHOENIXRAWONLY appears only in the raw message" in serialized_context
+
+    def test_handle_expand_query_keeps_raw_snippets_out_of_synthesis_context(self, engine, monkeypatch):
+        captured = {}
+
+        def fake_synthesize(*, prompt, context_blocks, model, max_tokens, timeout):
+            captured["context_blocks"] = context_blocks
+            return "raw snippet answer"
+
+        def fake_store_search(query, session_id=None, limit=5):
+            return [
+                {
+                    "store_id": 123,
+                    "session_id": session_id or "test-session",
+                    "source": "telegram",
+                    "role": "user",
+                    "timestamp": 1,
+                    "content": "A",
+                    "snippet": "UNBUDGETED RAW SNIPPET LEAK",
+                    "search_rank": 1,
+                }
+            ]
+
+        monkeypatch.setattr(lcm_tools, "_synthesize_expansion_answer", fake_synthesize)
+        monkeypatch.setattr(engine._store, "search", fake_store_search)
+
+        result = json.loads(
+            engine.handle_tool_call(
+                "lcm_expand_query",
+                {
+                    "prompt": "What raw detail?",
+                    "query": "anything",
+                    "max_tokens": 20,
+                    "context_max_tokens": 1,
+                },
+            )
+        )
+
+        serialized_context = json.dumps(captured["context_blocks"])
+        assert result["answer"] == "raw snippet answer"
+        assert result["raw_matches"][0]["snippet"] == "UNBUDGETED RAW SNIPPET LEAK"
+        assert "UNBUDGETED RAW SNIPPET LEAK" not in serialized_context
+        raw_block = next(block for block in captured["context_blocks"] if block["type"] == "raw_messages")
+        assert "snippet" not in raw_block["messages"][0]
+
+    def test_handle_expand_query_deduped_raw_hit_does_not_leak_snippet(self, engine, monkeypatch):
+        captured = {}
+
+        def fake_synthesize(*, prompt, context_blocks, model, max_tokens, timeout):
+            captured["context_blocks"] = context_blocks
+            return "deduped raw answer"
+
+        monkeypatch.setattr(lcm_tools, "_synthesize_expansion_answer", fake_synthesize)
+        store_id = engine._store.append(
+            "test-session",
+            {"role": "user", "content": "DEDUPEDRAW message evidence"},
+        )
+        node_id = engine._dag.add_node(
+            SummaryNode(
+                session_id="test-session",
+                depth=0,
+                summary="summary points at deduped raw evidence",
+                token_count=10,
+                source_token_count=10,
+                source_ids=[store_id],
+                source_type="messages",
+                created_at=1,
+            )
+        )
+
+        def fake_store_search(query, session_id=None, limit=5):
+            return [
+                {
+                    "store_id": store_id,
+                    "session_id": session_id or "test-session",
+                    "source": "telegram",
+                    "role": "user",
+                    "timestamp": 1,
+                    "content": "DEDUPEDRAW message evidence",
+                    "snippet": "DEDUPED RAW SNIPPET SHOULD NOT LEAK",
+                    "search_rank": 1,
+                }
+            ]
+
+        monkeypatch.setattr(engine._store, "search", fake_store_search)
+
+        result = json.loads(
+            engine.handle_tool_call(
+                "lcm_expand_query",
+                {
+                    "prompt": "What raw detail?",
+                    "node_ids": [node_id],
+                    "query": "DEDUPEDRAW",
+                    "max_tokens": 20,
+                    "context_max_tokens": 1000,
+                },
+            )
+        )
+
+        serialized_context = json.dumps(captured["context_blocks"])
+        assert result["answer"] == "deduped raw answer"
+        assert "DEDUPEDRAW message evidence" in serialized_context
+        assert "DEDUPED RAW SNIPPET SHOULD NOT LEAK" not in serialized_context
+        assert not any(block.get("type") == "raw_messages" for block in captured["context_blocks"])
+        assert result["raw_matches"] == []
+
+    def test_handle_expand_query_keeps_raw_tool_calls_out_of_synthesis_context(self, engine, monkeypatch):
+        captured = {}
+
+        def fake_synthesize(*, prompt, context_blocks, model, max_tokens, timeout):
+            captured["context_blocks"] = context_blocks
+            return "raw tool call answer"
+
+        def fake_store_search(query, session_id=None, limit=5):
+            return [
+                {
+                    "store_id": 456,
+                    "session_id": session_id or "test-session",
+                    "source": "telegram",
+                    "role": "assistant",
+                    "timestamp": 1,
+                    "content": "A",
+                    "tool_calls": [{"function": {"arguments": "UNBUDGETED TOOL ARGUMENT LEAK" * 20}}],
+                    "tool_call_id": "call_123",
+                    "tool_name": "expensive_tool",
+                    "search_rank": 1,
+                }
+            ]
+
+        monkeypatch.setattr(lcm_tools, "_synthesize_expansion_answer", fake_synthesize)
+        monkeypatch.setattr(engine._store, "search", fake_store_search)
+
+        result = json.loads(
+            engine.handle_tool_call(
+                "lcm_expand_query",
+                {
+                    "prompt": "What raw detail?",
+                    "query": "anything",
+                    "max_tokens": 20,
+                    "context_max_tokens": 1,
+                },
+            )
+        )
+
+        serialized_context = json.dumps(captured["context_blocks"])
+        raw_block = next(block for block in captured["context_blocks"] if block["type"] == "raw_messages")
+        raw_item = raw_block["messages"][0]
+        assert result["answer"] == "raw tool call answer"
+        assert "UNBUDGETED TOOL ARGUMENT LEAK" not in serialized_context
+        assert "tool_calls" not in raw_item
+        assert raw_item["tool_calls_omitted"] is True
+        assert raw_item["tool_call_id"] == "call_123"
+        assert raw_item["tool_name"] == "expensive_tool"
+
+    def test_handle_expand_query_raw_hit_context_windows_around_match(self, engine, monkeypatch):
+        captured = {}
+
+        def fake_synthesize(*, prompt, context_blocks, model, max_tokens, timeout):
+            captured["context_blocks"] = context_blocks
+            return "raw tail answer"
+
+        content = "prefix-noise " * 80 + "TAILMATCH exact evidence"
+
+        def fake_store_search(query, session_id=None, limit=5):
+            return [
+                {
+                    "store_id": 789,
+                    "session_id": session_id or "test-session",
+                    "source": "telegram",
+                    "role": "user",
+                    "timestamp": 1,
+                    "content": content,
+                    "snippet": "TAILMATCH exact evidence",
+                    "search_rank": 1,
+                }
+            ]
+
+        monkeypatch.setattr(lcm_tools, "_synthesize_expansion_answer", fake_synthesize)
+        monkeypatch.setattr(engine._store, "search", fake_store_search)
+
+        result = json.loads(
+            engine.handle_tool_call(
+                "lcm_expand_query",
+                {
+                    "prompt": "What raw detail?",
+                    "query": "TAILMATCH",
+                    "max_tokens": 20,
+                    "context_max_tokens": 6,
+                },
+            )
+        )
+
+        raw_block = next(block for block in captured["context_blocks"] if block["type"] == "raw_messages")
+        raw_item = raw_block["messages"][0]
+        assert result["answer"] == "raw tail answer"
+        assert "TAILMATCH" in raw_item["content"]
+        assert raw_item["content_offset"] == content.index("TAILMATCH")
+        assert raw_item["match_window_offset"] == content.index("TAILMATCH")
+        assert "prefix-noise" not in raw_item["content"]
+
+    def test_handle_expand_query_raw_hit_match_window_uses_sanitized_query_terms(self, engine, monkeypatch):
+        captured = {}
+
+        def fake_synthesize(*, prompt, context_blocks, model, max_tokens, timeout):
+            captured["context_blocks"] = context_blocks
+            return "raw sanitized answer"
+
+        content = "match unrelated prefix-noise " * 40 + "tail match exact evidence"
+
+        def fake_store_search(query, session_id=None, limit=5):
+            return [
+                {
+                    "store_id": 790,
+                    "session_id": session_id or "test-session",
+                    "source": "telegram",
+                    "role": "user",
+                    "timestamp": 1,
+                    "content": content,
+                    "snippet": "tail match exact evidence",
+                    "search_rank": 1,
+                }
+            ]
+
+        monkeypatch.setattr(lcm_tools, "_synthesize_expansion_answer", fake_synthesize)
+        monkeypatch.setattr(engine._store, "search", fake_store_search)
+
+        for query in ["tail-match", "tail.match", "tail/match", "tail:match", "tail(match)"]:
+            captured.clear()
+            result = json.loads(
+                engine.handle_tool_call(
+                    "lcm_expand_query",
+                    {
+                        "prompt": "What raw detail?",
+                        "query": query,
+                        "max_tokens": 20,
+                        "context_max_tokens": 6,
+                    },
+                )
+            )
+
+            raw_block = next(block for block in captured["context_blocks"] if block["type"] == "raw_messages")
+            raw_item = raw_block["messages"][0]
+            assert result["answer"] == "raw sanitized answer"
+            assert "tail match" in raw_item["content"]
+            assert raw_item["content_offset"] == content.index("tail match")
+            assert raw_item["match_window_offset"] == content.index("tail match")
+            assert "match unrelated" not in raw_item["content"]
+
+    def test_handle_expand_query_raw_hit_truncation_returns_store_expand_cursor(self, engine, monkeypatch):
+        import hermes_lcm.tokens as token_utils
+
+        def fake_count_tokens(text):
+            return 0 if not text else len(text) + 1
+
+        def fake_synthesize(*, prompt, context_blocks, model, max_tokens, timeout):
+            return "raw cursor answer"
+
+        monkeypatch.setattr(token_utils, "count_tokens", fake_count_tokens)
+        monkeypatch.setattr(lcm_tools, "_synthesize_expansion_answer", fake_synthesize)
+        store_id = engine._store.append(
+            "test-session",
+            {"role": "user", "content": "PHOENIXRAWCURSOR has a longer raw detail"},
+        )
+
+        result = json.loads(
+            engine.handle_tool_call(
+                "lcm_expand_query",
+                {
+                    "prompt": "What mentions PHOENIX?",
+                    "query": "PHOENIXRAWCURSOR",
+                    "max_tokens": 20,
+                    "context_max_tokens": 1,
+                },
+            )
+        )
+
+        raw_page = next(item for item in result["context_pagination"] if item["type"] == "raw_messages")
+        assert raw_page["expand_args"] == {"store_id": store_id, "content_offset": 1}
+
     def test_handle_expand_query_advances_content_cursor_when_context_budget_cannot_fit_character(self, engine, monkeypatch):
         import hermes_lcm.tokens as token_utils
 
