@@ -2062,13 +2062,35 @@ class TestMessageStore:
                 }
             ],
         )
-        timestamp = store.get(ids[0])["timestamp"]
 
         short_results = store.search("alpha beta gamma", session_id="sess1", limit=5, sort="recency")
         long_results = store.search("alpha beta gamma", session_id="sess1", limit=200, sort="recency")
 
-        assert [result["timestamp"] for result in short_results] == [timestamp] * len(short_results)
+        # With per-message timestamps (fix for batch timestamp dedup), messages
+        # no longer share identical timestamps.  The stability invariant is that
+        # the top-N results from a limited search match the first N of an
+        # unlimited search — i.e. the sort order is deterministic.
         assert [result["store_id"] for result in short_results] == [result["store_id"] for result in long_results[:5]]
+
+    def test_append_batch_timestamps_are_unique_per_row(self, store):
+        """Regression: each message in a batch must get its own timestamp.
+
+        The old code called time.time() once before the loop, giving every
+        message in the batch the same timestamp.  This broke date-based
+        queries (journal entries, time-range filtering).
+        """
+        n = 50
+        ids = store.append_batch(
+            "ts-sess",
+            [{"role": "user", "content": f"msg {i}"} for i in range(n)],
+        )
+        timestamps = [store.get(sid)["timestamp"] for sid in ids]
+        # All timestamps must be distinct — no two rows share the same value.
+        assert len(set(timestamps)) == n, (
+            f"Expected {n} unique timestamps, got {len(set(timestamps))}"
+        )
+        # Strictly non-decreasing (clock may tick between rows).
+        assert timestamps == sorted(timestamps)
 
     def test_search_hybrid_clamps_future_timestamps_consistently(self, store):
         now = time.time()
