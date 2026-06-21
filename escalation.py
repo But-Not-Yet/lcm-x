@@ -141,29 +141,76 @@ def _normalized_focus_topic(focus_topic: str, max_chars: int = 160) -> str:
     return normalized[: max(0, max_chars - 1)].rstrip() + "…"
 
 
+# Historical section headings — mirror upstream hermes-agent constants so that
+# the summariser has consistent structural anchors for grouping stale content.
+# These headings act as summariser guidance, not an enforced active-context
+# contract: _assemble_context() passes node.summary through as ordinary content,
+# so headings influence LLM attention rather than being hard reference-only
+# markers.  The practical effect is that LLMs naturally down-weight content
+# under "Historical" headings, but no code path enforces the boundary.
+# (hermes-agent issue #9631: iterative compaction kept completed topics alive.
+#  PR #44687 adds auto-derive focus topic; PR #44454 salvaged #44345/#41650
+#  and introduced HISTORICAL_*_HEADING constants [8f8cad7ec / d5e2fbf24]
+#  for structural demote of stale/completed topics.)
+_HISTORICAL_HEADING_MARKERS = (
+    "## Historical Task Snapshot",
+    "## Historical In-Progress State",
+    "## Historical Pending User Asks",
+    "## Historical Remaining Work",
+)
+
+
 def _build_l1_focus_brief(focus_topic: str) -> str:
+    """Build L1 focus guidance with explicit demote instructions for stale topics.
+
+    Mirrors upstream hermes-agent PR #44687 (auto-derive focus topic) and
+    PR #44454 (historical heading constants + stale-task demotion) to prevent
+    iterative compaction from keeping completed topics alive and overriding
+    the current active topic (issue #9631).
+    """
     topic = _normalized_focus_topic(focus_topic)
     if not topic:
         return ""
+    markers = " / ".join(f"'{m}'" for m in _HISTORICAL_HEADING_MARKERS)
     return (
         "Focus brief:\n"
         f"Primary focus: {topic}\n"
         "Preserve concrete decisions, constraints, files, commands, identifiers, and current state for this focus.\n"
-        "Spend roughly 60-70% of the summary budget on the focus when relevant.\n"
-        "Do not discard unrelated blockers or active tasks just because they are off-focus.\n"
-    )
+        "Spend roughly 60-70% of the summary token budget on the focus when relevant.\n"
+        "\n"
+        "Demote old / completed topics:\n"
+        "If the summary contains tasks, questions, or remaining work that are no longer active in the latest turns,\n"
+        "mark them under one of these historical headings: {markers}.\n"
+        "Frame them as STALE context — the agent must NOT resume that work unless the latest user message\n"
+        "explicitly asks for it. If fully resolved, reduce to a one-line bullet or omit.\n"
+        "Exception: active blockers or handoff state should NOT be demoted even if they are absent from the\n"
+        "latest turns. Keep blockers and pending handoffs outside historical headings so the agent can still act on them.\n"
+    ).format(markers=markers)
 
 
 def _build_l2_focus_brief(focus_topic: str) -> str:
+    """Build L2 focus guidance with explicit demote instructions for stale topics.
+
+    Mirrors upstream hermes-agent PR #44687 (auto-focus) and PR #44454
+    (historical heading constants + stale-task demotion).
+    """
     topic = _normalized_focus_topic(focus_topic)
     if not topic:
         return ""
+    markers = " / ".join(f"'{m}'" for m in _HISTORICAL_HEADING_MARKERS)
     return (
         "Focus brief:\n"
         f"Primary focus: {topic}\n"
         "Prefer bullets that preserve decisions, blockers, files, commands, identifiers, and current state for this focus.\n"
         "Keep other active tasks only when they are current blockers or handoff state.\n"
-    )
+        "\n"
+        "Demote old / completed topics:\n"
+        "Place non-current work under: {markers}.\n"
+        "These sections are STALE — the agent must not act on them unless the latest user message explicitly\n"
+        "requests it. Reduce resolved topics to one-liners or drop.\n"
+        "Exception: active blockers and pending handoff state should NOT be demoted even when absent from recent\n"
+        "turns. Keep them outside historical headings so the agent retains awareness of unresolved constraints.\n"
+    ).format(markers=markers)
 
 
 def _summary_model_chain(primary_model: str = "", fallback_models: list[str] | tuple[str, ...] | None = None) -> list[str]:
