@@ -2,8 +2,6 @@
   <img src="docs/banner.png" alt="HERMES-LCM" width="800">
 </p>
 
-# hermes-lcm
-
 [![CI](https://github.com/stephenschoettler/hermes-lcm/actions/workflows/ci.yml/badge.svg)](https://github.com/stephenschoettler/hermes-lcm/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/stephenschoettler/hermes-lcm)](https://github.com/stephenschoettler/hermes-lcm/releases)
 
