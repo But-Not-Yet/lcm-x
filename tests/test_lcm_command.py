@@ -13,8 +13,10 @@ import hermes_lcm.command as command_mod
 from hermes_lcm.command import _fmt_size, handle_lcm_command
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.dag import SummaryNode
+from hermes_lcm.db_bootstrap import check_external_content_fts_integrity
 from hermes_lcm.diagnostics import doctor_guidance_for_check
 from hermes_lcm.engine import LCMEngine
+from hermes_lcm.store import build_message_fts_spec
 
 
 @pytest.fixture
@@ -1030,6 +1032,73 @@ def test_lcm_doctor_clean_rejects_unknown_extra_args(engine):
     assert "/lcm doctor retention" in result
 
 
+def test_lcm_doctor_text_reports_same_count_stale_message_fts(engine):
+    engine._store.append(
+        "test-session",
+        {"role": "user", "content": "original searchable content"},
+        token_estimate=1,
+    )
+    engine._store._conn.execute("DROP TRIGGER msg_fts_update")
+    engine._store._conn.execute(
+        "UPDATE messages SET content = ? WHERE session_id = ?",
+        ("changed content", "test-session"),
+    )
+    engine._store._conn.commit()
+
+    fts_integrity = check_external_content_fts_integrity(engine._store._conn, build_message_fts_spec())
+    json_result = json.loads(lcm_tools.lcm_doctor({}, engine=engine))
+    text_result = handle_lcm_command("doctor", engine)
+
+    assert fts_integrity["status"] == "fail"
+    messages_check = next(check for check in json_result["checks"] if check["check"] == "messages_fts_integrity")
+    assert messages_check["status"] == "fail"
+    assert "status: issues-found" in text_result
+    assert "messages_fts: fail" in text_result
+    assert "/lcm doctor repair" in text_result
+
+
+def test_lcm_doctor_text_reports_unchecked_message_fts_as_warning(engine, monkeypatch):
+    def fake_fts_integrity(_conn, spec):
+        if spec.table_name == "messages_fts":
+            return {"status": "unchecked", "detail": "attempt to write a readonly database"}
+        return {"status": "pass", "detail": "ok"}
+
+    monkeypatch.setattr(command_mod, "check_external_content_fts_integrity", fake_fts_integrity)
+
+    text_result = handle_lcm_command("doctor", engine)
+
+    assert "status: action-recommended" in text_result
+    assert "messages_fts: unchecked" in text_result
+    assert "nodes_fts: ok" in text_result
+    assert "issues: none" in text_result
+    assert "messages_fts_integrity: inspect warning-only" in text_result
+    assert "read-write SQLite access" in text_result
+    assert "/lcm doctor repair" not in text_result
+
+
+def test_lcm_doctor_json_preserves_unchecked_fts_detail_for_guidance(engine, monkeypatch):
+    def fake_fts_integrity(_conn, spec):
+        if spec.table_name == "messages_fts":
+            return {"status": "unchecked", "detail": "attempt to write a readonly database"}
+        return {"status": "pass", "detail": "ok"}
+
+    monkeypatch.setattr(lcm_tools, "check_external_content_fts_integrity", fake_fts_integrity)
+
+    doctor = json.loads(lcm_tools.lcm_doctor({}, engine=engine))
+    messages_check = next(check for check in doctor["checks"] if check["check"] == "messages_fts_integrity")
+    guidance = {item["check"]: item for item in doctor["guidance"]}
+
+    assert messages_check["status"] == "warn"
+    assert messages_check["detail"] == {
+        "status": "unchecked",
+        "detail": "attempt to write a readonly database",
+    }
+    assert guidance["messages_fts_integrity"]["action"] == "inspect"
+    assert guidance["messages_fts_integrity"]["warning_only"] is True
+    assert "read-write SQLite access" in guidance["messages_fts_integrity"]["operator_action"]
+    assert "/lcm doctor repair" not in guidance["messages_fts_integrity"]["operator_action"]
+
+
 def test_lcm_doctor_repair_reports_fts_drift_without_mutating(tmp_path):
     config = LCMConfig(database_path=str(tmp_path / "lcm_repair_drift.db"))
     engine = LCMEngine(config=config, hermes_home=str(tmp_path / "hermes_home"))
@@ -1065,6 +1134,29 @@ def test_lcm_doctor_repair_reports_fts_drift_without_mutating(tmp_path):
         ).fetchall()
     }
     assert remaining_triggers == set()
+
+
+def test_lcm_doctor_repair_reports_same_count_deep_fts_drift(tmp_path):
+    config = LCMConfig(database_path=str(tmp_path / "lcm_repair_deep_drift.db"))
+    engine = LCMEngine(config=config, hermes_home=str(tmp_path / "hermes_home"))
+    engine._session_id = "live-session"
+    engine._session_platform = "telegram"
+    engine._conversation_id = "live-session"
+    engine._store.append("live-session", {"role": "user", "content": "original searchable content"}, token_estimate=4)
+    engine._store._conn.execute("DROP TRIGGER msg_fts_update")
+    engine._store._conn.execute(
+        "UPDATE messages SET content = ? WHERE session_id = ?",
+        ("changed searchable content", "live-session"),
+    )
+    engine._store._conn.commit()
+
+    result = handle_lcm_command("doctor repair", engine)
+
+    assert "LCM doctor repair" in result
+    assert "status: repair-needed" in result
+    assert "messages_fts: repair-needed" in result
+    assert "messages_fts_integrity_status: fail" in result
+    assert "note: use `/lcm doctor repair apply`" in result
 
 
 def test_lcm_doctor_repair_dry_run_works_with_read_only_database(tmp_path):

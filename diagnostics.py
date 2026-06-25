@@ -12,6 +12,20 @@ DOCTOR_ACTION_INSPECT = "inspect"
 DOCTOR_ACTION_BACKUP_FIRST_CLEANUP = "backup-first cleanup"
 
 
+def _enforce_state_db_containment(path: Path, *, description: str) -> Path:
+    resolved = path.expanduser().resolve()
+    env_base = os.environ.get("LCM_HERMES_BASE_DIR")
+    if env_base:
+        allowed_base = Path(env_base).expanduser().resolve()
+        try:
+            resolved.relative_to(allowed_base)
+        except ValueError:
+            raise ValueError(
+                f"{description} resolves to {resolved} which is not within allowed base {allowed_base}"
+            )
+    return resolved
+
+
 def state_db_path_for_engine(engine: Any) -> Path:
     """Return the Hermes state database path for an LCM engine.
 
@@ -20,19 +34,15 @@ def state_db_path_for_engine(engine: Any) -> Path:
     """
     hermes_home = getattr(engine, "_hermes_home", "") or ""
     if hermes_home:
-        resolved = Path(hermes_home).expanduser().resolve() / "state.db"
-        env_base = os.environ.get("LCM_HERMES_BASE_DIR")
-        if env_base:
-            allowed_base = Path(env_base).expanduser().resolve()
-            try:
-                resolved.relative_to(allowed_base)
-            except ValueError:
-                raise ValueError(
-                    f"hermes_home {hermes_home} resolves to {resolved} which is not within allowed base {allowed_base}"
-                )
-        return resolved
+        return _enforce_state_db_containment(
+            Path(hermes_home) / "state.db",
+            description=f"hermes_home {hermes_home}",
+        )
     db_path = Path(getattr(engine._store, "db_path", Path.home() / ".hermes" / "lcm.db"))
-    return db_path.parent / "state.db"
+    return _enforce_state_db_containment(
+        db_path.parent / "state.db",
+        description=f"state database fallback from LCM database {db_path}",
+    )
 
 
 def has_lifecycle_fragmentation(stats: dict[str, Any]) -> bool:
@@ -83,9 +93,15 @@ def doctor_guidance_for_check(check: dict[str, Any]) -> dict[str, Any] | None:
     elif name == "schema_core_tables":
         command = "verify HERMES_HOME/LCM_DATABASE_PATH points at the intended LCM database before repair or restore"
     elif name in {"messages_fts_integrity", "nodes_fts_integrity", "fts_index_sync"}:
-        action = DOCTOR_ACTION_BACKUP_FIRST_CLEANUP
-        command = "run `/lcm doctor repair` first; if it still recommends repair, run `/lcm backup` before `/lcm doctor repair apply`"
-        rationale = "FTS repair is rebuildable, but it still mutates SQLite indexes"
+        if status == "warn" and isinstance(detail, dict) and detail.get("status") == "unchecked":
+            action = DOCTOR_ACTION_INSPECT
+            command = "rerun `/lcm doctor` with read-write SQLite access if a deep FTS integrity result is needed"
+            warning_only = True
+            rationale = "the deep FTS check could not run, but this is not evidence that the index is corrupt"
+        else:
+            action = DOCTOR_ACTION_BACKUP_FIRST_CLEANUP
+            command = "run `/lcm doctor repair` first; if it still recommends repair, run `/lcm backup` before `/lcm doctor repair apply`"
+            rationale = "FTS repair is rebuildable, but it still mutates SQLite indexes"
     elif name == "sqlite_storage":
         command = "inspect journal/quick_check output and database/WAL size; restore from backup if SQLite reports corruption"
     elif name == "payload_storage":
