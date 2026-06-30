@@ -3116,7 +3116,10 @@ def test_ignore_message_patterns_remain_storage_only_for_compress_replay(tmp_pat
 
     active_context = engine.compress(messages)
 
-    assert [message.get("content") for message in active_context] == [ignored, kept]
+    active_contents = [message.get("content") for message in active_context]
+    assert active_contents[0].startswith("[LCM active replay placeholder: message ignored;")
+    assert ignored not in active_contents[0]
+    assert active_contents[1] == kept
     stored_contents = [row["content"] for row in engine._store.get_session_messages(engine.current_session_id)]
     assert stored_contents == [kept]
     assert engine._store.search("noisy heartbeat", session_id=engine.current_session_id) == []
@@ -3277,7 +3280,7 @@ def test_existing_quarantined_assistant_row_rebinds_after_ignore_pattern_added(t
 
     second_rows = second._store.get_session_messages(second.current_session_id)
     assert [row["role"] for row in second_rows] == ["system", "assistant", "user"]
-    assert "assistant output quarantined" in str(second_active[1].get("content", ""))
+    assert "LCM active replay placeholder: message ignored" in str(second_active[1].get("content", ""))
     assert BROKEN_ASSISTANT_MARKER not in str(second_active[1].get("content", ""))
 
 
