@@ -3,7 +3,7 @@
 from hermes_lcm.command import handle_lcm_command
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.engine import LCMEngine
-from hermes_lcm.presets import preset_status_payload
+from hermes_lcm.presets import get_preset, preset_match_confidence, preset_status_payload
 
 
 _PRESET_ENV_VARS = (
@@ -51,9 +51,10 @@ def test_lcm_preset_show_exposes_codex_provenance_without_mutating_config(tmp_pa
     assert "preset: codex_gpt_long_context" in result
     assert "policy_version: 1" in result
     assert "benchmark_version: 2" in result
-    assert "fixture_suite: codex_pressure_probe:42:4:1000" in result
-    assert "score: 92.5" in result
-    assert "baseline_score: 72.5" in result
+    assert "scrubbed_operator_coding_tool_heavy" in result
+    assert "codex_pressure_probe:42:4:1000" in result
+    assert "score: 92.941" in result
+    assert "baseline_score: 82.941" in result
     assert "policy_path: benchmarks/policies/codex_gpt_long_context.yaml" in result
     assert "operator_config_precedence: explicit preset-managed LCM_* overrides win" in result
     assert "runtime_mutation: no" in result
@@ -71,9 +72,10 @@ def test_lcm_preset_show_exposes_spark_provenance_without_mutating_config(tmp_pa
     assert "preset: codex_spark_context" in result
     assert "policy_version: 1" in result
     assert "benchmark_version: 2" in result
-    assert "fixture_suite: spark_pressure_probe:42:4:1000" in result
-    assert "score: 92.5" in result
-    assert "baseline_score: 72.5" in result
+    assert "scrubbed_operator_chatter_repeated_compaction" in result
+    assert "spark_pressure_probe:42:4:1000" in result
+    assert "score: 92.941" in result
+    assert "baseline_score: 82.941" in result
     assert "policy_path: benchmarks/policies/codex_spark_context.yaml" in result
     assert "large context windows near 128k tokens" in result
     assert "LCM_CONTEXT_THRESHOLD=0.75" in result
@@ -95,6 +97,8 @@ def test_lcm_preset_suggest_reports_explicit_operator_config_precedence(tmp_path
     assert "suggested_preset: codex_gpt_long_context" in result
     assert "reason: context-window match for GPT/Codex candidate; verify provider/model family before applying" in result
     assert "match_confidence: context-only" in result
+    assert "confidence_reasons:" in result
+    assert "provider/model family was not verified by host metadata" in result
     assert "explicit_overrides: LCM_FRESH_TAIL_COUNT" in result
     assert "LCM_FRESH_TAIL_COUNT: keep explicit value 99 (preset 24)" in result
     assert "note: suggestion only; no live config was changed" in result
@@ -141,6 +145,56 @@ def test_lcm_preset_suggest_reports_spark_for_128k_context_window(tmp_path, monk
     assert "LCM_FRESH_TAIL_COUNT=16" in result
     assert "LCM_LEAF_CHUNK_TOKENS=8000" in result
     assert "note: suggestion only; no live config was changed" in result
+
+
+def test_lcm_preset_suggest_reports_benchmark_backed_route_confidence_when_host_metadata_matches(tmp_path, monkeypatch):
+    _clear_preset_env(monkeypatch)
+    engine = _engine(tmp_path, context_length=128_000)
+    engine.update_model(
+        model="gpt-5.3-codex-spark",
+        provider="openai-codex",
+        context_length=128_000,
+    )
+
+    result = handle_lcm_command("preset suggest", engine)
+    payload = preset_status_payload(engine, environ={})
+
+    assert "suggested_preset: codex_spark_context" in result
+    assert "match_confidence: benchmark-backed-route" in result
+    assert "provider=openai-codex; model=gpt-5.3-codex-spark" in result
+    assert payload["match_confidence"] == "benchmark-backed-route"
+    assert any("benchmark evidence: score=92.941" in reason for reason in payload["confidence_reasons"])
+
+
+def test_lcm_preset_suggest_keeps_non_spark_gpt5_128k_context_only(tmp_path, monkeypatch):
+    _clear_preset_env(monkeypatch)
+    engine = _engine(tmp_path, context_length=128_000)
+    engine.update_model(
+        model="gpt-5",
+        provider="openai-codex",
+        context_length=128_000,
+    )
+
+    result = handle_lcm_command("preset suggest", engine)
+    payload = preset_status_payload(engine, environ={})
+
+    assert "suggested_preset: codex_spark_context" in result
+    assert "match_confidence: context-only" in result
+    assert "provider/model family was not verified by host metadata" in result
+    assert payload["match_confidence"] == "context-only"
+    assert any("provider/model family was not verified" in reason for reason in payload["confidence_reasons"])
+
+
+def test_lcm_preset_confidence_does_not_treat_spark_route_as_long_context_match(tmp_path, monkeypatch):
+    _clear_preset_env(monkeypatch)
+    engine = _engine(tmp_path, context_length=272_000)
+    engine.update_model(
+        model="gpt-5.3-codex-spark",
+        provider="openai-codex",
+        context_length=272_000,
+    )
+
+    assert preset_match_confidence(engine, get_preset("codex_gpt_long_context")) == "context-only"
 
 
 def test_lcm_preset_suggest_declines_unbenchmarked_context_window(tmp_path):
