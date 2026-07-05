@@ -729,6 +729,67 @@ class MessageStore:
             return None, None
         return row[0], row[1]
 
+    # -- Compaction telemetry ------------------------------------------------
+
+    @staticmethod
+    def _compaction_telemetry_key(conversation_id: str) -> str:
+        return f"compaction_telemetry:{conversation_id}"
+
+    def read_compaction_telemetry(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        """Return the persisted per-conversation compaction-telemetry record, or None.
+
+        Best-effort: a closed connection, missing/empty row, or malformed JSON all
+        yield None. Telemetry is diagnostic and must never block a turn. Reads are
+        unlocked, matching the store's other read paths.
+        """
+        if not conversation_id:
+            return None
+        conn = self._conn
+        if conn is None:
+            return None
+        row = conn.execute(
+            "SELECT value FROM metadata WHERE key = ?",
+            (self._compaction_telemetry_key(conversation_id),),
+        ).fetchone()
+        if not row or not row[0]:
+            return None
+        try:
+            data = json.loads(str(row[0]))
+        except (ValueError, TypeError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def write_compaction_telemetry(self, conversation_id: str, record: Dict[str, Any]) -> None:
+        """Upsert the per-conversation compaction-telemetry record.
+
+        Stored as a single JSON row in the existing metadata table (no dedicated
+        schema, no version bump) under the store write lock. The write -- and its
+        commit -- is skipped when the serialized payload is unchanged so idle
+        turns do not churn the row.
+        """
+        if not conversation_id:
+            return
+        conn = self._conn
+        if conn is None:
+            return
+        serialized = json.dumps(record, sort_keys=True)
+        key = self._compaction_telemetry_key(conversation_id)
+        with self._write_lock:
+            existing = conn.execute(
+                "SELECT value FROM metadata WHERE key = ?", (key,)
+            ).fetchone()
+            if existing is not None and existing[0] == serialized:
+                return
+            conn.execute(
+                """
+                INSERT INTO metadata(key, value)
+                VALUES(?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (key, serialized),
+            )
+            conn.commit()
+
     # -- Search -------------------------------------------------------------
 
     def search(self, query: str, session_id: str | None = None,
