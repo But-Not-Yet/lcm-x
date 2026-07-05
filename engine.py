@@ -843,6 +843,32 @@ class LCMEngine(ContextEngine):
         return "lcm"
 
     @property
+    def last_compression_status(self) -> str:
+        """Public status for the most recent compression/preflight attempt.
+
+        Host runtimes use this to distinguish a real compaction boundary from
+        an LCM no-op (for example, when request pressure is high but all
+        compactable raw backlog is protected by the fresh tail).
+        """
+        return self._last_compression_status
+
+    @property
+    def last_compression_noop_reason(self) -> str:
+        """Human-readable reason for the latest no-op compression decision."""
+        return self._last_compression_noop_reason
+
+    @property
+    def last_compression_was_noop(self) -> bool:
+        """Whether the most recent compression/preflight decision was a no-op."""
+        return self._last_compression_status == "noop"
+
+    def _mark_preflight_compression_requested(self) -> bool:
+        """Record that preflight found work and clear any stale no-op reason."""
+        self._last_compression_status = "pending"
+        self._last_compression_noop_reason = ""
+        return True
+
+    @property
     def current_session_id(self) -> str:
         """User-facing "current session" id surfaced by LCM tools.
 
@@ -1019,9 +1045,9 @@ class LCMEngine(ContextEngine):
                 return False
             replay_rough = count_messages_tokens(replay_messages)
             if self._should_force_overflow_recovery(observed_tokens=replay_rough):
-                return True
+                return self._mark_preflight_compression_requested()
             if self._replay_diff_requests_ingest_cleanup(messages, replay_messages):
-                return True
+                return self._mark_preflight_compression_requested()
             if pre_ingest_placeholder_ambiguous_noop:
                 self._last_compression_status = "noop"
                 self._last_compression_noop_reason = pre_ingest_noop_reason
@@ -1029,22 +1055,24 @@ class LCMEngine(ContextEngine):
                 return False
             eligible, reason = self._leaf_compaction_candidate_status(replay_messages)
             if eligible:
-                return True
+                return self._mark_preflight_compression_requested()
             if self._has_ignored_backlog_outside_fresh_tail(replay_messages):
-                return True
+                return self._mark_preflight_compression_requested()
             if self.threshold_tokens > 0 and replay_rough >= self.threshold_tokens:
                 if self._should_run_deferred_maintenance(replay_messages, observed_tokens=replay_rough):
-                    return True
+                    return self._mark_preflight_compression_requested()
                 self._last_compression_status = "noop"
                 self._last_compression_noop_reason = reason
                 logger.info("LCM preflight compression no-op: %s", reason)
                 return False
             self._refresh_raw_backlog_debt(replay_messages, observed_tokens=replay_rough)
-            return self._should_run_deferred_maintenance(replay_messages, observed_tokens=replay_rough)
+            if self._should_run_deferred_maintenance(replay_messages, observed_tokens=replay_rough):
+                return self._mark_preflight_compression_requested()
+            return False
         if self._compression_boundary_cooldown_active():
             return False
         if self._should_force_overflow_recovery(observed_tokens=rough):
-            return True
+            return self._mark_preflight_compression_requested()
         if self.threshold_tokens > 0 and rough >= self.threshold_tokens:
             if pre_ingest_placeholder_ambiguous_noop:
                 self._last_compression_status = "noop"
@@ -1053,17 +1081,19 @@ class LCMEngine(ContextEngine):
                 return False
             eligible, reason = self._leaf_compaction_candidate_status(messages)
             if eligible:
-                return True
+                return self._mark_preflight_compression_requested()
             if self._has_ignored_backlog_outside_fresh_tail(messages):
-                return True
+                return self._mark_preflight_compression_requested()
             if self._should_run_deferred_maintenance(messages, observed_tokens=rough):
-                return True
+                return self._mark_preflight_compression_requested()
             self._last_compression_status = "noop"
             self._last_compression_noop_reason = reason
             logger.info("LCM preflight compression no-op: %s", reason)
             return False
         self._refresh_raw_backlog_debt(messages, observed_tokens=rough)
-        return self._should_run_deferred_maintenance(messages, observed_tokens=rough)
+        if self._should_run_deferred_maintenance(messages, observed_tokens=rough):
+            return self._mark_preflight_compression_requested()
+        return False
 
     def _replay_diff_requests_ingest_cleanup(
         self,
