@@ -37,6 +37,7 @@ from .presets import (
     suggest_preset_for_engine,
     unsupported_runtime_fields_text,
 )
+from .maintenance import backup_database, rotate_backup_database
 from .session_patterns import build_session_match_keys, matches_session_pattern
 from .store import build_message_fts_spec
 
@@ -460,113 +461,6 @@ def _scan_retention_candidates(engine) -> dict[str, Any]:
     }
 
 
-def _flush_engine_connections(engine) -> None:
-    """Commit pending writes on every SQLite connection the engine owns.
-
-    Shared by ``_backup_database`` (timestamped backup) and
-    ``_rotate_backup_database`` (rolling backup) so the connection-flush
-    contract stays in one place.
-    """
-    engine._store.commit()
-    engine._dag._conn.commit()
-    lifecycle_conn = getattr(getattr(engine, "_lifecycle", None), "_conn", None)
-    if lifecycle_conn is not None:
-        lifecycle_conn.commit()
-
-
-def _backup_database(engine) -> dict[str, Any]:
-    db_path = Path(engine._store.db_path)
-    if not db_path.exists():
-        return {
-            "ok": False,
-            "db_path": db_path,
-            "error": "database file does not exist",
-        }
-
-    backup_dir = engine.backup_dir()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_path = backup_dir / f"{db_path.stem}-{timestamp}.sqlite3"
-
-    try:
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        _flush_engine_connections(engine)
-
-        dest = sqlite3.connect(str(backup_path))
-        try:
-            engine._store.backup(dest)
-        finally:
-            dest.close()
-    except (OSError, sqlite3.Error) as exc:
-        return {
-            "ok": False,
-            "db_path": db_path,
-            "error": str(exc),
-        }
-
-    backup_size = backup_path.stat().st_size if backup_path.exists() else 0
-    return {
-        "ok": True,
-        "db_path": db_path,
-        "backup_path": backup_path,
-        "backup_size": backup_size,
-    }
-
-
-def _rotate_backup_database(engine) -> dict[str, Any]:
-    """Write a rolling rotate-latest SQLite snapshot of the LCM store.
-
-    Atomic via tmp-then-rename so the slot is never half-written. Unlike
-    ``_backup_database`` which produces timestamped files, this overwrites a
-    single rolling slot so disk usage stays bounded across repeated rotates.
-    """
-    db_path = Path(engine._store.db_path)
-    if not db_path.exists():
-        return {
-            "ok": False,
-            "db_path": db_path,
-            "error": "database file does not exist",
-        }
-
-    backup_path = engine.rotate_backup_path()
-    backup_dir = backup_path.parent
-    tmp_path = backup_path.with_name(backup_path.name + ".tmp")
-
-    try:
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        _flush_engine_connections(engine)
-
-        if tmp_path.exists():
-            tmp_path.unlink()
-        dest = sqlite3.connect(str(tmp_path))
-        try:
-            engine._store.backup(dest)
-        finally:
-            dest.close()
-        # Atomic replace so the rolling slot is never half-written.
-        tmp_path.replace(backup_path)
-    except (OSError, sqlite3.Error) as exc:
-        # Best-effort cleanup of the tmp file if something failed midway.
-        try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        except OSError:
-            pass
-        return {
-            "ok": False,
-            "db_path": db_path,
-            "backup_path": backup_path,
-            "error": str(exc),
-        }
-
-    backup_size = backup_path.stat().st_size if backup_path.exists() else 0
-    return {
-        "ok": True,
-        "db_path": db_path,
-        "backup_path": backup_path,
-        "backup_size": backup_size,
-    }
-
-
 def _rotate_text(engine) -> str:
     preview = engine.rotate_active_session(apply=False)
     if not preview.get("ok"):
@@ -642,7 +536,7 @@ def _rotate_apply_text(engine) -> str:
         ]
         return "\n".join(lines)
 
-    backup = _rotate_backup_database(engine)
+    backup = rotate_backup_database(engine)
     if not backup["ok"]:
         return "\n".join([
             "LCM rotate apply",
@@ -753,7 +647,7 @@ def _doctor_repair_text(engine) -> str:
 
 
 def _doctor_repair_apply_text(engine) -> str:
-    backup = _backup_database(engine)
+    backup = backup_database(engine)
     if not backup["ok"]:
         return "\n".join([
             "LCM doctor repair apply",
@@ -852,7 +746,7 @@ def _doctor_source_apply_text(engine) -> str:
             "note: no legacy blank-source rows needed normalization",
         ])
 
-    backup = _backup_database(engine)
+    backup = backup_database(engine)
     if not backup["ok"]:
         return "\n".join([
             "LCM doctor source apply",
@@ -1516,7 +1410,7 @@ def _doctor_clean_apply_text(engine) -> str:
             "note: nothing was deleted",
         ])
 
-    backup = _backup_database(engine)
+    backup = backup_database(engine)
     if not backup["ok"]:
         return "\n".join([
             "LCM doctor clean apply",
@@ -1620,7 +1514,7 @@ def _doctor_clean_lifecycle_apply_text(engine) -> str:
             "note: no rows were deleted",
         ])
 
-    backup = _backup_database(engine)
+    backup = backup_database(engine)
     if not backup["ok"]:
         return "\n".join([
             "LCM doctor clean lifecycle apply",
@@ -1663,7 +1557,7 @@ def _doctor_clean_lifecycle_apply_text(engine) -> str:
 
 
 def _backup_text(engine) -> str:
-    backup = _backup_database(engine)
+    backup = backup_database(engine)
     if not backup["ok"]:
         return "\n".join([
             "LCM backup",
