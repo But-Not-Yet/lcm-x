@@ -400,12 +400,30 @@ def _deterministic_truncate(text: str, max_tokens: int) -> str:
         # Budget too small to afford the head/tail marker; single head cut.
         return truncate_text_to_tokens(text, max_tokens)
 
-    body_budget = max_tokens - marker_tokens
-    head_tokens = body_budget // 2
-    tail_tokens = body_budget - head_tokens
-    head = truncate_text_to_tokens(text, head_tokens)
-    tail = truncate_text_to_tokens(text, tail_tokens, from_end=True)
-    return head + _L3_TRUNCATION_MARKER + tail
+    def assemble(body_tokens: int) -> str:
+        head_tokens = body_tokens // 2
+        tail_tokens = body_tokens - head_tokens
+        head = truncate_text_to_tokens(text, head_tokens)
+        tail = truncate_text_to_tokens(text, tail_tokens, from_end=True)
+        return head + _L3_TRUNCATION_MARKER + tail
+
+    # ``count_tokens`` is exact with tiktoken, but the no-tiktoken fallback is
+    # intentionally a script-density estimate and is not additive: counting the
+    # CJK head, ASCII marker, and CJK tail separately can fit while the combined
+    # string exceeds ``max_tokens``. Binary search the body budget against the
+    # final assembled result so L3 is bounded under both counters.
+    best = _L3_TRUNCATION_MARKER
+    low = 0
+    high = max_tokens - marker_tokens
+    while low <= high:
+        body_tokens = (low + high) // 2
+        candidate = assemble(body_tokens)
+        if count_tokens(candidate) <= max_tokens:
+            best = candidate
+            low = body_tokens + 1
+        else:
+            high = body_tokens - 1
+    return best
 
 
 def summarize_with_escalation(

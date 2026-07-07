@@ -1152,32 +1152,25 @@ class TestTokens:
 
 
 class TestDeterministicTruncate:
-    def test_honours_token_budget_for_cjk(self):
+    def test_honours_token_budget_for_cjk_without_tiktoken(self, monkeypatch):
         from hermes_lcm.escalation import _deterministic_truncate, _L3_TRUNCATION_MARKER
+        from hermes_lcm import tokens as token_module
+
+        monkeypatch.setattr(token_module, "_get_encoder", lambda: None)
+        token_module._count_tokens_cached.cache_clear()
 
         # Dense CJK: tokenizes far more densely than 4 chars/token, so the old
-        # chars*4 budget overshot the token budget ~2-4x.
+        # chars*4 budget overshot the token budget ~2-4x. Force the fallback
+        # counter because that path is where per-part counts are non-additive.
         cjk = "这是一段需要压缩的中文技术文本内容。" * 200
-        max_tokens = 100
-        assert count_tokens(cjk) > max_tokens  # precondition: truncation happens
+        for max_tokens in (80, 100, 150, 200, 512):
+            assert token_module.count_tokens(cjk) > max_tokens  # precondition: truncation happens
 
-        out = _deterministic_truncate(cjk, max_tokens)
+            out = _deterministic_truncate(cjk, max_tokens)
 
-        # Reconstruct the pre-fix output (flat chars*4 head/tail) to show the fix
-        # is a real improvement regardless of whether tiktoken is installed in
-        # the test environment.
-        char_budget = max_tokens * 4
-        old_style = (
-            cjk[: int(char_budget * 0.4)]
-            + _L3_TRUNCATION_MARKER
-            + cjk[-int(char_budget * 0.4):]
-        )
-        assert count_tokens(out) < count_tokens(old_style)
-        # With tiktoken the result lands within a token or two of the budget;
-        # under the char-fallback estimator the ASCII marker is over-counted at
-        # the CJK density, so allow a modest band well below the old ~2-4x.
-        assert count_tokens(out) <= int(max_tokens * 1.4)
-        assert count_tokens(out) < count_tokens(cjk)  # converged
+            assert _L3_TRUNCATION_MARKER in out
+            assert token_module.count_tokens(out) <= max_tokens
+            assert token_module.count_tokens(out) < token_module.count_tokens(cjk)  # converged
 
     def test_ascii_truncation_converges_and_keeps_head_and_tail(self):
         from hermes_lcm.escalation import _deterministic_truncate
@@ -1186,7 +1179,7 @@ class TestDeterministicTruncate:
         max_tokens = 60
         out = _deterministic_truncate(text, max_tokens)
         assert count_tokens(out) < count_tokens(text)
-        assert count_tokens(out) <= max_tokens + 20
+        assert count_tokens(out) <= max_tokens
         assert out.startswith("alpha")
         assert out.rstrip().endswith("omega")
 
