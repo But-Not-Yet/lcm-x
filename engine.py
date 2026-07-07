@@ -4893,10 +4893,10 @@ class LCMEngine(CompactionMixin, ReconcileMixin, AuxiliarySessionMixin, Placehol
         emitted inside the summary block so restart reconciliation ignores it
         instead of ingesting a duplicate non-contiguous user message.
 
-        If a previous compaction already emitted the preserved-objective
-        scaffold and no newer real user turn exists, carry that scaffold forward
-        as the next anchor source so repeated compaction does not summarize the
-        active objective away one compression later.
+        Previous preserved-objective scaffolds are derived context, not real
+        user turns, so they are not eligible as the next anchor source. Once a
+        reverse scan reaches one, older user turns are stale relative to that
+        synthetic continuity marker and must not be promoted as current intent.
         """
         selected_tail_messages = [msg for msg in selected_tail if isinstance(msg, dict)]
         for message in reversed(messages):
@@ -4913,14 +4913,8 @@ class LCMEngine(CompactionMixin, ReconcileMixin, AuxiliarySessionMixin, Placehol
                 or self._is_ignored_active_replay_placeholder(message, content_text)
             ):
                 continue
-            sanitized_preserved_objective = self._sanitized_preserved_objective_context_content(message)
-            if sanitized_preserved_objective:
-                if any(
-                    self._sanitized_preserved_objective_context_content(selected) == sanitized_preserved_objective
-                    for selected in selected_tail_messages
-                ):
-                    return None
-                return sanitized_preserved_objective
+            if self._preserved_objective_context_content(message):
+                return None
             if message.get("role") != "user":
                 continue
             if self._is_preserved_todo_context_message(message):

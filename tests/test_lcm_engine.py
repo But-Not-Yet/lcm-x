@@ -5466,7 +5466,7 @@ class TestMessageFiltering:
         assert "SECRET" not in result_text
         assert "Current user objective preserved" not in result_text
 
-    def test_preserved_objective_survives_ignored_backlog_filtering(self, tmp_path):
+    def test_preserved_objective_scaffold_does_not_survive_ignored_backlog_filtering(self, tmp_path):
         engine = self._make_engine(
             tmp_path,
             "lcm_msg_ignore_preserved_scaffold.db",
@@ -5480,14 +5480,14 @@ class TestMessageFiltering:
                 "content": "[Current user objective preserved from compacted history]\ncarry this objective forward",
             },
             {"role": "user", "content": "SECRET ignored objective must not be preserved"},
-            {"role": "assistant", "content": "fresh tail response"},
+            {"role": "user", "content": "fresh visible request"},
         ]
 
         result = engine.compress(messages, current_tokens=count_messages_tokens(messages))
         result_text = "\n".join(str(msg.get("content", "")) for msg in result)
 
-        assert "carry this objective forward" in result_text
-        assert "fresh tail response" in result_text
+        assert "carry this objective forward" not in result_text
+        assert "fresh visible request" in result_text
         assert "SECRET" not in result_text
 
     def test_original_ignore_decision_survives_sensitive_active_redaction(self, tmp_path, monkeypatch):
@@ -10593,7 +10593,7 @@ class TestEngineCompress:
         assert secret not in node_text
         assert trailing_request in node_text
 
-    def test_compress_sanitizes_carried_preserved_objective_anchor(self, tmp_path, monkeypatch):
+    def test_compress_does_not_reanchor_carried_preserved_objective_scaffold(self, tmp_path, monkeypatch):
         config = LCMConfig(
             fresh_tail_count=4,
             leaf_chunk_tokens=1,
@@ -10628,8 +10628,8 @@ class TestEngineCompress:
 
         result_text = "\n".join(str(msg.get("content", "")) for msg in result)
 
-        assert "[Current user objective preserved from compacted history]" in result_text
-        assert trailing_request in result_text
+        assert "[Current user objective preserved from compacted history]" not in result_text
+        assert trailing_request not in result_text
         assert secret not in result_text
         assert "active_memory" not in result_text
         assert "Untrusted context" not in result_text
@@ -10676,7 +10676,7 @@ class TestEngineCompress:
         assert "active_memory" not in result_text
         assert "Untrusted context" not in result_text
 
-    def test_compress_carries_preserved_user_request_across_repeated_compaction(self, tmp_path, monkeypatch):
+    def test_compress_does_not_reanchor_preserved_user_request_across_repeated_compaction(self, tmp_path, monkeypatch):
         config = LCMConfig(
             fresh_tail_count=4,
             leaf_chunk_tokens=1,
@@ -10713,8 +10713,8 @@ class TestEngineCompress:
             {"role": "tool", "tool_call_id": "call_4", "content": "out4"},
         ])
         second_serialized = "\n".join(str(msg.get("content", "")) for msg in second)
-        assert latest_request in second_serialized
-        assert second_serialized.count("[Current user objective preserved from compacted history]") == 1
+        assert latest_request not in second_serialized
+        assert "[Current user objective preserved from compacted history]" not in second_serialized
 
     def test_compress_preserves_system_and_tail(self, engine):
         """Compression should always keep system prompt and fresh tail."""
