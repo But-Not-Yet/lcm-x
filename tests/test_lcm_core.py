@@ -1137,18 +1137,18 @@ class TestTokens:
         ]
         assert count_messages_tokens(msgs) > 0
 
-    def test_truncate_text_to_tokens_respects_budget(self):
-        from hermes_lcm.tokens import truncate_text_to_tokens
+    def test_l3_truncate_text_to_tokens_respects_budget(self):
+        from hermes_lcm.escalation import _truncate_text_to_tokens
 
         text = "the quick brown fox jumps over the lazy dog " * 50
-        head = truncate_text_to_tokens(text, 20)
+        head = _truncate_text_to_tokens(text, 20)
         assert count_tokens(head) <= 20
         assert text.startswith(head[: min(len(head), 10)])
-        tail = truncate_text_to_tokens(text, 20, from_end=True)
+        tail = _truncate_text_to_tokens(text, 20, from_end=True)
         assert count_tokens(tail) <= 20
         # Short text and non-positive budgets are handled.
-        assert truncate_text_to_tokens("short", 100) == "short"
-        assert truncate_text_to_tokens("anything", 0) == ""
+        assert _truncate_text_to_tokens("short", 100) == "short"
+        assert _truncate_text_to_tokens("anything", 0) == ""
 
 
 class TestDeterministicTruncate:

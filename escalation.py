@@ -16,8 +16,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from . import tokens as _token_module
 from .model_routing import apply_lcm_model_route
-from .tokens import count_tokens, truncate_text_to_tokens
+from .tokens import count_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -383,6 +384,43 @@ _L3_TRUNCATION_MARKER = (
 )
 
 
+def _truncate_text_to_tokens(text: str, max_tokens: int, *, from_end: bool = False) -> str:
+    """Truncate ``text`` to at most ``max_tokens`` tokens for L3 fallback."""
+    if max_tokens <= 0 or not text:
+        return ""
+    enc = _token_module._get_encoder()
+    if enc is not None:
+        try:
+            tokens = enc.encode(text)
+            if len(tokens) <= max_tokens:
+                return text
+            kept = tokens[-max_tokens:] if from_end else tokens[:max_tokens]
+            return enc.decode(kept)
+        except Exception:
+            pass
+    if count_tokens(text) <= max_tokens:
+        return text
+    length = len(text)
+    non_ascii = 0 if text.isascii() else sum(1 for ch in text if ord(ch) > 127)
+    ratio = (non_ascii / length) if length else 0.0
+    if ratio >= 0.5:
+        divisor = 1.5
+    elif ratio >= 0.2:
+        divisor = 2.5
+    else:
+        divisor = _token_module._CHARS_PER_TOKEN
+    char_budget = max(1, int(max_tokens * divisor))
+    # The estimate is approximate; correct any overshoot in a few bounded steps
+    # so the returned slice never exceeds the token budget.
+    for _ in range(8):
+        candidate = text[-char_budget:] if from_end else text[:char_budget]
+        estimated = count_tokens(candidate)
+        if estimated <= max_tokens or char_budget <= 1:
+            return candidate
+        char_budget = max(1, int(char_budget * max_tokens / estimated) - 1)
+    return text[-char_budget:] if from_end else text[:char_budget]
+
+
 def _deterministic_truncate(text: str, max_tokens: int) -> str:
     """Level 3: no LLM, just truncate deterministically.
 
@@ -398,13 +436,13 @@ def _deterministic_truncate(text: str, max_tokens: int) -> str:
     marker_tokens = count_tokens(_L3_TRUNCATION_MARKER)
     if max_tokens <= marker_tokens + 4:
         # Budget too small to afford the head/tail marker; single head cut.
-        return truncate_text_to_tokens(text, max_tokens)
+        return _truncate_text_to_tokens(text, max_tokens)
 
     def assemble(body_tokens: int) -> str:
         head_tokens = body_tokens // 2
         tail_tokens = body_tokens - head_tokens
-        head = truncate_text_to_tokens(text, head_tokens)
-        tail = truncate_text_to_tokens(text, tail_tokens, from_end=True)
+        head = _truncate_text_to_tokens(text, head_tokens)
+        tail = _truncate_text_to_tokens(text, tail_tokens, from_end=True)
         return head + _L3_TRUNCATION_MARKER + tail
 
     # ``count_tokens`` is exact with tiktoken, but the no-tiktoken fallback is
