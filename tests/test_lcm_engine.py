@@ -465,6 +465,52 @@ def test_codex_oauth_context_cap_constrains_reserve_based_assembly_cap(tmp_path)
 
         assert engine.context_length == 272_000
         assert engine._effective_assembly_token_cap() == 248_000
+        assert engine.threshold_tokens == int(272_000 * 0.85)
+    finally:
+        engine.shutdown()
+
+
+def test_threshold_tokens_respects_lower_max_assembly_cap_for_host_preflight(tmp_path):
+    config = LCMConfig(
+        context_threshold=0.75,
+        database_path=str(tmp_path / "codex-low-assembly-cap.db"),
+        max_assembly_tokens=96_000,
+    )
+    config.config_sources["context_threshold"] = "env:LCM_CONTEXT_THRESHOLD"
+    engine = LCMEngine(config=config)
+    try:
+        engine.update_model(
+            model="gpt-5.5",
+            provider="openai-codex",
+            context_length=400_000,
+        )
+
+        assert engine.context_length == 272_000
+        assert int(272_000 * 0.75) == 204_000
+        assert engine._effective_assembly_token_cap() == 96_000
+        assert engine.threshold_tokens == 96_000
+        assert engine.should_compress(96_000)
+    finally:
+        engine.shutdown()
+
+
+def test_threshold_tokens_respects_lower_reserve_based_cap_for_host_preflight(tmp_path):
+    config = LCMConfig(
+        context_threshold=0.90,
+        database_path=str(tmp_path / "reserve-low-assembly-cap.db"),
+        reserve_tokens_floor=30_000,
+    )
+    engine = LCMEngine(config=config)
+    try:
+        engine.update_model(
+            model="gpt-test",
+            provider="openai",
+            context_length=100_000,
+        )
+
+        assert engine._effective_assembly_token_cap() == 70_000
+        assert engine.threshold_tokens == 70_000
+        assert engine.should_compress(70_000)
     finally:
         engine.shutdown()
 

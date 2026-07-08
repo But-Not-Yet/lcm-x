@@ -555,6 +555,22 @@ class LCMEngine(CompactionMixin, ReconcileMixin, AuxiliarySessionMixin, Placehol
             )
         return raw_context_length, None, ""
 
+    def _effective_threshold_tokens(self, context_threshold_tokens: int) -> int:
+        """Return the host-visible preflight trigger token count.
+
+        Hermes core uses ``threshold_tokens`` as a cheap gate before it pays for
+        the full request estimate that includes system prompt and tool schemas.
+        LCM can enforce a stricter active-context assembly cap than the normal
+        context-threshold value, so expose the stricter cap here; otherwise a
+        tool/schema-heavy request can skip host preflight entirely.
+        """
+        assembly_cap = self._effective_assembly_token_cap()
+        if assembly_cap is not None and assembly_cap > 0:
+            if context_threshold_tokens > 0:
+                return min(context_threshold_tokens, assembly_cap)
+            return assembly_cap
+        return context_threshold_tokens
+
     def _set_context_length(
         self,
         context_length: Any,
@@ -599,8 +615,11 @@ class LCMEngine(CompactionMixin, ReconcileMixin, AuxiliarySessionMixin, Placehol
             self._runtime_context_threshold(model=model, provider=provider)
         )
         self.threshold_percent = self.context_threshold
-        self.threshold_tokens = int(
+        context_threshold_tokens = int(
             effective_context_length * self.context_threshold
+        )
+        self.threshold_tokens = self._effective_threshold_tokens(
+            context_threshold_tokens
         )
         return True
 
