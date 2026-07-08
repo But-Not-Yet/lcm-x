@@ -1167,6 +1167,58 @@ class TestTokens:
         ]
         assert count_messages_tokens(msgs) > 0
 
+    def test_l3_truncate_text_to_tokens_respects_budget(self):
+        from hermes_lcm.escalation import _truncate_text_to_tokens
+
+        text = "the quick brown fox jumps over the lazy dog " * 50
+        head = _truncate_text_to_tokens(text, 20)
+        assert count_tokens(head) <= 20
+        assert text.startswith(head[: min(len(head), 10)])
+        tail = _truncate_text_to_tokens(text, 20, from_end=True)
+        assert count_tokens(tail) <= 20
+        # Short text and non-positive budgets are handled.
+        assert _truncate_text_to_tokens("short", 100) == "short"
+        assert _truncate_text_to_tokens("anything", 0) == ""
+
+
+class TestDeterministicTruncate:
+    def test_honours_token_budget_for_cjk_without_tiktoken(self, monkeypatch):
+        from hermes_lcm.escalation import _deterministic_truncate, _L3_TRUNCATION_MARKER
+        from hermes_lcm import tokens as token_module
+
+        monkeypatch.setattr(token_module, "_get_encoder", lambda: None)
+        token_module._count_tokens_cached.cache_clear()
+
+        # Dense CJK: tokenizes far more densely than 4 chars/token, so the old
+        # chars*4 budget overshot the token budget ~2-4x. Force the fallback
+        # counter because that path is where per-part counts are non-additive.
+        cjk = "这是一段需要压缩的中文技术文本内容。" * 200
+        for max_tokens in (80, 100, 150, 200, 512):
+            assert token_module.count_tokens(cjk) > max_tokens  # precondition: truncation happens
+
+            out = _deterministic_truncate(cjk, max_tokens)
+
+            assert _L3_TRUNCATION_MARKER in out
+            assert token_module.count_tokens(out) <= max_tokens
+            assert token_module.count_tokens(out) < token_module.count_tokens(cjk)  # converged
+
+    def test_ascii_truncation_converges_and_keeps_head_and_tail(self):
+        from hermes_lcm.escalation import _deterministic_truncate
+
+        text = "alpha " + ("filler word " * 500) + " omega"
+        max_tokens = 60
+        out = _deterministic_truncate(text, max_tokens)
+        assert count_tokens(out) < count_tokens(text)
+        assert count_tokens(out) <= max_tokens
+        assert out.startswith("alpha")
+        assert out.rstrip().endswith("omega")
+
+    def test_short_text_is_returned_unchanged(self):
+        from hermes_lcm.escalation import _deterministic_truncate
+
+        text = "already small enough"
+        assert _deterministic_truncate(text, 1000) == text
+
 
 class TestMessageStore:
     @pytest.fixture

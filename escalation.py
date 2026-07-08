@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from . import tokens as _token_module
 from .model_routing import apply_lcm_model_route
 from .tokens import count_tokens
 
@@ -424,25 +425,89 @@ CONTENT:
 {text}"""
 
 
+_L3_TRUNCATION_MARKER = (
+    "\n\n[...deterministic truncation — details available via lcm_expand...]\n\n"
+)
+
+
+def _truncate_text_to_tokens(text: str, max_tokens: int, *, from_end: bool = False) -> str:
+    """Truncate ``text`` to at most ``max_tokens`` tokens for L3 fallback."""
+    if max_tokens <= 0 or not text:
+        return ""
+    enc = _token_module._get_encoder()
+    if enc is not None:
+        try:
+            tokens = enc.encode(text)
+            if len(tokens) <= max_tokens:
+                return text
+            kept = tokens[-max_tokens:] if from_end else tokens[:max_tokens]
+            return enc.decode(kept)
+        except Exception:
+            pass
+    if count_tokens(text) <= max_tokens:
+        return text
+    length = len(text)
+    non_ascii = 0 if text.isascii() else sum(1 for ch in text if ord(ch) > 127)
+    ratio = (non_ascii / length) if length else 0.0
+    if ratio >= 0.5:
+        divisor = 1.5
+    elif ratio >= 0.2:
+        divisor = 2.5
+    else:
+        divisor = _token_module._CHARS_PER_TOKEN
+    char_budget = max(1, int(max_tokens * divisor))
+    # The estimate is approximate; correct any overshoot in a few bounded steps
+    # so the returned slice never exceeds the token budget.
+    for _ in range(8):
+        candidate = text[-char_budget:] if from_end else text[:char_budget]
+        estimated = count_tokens(candidate)
+        if estimated <= max_tokens or char_budget <= 1:
+            return candidate
+        char_budget = max(1, int(char_budget * max_tokens / estimated) - 1)
+    return text[-char_budget:] if from_end else text[:char_budget]
+
+
 def _deterministic_truncate(text: str, max_tokens: int) -> str:
     """Level 3: no LLM, just truncate deterministically.
 
-    Takes the first and last portions to preserve start context and
-    most recent state. Guaranteed to converge.
+    Keeps the first and last portions to preserve start context and most recent
+    state. Guaranteed to converge. Budgeted in *tokens* via the tiktoken encoder
+    (not a flat chars*4 estimate), so the result honours ``max_tokens`` even for
+    CJK / dense scripts, where chars*4 overshoots ~2-4x and would defeat the very
+    budget L3 exists to guarantee.
     """
     if count_tokens(text) <= max_tokens:
         return text
 
-    # Rough char budget (4 chars/token)
-    char_budget = max_tokens * 4
-    if len(text) <= char_budget:
-        return text
+    marker_tokens = count_tokens(_L3_TRUNCATION_MARKER)
+    if max_tokens <= marker_tokens + 4:
+        # Budget too small to afford the head/tail marker; single head cut.
+        return _truncate_text_to_tokens(text, max_tokens)
 
-    head_budget = int(char_budget * 0.4)
-    tail_budget = int(char_budget * 0.4)
-    middle = "\n\n[...deterministic truncation — details available via lcm_expand...]\n\n"
+    def assemble(body_tokens: int) -> str:
+        head_tokens = body_tokens // 2
+        tail_tokens = body_tokens - head_tokens
+        head = _truncate_text_to_tokens(text, head_tokens)
+        tail = _truncate_text_to_tokens(text, tail_tokens, from_end=True)
+        return head + _L3_TRUNCATION_MARKER + tail
 
-    return text[:head_budget] + middle + text[-tail_budget:]
+    # ``count_tokens`` is exact with tiktoken, but the no-tiktoken fallback is
+    # intentionally a script-density estimate and is not additive: counting the
+    # CJK head, ASCII marker, and CJK tail separately can fit while the combined
+    # string exceeds ``max_tokens``. Binary search the body budget against the
+    # final assembled result so L3 is bounded under both counters.
+    best = _L3_TRUNCATION_MARKER
+    low = 0
+    high = max_tokens - marker_tokens
+    while low <= high:
+        body_tokens = (low + high) // 2
+        candidate = assemble(body_tokens)
+        if count_tokens(candidate) <= max_tokens:
+            best = candidate
+            low = body_tokens + 1
+        else:
+            high = body_tokens - 1
+    return best
 
 
 def summarize_with_escalation(
