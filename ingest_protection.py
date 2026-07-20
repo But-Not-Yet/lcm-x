@@ -126,6 +126,10 @@ _SOURCE_LITERAL_LINE_RE = re.compile(
     r"^\s*(?:(?:\d+[|:])|(?:[+-](?![+-])))\s*(?:[rubf]{0,2})?[\"']\s*$",
     re.IGNORECASE,
 )
+_SOURCE_DIFF_LITERAL_RE = re.compile(
+    r"^\s*[+-](?![+-])\s*(?:[rubf]{0,2})?[\"'][^\r\n]*$",
+    re.IGNORECASE,
+)
 _PERSISTED_OUTPUT_TAG = "<persisted-output>"
 _PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 _PERSISTED_OUTPUT_SAVED_TO_RE = re.compile(r"^Full output saved to:\s*(?P<path>.+?)\s*$", re.MULTILINE)
@@ -1698,7 +1702,11 @@ def _placeholder_line_prefix(text: str, start: int) -> str:
 def _is_incidental_source_placeholder(text: str, start: int) -> bool:
     """Return true when a placeholder match is quoted source/docs, not a recovery ref."""
     prefix = _placeholder_line_prefix(text, start)
-    if _SOURCE_LITERAL_ASSIGNMENT_RE.search(prefix) or _SOURCE_LITERAL_LINE_RE.fullmatch(prefix):
+    if (
+        _SOURCE_LITERAL_ASSIGNMENT_RE.search(prefix)
+        or _SOURCE_LITERAL_LINE_RE.fullmatch(prefix)
+        or _SOURCE_DIFF_LITERAL_RE.fullmatch(prefix)
+    ):
         return True
     before = text[:start]
     if before.count("```") % 2:

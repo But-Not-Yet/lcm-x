@@ -2236,6 +2236,76 @@ def test_externalized_payload_integrity_scan_ignores_incidental_source_excerpts(
         assert incidental_ref not in encoded
 
 
+def test_externalized_payload_integrity_scan_ignores_nested_serialized_diff_literals(tmp_path):
+    engine = _engine(tmp_path)
+    (tmp_path / "externalized").mkdir()
+    review_diff = "\n".join(
+        [
+            "diff --git a/tests/test_example.py b/tests/test_example.py",
+            "@@ -10,2 +10,3 @@",
+            (
+                "-        'fixture_source = \\\"[Externalized tool output: "
+                "tool_call_id=call_1; chars=1; ref=20260708T120000Z-tool-call-{index}.json]\\\"'"
+            ),
+            (
+                "+        '100: value = \\\"[Externalized payload: kind=raw_payload; "
+                "role=assistant; chars=1; ref=inc-tool-colon.json]\\\"'"
+            ),
+            (
+                "+        '200| value = \\\"[Externalized payload: kind=raw_payload; "
+                "role=assistant; chars=1; ref=inc-tool-pipe.json]\\\"'"
+            ),
+        ]
+    )
+    genuine_placeholder = (
+        "[Externalized LCM ingest payload: kind=ingest_payload; field=content; "
+        "chars=1; bytes=1; ref=missing-genuine.json]"
+    )
+    nested_tool_output = json.dumps(
+        {
+            "output": review_diff.replace("\n", "\\n"),
+            "recoverable_payload": genuine_placeholder,
+        }
+    )
+    engine._store._conn.execute(
+        """INSERT INTO messages
+           (session_id, source, role, content, tool_call_id, tool_calls, tool_name, timestamp, token_estimate, pinned)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            engine.current_session_id,
+            "discord",
+            "tool",
+            nested_tool_output,
+            None,
+            None,
+            None,
+            1.0,
+            1,
+            0,
+        ),
+    )
+    engine._store._conn.commit()
+
+    detail = scan_externalized_payload_integrity(
+        engine._store._conn,
+        engine._config,
+        hermes_home=engine._hermes_home,
+    )
+
+    assert detail["externalized_payload_refs_total"] == 1
+    assert detail["externalized_payload_refs_missing"] == 1
+    assert detail["missing_externalized_payload_refs"] == [
+        {
+            "store_id": 1,
+            "session_id": engine.current_session_id,
+            "source": "discord",
+            "role": "tool",
+            "field": "content",
+            "externalized_ref": "missing-genuine.json",
+        }
+    ]
+
+
 def test_externalized_payload_integrity_scan_detects_embedded_content_placeholder_with_trailing_text(tmp_path):
     engine = _engine(tmp_path)
     (tmp_path / "externalized").mkdir()
