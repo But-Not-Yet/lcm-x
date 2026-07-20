@@ -1,7 +1,11 @@
 """Tests for B2 compaction telemetry (per-conversation snapshot in metadata)."""
 
+import json
+
 import pytest
 
+from hermes_lcm import tools as lcm_tools
+from hermes_lcm.command import handle_lcm_command
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.engine import LCMEngine
 from hermes_lcm.store import MessageStore
@@ -36,6 +40,28 @@ def _cold_usage(prompt=1000):
 
 def _telemetry(engine):
     return engine.get_status().get("compaction_telemetry")
+
+
+def _slash_status_fields(engine):
+    return {
+        key.strip(): value.strip()
+        for line in handle_lcm_command("status", engine).splitlines()
+        if ":" in line
+        for key, value in [line.split(":", 1)]
+    }
+
+
+def _assert_total_compaction_surfaces(engine, expected):
+    status = engine.get_status()
+    tool_status = json.loads(lcm_tools.lcm_status({}, engine=engine))
+    slash_status = _slash_status_fields(engine)
+
+    assert status["total_compactions"] == expected
+    assert status["total_compactions_scope"] == "current_conversation"
+    assert tool_status["total_compactions"] == expected
+    assert tool_status["total_compactions_scope"] == "current_conversation"
+    assert slash_status["total_compactions"] == str(expected)
+    assert slash_status["total_compactions_scope"] == "current_conversation"
 
 
 def test_records_per_turn_snapshot(engine):
@@ -96,6 +122,49 @@ def test_resets_on_compaction(engine):
     assert t["last_leaf_compaction_at"] is not None
     assert t["last_compaction_duration_ms"] == 12.5
     assert t["peak_prompt_tokens_since_leaf_compaction"] == 400  # reset to current
+
+
+def test_total_compactions_status_survives_session_rollover_for_conversation(engine):
+    engine.compression_count = 3
+    engine.update_from_response(_hot_usage())
+    _assert_total_compaction_surfaces(engine, 3)
+
+    engine.on_session_start(
+        "test-session-next",
+        platform="discord",
+        conversation_id="conv-1",
+    )
+
+    assert engine.compression_count == 0
+    _assert_total_compaction_surfaces(engine, 3)
+
+
+def test_total_compactions_status_defaults_to_zero_without_telemetry(engine):
+    _assert_total_compaction_surfaces(engine, 0)
+
+
+def test_total_compactions_status_is_scoped_to_current_conversation(engine):
+    engine._store.write_compaction_telemetry(
+        "conv-1",
+        {"conversation_id": "conv-1", "total_compactions": 2},
+    )
+    engine._store.write_compaction_telemetry(
+        "other-conversation",
+        {"conversation_id": "other-conversation", "total_compactions": 99},
+    )
+
+    _assert_total_compaction_surfaces(engine, 2)
+
+
+@pytest.mark.parametrize("malformed", [-1, "7", 1.5, True, None, [], {}])
+def test_total_compactions_status_fails_closed_for_malformed_telemetry(engine, malformed):
+    engine._store.write_compaction_telemetry(
+        "conv-1",
+        {"conversation_id": "conv-1", "total_compactions": malformed},
+    )
+
+    _assert_total_compaction_surfaces(engine, 0)
+    assert _telemetry(engine)["total_compactions"] == 0
 
 
 def test_no_conversation_records_nothing(engine):

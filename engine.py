@@ -134,6 +134,7 @@ logger = logging.getLogger(__name__)
 
 _SESSION_END_BUSY_TIMEOUT_MS = 50
 _CODEX_GPT55_COMPACTION_THRESHOLD = 0.85
+_TOTAL_COMPACTIONS_SCOPE = "current_conversation"
 
 # Auto-focus topic derivation: infer a compact focus hint from the most recent
 # real user turns so that summarization can prioritise current user intent.
@@ -144,6 +145,13 @@ _AUTO_FOCUS_MAX_CHARS = 700
 
 _PRESERVED_TODO_CONTEXT_PREFIX = "[Your active task list was preserved across context compression]"
 _LCM_MESSAGE_PREFIX_FINGERPRINT_LIMIT = 8
+
+
+def _normalize_total_compactions(value: Any) -> int:
+    """Return a persisted compaction total only when it is a valid counter."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
 
 
 class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessionMixin, PlaceholderLedgerMixin, BypassMixin, ContextEngine):
@@ -925,7 +933,9 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
                     int(existing.get("peak_prompt_tokens_since_leaf_compaction", 0) or 0),
                     prompt_tokens,
                 )
-            total_compactions = int(existing.get("total_compactions", 0) or 0)
+            total_compactions = _normalize_total_compactions(
+                existing.get("total_compactions", 0)
+            )
             if compacted:
                 total_compactions += self.compression_count - prev_count
                 last_leaf_compaction_at = time.time()
@@ -3423,6 +3433,15 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
         session_id = self.current_session_id
         conversation_id = self.current_conversation_id
         lifecycle_state = self._lifecycle.get_by_conversation(conversation_id) if conversation_id else None
+        try:
+            telemetry = self._store.read_compaction_telemetry(conversation_id)
+        except Exception:
+            telemetry = None
+        total_compactions = _normalize_total_compactions(
+            telemetry.get("total_compactions", 0) if telemetry else 0
+        )
+        status["total_compactions"] = total_compactions
+        status["total_compactions_scope"] = _TOTAL_COMPACTIONS_SCOPE
         status["engine"] = "lcm"
         status["runtime_identity"] = self.get_runtime_identity()
         status["ingest_protection"] = sensitive_pattern_status(self._config)
@@ -3491,10 +3510,6 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
                     "last_reset_at": lifecycle_state.last_reset_at,
                     "updated_at": lifecycle_state.updated_at,
                 }
-            try:
-                telemetry = self._store.read_compaction_telemetry(conversation_id)
-            except Exception:
-                telemetry = None
             if telemetry:
                 status["compaction_telemetry"] = {
                     "cache_state": telemetry.get("cache_state", "unknown"),
@@ -3513,7 +3528,7 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
                     "last_observed_cache_read": telemetry.get("last_observed_cache_read", 0),
                     "last_observed_cache_write": telemetry.get("last_observed_cache_write", 0),
                     "activity_band": telemetry.get("activity_band", "low"),
-                    "total_compactions": telemetry.get("total_compactions", 0),
+                    "total_compactions": total_compactions,
                     "last_leaf_compaction_at": telemetry.get("last_leaf_compaction_at"),
                     "last_compaction_duration_ms": telemetry.get("last_compaction_duration_ms"),
                     "provider": telemetry.get("provider"),
