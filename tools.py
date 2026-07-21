@@ -3093,6 +3093,10 @@ def _lcm_recall_has_usable_vector_corpus(
     or partial optional schema fails closed without materializing feature tables.
     """
     provider_name = str(provider_name or "").strip().lower()
+    provider_name = {
+        "voyageai": "voyage",
+        "fast-embed": "fastembed",
+    }.get(provider_name, provider_name)
     model_name = str(model_name or "").strip()
     if not provider_name or not model_name or time.monotonic() >= deadline:
         return False
