@@ -3076,6 +3076,103 @@ def _lcm_recall_rerank(
     return reordered, "applied"
 
 
+def _lcm_recall_has_usable_vector_corpus(
+    engine: "LCMEngine",
+    *,
+    run_summary: bool,
+    run_chunk: bool,
+    provider_name: str,
+    model_name: str,
+    deadline: float,
+) -> bool:
+    """Return whether a requested semantic arm has vectors for its selected profile.
+
+    This read-only preflight mirrors ``VectorStore`` profile ordering and requires
+    a live metadata+vector pair. Merely configuring embeddings or registering an
+    empty profile therefore cannot shorten the only usable FTS fallback. Missing
+    or partial optional schema fails closed without materializing feature tables.
+    """
+    provider_name = str(provider_name or "").strip().lower()
+    model_name = str(model_name or "").strip()
+    if not provider_name or not model_name or time.monotonic() >= deadline:
+        return False
+
+    conn: sqlite3.Connection | None = None
+    try:
+        db_path = Path(engine._store.db_path).resolve()
+        remaining_s = max(0.001, deadline - time.monotonic())
+        conn = sqlite3.connect(
+            f"{db_path.as_uri()}?mode=ro",
+            uri=True,
+            timeout=min(0.05, remaining_s),
+        )
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only=ON")
+        conn.set_progress_handler(
+            lambda: 1 if time.monotonic() >= deadline else 0,
+            1000,
+        )
+
+        def corpus_has_vectors(
+            *,
+            task: str,
+            selected_model: str,
+            meta_table: str,
+            vector_table: str,
+            id_column: str,
+        ) -> bool:
+            profile = conn.execute(
+                """
+                SELECT identity_hash
+                FROM lcm_embedding_profile
+                WHERE model_name = ? AND provider = ? AND task = ?
+                ORDER BY (active = 1 AND archived_at IS NULL) DESC,
+                         registered_at DESC, identity_hash DESC
+                LIMIT 1
+                """,
+                (selected_model, provider_name, task),
+            ).fetchone()
+            if profile is None:
+                return False
+            identity_hash = str(profile["identity_hash"])
+            row = conn.execute(
+                f"""
+                SELECT 1
+                FROM {meta_table} m
+                JOIN {vector_table} v
+                  ON v.{id_column} = m.{id_column}
+                 AND v.identity_hash = m.identity_hash
+                WHERE m.identity_hash = ? AND m.archived = 0
+                LIMIT 1
+                """,
+                (identity_hash,),
+            ).fetchone()
+            return row is not None
+
+        if run_summary and corpus_has_vectors(
+            task="summary",
+            selected_model=model_name,
+            meta_table="lcm_embedding_meta",
+            vector_table="lcm_embedding_vectors",
+            id_column="embedded_id",
+        ):
+            return True
+        if run_chunk and corpus_has_vectors(
+            task="chunk",
+            selected_model=default_chunk_model(provider_name, model_name),
+            meta_table="lcm_chunk_meta",
+            vector_table="lcm_chunk_vectors",
+            id_column="chunk_id",
+        ):
+            return True
+        return False
+    except (OSError, ValueError, sqlite3.Error):
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
     """Search the agent's entire memory (all conversations, all time) by meaning.
 
@@ -3132,17 +3229,30 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
     degraded_reasons: list[str] = []
     timed_out = False
     provider: Any = None
+    provider_override = str(kwargs.get("provider_override") or "").strip()
 
     # -- FTS arm (the default-on value: works with embeddings disabled) --
     if run_fts:
         fts_deadline = deadline
-        semantic_configured = (
+        configured_provider = provider_override or str(
+            getattr(engine._config, "embedding_provider", "") or ""
+        ).strip()
+        configured_model = str(
+            getattr(engine._config, "embedding_model", "") or ""
+        ).strip()
+        semantic_available = (
             embeddings_enabled
             and (run_summary or run_chunk)
-            and bool(str(getattr(engine._config, "embedding_provider", "") or "").strip())
-            and bool(str(getattr(engine._config, "embedding_model", "") or "").strip())
+            and _lcm_recall_has_usable_vector_corpus(
+                engine,
+                run_summary=run_summary,
+                run_chunk=run_chunk,
+                provider_name=configured_provider,
+                model_name=configured_model,
+                deadline=deadline,
+            )
         )
-        if semantic_configured:
+        if semantic_available:
             now = time.monotonic()
             remaining_s = max(0.0, deadline - now)
             fts_budget_s = min(
@@ -3179,7 +3289,6 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
             query_vector: list[float] | None = None
             chunk_provider: Any = None
             chunk_query_vector: list[float] | None = None
-            provider_override = kwargs.get("provider_override")
             try:
                 provider = _run_within_deadline(
                     lambda: _resolve_recall_provider(

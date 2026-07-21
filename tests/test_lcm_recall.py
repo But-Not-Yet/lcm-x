@@ -80,13 +80,13 @@ def _add_summary(engine, summary, *, session_id, created_at, latest_at=None):
     )
 
 
-def _seed_summary_vectors(engine, rows, *, provider="mock"):
+def _seed_summary_vectors(engine, rows, *, provider="mock", model="mock-model"):
     store = VectorStore(engine._store.db_path, config=engine._config)
     try:
-        store.register_profile("mock-model", provider, 2)
-        identity = store.capture_identity("mock-model", provider=provider)
+        store.register_profile(model, provider, 2)
+        identity = store.capture_identity(model, provider=provider)
         for node_id, vector in rows:
-            store.record_embedding(str(node_id), "summary", "mock-model", vector, identity=identity)
+            store.record_embedding(str(node_id), "summary", model, vector, identity=identity)
     finally:
         store.close()
 
@@ -504,6 +504,18 @@ def test_slow_fts_arm_cannot_starve_semantic_recall_and_rerank(recall_engine, mo
     recall_engine._config.embedding_provider = "voyage"
     recall_engine._config.embedding_model = "voyage-4-large"
     recall_engine._config.rerank_enabled = True
+    node = _add_summary(
+        recall_engine,
+        "semantic result survives slow full-text search",
+        session_id="session-a",
+        created_at=1.0,
+    )
+    _seed_summary_vectors(
+        recall_engine,
+        [(node, [1.0, 0.0])],
+        provider="voyage",
+        model="voyage-4-large",
+    )
 
     clock = [100.0]
     captured: dict[str, float] = {}
@@ -607,6 +619,36 @@ def test_fts_fallback_keeps_full_recall_budget_without_semantic_route(
     )
 
     assert captured["fts_deadline"] == 108.0
+
+
+def test_fts_keeps_full_budget_when_requested_vector_corpus_is_unbackfilled(
+    recall_engine,
+    monkeypatch,
+):
+    """Configured embeddings without requested vectors are still an FTS-only route."""
+    recall_engine._config.recall_query_timeout_s = 8.0
+
+    clock = [100.0]
+    captured: dict[str, float] = {}
+
+    def fts_arm(_engine, _query, *, candidate_limit, deadline):
+        del candidate_limit
+        captured["fts_deadline"] = deadline
+        return [], None
+
+    monkeypatch.setattr(lcm_tools.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(lcm_tools, "resolve_provider", lambda _config: MockProvider())
+    monkeypatch.setattr(lcm_tools, "_lcm_recall_fts_arm", fts_arm)
+
+    payload = json.loads(
+        lcm_tools.lcm_recall(
+            {"query": "fts fallback budget", "include": "verbatim", "limit": 5},
+            engine=recall_engine,
+        )
+    )
+
+    assert captured["fts_deadline"] == 108.0
+    assert payload["provenance"]["coverage"]["chunk"] == "none"
 
 
 def test_bounded_chunk_coverage_surfaces_as_degraded(recall_engine, monkeypatch):
