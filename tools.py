@@ -266,6 +266,11 @@ _LCM_RECALL_DEFAULT_SCOPE_BIAS = 0.5
 _LCM_RECALL_SNIPPET_CHARS = 300
 _LCM_RECALL_RESPONSE_CHAR_CAP = 64_000
 _LCM_RECALL_VALID_INCLUDE = frozenset({"all", "summaries", "verbatim"})
+# A slow first FTS arm must not consume the whole shared recall deadline when a
+# real semantic route is configured. FTS-only/degraded installs keep the full
+# budget; hybrid recall reserves the remainder for provider resolution, vector
+# arms, hydration, fusion, and optional reranking.
+_LCM_RECALL_FTS_MAX_BUDGET_FRACTION = 0.25
 # Recency boost half-life (30 days) and its floor: a memory's rank_score is
 # multiplied by 2**(-age/half_life), clamped so age never zeroes an otherwise
 # strong hit — it only nudges toward newer memories.
@@ -3130,9 +3135,24 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
 
     # -- FTS arm (the default-on value: works with embeddings disabled) --
     if run_fts:
+        fts_deadline = deadline
+        semantic_configured = (
+            embeddings_enabled
+            and (run_summary or run_chunk)
+            and bool(str(getattr(engine._config, "embedding_provider", "") or "").strip())
+            and bool(str(getattr(engine._config, "embedding_model", "") or "").strip())
+        )
+        if semantic_configured:
+            now = time.monotonic()
+            remaining_s = max(0.0, deadline - now)
+            fts_budget_s = min(
+                remaining_s,
+                max(0.001, remaining_s * _LCM_RECALL_FTS_MAX_BUDGET_FRACTION),
+            )
+            fts_deadline = now + fts_budget_s
         try:
             hits, fts_error = _lcm_recall_fts_arm(
-                engine, query, candidate_limit=candidate_limit, deadline=deadline
+                engine, query, candidate_limit=candidate_limit, deadline=fts_deadline
             )
         except (_WorkerCapacityError, TimeoutError) as exc:
             hits, fts_error = [], {"error": str(exc)}

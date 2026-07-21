@@ -498,6 +498,117 @@ def test_recall_uses_recall_timeout_budget(recall_engine, monkeypatch):
     assert payload["hits"]
 
 
+def test_slow_fts_arm_cannot_starve_semantic_recall_and_rerank(recall_engine, monkeypatch):
+    """A slow first arm degrades alone instead of consuming the whole recall budget."""
+    recall_engine._config.recall_query_timeout_s = 8.0
+    recall_engine._config.embedding_provider = "voyage"
+    recall_engine._config.embedding_model = "voyage-4-large"
+    recall_engine._config.rerank_enabled = True
+
+    clock = [100.0]
+    captured: dict[str, float] = {}
+
+    class VoyageProvider(MockProvider):
+        provider_id = "voyage"
+        model_id = "voyage-4-large"
+
+        def rerank(self, _query, documents, *, top_k=None, timeout, model="rerank-2.5-lite"):
+            return [(index, 1.0) for index, _document in enumerate(documents)]
+
+    provider = VoyageProvider()
+
+    def slow_fts(_engine, _query, *, candidate_limit, deadline):
+        del candidate_limit
+        captured["fts_deadline"] = deadline
+        clock[0] = deadline
+        return [], {"error": "full-text deadline exhausted", "timeout": True}
+
+    def summary_arm(_engine, **_kwargs):
+        return (
+            [
+                {
+                    "kind": "summary",
+                    "node_id": 1,
+                    "session_id": "session-a",
+                    "timestamp": 1.0,
+                    "snippet": "semantic result survives slow full-text search",
+                    "from_current_session": False,
+                    "expand_hint": "lcm_expand(node_id=1)",
+                }
+            ],
+            "full",
+            1,
+            1,
+        )
+
+    monkeypatch.setattr(lcm_tools.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(lcm_tools, "resolve_provider", lambda _config: provider)
+    monkeypatch.setattr(lcm_tools, "_resolve_recall_chunk_provider", lambda *_a, **_k: provider)
+    monkeypatch.setattr(lcm_tools, "_lcm_recall_fts_arm", slow_fts)
+    monkeypatch.setattr(lcm_tools, "_lcm_recall_summary_arm", summary_arm)
+    monkeypatch.setattr(lcm_tools, "_lcm_recall_chunk_arm", lambda *_a, **_k: ([], "none", 0, 0))
+
+    payload = json.loads(
+        lcm_tools.lcm_recall(
+            {"query": "semantic deadline fairness", "include": "all", "limit": 5},
+            engine=recall_engine,
+        )
+    )
+
+    assert captured["fts_deadline"] < 108.0
+    assert payload["provenance"]["arms_run"] == ["summary"]
+    assert payload["provenance"]["coverage"] == {
+        "fts": "none",
+        "summary": "full",
+        "chunk": "none",
+    }
+    assert payload["provenance"]["rerank"] == "applied"
+    assert payload["hits"][0]["node_id"] == 1
+    assert payload["degraded"] is True
+    assert payload["timeout"] is True
+
+
+@pytest.mark.parametrize(
+    ("embeddings_enabled", "provider_name", "model_name"),
+    [
+        (False, "voyage", "voyage-4-large"),
+        (True, "", ""),
+    ],
+)
+def test_fts_fallback_keeps_full_recall_budget_without_semantic_route(
+    recall_engine,
+    monkeypatch,
+    embeddings_enabled,
+    provider_name,
+    model_name,
+):
+    recall_engine._config.recall_query_timeout_s = 8.0
+    recall_engine._config.embeddings_enabled = embeddings_enabled
+    recall_engine._config.embedding_provider = provider_name
+    recall_engine._config.embedding_model = model_name
+
+    clock = [100.0]
+    captured: dict[str, float] = {}
+
+    def fts_arm(_engine, _query, *, candidate_limit, deadline):
+        del candidate_limit
+        captured["fts_deadline"] = deadline
+        return [], None
+
+    monkeypatch.setattr(lcm_tools.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(lcm_tools, "resolve_provider", lambda _config: None)
+    monkeypatch.setattr(lcm_tools, "_lcm_recall_fts_arm", fts_arm)
+
+    json.loads(
+        lcm_tools.lcm_recall(
+            {"query": "fts fallback budget", "include": "all", "limit": 5},
+            engine=recall_engine,
+        )
+    )
+
+    assert captured["fts_deadline"] == 108.0
+
+
 def test_bounded_chunk_coverage_surfaces_as_degraded(recall_engine, monkeypatch):
     """SCAN-1: a recency-bounded chunk arm reports a degraded_reasons entry naming
     the arm + scanned/total, instead of silently truncating."""
