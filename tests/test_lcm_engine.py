@@ -311,6 +311,27 @@ def test_lcm_tool_status_includes_optional_cache_usage_metrics(engine):
     assert payload["config"]["summary_timeout_ms"] == 60_000
 
 
+def test_compress_exception_sets_terminal_error_status_and_reraises_same_exception(
+    engine,
+    monkeypatch,
+):
+    original = RuntimeError("forced compaction failure")
+    engine._last_compression_status = "noop"
+    engine._last_compression_noop_reason = "stale no-op reason"
+
+    def fail_ingest(_messages):
+        raise original
+
+    monkeypatch.setattr(engine, "_ingest_messages", fail_ingest)
+    with pytest.raises(RuntimeError) as caught:
+        engine.compress([{"role": "user", "content": "trigger"}])
+
+    assert caught.value is original
+    assert engine.last_compression_status == "error"
+    assert engine.last_compression_noop_reason == ""
+    assert engine.last_compression_was_noop is False
+
+
 def test_update_model_updates_runtime_metadata_and_context_window(engine):
     engine.update_model(
         model="deepseek-v4-flash",

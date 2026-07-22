@@ -69,6 +69,7 @@ from .retrieval_core import (
 from .rollup_store import RollupStore
 from .search_query import AGE_DECAY_RATE, normalize_search_sort
 from .session_patterns import build_session_match_keys, compile_session_pattern
+from .sqlite_util import _sqlite_savepoint
 from .store import build_message_fts_spec
 from .vector_store import VectorStore
 
@@ -1393,6 +1394,26 @@ def _recent_conversation_scope_session_ids(engine: "LCMEngine") -> list[str]:
 
 
 def _recent_leaf_sections(
+    engine: "LCMEngine",
+    window: RecentPeriodWindow,
+    requested_scope: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Load fallback nodes without retaining their TEMP-staging snapshot."""
+    with engine._dag._db_lock:
+        connection = engine._dag.connection
+        if connection is None:
+            return []
+        with _sqlite_savepoint(connection):
+            return _recent_leaf_sections_staged(
+                engine,
+                window,
+                requested_scope,
+                limit,
+            )
+
+
+def _recent_leaf_sections_staged(
     engine: "LCMEngine",
     window: RecentPeriodWindow,
     requested_scope: str,
