@@ -890,8 +890,9 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
         Best-effort and diagnostic only: any failure is logged at debug and never
         affects the turn. Turns with no token or cache signal are skipped so idle
         turns do not churn the record. The since-compaction accumulators reset off
-        the monotonic ``compression_count`` (which also drops to 0 on a session
-        reset) rather than instrumenting the compaction hot path.
+        the monotonic ``compression_count``. Session resets mark the next
+        telemetry write for an explicit zero-baseline comparison so compactions
+        that happen before that write are not mistaken for an old baseline.
         """
         conversation_id = self._conversation_id
         if not conversation_id:
@@ -922,8 +923,18 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
                 cold_streak += 1
 
             prev_count = int(existing.get("compression_count_at_record", 0) or 0)
-            compacted = self.compression_count > prev_count
-            rebaselined = self.compression_count != prev_count  # compaction or session reset
+            counter_rebaseline_pending = bool(
+                getattr(self, "_compaction_telemetry_counter_rebaseline_pending", False)
+            )
+            compaction_delta = (
+                self.compression_count
+                if counter_rebaseline_pending
+                else max(0, self.compression_count - prev_count)
+            )
+            compacted = compaction_delta > 0
+            rebaselined = (
+                counter_rebaseline_pending or self.compression_count != prev_count
+            )
             if rebaselined:
                 turns_since = 0
                 peak_tokens_since = prompt_tokens
@@ -937,7 +948,7 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
                 existing.get("total_compactions", 0)
             )
             if compacted:
-                total_compactions += self.compression_count - prev_count
+                total_compactions += compaction_delta
                 last_leaf_compaction_at = time.time()
                 last_compaction_duration_ms = round(self._last_compaction_duration_ms, 3)
             else:
@@ -967,6 +978,7 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
             if cache_state == "hot":
                 record["last_cache_hit_at"] = time.time()
             self._store.write_compaction_telemetry(conversation_id, record)
+            self._compaction_telemetry_counter_rebaseline_pending = False
         except Exception:
             logger.debug("LCM compaction telemetry update failed", exc_info=True)
 

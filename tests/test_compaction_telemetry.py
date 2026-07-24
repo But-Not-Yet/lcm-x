@@ -139,6 +139,30 @@ def test_total_compactions_status_survives_session_rollover_for_conversation(eng
     _assert_total_compaction_surfaces(engine, 3)
 
 
+@pytest.mark.parametrize("previous_session_count", [1, 3])
+def test_total_compactions_includes_first_compaction_after_session_rollover(
+    engine,
+    previous_session_count,
+):
+    engine.compression_count = previous_session_count
+    engine.update_from_response(_hot_usage())
+
+    engine.on_session_start(
+        "test-session-next",
+        platform="discord",
+        conversation_id="conv-1",
+    )
+    assert engine.compression_count == 0
+
+    # The first response telemetry can arrive after the new session has already
+    # compacted. Count it even when the new session's counter is equal to or
+    # below the persisted baseline from the previous session.
+    engine.compression_count = 1
+    engine.update_from_response(_hot_usage())
+
+    _assert_total_compaction_surfaces(engine, previous_session_count + 1)
+
+
 def test_total_compactions_status_defaults_to_zero_without_telemetry(engine):
     _assert_total_compaction_surfaces(engine, 0)
 

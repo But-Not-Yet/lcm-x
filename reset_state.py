@@ -31,6 +31,7 @@ class ResetStateMixin:
         self._last_compression_status = "idle"
         self._last_compression_noop_reason = ""
         self._last_boundary_skip_time = 0
+        self._compaction_telemetry_counter_rebaseline_pending = True
 
     def _reset_compaction_progress(self) -> None:
         """Reset process-local compaction markers for a fresh/unproven session."""
