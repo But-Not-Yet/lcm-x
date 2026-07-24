@@ -124,6 +124,18 @@ def test_resets_on_compaction(engine):
     assert t["peak_prompt_tokens_since_leaf_compaction"] == 400  # reset to current
 
 
+def test_total_compactions_status_includes_pending_compaction(engine):
+    engine.compression_count = 3
+    engine.update_from_response(_hot_usage())
+    _assert_total_compaction_surfaces(engine, 3)
+
+    # Status can be requested after compaction increments the live counter but
+    # before the response hook persists the next telemetry snapshot.
+    engine.compression_count += 1
+
+    _assert_total_compaction_surfaces(engine, 4)
+
+
 def test_total_compactions_status_survives_session_rollover_for_conversation(engine):
     engine.compression_count = 3
     engine.update_from_response(_hot_usage())

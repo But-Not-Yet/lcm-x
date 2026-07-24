@@ -885,6 +885,23 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
             return 0.0
         return self.last_cache_read_tokens / self.last_prompt_tokens
 
+    def _compaction_telemetry_counter_delta(
+        self,
+        existing: Dict[str, Any],
+    ) -> tuple[int, bool, int]:
+        """Return persisted baseline, reset state, and unrecorded compactions."""
+        prev_count = int(existing.get("compression_count_at_record", 0) or 0)
+        rebaseline_pending = bool(
+            existing
+            and self._compaction_telemetry_counter_rebaseline_pending
+        )
+        delta = (
+            self.compression_count
+            if rebaseline_pending
+            else max(0, self.compression_count - prev_count)
+        )
+        return prev_count, rebaseline_pending, delta
+
     def _record_turn_compaction_telemetry(self) -> None:
         """Persist a per-conversation compaction-telemetry snapshot for this turn.
 
@@ -923,20 +940,11 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
             elif cache_state == "cold":
                 cold_streak += 1
 
-            prev_count = int(existing.get("compression_count_at_record", 0) or 0)
-            counter_rebaseline_pending = bool(
-                existing
-                and getattr(
-                    self,
-                    "_compaction_telemetry_counter_rebaseline_pending",
-                    False,
-                )
-            )
-            compaction_delta = (
-                self.compression_count
-                if counter_rebaseline_pending
-                else max(0, self.compression_count - prev_count)
-            )
+            (
+                prev_count,
+                counter_rebaseline_pending,
+                compaction_delta,
+            ) = self._compaction_telemetry_counter_delta(existing)
             compacted = compaction_delta > 0
             rebaselined = (
                 counter_rebaseline_pending or self.compression_count != prev_count
@@ -3458,6 +3466,14 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
         total_compactions = _normalize_total_compactions(
             telemetry.get("total_compactions", 0) if telemetry else 0
         )
+        if conversation_id and conversation_id == self._conversation_id:
+            try:
+                _, _, pending_compactions = self._compaction_telemetry_counter_delta(
+                    telemetry or {}
+                )
+            except (TypeError, ValueError):
+                pending_compactions = 0
+            total_compactions += pending_compactions
         status["total_compactions"] = total_compactions
         status["total_compactions_scope"] = _TOTAL_COMPACTIONS_SCOPE
         status["engine"] = "lcm"
