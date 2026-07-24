@@ -270,6 +270,7 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
         self.last_reasoning_tokens = 0
         self.cache_metrics_available = False
         self.compression_count = 0
+        self._compaction_telemetry_counter_rebaseline_pending = True
         # Wall-clock of the last leaf compaction (ms); surfaced via telemetry only.
         self._last_compaction_duration_ms = 0.0
         # run_agent.py reads these for preflight checks
@@ -924,7 +925,12 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
 
             prev_count = int(existing.get("compression_count_at_record", 0) or 0)
             counter_rebaseline_pending = bool(
-                getattr(self, "_compaction_telemetry_counter_rebaseline_pending", False)
+                existing
+                and getattr(
+                    self,
+                    "_compaction_telemetry_counter_rebaseline_pending",
+                    False,
+                )
             )
             compaction_delta = (
                 self.compression_count

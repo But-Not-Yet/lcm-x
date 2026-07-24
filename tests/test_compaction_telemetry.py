@@ -163,6 +163,35 @@ def test_total_compactions_includes_first_compaction_after_session_rollover(
     _assert_total_compaction_surfaces(engine, previous_session_count + 1)
 
 
+def test_total_compactions_includes_first_compaction_after_engine_restart(tmp_path):
+    config = LCMConfig()
+    config.database_path = str(tmp_path / "lcm_test.db")
+
+    first = LCMEngine(config=config, hermes_home=str(tmp_path / "hermes_home"))
+    first.on_session_start(
+        "test-session",
+        platform="discord",
+        conversation_id="conv-1",
+    )
+    first.compression_count = 3
+    first.update_from_response(_hot_usage())
+    first.shutdown()
+
+    restarted = LCMEngine(config=config, hermes_home=str(tmp_path / "hermes_home"))
+    try:
+        restarted.on_session_start(
+            "test-session-next",
+            platform="discord",
+            conversation_id="conv-1",
+        )
+        restarted.compression_count = 1
+        restarted.update_from_response(_hot_usage())
+
+        _assert_total_compaction_surfaces(restarted, 4)
+    finally:
+        restarted.shutdown()
+
+
 def test_total_compactions_status_defaults_to_zero_without_telemetry(engine):
     _assert_total_compaction_surfaces(engine, 0)
 
