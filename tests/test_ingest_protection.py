@@ -2078,7 +2078,13 @@ def test_externalized_payload_integrity_scan_ignores_incidental_source_excerpts(
     missing_ref = "20260719_missing_payload_0123456789ab_abcdef.json"
     braced_ref = "20260719_call-{index}_payload_0123456789ab_abcdef.json"
     orphan_ref = "20260719_orphan_payload_0123456789ab_abcdef.json"
-    for ref in (present_ref, braced_ref, orphan_ref):
+    incidental_existing_refs = (
+        "docs-placeholder.json",
+        "foreign_payload_ref.json",
+        "tool-result.json",
+        "inc-tool-colon.json",
+    )
+    for ref in (present_ref, braced_ref, orphan_ref, *incidental_existing_refs):
         (storage_dir / ref).write_text(json.dumps({"content": "fixture payload"}))
 
     template_source_excerpt = "\n".join(
@@ -2211,9 +2217,10 @@ def test_externalized_payload_integrity_scan_ignores_incidental_source_excerpts(
             "externalized_ref": missing_ref,
         }
     ]
-    assert detail["externalized_payload_files_unreferenced"] == 1
+    assert detail["externalized_payload_files_unreferenced"] == 5
     assert detail["unreferenced_externalized_payload_files"] == [
-        {"externalized_ref": orphan_ref}
+        {"externalized_ref": ref}
+        for ref in sorted((orphan_ref, *incidental_existing_refs))
     ]
     for key in (
         "externalized_payload_refs_total",
@@ -2225,12 +2232,10 @@ def test_externalized_payload_integrity_scan_ignores_incidental_source_excerpts(
     ):
         assert doctor_detail[key] == detail[key]
     encoded = json.dumps(detail)
+    for incidental_ref in incidental_existing_refs:
+        assert {"externalized_ref": incidental_ref} in detail["unreferenced_externalized_payload_files"]
     for incidental_ref in (
         "20260708T120000Z-tool-call-{index}.json",
-        "foreign_payload_ref.json",
-        "tool-result.json",
-        "docs-placeholder.json",
-        "inc-tool-colon.json",
         "inc-tool-pipe.json",
     ):
         assert incidental_ref not in encoded

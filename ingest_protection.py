@@ -1833,11 +1833,7 @@ def scan_externalized_payload_integrity(conn, config, *, hermes_home: str = "", 
         for field, value in (("content", content), ("tool_calls", tool_calls)):
             if not isinstance(value, str):
                 continue
-            refs = _refs_for_externalized_integrity_scan(value, role=str(role or ""), field=field)
-            for ref in extract_all_externalized_payload_refs(value):
-                if ref in existing_files and ref not in refs:
-                    refs.append(ref)
-            for ref in refs:
+            for ref in _refs_for_externalized_integrity_scan(value, role=str(role or ""), field=field):
                 referenced_refs.add(ref)
                 first_location_by_ref.setdefault(
                     ref,
