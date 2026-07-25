@@ -158,6 +158,7 @@ class _RollupMaintenanceScheduler:
         self._follow_up_key: tuple[str, str] | None = None
         self._follow_up_job: Callable[[], None] | None = None
         self._running_follow_up = False
+        self._exclusive_keys: set[tuple[str, str]] = set()
         self._worker: threading.Thread | None = None
 
     def schedule(
@@ -166,6 +167,14 @@ class _RollupMaintenanceScheduler:
         job: Callable[[], None],
     ) -> bool:
         with self._condition:
+            if key in self._exclusive_keys:
+                logger.info(
+                    "LCM temporal rollup maintenance deferred while an operator "
+                    "rebuild owns database=%s scope=%s",
+                    key[0],
+                    key[1],
+                )
+                return False
             if key in self._queued_keys:
                 return True
             if key in self._active_keys and not self._running_follow_up:
@@ -194,6 +203,28 @@ class _RollupMaintenanceScheduler:
             self._condition.notify_all()
             return True
 
+    def try_acquire_exclusive(self, key: tuple[str, str]) -> bool:
+        """Reserve one idle key for a synchronous operator rebuild.
+
+        This is intentionally non-blocking: a manual rebuild must not race a
+        provider-backed maintenance pass, but it also must not wait behind one
+        on the gateway thread. The caller can ask the operator to retry once the
+        background pass completes.
+        """
+        with self._condition:
+            busy_keys = self._queued_keys | self._active_keys | self._exclusive_keys
+            if key in busy_keys or self._follow_up_key == key:
+                return False
+            if len(self._exclusive_keys) >= self._max_pending_jobs:
+                return False
+            self._exclusive_keys.add(key)
+            return True
+
+    def release_exclusive(self, key: tuple[str, str]) -> None:
+        with self._condition:
+            self._exclusive_keys.discard(key)
+            self._condition.notify_all()
+
     def drain(
         self,
         keys: set[tuple[str, str]],
@@ -205,6 +236,7 @@ class _RollupMaintenanceScheduler:
             while keys & (
                 self._queued_keys
                 | self._active_keys
+                | self._exclusive_keys
                 | ({self._follow_up_key} if self._follow_up_key else set())
             ):
                 if deadline is None:
@@ -1464,6 +1496,27 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
 
     # -- ContextEngine optional methods ------------------------------------
 
+    def _rollup_maintenance_key(self, scope: str) -> tuple[str, str]:
+        raw_database_path = str(self._dag.db_path)
+        if raw_database_path == ":memory:":
+            database_identity = f":memory:{id(self._dag)}"
+        else:
+            database_identity = str(Path(raw_database_path).resolve())
+        return database_identity, str(scope)
+
+    def try_acquire_rollup_operator_lease(
+        self,
+        scope: str,
+    ) -> tuple[str, str] | None:
+        """Reserve this database/scope for a synchronous rollup rebuild."""
+        key = self._rollup_maintenance_key(scope)
+        if not _ROLLUP_MAINTENANCE_SCHEDULER.try_acquire_exclusive(key):
+            return None
+        return key
+
+    def release_rollup_operator_lease(self, key: tuple[str, str]) -> None:
+        _ROLLUP_MAINTENANCE_SCHEDULER.release_exclusive(key)
+
     def _schedule_rollup_maintenance(self, scope: str) -> None:
         """Enqueue one best-effort rollup pass using private SQLite helpers."""
         try:
@@ -1475,7 +1528,7 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
                 )
                 return
             database_path = Path(raw_database_path).resolve()
-            key = (str(database_path), str(scope))
+            key = self._rollup_maintenance_key(scope)
             config = copy.deepcopy(self._config)
             circuit_breaker = self._summary_circuit_breaker
             spend_guard = self._summary_spend_guard

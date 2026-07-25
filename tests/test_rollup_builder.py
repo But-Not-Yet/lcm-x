@@ -690,6 +690,30 @@ def test_rollup_scheduler_follow_up_slot_is_single_and_queue_fair():
     assert scheduler._follow_up_job is None
 
 
+def test_rollup_scheduler_operator_exclusion_is_bounded_and_defers_maintenance():
+    scheduler = engine_module._RollupMaintenanceScheduler(max_pending_jobs=1)
+    operator_key = ("db", "operator")
+    completed: list[str] = []
+
+    assert scheduler.try_acquire_exclusive(operator_key)
+    assert not scheduler.try_acquire_exclusive(operator_key)
+    assert not scheduler.try_acquire_exclusive(("db", "second-operator"))
+    assert not scheduler.schedule(
+        operator_key,
+        lambda: completed.append("raced"),
+    )
+    assert not scheduler.drain({operator_key}, timeout=0)
+
+    scheduler.release_exclusive(operator_key)
+    assert scheduler.drain({operator_key}, timeout=0)
+    assert scheduler.schedule(
+        operator_key,
+        lambda: completed.append("after-release"),
+    )
+    assert scheduler.drain({operator_key}, timeout=2)
+    assert completed == ["after-release"]
+
+
 def test_rollup_background_failure_is_logged_without_breaking_bind(
     tmp_path,
     monkeypatch,

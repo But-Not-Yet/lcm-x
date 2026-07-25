@@ -2414,6 +2414,15 @@ def _rollups_rebuild_text(tokens: list[str], engine) -> str:
     targets = _rollup_period_targets(kind, target_date)
     limit = max(0, int(engine._config.rollup_builds_per_pass))
     store = RollupStore(engine._dag.db_path)
+    lease_key = engine.try_acquire_rollup_operator_lease(scope)
+    if lease_key is None:
+        store.close()
+        return "\n".join([
+            "LCM temporal rollup rebuild",
+            "status: busy",
+            "error: background temporal rollup maintenance is active for this session",
+            "note: retry after the current maintenance pass completes",
+        ])
     outcomes: list[_RollupRebuildResult] = []
     try:
         if store.connection is None:  # pragma: no cover - RollupStore initialization contract
@@ -2480,6 +2489,7 @@ def _rollups_rebuild_text(tokens: list[str], engine) -> str:
         ])
     finally:
         store.close()
+        engine.release_rollup_operator_lease(lease_key)
 
     # ``complete`` is reserved for attempted targets that all reached ready.
     # Explicitly bounded, unattempted queued debt may coexist with complete.
