@@ -13,8 +13,9 @@ import re
 import sqlite3
 import threading
 import time
+from collections import deque
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from agent.context_engine import ContextEngine
 
@@ -131,6 +132,124 @@ from .tokens import count_message_tokens, count_messages_tokens, count_tokens
 from . import tools as lcm_tools
 
 logger = logging.getLogger(__name__)
+
+
+class _RollupMaintenanceScheduler:
+    """Run deduplicated rollup jobs on one process-wide worker.
+
+    Session binding only enqueues work. The worker is shared by every engine so
+    rapid gateway binds cannot create one thread per session. A key that is
+    already queued is ignored; a key requested while active gets at most one
+    follow-up pass, which preserves eventual progress when new staleness arrives
+    during an in-flight build without allowing concurrent duplicate builds.
+    """
+
+    def __init__(self, max_pending_jobs: int = 64) -> None:
+        self._condition = threading.Condition()
+        self._max_pending_jobs = max(1, int(max_pending_jobs))
+        self._jobs: deque[
+            tuple[tuple[str, str], Callable[[], None]]
+        ] = deque()
+        self._queued_keys: set[tuple[str, str]] = set()
+        self._active_keys: set[tuple[str, str]] = set()
+        # One worker means at most one active key. Keep its requested rerun in
+        # a literal single slot so queue saturation cannot discard the
+        # documented active-pass follow-up guarantee or grow hidden state.
+        self._follow_up_key: tuple[str, str] | None = None
+        self._follow_up_job: Callable[[], None] | None = None
+        self._running_follow_up = False
+        self._worker: threading.Thread | None = None
+
+    def schedule(
+        self,
+        key: tuple[str, str],
+        job: Callable[[], None],
+    ) -> bool:
+        with self._condition:
+            if key in self._queued_keys:
+                return True
+            if key in self._active_keys and not self._running_follow_up:
+                self._follow_up_key = key
+                self._follow_up_job = job
+                self._condition.notify_all()
+                return True
+            if len(self._jobs) >= self._max_pending_jobs:
+                logger.warning(
+                    "LCM temporal rollup maintenance queue is full; "
+                    "deferring database=%s scope=%s until a later bind",
+                    key[0],
+                    key[1],
+                )
+                return False
+            if self._worker is None or not self._worker.is_alive():
+                worker = threading.Thread(
+                    target=self._run,
+                    name="lcm-rollup-maintenance",
+                    daemon=True,
+                )
+                worker.start()
+                self._worker = worker
+            self._jobs.append((key, job))
+            self._queued_keys.add(key)
+            self._condition.notify_all()
+            return True
+
+    def drain(
+        self,
+        keys: set[tuple[str, str]],
+        timeout: float | None = None,
+    ) -> bool:
+        """Wait until none of ``keys`` is queued or active."""
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        with self._condition:
+            while keys & (
+                self._queued_keys
+                | self._active_keys
+                | ({self._follow_up_key} if self._follow_up_key else set())
+            ):
+                if deadline is None:
+                    self._condition.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._condition.wait(remaining)
+            return True
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                while not self._jobs:
+                    self._condition.wait()
+                key, job = self._jobs.popleft()
+                self._queued_keys.discard(key)
+                self._active_keys.add(key)
+                self._running_follow_up = False
+            while True:
+                try:
+                    job()
+                except Exception:
+                    logger.warning(
+                        "LCM background temporal rollup maintenance failed for database=%s scope=%s",
+                        key[0],
+                        key[1],
+                        exc_info=True,
+                    )
+                with self._condition:
+                    if self._follow_up_key == key and self._follow_up_job is not None:
+                        job = self._follow_up_job
+                        self._follow_up_key = None
+                        self._follow_up_job = None
+                        self._running_follow_up = True
+                        self._condition.notify_all()
+                        continue
+                    self._active_keys.discard(key)
+                    self._running_follow_up = False
+                    self._condition.notify_all()
+                    break
+
+
+_ROLLUP_MAINTENANCE_SCHEDULER = _RollupMaintenanceScheduler()
 
 _SESSION_END_BUSY_TIMEOUT_MS = 50
 _CODEX_GPT55_COMPACTION_THRESHOLD = 0.85
@@ -376,6 +495,9 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
         self._host_fallback_compressor: Any = None
         self._host_fallback_session_id = ""
         self._host_fallback_import_warning_logged = False
+        # Keys scheduled by this engine are retained for deterministic test and
+        # diagnostic drains. Jobs themselves never use this engine's SQLite helpers.
+        self._rollup_maintenance_keys: set[tuple[str, str]] = set()
 
     def clone_for_agent(self) -> "LCMEngine":
         """Return a fresh runtime engine for one AIAgent instance.
@@ -1342,6 +1464,52 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
 
     # -- ContextEngine optional methods ------------------------------------
 
+    def _schedule_rollup_maintenance(self, scope: str) -> None:
+        """Enqueue one best-effort rollup pass using private SQLite helpers."""
+        try:
+            raw_database_path = str(self._dag.db_path)
+            if raw_database_path == ":memory:":
+                logger.warning(
+                    "LCM cannot run background temporal rollup maintenance for "
+                    "an isolated in-memory SQLite database; maintenance skipped"
+                )
+                return
+            database_path = Path(raw_database_path).resolve()
+            key = (str(database_path), str(scope))
+            config = copy.deepcopy(self._config)
+            circuit_breaker = self._summary_circuit_breaker
+            spend_guard = self._summary_spend_guard
+
+            def maintain() -> None:
+                private_dag = SummaryDAG(database_path)
+                try:
+                    run_rollup_maintenance(
+                        private_dag,
+                        config,
+                        scope,
+                        circuit_breaker=circuit_breaker,
+                        spend_guard=spend_guard,
+                    )
+                finally:
+                    private_dag.close()
+
+            if _ROLLUP_MAINTENANCE_SCHEDULER.schedule(key, maintain):
+                self._rollup_maintenance_keys.add(key)
+        except Exception:
+            # Maintenance is opportunistic; a scheduler/setup failure must never
+            # turn a successful foreground session bind into a host failure.
+            logger.warning(
+                "LCM could not schedule background temporal rollup maintenance",
+                exc_info=True,
+            )
+
+    def drain_rollup_maintenance(self, timeout: float | None = None) -> bool:
+        """Wait for rollup jobs scheduled by this engine (tests and diagnostics)."""
+        return _ROLLUP_MAINTENANCE_SCHEDULER.drain(
+            set(self._rollup_maintenance_keys),
+            timeout=timeout,
+        )
+
     def _bind_lifecycle_state(
         self,
         session_id: str,
@@ -1393,11 +1561,7 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
             and not self._session_ignored
             and not self._session_stateless
         ):
-            run_rollup_maintenance(
-                self._dag, self._config, session_id,
-                circuit_breaker=self._summary_circuit_breaker,
-                spend_guard=self._summary_spend_guard,
-            )
+            self._schedule_rollup_maintenance(session_id)
 
     def _invalidate_rollups_for_published_node(self, node: "SummaryNode") -> None:
         """Stale the rollups covering EVERY UTC day a just-published node spans.
