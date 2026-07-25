@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+import hermes_lcm.command as command_module
 import hermes_lcm.engine as engine_module
 import hermes_lcm.rollup_builder as builder_module
 from hermes_lcm import tools as lcm_tools
@@ -172,7 +173,10 @@ def test_rollups_rebuild_marks_all_targets_stale_and_builds_bounded(engine, monk
         store.close()
 
 
-def test_rollups_rebuild_refuses_while_background_maintenance_is_active(engine):
+def test_rollups_rebuild_refuses_while_background_maintenance_is_active(
+    engine,
+    monkeypatch,
+):
     scope = engine.current_session_id
     key = engine._rollup_maintenance_key(scope)
     started = threading.Event()
@@ -189,6 +193,13 @@ def test_rollups_rebuild_refuses_while_background_maintenance_is_active(engine):
     )
     assert started.wait(timeout=2)
     try:
+        monkeypatch.setattr(
+            command_module,
+            "RollupStore",
+            lambda *_args, **_kwargs: pytest.fail(
+                "busy operator rebuild touched SQLite before acquiring its lease"
+            ),
+        )
         result = handle_lcm_command("rollups rebuild day 2026-07-15", engine)
 
         assert "status: busy" in result
@@ -197,6 +208,26 @@ def test_rollups_rebuild_refuses_while_background_maintenance_is_active(engine):
     finally:
         release.set()
         assert engine_module._ROLLUP_MAINTENANCE_SCHEDULER.drain({key}, timeout=5)
+
+
+def test_rollups_rebuild_releases_operator_lease_when_store_open_fails(
+    engine,
+    monkeypatch,
+):
+    scope = engine.current_session_id
+    key = engine._rollup_maintenance_key(scope)
+
+    def fail_store_open(*_args, **_kwargs):
+        raise RuntimeError("forced store-open failure")
+
+    monkeypatch.setattr(command_module, "RollupStore", fail_store_open)
+
+    result = handle_lcm_command("rollups rebuild day 2026-07-15", engine)
+
+    assert "status: error" in result
+    assert "forced store-open failure" in result
+    assert engine_module._ROLLUP_MAINTENANCE_SCHEDULER.try_acquire_exclusive(key)
+    engine_module._ROLLUP_MAINTENANCE_SCHEDULER.release_exclusive(key)
 
 
 def test_rollups_rebuild_all_durably_seeds_unattempted_targets(engine, monkeypatch):
