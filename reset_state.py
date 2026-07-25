@@ -7,6 +7,8 @@ reset or rolled over. State stays on the engine (accessed via ``self``);
 mixing this in leaves every call site and ``self._*`` reference unchanged.
 """
 
+import uuid
+
 
 class ResetStateMixin:
     def _reset_session_counters(self) -> None:
@@ -24,6 +26,7 @@ class ResetStateMixin:
         self.last_cache_write_tokens = 0
         self.last_reasoning_tokens = 0
         self.cache_metrics_available = False
+        self._compaction_telemetry_counter_epoch = uuid.uuid4().hex
         self._context_probed = False
         self._context_probe_persistable = False
         self._last_overflow_recovery_failed = False

@@ -13,6 +13,7 @@ import re
 import sqlite3
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -270,6 +271,9 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
         self.last_reasoning_tokens = 0
         self.cache_metrics_available = False
         self.compression_count = 0
+        # Distinguishes this reset-scoped process counter from overlapping or
+        # previous runtimes that write the same conversation telemetry row.
+        self._compaction_telemetry_counter_epoch = uuid.uuid4().hex
         self._compaction_telemetry_counter_rebaseline_pending = True
         self._compaction_telemetry_turn_reset_pending = False
         # Wall-clock of the last leaf compaction (ms); surfaced via telemetry only.
@@ -892,12 +896,30 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
     ) -> tuple[int, bool, int]:
         """Return persisted baseline, reset state, and unrecorded compactions."""
         prev_count = int(existing.get("compression_count_at_record", 0) or 0)
+        epoch_baseline = None
+        watermarks = existing.get("counter_epoch_watermarks", [])
+        if isinstance(watermarks, list):
+            for item in watermarks:
+                if (
+                    isinstance(item, list)
+                    and len(item) == 2
+                    and item[0] == self._compaction_telemetry_counter_epoch
+                    and isinstance(item[1], int)
+                    and not isinstance(item[1], bool)
+                    and item[1] >= 0
+                ):
+                    epoch_baseline = item[1]
+                    break
+        if epoch_baseline is not None:
+            prev_count = epoch_baseline
         rebaseline_pending = bool(
             existing
             and self._compaction_telemetry_counter_rebaseline_pending
         )
         delta = (
-            self.compression_count
+            max(0, self.compression_count - epoch_baseline)
+            if epoch_baseline is not None
+            else self.compression_count
             if rebaseline_pending
             else max(0, self.compression_count - prev_count)
         )
@@ -914,20 +936,20 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
             if compaction_delta <= 0:
                 return
 
-            record = dict(existing)
-            record.update({
+            updates = {
                 "conversation_id": conversation_id,
-                "total_compactions": (
-                    _normalize_total_compactions(existing.get("total_compactions", 0))
-                    + compaction_delta
-                ),
+                "counter_epoch": self._compaction_telemetry_counter_epoch,
                 "compression_count_at_record": self.compression_count,
                 "turns_since_leaf_compaction": 0,
                 "peak_prompt_tokens_since_leaf_compaction": 0,
                 "last_leaf_compaction_at": time.time(),
                 "last_compaction_duration_ms": round(self._last_compaction_duration_ms, 3),
-            })
-            self._store.write_compaction_telemetry(conversation_id, record)
+            }
+            self._store.increment_compaction_telemetry(
+                conversation_id,
+                compaction_delta,
+                updates,
+            )
             self._compaction_telemetry_counter_rebaseline_pending = False
             # The response hook still owns per-turn token/cache fields. Keep its
             # first post-compaction snapshot at turn zero without recounting.
@@ -1022,11 +1044,18 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
                 "last_leaf_compaction_at": last_leaf_compaction_at,
                 "last_compaction_duration_ms": last_compaction_duration_ms,
                 "total_compactions": total_compactions,
+                "counter_epoch": self._compaction_telemetry_counter_epoch,
                 "compression_count_at_record": self.compression_count,
             })
             if cache_state == "hot":
                 record["last_cache_hit_at"] = time.time()
-            self._store.write_compaction_telemetry(conversation_id, record)
+            # Even zero-delta snapshots use the transactional updater so an
+            # overlapping snapshot cannot overwrite a newly incremented total.
+            self._store.increment_compaction_telemetry(
+                conversation_id,
+                compaction_delta,
+                record,
+            )
             self._compaction_telemetry_counter_rebaseline_pending = False
             self._compaction_telemetry_turn_reset_pending = False
         except Exception:
@@ -2212,6 +2241,8 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
         boundary_reason = str(kwargs.get("boundary_reason") or "")
         old_session_id = str(kwargs.get("old_session_id") or "")
         previous_session_id = self._session_id
+        previous_conversation_id = self._conversation_id
+        requested_conversation_id = str(kwargs.get("conversation_id") or session_id)
         self._lcm_current_start_allows_bypass_lineage = False
         requested_platform = str(kwargs.get("platform") or self._session_platform or "")
         pre_reset_preserve_ambiguous_no_frame_old_session = False
@@ -2462,6 +2493,11 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
             self._finalize_pending_reset_boundary(previous_session_id)
             self._reset_session_scoped_runtime_state()
         else:
+            if (
+                previous_conversation_id
+                and requested_conversation_id != previous_conversation_id
+            ):
+                self._reset_session_counters()
             self._clear_pending_reset_boundary()
             self._ingest_cursor = 0
             self._last_compacted_store_id = 0
