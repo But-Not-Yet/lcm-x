@@ -271,6 +271,7 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
         self.cache_metrics_available = False
         self.compression_count = 0
         self._compaction_telemetry_counter_rebaseline_pending = True
+        self._compaction_telemetry_turn_reset_pending = False
         # Wall-clock of the last leaf compaction (ms); surfaced via telemetry only.
         self._last_compaction_duration_ms = 0.0
         # run_agent.py reads these for preflight checks
@@ -902,6 +903,38 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
         )
         return prev_count, rebaseline_pending, delta
 
+    def _record_successful_compaction_telemetry(self) -> None:
+        """Durably count a completed leaf compaction before returning it."""
+        conversation_id = self._conversation_id
+        if not conversation_id:
+            return
+        try:
+            existing = self._store.read_compaction_telemetry(conversation_id) or {}
+            _, _, compaction_delta = self._compaction_telemetry_counter_delta(existing)
+            if compaction_delta <= 0:
+                return
+
+            record = dict(existing)
+            record.update({
+                "conversation_id": conversation_id,
+                "total_compactions": (
+                    _normalize_total_compactions(existing.get("total_compactions", 0))
+                    + compaction_delta
+                ),
+                "compression_count_at_record": self.compression_count,
+                "turns_since_leaf_compaction": 0,
+                "peak_prompt_tokens_since_leaf_compaction": 0,
+                "last_leaf_compaction_at": time.time(),
+                "last_compaction_duration_ms": round(self._last_compaction_duration_ms, 3),
+            })
+            self._store.write_compaction_telemetry(conversation_id, record)
+            self._compaction_telemetry_counter_rebaseline_pending = False
+            # The response hook still owns per-turn token/cache fields. Keep its
+            # first post-compaction snapshot at turn zero without recounting.
+            self._compaction_telemetry_turn_reset_pending = True
+        except Exception:
+            logger.debug("LCM successful compaction telemetry update failed", exc_info=True)
+
     def _record_turn_compaction_telemetry(self) -> None:
         """Persist a per-conversation compaction-telemetry snapshot for this turn.
 
@@ -947,7 +980,9 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
             ) = self._compaction_telemetry_counter_delta(existing)
             compacted = compaction_delta > 0
             rebaselined = (
-                counter_rebaseline_pending or self.compression_count != prev_count
+                self._compaction_telemetry_turn_reset_pending
+                or counter_rebaseline_pending
+                or self.compression_count != prev_count
             )
             if rebaselined:
                 turns_since = 0
@@ -993,6 +1028,7 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
                 record["last_cache_hit_at"] = time.time()
             self._store.write_compaction_telemetry(conversation_id, record)
             self._compaction_telemetry_counter_rebaseline_pending = False
+            self._compaction_telemetry_turn_reset_pending = False
         except Exception:
             logger.debug("LCM compaction telemetry update failed", exc_info=True)
 

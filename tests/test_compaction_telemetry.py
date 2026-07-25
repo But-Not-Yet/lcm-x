@@ -204,6 +204,80 @@ def test_total_compactions_includes_first_compaction_after_engine_restart(tmp_pa
         restarted.shutdown()
 
 
+def test_successful_compaction_is_durable_before_response_hook(tmp_path, monkeypatch):
+    config = LCMConfig(
+        database_path=str(tmp_path / "lcm_test.db"),
+        fresh_tail_count=2,
+        leaf_chunk_tokens=1,
+    )
+    conversation_id = "conv-1"
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old question one"},
+        {"role": "assistant", "content": "old answer one"},
+        {"role": "user", "content": "old question two"},
+        {"role": "assistant", "content": "old answer two"},
+        {"role": "user", "content": "fresh question"},
+        {"role": "assistant", "content": "fresh answer"},
+    ]
+
+    first = LCMEngine(config=config, hermes_home=str(tmp_path / "hermes_home"))
+    first.on_session_start(
+        "test-session",
+        platform="cli",
+        conversation_id=conversation_id,
+        context_length=200_000,
+    )
+
+    def summarize(initial_chunk, **_kwargs):
+        return (
+            list(initial_chunk),
+            100,
+            "Durable summary.\nExpand for details about: old turns",
+            1,
+            1,
+        )
+
+    monkeypatch.setattr(first, "_summarize_leaf_chunk_with_rescue", summarize)
+    first.compress(messages)
+    assert first.compression_count == 1
+    persisted = first._store.read_compaction_telemetry(conversation_id)
+    assert persisted is not None
+    assert persisted["total_compactions"] == 1
+    assert persisted["compression_count_at_record"] == 1
+
+    # Simulate process interruption before update_from_response() can persist
+    # the next per-turn telemetry snapshot.
+    first.shutdown()
+
+    restarted = LCMEngine(config=config, hermes_home=str(tmp_path / "hermes_home"))
+    try:
+        restarted.on_session_start(
+            "test-session-next",
+            platform="cli",
+            conversation_id=conversation_id,
+            context_length=200_000,
+        )
+
+        _assert_total_compaction_surfaces(restarted, 1)
+    finally:
+        restarted.shutdown()
+
+
+def test_response_hook_does_not_recount_durably_recorded_compaction(engine):
+    engine.compression_count = 1
+    engine._last_compaction_duration_ms = 12.5
+    engine._record_successful_compaction_telemetry()
+
+    engine.update_from_response(_hot_usage(prompt=400))
+
+    telemetry = _telemetry(engine)
+    assert telemetry["total_compactions"] == 1
+    assert telemetry["turns_since_leaf_compaction"] == 0
+    assert telemetry["peak_prompt_tokens_since_leaf_compaction"] == 400
+    assert telemetry["last_compaction_duration_ms"] == 12.5
+
+
 def test_total_compactions_status_defaults_to_zero_without_telemetry(engine):
     _assert_total_compaction_surfaces(engine, 0)
 
