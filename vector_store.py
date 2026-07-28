@@ -1983,9 +1983,14 @@ class VectorStore:
         # COMPLETE mirror of its vectors. A partial binary corpus (FIX 1) stays on
         # the exact scan below so no vector is silently INNER-JOINed away. The
         # source filter stays on the exact bounded path (its lineage walk is
-        # budget-bounded and does not scale to a full-corpus scan).
-        if numpy is not None and source is None and self._binary_fully_synced(
-            identity, chunk=False
+        # budget-bounded and does not scale to a full-corpus scan). A requested
+        # hard bound also routes to the exact path, which is the only one that
+        # can enforce and disclose it.
+        if (
+            numpy is not None
+            and source is None
+            and not self._scan_bounds_requested(scan_max_rows, scan_budget_s)
+            and self._binary_fully_synced(identity, chunk=False)
         ):
             unfiltered = since is None and until is None and conversation_ids is None
             binary_ids, binary_matrix = self._cached_binary_matrix(
@@ -2103,6 +2108,19 @@ class VectorStore:
         if scan_max_rows > 0:
             return scan_max_rows + 1, scan_max_rows
         return _SCAN_ALL_ROWS, None
+
+    @staticmethod
+    def _scan_bounds_requested(scan_max_rows: int, scan_budget_s: float) -> bool:
+        """Whether the caller asked for a hard bound on this scan.
+
+        The two-stage binary-prescreen path can honor neither: it is one matmul
+        over the whole binary mirror, with no candidate window to cap and no
+        batch boundary to stop at. When a bound is requested we therefore route
+        to the exact batched scan, which enforces it and reports the bounded
+        coverage. Both knobs default to 0, so an unbounded recall keeps the
+        two-stage path and its ``full_approx`` disclosure unchanged.
+        """
+        return scan_max_rows > 0 or scan_budget_s > 0
 
     # -- Chunk corpus ------------------------------------------------------
     #
@@ -2565,8 +2583,14 @@ class VectorStore:
         # is a COMPLETE mirror of its vectors (FIX 1 — a partial binary corpus
         # would be silently truncated by the INNER JOIN). Chunk filters are plain
         # indexed message columns (timestamp/session_id/source), so they all apply
-        # in the binary load over the whole (filtered) corpus.
-        if numpy is not None and self._binary_fully_synced(identity, chunk=True):
+        # in the binary load over the whole (filtered) corpus. A requested hard
+        # bound routes to the exact path, which is the only one that can enforce
+        # and disclose it.
+        if (
+            numpy is not None
+            and not self._scan_bounds_requested(scan_max_rows, scan_budget_s)
+            and self._binary_fully_synced(identity, chunk=True)
+        ):
             unfiltered = (
                 since is None and until is None
                 and conversation_ids is None and source is None
