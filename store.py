@@ -1112,11 +1112,11 @@ class MessageStore:
         safe_query = sanitize_fts5_query(query)
         terms = extract_search_terms(safe_query)
         phrases = extract_quoted_phrases(safe_query)
-        # LIKE is the fallback for text FTS cannot express (CJK/emoji/compound
-        # tokens) and for a query with no term left after sanitization. A raw
-        # natural-language question is NOT one of those: it sanitizes to a term
-        # form the index answers, so it stays on the FTS path (F31 §3).
-        if requires_like_fallback(query) or not safe_query:
+        # LIKE is the fallback for text sanitization LOSES (CJK/emoji) and for a
+        # query with no term left after it. A raw natural-language question is
+        # NOT one of those: it sanitizes to a term form the index answers, so it
+        # stays on the FTS path (F31 §3).
+        if requires_like_fallback(query, safe_query):
             return self._search_like(
                 query,
                 session_id=session_id,

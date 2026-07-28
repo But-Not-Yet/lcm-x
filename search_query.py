@@ -100,8 +100,29 @@ def contains_risky_fts_ascii(text: str) -> bool:
     return bool(_RISKY_FTS_TOKEN_RE.search(text_without_phrases))
 
 
-def requires_like_fallback(query: str) -> bool:
-    return contains_cjk(query) or contains_emoji(query) or contains_risky_fts_ascii(query)
+def requires_like_fallback(query: str, sanitized: str | None = None) -> bool:
+    """Whether ``query`` must be answered by the LIKE scan instead of the index.
+
+    The test is what SANITIZATION LOSES, not what the FTS5 query grammar cannot
+    spell. A compound token (``art-related``, ``api:v2``, ``a/b``) sanitizes to
+    ordinary terms the index answers perfectly well, so routing it to the
+    full-table LIKE scan just re-imports the scaling ceiling this branch is
+    fixing — 6 of the 50 fixed Phase 1B questions carry a hyphen. The risky-ASCII
+    check therefore runs against the SANITIZED form, which is what actually
+    reaches ``MATCH``.
+
+    Genuine losses stay on LIKE: unicode61 does not segment CJK, it drops emoji
+    from the index entirely, and a query that sanitizes to nothing has no terms
+    left to match. Those two character classes are tested against the RAW query
+    because sanitization is exactly what removes them.
+    """
+    raw = query or ""
+    safe = sanitize_fts5_query(raw) if sanitized is None else (sanitized or "")
+    if not safe.strip():
+        return True
+    if contains_cjk(raw) or contains_emoji(raw):
+        return True
+    return contains_risky_fts_ascii(safe)
 
 
 def _token_variants(token: str) -> List[str]:

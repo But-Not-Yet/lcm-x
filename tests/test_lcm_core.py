@@ -1875,6 +1875,30 @@ class TestMessageStore:
         assert len(results) == 1
         assert results[0]["content"] == "budget revenue q3 totals recorded"
 
+    def test_search_keeps_hyphenated_compound_on_the_fts_path(self, store):
+        """Review finding 1: a compound token sanitizes to ordinary terms, so it
+        must NOT be routed to the full-table LIKE scan (6 of the 50 fixed Phase
+        1B questions carry a hyphen)."""
+        from hermes_lcm.search_query import requires_like_fallback
+
+        assert requires_like_fallback("art-related") is False
+        store.append("sess1", {"role": "user", "content": "art related notes from tuesday"})
+        store._search_like = lambda *args, **kwargs: pytest.fail(
+            "hyphenated compound fell back to the LIKE full-scan"
+        )
+
+        results = store.search("art-related", session_id="sess1")
+
+        assert len(results) == 1
+        assert results[0]["content"] == "art related notes from tuesday"
+
+    def test_search_still_falls_back_to_like_for_cjk_and_emoji(self, store):
+        """The genuine losses stay on LIKE: sanitization cannot preserve them."""
+        from hermes_lcm.search_query import requires_like_fallback
+
+        assert requires_like_fallback("東京") is True
+        assert requires_like_fallback("launch \U0001F680") is True
+
     def test_search_falls_back_to_like_when_query_sanitizes_empty(self, store):
         store.append("sess1", {"role": "user", "content": "what??? really"})
         calls: list[str] = []
@@ -2184,7 +2208,11 @@ class TestMessageStore:
         traced: list[str] = []
         store._conn.set_trace_callback(traced.append)
         try:
-            results = store.search("plugin-only", session_id="sess1", limit=2, sort="relevance")
+            # The emoji is what routes to LIKE: a bare compound now sanitizes to
+            # terms the index answers (review finding 1).
+            results = store.search(
+                "plugin-only \U0001F680", session_id="sess1", limit=2, sort="relevance"
+            )
         finally:
             store._conn.set_trace_callback(None)
 
@@ -2230,7 +2258,11 @@ class TestMessageStore:
                 "content": '{"query":"hermes-lcm","matches":["hermes-lcm","hermes-lcm"]}',
             },
         )
-        fallback_results = store.search("hermes-lcm", session_id="sess1", limit=2, sort="relevance")
+        # The emoji is what routes to LIKE: a bare compound now sanitizes to
+        # terms the index answers (review finding 1).
+        fallback_results = store.search(
+            "hermes-lcm \U0001F680", session_id="sess1", limit=2, sort="relevance"
+        )
         assert fallback_results[0]["store_id"] == fallback_user_id
         assert fallback_results[1]["store_id"] == fallback_tool_id
 
@@ -3856,7 +3888,11 @@ class TestSummaryDAG:
         traced: list[str] = []
         dag._conn.set_trace_callback(traced.append)
         try:
-            results = dag.search("plugin-only", session_id="s1", limit=2, sort="relevance")
+            # The emoji is what routes to LIKE: a bare compound now sanitizes to
+            # terms the index answers (review finding 1).
+            results = dag.search(
+                "plugin-only \U0001F680", session_id="s1", limit=2, sort="relevance"
+            )
         finally:
             dag._conn.set_trace_callback(None)
 
@@ -3979,7 +4015,12 @@ class TestSummaryDAG:
             latest_at=1_700_000_000,
         ))
 
-        results = dag.search("plugin-only", session_id="s1", limit=2, sort="relevance")
+        # The emoji is what routes to LIKE: a bare compound now sanitizes to
+        # terms the index answers (review finding 1). The raw query keeps its
+        # hyphen, so the risky-ASCII repetition collapse under test is unchanged.
+        results = dag.search(
+            "plugin-only \U0001F680", session_id="s1", limit=2, sort="relevance"
+        )
 
         assert results[0].node_id == direct
         assert results[1].node_id == spammy
