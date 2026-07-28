@@ -3762,9 +3762,15 @@ def _lcm_recall_summary_arm(
     current = engine.current_session_id
     hits: list[dict[str, Any]] = []
     for node, _score in nodes:
+        source_store_id = (
+            int(node.source_ids[0])
+            if node.source_type == "messages" and node.source_ids
+            else None
+        )
         hit = {
             "kind": "summary",
             "node_id": node.node_id,
+            "store_id": source_store_id,
             "session_id": node.session_id,
             "timestamp": node.latest_at or node.created_at or 0,
             "snippet": (node.summary or "")[:_LCM_RECALL_SNIPPET_CHARS],
@@ -4247,6 +4253,8 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
         }
         if hit.get("kind") == "summary":
             item["node_id"] = hit.get("node_id")
+            if hit.get("store_id") is not None:
+                item["store_id"] = hit.get("store_id")
         else:
             item["store_id"] = hit.get("store_id")
             if hit.get("chunk_span"):

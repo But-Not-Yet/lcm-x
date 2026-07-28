@@ -64,7 +64,15 @@ def recall_engine(tmp_path):
         store.close()
 
 
-def _add_summary(engine, summary, *, session_id, created_at, latest_at=None):
+def _add_summary(
+    engine,
+    summary,
+    *,
+    session_id,
+    created_at,
+    latest_at=None,
+    source_ids=None,
+):
     return engine._dag.add_node(
         SummaryNode(
             session_id=session_id,
@@ -72,7 +80,7 @@ def _add_summary(engine, summary, *, session_id, created_at, latest_at=None):
             summary=summary,
             token_count=20,
             source_token_count=40,
-            source_ids=[],
+            source_ids=list(source_ids or []),
             source_type="messages",
             created_at=created_at,
             earliest_at=created_at,
@@ -204,6 +212,33 @@ def test_recall_returns_cross_session_summaries_without_a_filter(recall_engine, 
     assert sessions == {"session-a", "session-b"}
     assert all(hit["kind"] == "summary" for hit in payload["hits"])
     assert payload["provenance"]["arms_run"] == ["summary"]
+
+
+def test_summary_hit_carries_direct_source_store_id(recall_engine, monkeypatch):
+    store_id = recall_engine._store.append(
+        "session-a",
+        {"role": "user", "content": "kanban dashboard sprint source row"},
+    )
+    node_id = _add_summary(
+        recall_engine,
+        "kanban dashboard sprint summary",
+        session_id="session-a",
+        created_at=10.0,
+        source_ids=[store_id],
+    )
+    _seed_summary_vectors(recall_engine, [(node_id, [1.0, 0.0])])
+
+    payload = _recall(
+        recall_engine,
+        monkeypatch,
+        include="summaries",
+        scope_bias=0.0,
+        limit=5,
+    )
+
+    hit = next(hit for hit in payload["hits"] if hit["node_id"] == node_id)
+    assert hit["kind"] == "summary"
+    assert hit["store_id"] == store_id
 
 
 def test_scope_bias_boosts_current_conversation_without_filtering(recall_engine, monkeypatch):
