@@ -1277,8 +1277,15 @@ class VectorStore:
         dim: int,
         embedded_ids: Sequence[str],
         dtype: str = _VECTOR_DTYPE,
+        cache: bool = True,
     ) -> tuple[list[int], list[str], list[str], Any]:
-        """Load only the SQL-bounded candidate set into a NumPy matrix."""
+        """Load only the SQL-bounded candidate set into a NumPy matrix.
+
+        ``cache=False`` streams the batch past the LRU entirely — see
+        ``_scan_ranked`` for why a multi-batch sweep must not cache.
+        """
+        if not cache:
+            return self._load_matrix(numpy, identity_hash, dim, embedded_ids, dtype)
         with self._cache_lock:
             data_version = self._data_version(identity_hash)
             key = (identity_hash, data_version, tuple(str(value) for value in embedded_ids))
@@ -1286,19 +1293,30 @@ class VectorStore:
             if cached is not None:
                 self._matrix_cache.move_to_end(key)  # mark most-recently used
                 return cached
-            rowids, loaded_ids, kinds, raw_vectors = self._load_vectors_for_ids(
-                identity_hash, dim, embedded_ids, dtype
-            )
-            matrix = (
-                numpy.asarray(raw_vectors, dtype=numpy.float32)
-                if raw_vectors
-                else numpy.empty((0, dim), dtype=numpy.float32)
-            )
-            loaded = (rowids, loaded_ids, kinds, matrix)
+            loaded = self._load_matrix(numpy, identity_hash, dim, embedded_ids, dtype)
             self._matrix_cache[key] = loaded
             while len(self._matrix_cache) > self._MATRIX_CACHE_MAX_ENTRIES:
                 self._matrix_cache.popitem(last=False)  # evict oldest
             return loaded
+
+    def _load_matrix(
+        self,
+        numpy: Any,
+        identity_hash: str,
+        dim: int,
+        embedded_ids: Sequence[str],
+        dtype: str,
+    ) -> tuple[list[int], list[str], list[str], Any]:
+        """Decode one candidate set into a NumPy matrix (no cache interaction)."""
+        rowids, loaded_ids, kinds, raw_vectors = self._load_vectors_for_ids(
+            identity_hash, dim, embedded_ids, dtype
+        )
+        matrix = (
+            numpy.asarray(raw_vectors, dtype=numpy.float32)
+            if raw_vectors
+            else numpy.empty((0, dim), dtype=numpy.float32)
+        )
+        return rowids, loaded_ids, kinds, matrix
 
     def _bounded_candidate_ids(
         self,
@@ -1491,14 +1509,24 @@ class VectorStore:
         cut the scan short; when it does, the caller degrades to
         ``coverage='bounded'`` and the existing disclosure names the ratio.
         Returns ``(ranked top-k, candidates scored, stopped early)``.
+
+        A MULTI-BATCH sweep streams past the matrix LRU (``cache=False``). The
+        cache holds 4 entries, so a corpus needing more batches than that evicts
+        each one before the next sweep reaches it — every repetition pays a full
+        reload for zero hits, while still retaining 4 float32 matrices (153.6MB
+        on the 185k-vector chunk arm) and breaking the one-batch memory bound
+        this batching exists to provide. A single-batch scan — every lcm_grep
+        call and any corpus under the batch size — still caches exactly as
+        before, so the pooled-store warm path is unchanged.
         """
         best: list[tuple[int, str, float, str]] = []
         scanned = 0
         stopped_early = False
+        cache_batches = len(candidate_ids) <= batch_rows
         started = time.monotonic()
         for start in range(0, len(candidate_ids), batch_rows):
             batch = candidate_ids[start:start + batch_rows]
-            rowids, embedded_ids, kinds, scores = score_batch(batch)
+            rowids, embedded_ids, kinds, scores = score_batch(batch, cache_batches)
             scanned += len(batch)
             best.extend(
                 (int(rowid), str(embedded_id), float(score), str(kind))
@@ -2010,13 +2038,16 @@ class VectorStore:
         if numpy is not None:
             query_array = numpy.asarray(query, dtype=numpy.float32)
 
-            def score_batch(batch_ids: Sequence[str]) -> tuple[Any, Any, Any, Any]:
+            def score_batch(
+                batch_ids: Sequence[str], cache: bool
+            ) -> tuple[Any, Any, Any, Any]:
                 rowids, embedded_ids, kinds, matrix = self._numpy_rows(
                     numpy,
                     identity,
                     dim,
                     batch_ids,
                     dtype,
+                    cache=cache,
                 )
                 return rowids, embedded_ids, kinds, matrix @ query_array
         else:
@@ -2025,7 +2056,9 @@ class VectorStore:
             # only ONE batch of vectors is decoded into host memory at a time.
             # Filters live in the WHERE clause, so a filtered match is never
             # lost; only the source-lineage walk runs on the enumerated set.
-            def score_batch(batch_ids: Sequence[str]) -> tuple[Any, Any, Any, Any]:
+            def score_batch(
+                batch_ids: Sequence[str], _cache: bool
+            ) -> tuple[Any, Any, Any, Any]:
                 rowids, embedded_ids, kinds, vectors = self._load_vectors_for_ids(
                     identity,
                     dim,
@@ -2443,7 +2476,10 @@ class VectorStore:
         dim: int,
         chunk_ids: Sequence[str],
         dtype: str = _VECTOR_DTYPE,
+        cache: bool = True,
     ) -> tuple[list[int], list[str], list[str], Any]:
+        if not cache:
+            return self._load_chunk_matrix(numpy, identity_hash, dim, chunk_ids, dtype)
         with self._cache_lock:
             data_version = self._data_version(identity_hash)
             key = (identity_hash, data_version, tuple(str(value) for value in chunk_ids))
@@ -2451,19 +2487,30 @@ class VectorStore:
             if cached is not None:
                 self._chunk_matrix_cache.move_to_end(key)  # mark most-recently used
                 return cached
-            rowids, loaded_ids, kinds, raw_vectors = self._load_chunk_vectors_for_ids(
-                identity_hash, dim, chunk_ids, dtype
-            )
-            matrix = (
-                numpy.asarray(raw_vectors, dtype=numpy.float32)
-                if raw_vectors
-                else numpy.empty((0, dim), dtype=numpy.float32)
-            )
-            loaded = (rowids, loaded_ids, kinds, matrix)
+            loaded = self._load_chunk_matrix(numpy, identity_hash, dim, chunk_ids, dtype)
             self._chunk_matrix_cache[key] = loaded
             while len(self._chunk_matrix_cache) > self._MATRIX_CACHE_MAX_ENTRIES:
                 self._chunk_matrix_cache.popitem(last=False)  # evict oldest
             return loaded
+
+    def _load_chunk_matrix(
+        self,
+        numpy: Any,
+        identity_hash: str,
+        dim: int,
+        chunk_ids: Sequence[str],
+        dtype: str,
+    ) -> tuple[list[int], list[str], list[str], Any]:
+        """Decode one chunk candidate set into a NumPy matrix (no cache)."""
+        rowids, loaded_ids, kinds, raw_vectors = self._load_chunk_vectors_for_ids(
+            identity_hash, dim, chunk_ids, dtype
+        )
+        matrix = (
+            numpy.asarray(raw_vectors, dtype=numpy.float32)
+            if raw_vectors
+            else numpy.empty((0, dim), dtype=numpy.float32)
+        )
+        return rowids, loaded_ids, kinds, matrix
 
     def knn_chunks(
         self,
@@ -2566,13 +2613,17 @@ class VectorStore:
         if numpy is not None:
             query_array = numpy.asarray(query, dtype=numpy.float32)
 
-            def score_batch(batch_ids: Sequence[str]) -> tuple[Any, Any, Any, Any]:
+            def score_batch(
+                batch_ids: Sequence[str], cache: bool
+            ) -> tuple[Any, Any, Any, Any]:
                 rowids, chunk_ids, kinds, matrix = self._numpy_chunk_rows(
-                    numpy, identity, dim, batch_ids, dtype
+                    numpy, identity, dim, batch_ids, dtype, cache=cache
                 )
                 return rowids, chunk_ids, kinds, matrix @ query_array
         else:
-            def score_batch(batch_ids: Sequence[str]) -> tuple[Any, Any, Any, Any]:
+            def score_batch(
+                batch_ids: Sequence[str], _cache: bool
+            ) -> tuple[Any, Any, Any, Any]:
                 rowids, chunk_ids, kinds, vectors = self._load_chunk_vectors_for_ids(
                     identity, dim, batch_ids, dtype
                 )

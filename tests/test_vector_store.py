@@ -455,6 +455,47 @@ def test_full_scan_without_numpy_also_reaches_the_oldest(tmp_path, monkeypatch):
         dag.close()
 
 
+def test_multi_batch_scan_does_not_populate_or_thrash_the_matrix_cache(tmp_path):
+    """Review finding 2: a sweep needing more batches than the 4-entry LRU
+    evicts each entry before the next sweep reaches it — zero hits, while
+    retaining 4 float32 matrices and breaking the one-batch memory bound.
+    Multi-batch sweeps therefore stream past the cache entirely."""
+    db_path = tmp_path / "cache-thrash.db"
+    dag = SummaryDAG(db_path)
+    store = VectorStore(db_path, bounded_scan_rows=2)  # 2-row batches, 12 vectors
+    try:
+        _seed_scan_corpus(
+            dag, store, 12, gold_vector=[1.0, 0.0, 0.0], filler_vector=[0.0, 1.0, 0.0]
+        )
+        assert len(store._matrix_cache) == 0
+
+        for _ in range(3):  # repeat: the old code re-loaded all 6 batches each time
+            store.knn([1.0, 0.0, 0.0], k=1, model="scan", full_scan=True)
+
+        assert len(store._matrix_cache) == 0
+    finally:
+        store.close()
+        dag.close()
+
+
+def test_single_batch_scan_still_caches_its_matrix(tmp_path):
+    """The warm pooled-store path is unchanged when one batch covers the corpus."""
+    db_path = tmp_path / "cache-single.db"
+    dag = SummaryDAG(db_path)
+    store = VectorStore(db_path, bounded_scan_rows=50)  # one batch covers all 5
+    try:
+        _seed_scan_corpus(
+            dag, store, 5, gold_vector=[1.0, 0.0, 0.0], filler_vector=[0.0, 1.0, 0.0]
+        )
+
+        store.knn([1.0, 0.0, 0.0], k=1, model="scan", full_scan=True)
+
+        assert len(store._matrix_cache) == 1
+    finally:
+        store.close()
+        dag.close()
+
+
 def test_full_scan_max_rows_caps_the_scan_and_discloses_it(tmp_path):
     """scan_max_rows is the pathological-corpus escape hatch, and it discloses."""
     db_path = tmp_path / "full-scan-capped.db"
@@ -1435,9 +1476,9 @@ def test_numpy_candidate_load_is_sql_bounded(tmp_path, monkeypatch):
         loaded: list[int] = []
         original = store._numpy_rows
 
-        def counted(np, identity_hash, dim, ids, dtype="float32"):
+        def counted(np, identity_hash, dim, ids, dtype="float32", cache=True):
             loaded.append(len(ids))
-            return original(np, identity_hash, dim, ids, dtype)
+            return original(np, identity_hash, dim, ids, dtype, cache=cache)
 
         monkeypatch.setattr(store, "_numpy_rows", counted)
         result = store.knn([1.0, 0.0], k=1, model="m")
