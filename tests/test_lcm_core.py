@@ -1922,6 +1922,21 @@ class TestMessageStore:
 
         assert [row["store_id"] for row in results] == [both]
 
+    def test_search_honors_operators_only_when_the_caller_opts_in(self, store):
+        """The two modes are now marked: a caller that composed FTS5 syntax on
+        purpose (the benchmark harness joins barewords with OR) keeps its
+        disjunction; raw prose never acquires one."""
+        alpha = store.append("sess1", {"role": "user", "content": "alpha only here"})
+        beta = store.append("sess1", {"role": "user", "content": "beta only here"})
+
+        deliberate = store.search(
+            "alpha OR beta", session_id="sess1", allow_operators=True
+        )
+        assert {row["store_id"] for row in deliberate} == {alpha, beta}
+
+        raw = store.search("alpha OR beta", session_id="sess1")
+        assert raw == []  # conjunction of alpha, or, beta — nothing has all three
+
     def test_search_survives_a_leading_boolean_operator(self, store):
         """`NOT ready` was an FTS syntax error that dumped the query on LIKE."""
         store.append("sess1", {"role": "user", "content": "not ready for launch"})

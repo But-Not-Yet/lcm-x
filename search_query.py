@@ -98,16 +98,23 @@ def _neutralize_bare_operators(sanitized: str) -> str:
     return "".join(out)
 
 
-def sanitize_fts5_query(query: str) -> str:
+def sanitize_fts5_query(query: str, *, allow_operators: bool = False) -> str:
     """Reduce a query to FTS5-safe terms, preserving balanced phrase quotes.
 
     Composed (NFC) first so a decomposed accent is one alphanumeric character
     rather than a base plus a combining mark, which is what unicode61 folds and
     indexes. The LIKE path deliberately does NOT normalize: it is a literal
     substring match against stored bytes, so it must not re-spell the query.
+
+    ``allow_operators`` is the explicit marker for a query a CALLER composed as
+    FTS5 syntax (the benchmark harness joins its barewords with ``OR``). It
+    keeps bare AND/OR/NOT/NEAR intact. It must never be set for text that came
+    from a user or an agent: the default assumes raw prose, which is the only
+    safe reading when the two cannot be told apart.
     """
     composed = unicodedata.normalize("NFC", query or "")
-    return _neutralize_bare_operators(_sanitize_query(composed, _fts5_safe_char))
+    sanitized = _sanitize_query(composed, _fts5_safe_char)
+    return sanitized if allow_operators else _neutralize_bare_operators(sanitized)
 
 
 def sanitize_like_query(query: str) -> str:
