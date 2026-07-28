@@ -3521,22 +3521,20 @@ def _lcm_recall_diverse_entries(
 def _lcm_recall_reference_shape(hit: dict[str, Any], *, hydratable: bool) -> str | None:
     """Name the delivery shape that gives this hit a truthful source reference.
 
-    Reference-strict delivery (FINDING-F35 §2). Exactly two shapes reach the
-    caller with a mechanically checkable ``(store_id, char_start, char_end)``
-    span into a real stored row:
+    Reference-strict delivery (FINDING-F35 §2). This is only the CHEAP,
+    rank-ordered ADMISSION test -- it says a candidate could plausibly resolve to
+    a ``(store_id, char_start, char_end)`` span, not that it does. Truth is
+    established later by :func:`_lcm_recall_verified_span`, which reads the row
+    and checks that the delivered text really sits at the claimed offset.
 
-    * ``content_offset`` -- a hydrated message excerpt carries the exact window
-      it read (``store_id`` + ``content_offset`` + ``content_returned_chars``);
-    * ``chunk_span`` -- a message hit outside the hydration budget carries the
-      verbatim chunk span it was retrieved from.
-
-    A summary has NEITHER, and cannot be given one. Its text is model-generated
-    prose, not a verbatim span of any row, so ``lcm:<store_id>:<start>-<end>``
-    would assert bytes that are not at that offset. ``SummaryNode.source_ids``
-    is the list of *every* message a leaf node summarizes, so even a
-    message-sourced node's first source is lineage, not a citation (#164a).
-    Summaries stay RANKING SIGNAL -- they fuse and order, they are not delivered
-    as evidence.
+    A summary is rejected here and cannot be given a reference. Its text is
+    model-generated prose, not a verbatim span of any row, so
+    ``lcm:<store_id>:<start>-<end>`` would assert bytes that are not at that
+    offset. ``SummaryNode.source_ids`` is the list of *every* message a leaf node
+    summarizes, so even a message-sourced node's first source is lineage, not a
+    citation (#164a). The summary arm keeps its ranking influence through
+    :func:`_lcm_recall_summary_source_hits`, which lets the nodes' SOURCE
+    MESSAGES compete as ordinary citable candidates.
     """
     if hit.get("kind") == "summary":
         return None
@@ -3546,24 +3544,76 @@ def _lcm_recall_reference_shape(hit: dict[str, Any], *, hydratable: bool) -> str
         return "content_offset"
     if hit.get("chunk_span"):
         return "chunk_span"
+    # An arm that already knows where its excerpt sits (the chunk arm's
+    # char_start, a summary-source hit's row prefix) can be cited without
+    # hydration -- subject to the verification below.
+    if hit.get("content_offset") is not None:
+        return "content_offset"
     return None
 
 
-def _lcm_recall_item_is_referenced(item: dict[str, Any]) -> bool:
-    """Post-hydration check that a BUILT item really carries its source span.
+def _lcm_recall_verified_span(
+    item: dict[str, Any], row: dict[str, Any] | None
+) -> tuple[int, int] | None:
+    """Return the ``(offset, chars)`` the delivered text ACTUALLY occupies.
 
-    The candidate filter admits an in-budget message hit on the promise that
-    hydration will attach ``content_offset``/``content_returned_chars``. A store
-    row that has gone missing breaks that promise, so the finished item is
-    re-checked against what it actually carries rather than what was predicted.
+    The one honest definition of a validated source reference: the bytes handed
+    to the caller must be present at the claimed offset of the CURRENT row. That
+    single check subsumes three failure modes a structural test misses --
+
+    * a stale ``chunk_span`` whose row was deleted or rewritten between chunk
+      hydration and response shaping (no coherent snapshot spans those reads);
+    * an FTS snippet, which is a match window with markers rather than a
+      verbatim prefix, so its ``content_offset`` of 0 is not a real location;
+    * a hydration miss, where the promised window never arrived.
+
+    Returning the span rather than a bool is deliberate: the caller PUBLISHES it
+    (``content_offset``/``content_returned_chars``) so consumers do not have to
+    re-derive it. ``__init__.py``'s ``_answer_ready_baseline`` substitutes offset
+    0 when the field is absent, which silently fabricates a reference for every
+    hit whose excerpt does not start at the beginning of its row.
     """
     if item.get("kind") == "summary" or item.get("store_id") is None:
-        return False
-    if isinstance(item.get("exact_ref"), str) and item["exact_ref"]:
-        return True
-    if item.get("content_offset") is not None and item.get("content_returned_chars"):
-        return True
-    return bool(item.get("chunk_span"))
+        return None
+    text = item.get("content") if item.get("content") is not None else item.get("snippet")
+    text = str(text or "")
+    if not text:
+        return None
+    raw_offset = item.get("content_offset")
+    if raw_offset is None:
+        return None
+    try:
+        offset = int(raw_offset)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if offset < 0 or row is None:
+        return None
+    content = str(row.get("content") or "")
+    if content[offset:offset + len(text)] != text:
+        return None
+    return offset, len(text)
+
+
+def _lcm_recall_strict_rows(
+    engine: "LCMEngine",
+    entries: list[dict[str, Any]],
+    answer_ready_content: dict[tuple, dict[str, Any]],
+) -> dict[int, dict[str, Any]]:
+    """Read the current rows the un-hydrated admitted candidates claim to quote.
+
+    Hydration already read the row for every in-budget slot and cut the window
+    out of it, so those spans are true by construction. The candidates past that
+    budget were admitted on a chunk index alone -- one batched read (never a
+    query per hit) gives them the same standard of proof.
+    """
+    store_ids = [
+        int(entry["hit"]["store_id"])
+        for entry in entries
+        if entry["hit"].get("kind") != "summary"
+        and entry["hit"].get("store_id") is not None
+        and _hit_identity(entry["hit"]) not in answer_ready_content
+    ]
+    return engine._store.get_batch(store_ids) if store_ids else {}
 
 
 def _lcm_recall_citable_entries(
@@ -3573,47 +3623,82 @@ def _lcm_recall_citable_entries(
     per_session_limit: int,
     expanded_limit: int,
 ) -> tuple[list[dict[str, Any]], int, int]:
-    """Reference-strict variant of :func:`_lcm_recall_diverse_entries`.
+    """Reference-strict selection with no reserve (kept for direct unit use)."""
+    selector = _LcmRecallStrictSelector(
+        ordered, per_session_limit=per_session_limit, expanded_limit=expanded_limit
+    )
+    selected = selector.take(limit)
+    return selected, selector.diversity_dropped, selector.unreferenced_dropped
+
+
+class _LcmRecallStrictSelector:
+    """Reference-strict variant of :func:`_lcm_recall_diverse_entries`, resumable.
 
     Same stable rank-preserving selection with bounded session density, with one
-    added admission rule: a candidate that cannot carry a validated source
-    reference at the slot it would occupy is skipped. Because the rule filters
-    the RANKED CANDIDATE LIST rather than the finished result, the selection
+    added admission rule: a candidate that cannot plausibly carry a validated
+    source reference at the slot it would occupy is skipped. Because the rule
+    filters the RANKED CANDIDATE LIST rather than the finished result, selection
     simply continues down the ranking -- an omitted hit is backfilled by the
     next-ranked citable one and the delivered count stays at ``limit``.
 
-    Citability depends on the slot: the first ``expanded_limit`` selections are
-    inside the hydration budget and resolve via ``content_offset``; later ones
-    must bring their own ``chunk_span``. The reference check runs BEFORE the
-    session-density check so an undelivered hit never consumes session quota.
-    When nothing is uncitable this is the identity -- same selection, same
-    ``diversity_dropped`` -- so delivery stays byte-identical.
+    The walk is RESUMABLE because admission is only a prediction: a candidate can
+    still fail verification against its current row once the response is being
+    shaped (a deleted row, a stale chunk span). Stopping dead at ``limit`` would
+    then underfill while citable candidates sat unexamined just below the cut, so
+    the caller draws a replacement with :meth:`take` and the walk picks up where
+    it left off -- same rules, same session ledger, counters advanced only over
+    what was actually examined. A run that needs no replacement therefore walks
+    exactly as far as the non-resumable version did and reports the identical
+    ``diversity_dropped``; with nothing uncitable at all it is the identity, so
+    delivery stays byte-identical.
+
+    The reference check runs BEFORE the session-density check so a candidate that
+    is never delivered cannot consume session quota.
     """
-    selected: list[dict[str, Any]] = []
-    session_counts: dict[str, int] = {}
-    dropped = 0
-    unreferenced = 0
-    for entry in ordered:
-        hit = entry["hit"]
-        if _lcm_recall_reference_shape(
-            hit, hydratable=len(selected) < expanded_limit
-        ) is None:
-            unreferenced += 1
-            continue
-        raw_session_id = hit.get("session_id")
-        session_key = (
-            str(raw_session_id)
-            if raw_session_id not in {None, ""}
-            else f"missing:{_hit_identity(hit)!r}"
-        )
-        if session_counts.get(session_key, 0) >= per_session_limit:
-            dropped += 1
-            continue
-        session_counts[session_key] = session_counts.get(session_key, 0) + 1
-        selected.append(entry)
-        if len(selected) >= limit:
-            break
-    return selected, dropped, unreferenced
+
+    def __init__(
+        self,
+        ordered: list[dict[str, Any]],
+        *,
+        per_session_limit: int,
+        expanded_limit: int,
+    ) -> None:
+        self._ordered = ordered
+        self._cursor = 0
+        self._per_session_limit = per_session_limit
+        self._expanded_limit = expanded_limit
+        self._session_counts: dict[str, int] = {}
+        self._admitted = 0
+        self.diversity_dropped = 0
+        self.unreferenced_dropped = 0
+
+    def take(self, count: int) -> list[dict[str, Any]]:
+        """Admit up to ``count`` further candidates, resuming the ranked walk."""
+        taken: list[dict[str, Any]] = []
+        while self._cursor < len(self._ordered) and len(taken) < count:
+            entry = self._ordered[self._cursor]
+            self._cursor += 1
+            hit = entry["hit"]
+            if _lcm_recall_reference_shape(
+                hit, hydratable=self._admitted < self._expanded_limit
+            ) is None:
+                self.unreferenced_dropped += 1
+                continue
+            raw_session_id = hit.get("session_id")
+            session_key = (
+                str(raw_session_id)
+                if raw_session_id not in {None, ""}
+                else f"missing:{_hit_identity(hit)!r}"
+            )
+            if self._session_counts.get(session_key, 0) >= self._per_session_limit:
+                self.diversity_dropped += 1
+                continue
+            self._session_counts[session_key] = (
+                self._session_counts.get(session_key, 0) + 1
+            )
+            self._admitted += 1
+            taken.append(entry)
+        return taken
 
 
 def _lcm_recall_content_window(
@@ -4403,7 +4488,7 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
     # -- Response shaping (char-capped). The default snippets path retains the
     # historical order and serialized response exactly. answer_ready applies
     # stable post-rank diversity before bounded exact-ref hydration.
-    unreferenced_dropped = 0
+    diversity_dropped = 0
     if detail == "answer_ready":
         selection_limit = _LCM_RECALL_LIMIT_CAP if delta_requested else limit
         expanded_limit = (
@@ -4412,16 +4497,12 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
             else _LCM_RECALL_ANSWER_READY_EXPANDED_HIT_LIMIT
         )
         if reference_strict:
-            (
-                selected_entries,
-                diversity_dropped,
-                unreferenced_dropped,
-            ) = _lcm_recall_citable_entries(
+            strict_selector = _LcmRecallStrictSelector(
                 ordered,
-                limit=selection_limit,
                 per_session_limit=_LCM_RECALL_ANSWER_READY_PER_SESSION_LIMIT,
                 expanded_limit=expanded_limit,
             )
+            selected_entries = strict_selector.take(selection_limit)
         else:
             selected_entries, diversity_dropped = _lcm_recall_diverse_entries(
                 ordered,
@@ -4453,7 +4534,20 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
     response_chars = 0
     response_cap_truncated = False
     unreferenced_omitted = 0
-    for entry in selected_entries:
+    # Reference-strict shaping validates each admitted candidate against the row
+    # as it stands NOW: hydration already read the row for the in-budget slots,
+    # and this one batched read covers the rest, so no delivered span is taken on
+    # trust from a chunk index that may have gone stale.
+    strict_rows: dict[int, dict[str, Any]] = {}
+    if reference_strict:
+        strict_rows = _lcm_recall_strict_rows(
+            engine, selected_entries, answer_ready_content
+        )
+    pending = list(selected_entries)
+    cursor = 0
+    while cursor < len(pending):
+        entry = pending[cursor]
+        cursor += 1
         hit = entry["hit"]
         arms = sorted({arm_order[index] for index in entry["ranks"].keys()})
         item: dict[str, Any] = {
@@ -4517,13 +4611,35 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
                         else "ingest_fallback"
                     ),
                 }
-        # Fail-closed backstop: the candidate filter admitted this hit on the
-        # promise of a hydrated window, so only a missing store row can land
-        # here. Omit rather than deliver an uncitable card; the count is
-        # disclosed instead of the shortfall being silent.
-        if reference_strict and not _lcm_recall_item_is_referenced(item):
-            unreferenced_omitted += 1
-            continue
+        if reference_strict:
+            # Admission was a prediction; this is the truth check. Publish the
+            # span the delivered text ACTUALLY occupies so a consumer never has
+            # to guess an offset, and refill from the ranked tail when a
+            # candidate fails -- stopping short here would underfill while
+            # citable candidates sat unexamined just below the cut.
+            if hydrated is not None:
+                # The window was cut from the row this same request, so it is
+                # true by construction and needs no second read.
+                span = (
+                    int(hydrated["content_offset"]),
+                    int(hydrated["content_returned_chars"]),
+                )
+            else:
+                if item.get("content_offset") is None:
+                    item["content_offset"] = hit.get("content_offset")
+                span = _lcm_recall_verified_span(
+                    item, strict_rows.get(item.get("store_id"))
+                )
+            if span is None:
+                unreferenced_omitted += 1
+                refill = strict_selector.take(1)
+                if refill:
+                    pending.extend(refill)
+                    strict_rows.update(
+                        _lcm_recall_strict_rows(engine, refill, answer_ready_content)
+                    )
+                continue
+            item["content_offset"], item["content_returned_chars"] = span
         item_chars = len(json.dumps(item, ensure_ascii=False))
         if hits_out and response_chars + item_chars > _LCM_RECALL_RESPONSE_CHAR_CAP:
             response_cap_truncated = True
@@ -4589,13 +4705,20 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
         }
         if reference_strict:
             expansion["reference_strict"] = True
-            expansion["unreferenced_dropped_count"] = unreferenced_dropped
+            expansion["diversity_dropped_count"] = strict_selector.diversity_dropped
+            expansion["unreferenced_dropped_count"] = (
+                strict_selector.unreferenced_dropped
+            )
             expansion["unreferenced_omitted_count"] = unreferenced_omitted
             expansion["summary_leads"] = summary_leads
             expansion["reference_policy"] = (
-                "no hit lacking a validated (store_id, char_start, char_end) source "
-                "span is delivered; dropped candidates are backfilled by the "
-                "next-ranked citable hit, so summaries rank but never cite"
+                "every delivered hit publishes the (store_id, content_offset, "
+                "content_returned_chars) span its text occupies in the current "
+                "row; a candidate that fails that check is replaced by the "
+                "next-ranked citable one. Summary nodes are never delivered as "
+                "evidence -- their relevance reaches the ranking through the "
+                "source messages beneath them, and the nodes themselves come "
+                "back here as non-evidence drill-down leads"
             )
         response["detail"] = detail
         response["provenance"]["detail"] = detail

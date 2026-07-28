@@ -497,7 +497,7 @@ def test_answer_ready_delta_is_opt_in_and_returns_only_novel_exact_refs(
     )
     monkeypatch.setattr(lcm_tools, "resolve_provider", lambda _config: MockProvider())
     monkeypatch.setattr(lcm_tools, "_lcm_recall_summary_arm", lambda *_a, **_k: ([], "none", 0, 0, []))
-    monkeypatch.setattr(lcm_tools, "_lcm_recall_chunk_arm", lambda *_a, **_k: ([], "none", 0, 0, []))
+    monkeypatch.setattr(lcm_tools, "_lcm_recall_chunk_arm", lambda *_a, **_k: ([], "none", 0, 0))
 
     primary = _recall(
         recall_engine,
@@ -1545,9 +1545,12 @@ def test_reference_strict_delivers_only_citable_hits_and_reports_the_omissions(
     assert len(hits) == 6, "omitted summaries must be backfilled, not lost"
     assert {hit["kind"] for hit in hits} == {"message_excerpt"}
     assert all(hit["store_id"] in store_ids for hit in hits)
-    # Every delivered hit resolves to a truthful span in a real stored row.
+    # Every delivered hit PUBLISHES the span its text occupies, so a consumer
+    # never has to guess an offset.
     assert all(
-        lcm_tools._lcm_recall_item_is_referenced(hit) for hit in hits
+        isinstance(hit.get("content_offset"), int)
+        and hit.get("content_returned_chars")
+        for hit in hits
     )
     policy = payload["provenance"]["answer_ready"]
     assert policy["reference_strict"] is True
@@ -1666,8 +1669,9 @@ def test_reference_strict_disabled_never_enters_the_new_delivery_path(
     def _forbidden(*_args, **_kwargs):
         raise AssertionError("reference-strict code ran on the disabled path")
 
-    monkeypatch.setattr(lcm_tools, "_lcm_recall_citable_entries", _forbidden)
-    monkeypatch.setattr(lcm_tools, "_lcm_recall_item_is_referenced", _forbidden)
+    monkeypatch.setattr(lcm_tools, "_LcmRecallStrictSelector", _forbidden)
+    monkeypatch.setattr(lcm_tools, "_lcm_recall_verified_span", _forbidden)
+    monkeypatch.setattr(lcm_tools, "_lcm_recall_strict_rows", _forbidden)
 
     payload = _recall(
         recall_engine,
@@ -1766,3 +1770,155 @@ def test_summary_nodes_come_back_as_non_evidence_leads(recall_engine, monkeypatc
     # A locator, never the summary text.
     assert "summary" not in leads[0]
     assert "snippet" not in leads[0]
+
+
+def test_admitted_hit_publishes_the_true_chunk_offset_not_zero(
+    recall_engine, monkeypatch
+):
+    """FINDING 2: a post-hydration hit must publish its real offset.
+
+    ``__init__.py``'s ``_answer_ready_baseline`` substitutes ``content_offset``
+    0 when the field is absent, which fabricates a reference for every excerpt
+    that does not start at the beginning of its row.
+    """
+    match = "kanban dashboard sprint"
+    content = "a" * 2_217 + match + "z" * 500
+    store_id = recall_engine._store.append(
+        "session-a", {"role": "user", "content": content}, source="chat"
+    )
+    _seed_chunk_vectors(
+        recall_engine, [(store_id, 0, 2_217, len(content), [1.0, 0.0])]
+    )
+    # Push it past the hydration budget so it is admitted on its chunk span.
+    filler = _seed_citable_messages(recall_engine, 9, sessions=("session-b", "session-c"))
+    _only_vector_arms(monkeypatch)
+
+    payload = _recall(
+        recall_engine,
+        monkeypatch,
+        include="verbatim",
+        detail="answer_ready",
+        scope_bias=0.0,
+        limit=25,
+    )
+
+    hit = next(h for h in payload["hits"] if h["store_id"] == store_id)
+    assert "content" not in hit, "this case must exercise the un-hydrated path"
+    assert hit["content_offset"] == 2_217
+    assert hit["content_returned_chars"] == len(hit["snippet"])
+    # The published span is where the text really is.
+    start = hit["content_offset"]
+    assert content[start:start + hit["content_returned_chars"]] == hit["snippet"]
+    assert filler
+
+
+def test_every_admitted_hit_publishes_a_public_offset(recall_engine, monkeypatch):
+    """FINDING 2: no admitted hit may leave the offset for a consumer to guess."""
+    _only_vector_arms(monkeypatch)
+    _seed_citable_messages(recall_engine, 12)
+
+    payload = _recall(
+        recall_engine,
+        monkeypatch,
+        include="verbatim",
+        detail="answer_ready",
+        scope_bias=0.0,
+        limit=12,
+    )
+
+    assert payload["hits"]
+    for hit in payload["hits"]:
+        assert isinstance(hit["content_offset"], int)
+        assert hit["content_returned_chars"] > 0
+
+
+def test_hydration_miss_refills_from_the_ranked_tail(recall_engine, monkeypatch):
+    """FINDING 3: a row deleted between the reads must not underfill.
+
+    Selection stops at ``limit``; if a selected row then vanishes, omitting it
+    without drawing a replacement leaves the response short while citable
+    candidates sit unexamined just below the cut.
+    """
+    _only_vector_arms(monkeypatch)
+    _seed_citable_messages(recall_engine, 12)
+
+    # Doom rows the run actually DELIVERS, so the refill is genuinely exercised
+    # rather than the deletion landing on candidates below the cut.
+    baseline = _recall(
+        recall_engine,
+        monkeypatch,
+        include="verbatim",
+        detail="answer_ready",
+        scope_bias=0.0,
+        limit=8,
+    )
+    assert len(baseline["hits"]) == 8
+    doomed = {hit["store_id"] for hit in baseline["hits"][:2]}
+    real_get_batch = recall_engine._store.get_batch
+
+    def deleting_get_batch(ids):
+        # Simulate delete_session_messages landing between the ranking read and
+        # the hydration read: the rows are simply not there any more.
+        return {
+            key: value
+            for key, value in real_get_batch(ids).items()
+            if key not in doomed
+        }
+
+    monkeypatch.setattr(recall_engine._store, "get_batch", deleting_get_batch)
+
+    payload = _recall(
+        recall_engine,
+        monkeypatch,
+        include="verbatim",
+        detail="answer_ready",
+        scope_bias=0.0,
+        limit=8,
+    )
+
+    assert len(payload["hits"]) == 8, "the count must survive a hydration miss"
+    assert not (doomed & {hit["store_id"] for hit in payload["hits"]})
+    assert payload["total_results"] == 8
+
+
+def test_stale_chunk_span_never_becomes_a_strict_reference(
+    recall_engine, monkeypatch
+):
+    """FINDING 4: a chunk index is not proof the row still says that.
+
+    Cleanup can delete or rewrite the message after chunk hydration and before
+    response shaping; without a check against the current row the stale hit
+    would be delivered as reference-strict with a dangling span.
+    """
+    _only_vector_arms(monkeypatch)
+    content = "kanban dashboard sprint " + "evidence " * 40
+    store_id = recall_engine._store.append(
+        "session-a", {"role": "user", "content": content}, source="chat"
+    )
+    _seed_chunk_vectors(recall_engine, [(store_id, 0, 0, len(content), [1.0, 0.0])])
+    other = _seed_citable_messages(recall_engine, 9, sessions=("session-b", "session-c"))
+    real_get_batch = recall_engine._store.get_batch
+
+    def rewriting_get_batch(ids):
+        rows = dict(real_get_batch(ids))
+        if store_id in rows:
+            # The row now holds different bytes than the chunk index recorded.
+            rows[store_id] = {**rows[store_id], "content": "unrelated replacement"}
+        return rows
+
+    monkeypatch.setattr(recall_engine._store, "get_batch", rewriting_get_batch)
+
+    payload = _recall(
+        recall_engine,
+        monkeypatch,
+        include="verbatim",
+        detail="answer_ready",
+        scope_bias=0.0,
+        limit=25,
+    )
+
+    delivered = {hit["store_id"] for hit in payload["hits"]}
+    assert store_id not in delivered, "a stale span must not be delivered as strict"
+    assert delivered <= set(other)
+    for hit in payload["hits"]:
+        assert isinstance(hit["content_offset"], int)
