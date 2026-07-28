@@ -564,7 +564,11 @@ class SummaryDAG:
         safe_query = sanitize_fts5_query(query)
         terms = extract_search_terms(safe_query)
         phrases = extract_quoted_phrases(safe_query)
-        if requires_like_fallback(query):
+        # LIKE is the fallback for text FTS cannot express (CJK/emoji/compound
+        # tokens) and for a query with no term left after sanitization. A raw
+        # natural-language question is NOT one of those: it sanitizes to a term
+        # form the index answers, so it stays on the FTS path (F31 §3).
+        if requires_like_fallback(query) or not safe_query:
             return self._search_like(query, session_id=session_id, limit=limit, sort=sort, source=source)
 
         order_by = _build_search_order_by(sort, "COALESCE(n.latest_at, n.created_at)")
@@ -638,7 +642,9 @@ class SummaryDAG:
     def _search_like(self, query: str, session_id: str | None = None,
                      limit: int = 20, sort: str | None = None,
                      source: str | None = None) -> List[SummaryNode]:
-        safe_query = sanitize_fts5_query(query)
+        # A query that sanitizes away entirely (pure punctuation) still has a
+        # literal substring meaning here, so score it on the raw text.
+        safe_query = sanitize_fts5_query(query) or query
         terms = extract_search_terms(safe_query)
         phrases = extract_quoted_phrases(safe_query)
         if not terms:

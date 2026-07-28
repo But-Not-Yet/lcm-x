@@ -1847,6 +1847,51 @@ class TestMessageStore:
         assert len(results) == 1
         assert results[0]["content"] == "foo bar baz"
 
+    def test_search_keeps_raw_question_on_the_fts_path(self, store):
+        """A natural-language question must not degrade to the LIKE full-scan.
+
+        ``?`` and ``'`` are FTS5 syntax errors, so the question used to fail
+        MATCH and fall through to a LIKE scan that blows the recall deadline at
+        scale and returns nothing (F31 §3, issue #168).
+        """
+        store.append("sess1", {"role": "user", "content": "my dog's vet appointment was tuesday"})
+        store._search_like = lambda *args, **kwargs: pytest.fail(
+            "raw question fell back to the LIKE full-scan"
+        )
+
+        results = store.search("my dog's vet appointment?", session_id="sess1")
+
+        assert len(results) == 1
+        assert results[0]["content"] == "my dog's vet appointment was tuesday"
+
+    def test_search_keeps_punctuated_question_on_the_fts_path(self, store):
+        store.append("sess1", {"role": "user", "content": "budget revenue q3 totals recorded"})
+        store._search_like = lambda *args, **kwargs: pytest.fail(
+            "punctuated question fell back to the LIKE full-scan"
+        )
+
+        results = store.search("budget & revenue, q3 $ totals?", session_id="sess1")
+
+        assert len(results) == 1
+        assert results[0]["content"] == "budget revenue q3 totals recorded"
+
+    def test_search_falls_back_to_like_when_query_sanitizes_empty(self, store):
+        store.append("sess1", {"role": "user", "content": "what??? really"})
+        calls: list[str] = []
+        original = store._search_like
+
+        def _recording(query, **kwargs):
+            calls.append(query)
+            return original(query, **kwargs)
+
+        store._search_like = _recording
+
+        results = store.search("???", session_id="sess1")
+
+        assert calls == ["???"]
+        assert len(results) == 1
+        assert results[0]["content"] == "what??? really"
+
     def test_search_uses_sanitized_terms_for_directness_scoring(self, store):
         store.append("sess1", {"role": "user", "content": "vendoring external support stays plugin-only"})
 
@@ -3164,6 +3209,23 @@ class TestDbBootstrapGuards:
         assert sanitize_fts5_query("v2.21") == "v2 21"
         assert sanitize_fts5_query("api.v2") == "api v2"
         assert sanitize_fts5_query("hermes.lcm") == "hermes lcm"
+
+    def test_sanitize_fts5_query_reduces_a_question_to_terms(self):
+        # ? , & $ ' are all FTS5 syntax errors, not just the documented
+        # operators, so a raw question has to reach MATCH in term form (#168).
+        assert (
+            sanitize_fts5_query("What did I say about my dog's vet appointment?")
+            == "What did I say about my dog s vet appointment"
+        )
+        assert sanitize_fts5_query("budget & revenue, q3 $ totals") == "budget revenue q3 totals"
+
+    def test_sanitize_fts5_query_leaves_clean_queries_unchanged(self):
+        assert sanitize_fts5_query("docker deploy notes") == "docker deploy notes"
+        assert sanitize_fts5_query("東京 memo") == "東京 memo"
+
+    def test_sanitize_fts5_query_empties_a_punctuation_only_query(self):
+        assert sanitize_fts5_query("???") == ""
+        assert sanitize_fts5_query("!!! ***") == ""
 
     def test_ensure_external_content_fts_skips_rebuild_when_disk_is_low(self, tmp_path, monkeypatch):
         conn = sqlite3.connect(tmp_path / "low-disk.db")

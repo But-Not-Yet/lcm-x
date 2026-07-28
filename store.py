@@ -1112,7 +1112,11 @@ class MessageStore:
         safe_query = sanitize_fts5_query(query)
         terms = extract_search_terms(safe_query)
         phrases = extract_quoted_phrases(safe_query)
-        if requires_like_fallback(query):
+        # LIKE is the fallback for text FTS cannot express (CJK/emoji/compound
+        # tokens) and for a query with no term left after sanitization. A raw
+        # natural-language question is NOT one of those: it sanitizes to a term
+        # form the index answers, so it stays on the FTS path (F31 §3).
+        if requires_like_fallback(query) or not safe_query:
             return self._search_like(
                 query,
                 session_id=session_id,
@@ -1228,7 +1232,9 @@ class MessageStore:
                      role: str | None = None,
                      time_from: float | None = None,
                      time_to: float | None = None) -> List[Dict[str, Any]]:
-        safe_query = sanitize_fts5_query(query)
+        # A query that sanitizes away entirely (pure punctuation) still has a
+        # literal substring meaning here, so score it on the raw text.
+        safe_query = sanitize_fts5_query(query) or query
         terms = extract_search_terms(safe_query)
         phrases = extract_quoted_phrases(safe_query)
         if not terms:

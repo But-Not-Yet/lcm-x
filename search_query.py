@@ -26,16 +26,30 @@ _BOOLEAN_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
 _RISKY_FTS_TOKEN_RE = re.compile(r"[A-Za-z0-9][\-:/][A-Za-z0-9]")
 _SPLIT_PUNCT_RE = re.compile(r"[-:/]+")
 _STRIP_EDGE_PUNCT = "\"'()[]{}.,;"
-# Characters that are special in FTS5 query syntax
-_FTS5_SPECIAL_CHARS = frozenset('"()*^-:{}.')
+
+
+def _fts5_safe_char(char: str) -> str:
+    """Map one unquoted character to its FTS5 bareword-safe form.
+
+    An FTS5 bareword accepts only alphanumerics; every other character is
+    either query syntax (``"()*^-:{}.``), a string delimiter (``'``), or a
+    plain syntax error (``? , & $ ! % = < ;`` ...). A raw natural-language
+    question therefore fails ``MATCH`` outright and used to fall through to the
+    LIKE full-scan, which blows the recall deadline at scale and returns
+    nothing (F31 §3). Substituting a separator instead lets a question reach
+    the index in its term form; the default unicode61 tokenizer splits the
+    INDEXED text on exactly the same boundary, so no term is lost by the
+    substitution.
+    """
+    return char if (char.isalnum() or char.isspace()) else " "
 
 
 def _sanitize_unquoted_fts5_fragment(text: str) -> str:
-    return "".join(" " if char in _FTS5_SPECIAL_CHARS else char for char in text)
+    return "".join(_fts5_safe_char(char) for char in text)
 
 
 def sanitize_fts5_query(query: str) -> str:
-    """Strip FTS5 syntax operators while preserving balanced phrase quotes."""
+    """Reduce a query to FTS5-safe terms, preserving balanced phrase quotes."""
     if not query:
         return ""
 
@@ -59,10 +73,10 @@ def sanitize_fts5_query(query: str) -> str:
         if in_quote:
             quote_buffer.append(char)
             continue
-        result.append(" " if char in _FTS5_SPECIAL_CHARS else char)
+        result.append(_fts5_safe_char(char))
     if in_quote and quote_buffer:
         result.extend(_sanitize_unquoted_fts5_fragment("".join(quote_buffer)))
-    return "".join(result).strip()
+    return " ".join("".join(result).split())
 
 
 _WORD_RE = re.compile(r"[\w-]+", re.UNICODE)
