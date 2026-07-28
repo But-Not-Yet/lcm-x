@@ -1899,6 +1899,16 @@ class TestMessageStore:
         assert requires_like_fallback("東京") is True
         assert requires_like_fallback("launch \U0001F680") is True
 
+    def test_like_fallback_keeps_the_emoji_it_was_routed_here_for(self, store):
+        """Review finding 4: `launch 🚀` routes to LIKE precisely BECAUSE the
+        index cannot hold the emoji — so the LIKE path must not then sanitize
+        the emoji away and search only `%launch%`."""
+        emoji_only = store.append("sess1", {"role": "user", "content": "\U0001F680"})
+
+        results = store.search("launch \U0001F680", session_id="sess1")
+
+        assert emoji_only in {row["store_id"] for row in results}
+
     def test_search_falls_back_to_like_when_query_sanitizes_empty(self, store):
         store.append("sess1", {"role": "user", "content": "what??? really"})
         calls: list[str] = []
@@ -7459,3 +7469,24 @@ def test_count_tokens_skips_lru_for_large_strings(monkeypatch):
 
     assert first == second
     assert tokens._count_tokens_cached.cache_info().currsize == 0
+
+
+class TestSummaryDagLikeSanitization:
+    """Review finding 4, summary side: the DAG LIKE fallback keeps its emoji."""
+
+    def test_like_fallback_keeps_the_emoji_it_was_routed_here_for(self, tmp_path):
+        dag = SummaryDAG(tmp_path / "emoji-dag.db")
+        try:
+            emoji_only = dag.add_node(SummaryNode(
+                session_id="s1", depth=0, summary="\U0001F680",
+                token_count=4, source_ids=[1], source_type="messages",
+                created_at=1_700_000_000,
+                earliest_at=1_700_000_000,
+                latest_at=1_700_000_000,
+            ))
+
+            results = dag.search("launch \U0001F680", session_id="s1", limit=5)
+
+            assert emoji_only in {node.node_id for node in results}
+        finally:
+            dag.close()

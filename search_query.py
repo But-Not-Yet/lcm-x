@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import List
+from typing import Callable, List
 
 _CJK_RE = re.compile(
     r"["
@@ -26,6 +26,22 @@ _BOOLEAN_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
 _RISKY_FTS_TOKEN_RE = re.compile(r"[A-Za-z0-9][\-:/][A-Za-z0-9]")
 _SPLIT_PUNCT_RE = re.compile(r"[-:/]+")
 _STRIP_EDGE_PUNCT = "\"'()[]{}.,;"
+# Characters that are special in FTS5 QUERY SYNTAX (as opposed to characters
+# FTS5 simply cannot spell in a bareword). Only these have to go on the LIKE
+# path, which has no query grammar of its own.
+_FTS5_SPECIAL_CHARS = frozenset('"()*^-:{}.')
+
+
+def _like_safe_char(char: str) -> str:
+    """Map one unquoted character to its LIKE-safe form.
+
+    LIKE is a substring match, so the only thing it needs removed is the
+    operator punctuation a user typed FOR the index (quoted phrases, prefix
+    ``*``). Everything else is signal it can match on — emoji above all, which
+    the FTS term form must drop because unicode61 does not index it, and which
+    LIKE is therefore the ONLY way to find.
+    """
+    return " " if char in _FTS5_SPECIAL_CHARS else char
 
 
 def _fts5_safe_char(char: str) -> str:
@@ -44,12 +60,24 @@ def _fts5_safe_char(char: str) -> str:
     return char if (char.isalnum() or char.isspace()) else " "
 
 
-def _sanitize_unquoted_fts5_fragment(text: str) -> str:
-    return "".join(_fts5_safe_char(char) for char in text)
-
-
 def sanitize_fts5_query(query: str) -> str:
     """Reduce a query to FTS5-safe terms, preserving balanced phrase quotes."""
+    return _sanitize_query(query, _fts5_safe_char)
+
+
+def sanitize_like_query(query: str) -> str:
+    """Strip FTS5 syntax operators, preserving every other character.
+
+    The LIKE path's sanitization has to be WEAKER than the FTS one: a character
+    the index cannot spell is still a character LIKE can match. Sharing the FTS
+    term form here dropped emoji from the fallback that exists to find them
+    (``launch 🚀`` searched only ``%launch%``).
+    """
+    return _sanitize_query(query, _like_safe_char)
+
+
+def _sanitize_query(query: str, replace: Callable[[str], str]) -> str:
+    """Walk ``query`` outside balanced phrase quotes, mapping chars via ``replace``."""
     if not query:
         return ""
 
@@ -73,9 +101,9 @@ def sanitize_fts5_query(query: str) -> str:
         if in_quote:
             quote_buffer.append(char)
             continue
-        result.append(_fts5_safe_char(char))
+        result.append(replace(char))
     if in_quote and quote_buffer:
-        result.extend(_sanitize_unquoted_fts5_fragment("".join(quote_buffer)))
+        result.extend(replace(char) for char in "".join(quote_buffer))
     return " ".join("".join(result).split())
 
 

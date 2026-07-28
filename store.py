@@ -44,6 +44,7 @@ from .search_query import (
     normalize_search_sort,
     requires_like_fallback,
     sanitize_fts5_query,
+    sanitize_like_query,
     AGE_DECAY_RATE,
     should_apply_directness_rank_adjustment,
 )
@@ -1232,9 +1233,9 @@ class MessageStore:
                      role: str | None = None,
                      time_from: float | None = None,
                      time_to: float | None = None) -> List[Dict[str, Any]]:
-        # A query that sanitizes away entirely (pure punctuation) still has a
-        # literal substring meaning here, so score it on the raw text.
-        safe_query = sanitize_fts5_query(query) or query
+        # LIKE keeps every character the index cannot spell (emoji, punctuation)
+        # because substring matching is the only way to find those rows.
+        safe_query = sanitize_like_query(query)
         terms = extract_search_terms(safe_query)
         phrases = extract_quoted_phrases(safe_query)
         if not terms:
