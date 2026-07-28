@@ -1899,6 +1899,27 @@ class TestMessageStore:
         assert requires_like_fallback("東京") is True
         assert requires_like_fallback("launch \U0001F680") is True
 
+    def test_search_does_not_let_a_raw_query_acquire_or_semantics(self, store):
+        """Review finding 5: `Portland, OR hotel` must stay a conjunction of the
+        words the user typed, not broaden into a disjunction."""
+        both = store.append("sess1", {"role": "user", "content": "portland or hotel notes"})
+        store.append("sess1", {"role": "user", "content": "an unrelated hotel in denver"})
+
+        results = store.search("Portland, OR hotel", session_id="sess1")
+
+        assert [row["store_id"] for row in results] == [both]
+
+    def test_search_survives_a_leading_boolean_operator(self, store):
+        """`NOT ready` was an FTS syntax error that dumped the query on LIKE."""
+        store.append("sess1", {"role": "user", "content": "not ready for launch"})
+        store._search_like = lambda *args, **kwargs: pytest.fail(
+            "leading operator fell back to the LIKE full-scan"
+        )
+
+        results = store.search("NOT ready", session_id="sess1")
+
+        assert len(results) == 1
+
     def test_like_fallback_keeps_the_emoji_it_was_routed_here_for(self, store):
         """Review finding 4: `launch 🚀` routes to LIKE precisely BECAUSE the
         index cannot hold the emoji — so the LIKE path must not then sanitize
@@ -2207,9 +2228,23 @@ class TestMessageStore:
         query = "8416 OR vendored OR vendoring OR plugin-only OR external context-engine OR generic host support OR hermes-lcm stays external OR no vendoring"
         results = store.search(query, session_id="sess1", limit=5, sort="relevance")
 
-        assert len(results) == 1
-        assert results[0]["store_id"] == target
-        assert results[0]["snippet"]
+        # Review findings 1 + 5: the compounds now ride the index and the bare
+        # OR is neutralized, so this is a conjunction of every word typed. No
+        # row satisfies all of them (`8416`, `vendored` appear nowhere). What
+        # "cleanly" now means is that it resolves without an FTS syntax error,
+        # without the full-table fallback, and without a stray OR silently
+        # broadening the query into the filler row.
+        assert results == []
+
+        # The compounds themselves still reach the target through the index.
+        hits = store.search(
+            "plugin-only context-engine hermes-lcm stays external",
+            session_id="sess1",
+            limit=5,
+            sort="relevance",
+        )
+        assert [row["store_id"] for row in hits] == [target]
+        assert hits[0]["snippet"]
 
     def test_search_like_fallback_applies_sql_limit(self, store):
         for idx in range(80):
@@ -3265,6 +3300,14 @@ class TestDbBootstrapGuards:
         assert sanitize_fts5_query("docker deploy notes") == "docker deploy notes"
         assert sanitize_fts5_query("東京 memo") == "東京 memo"
 
+    def test_sanitize_fts5_query_neutralizes_bare_boolean_operators(self):
+        # Review finding 5: a raw question must never acquire operator semantics.
+        assert sanitize_fts5_query("Portland, OR hotel") == "Portland or hotel"
+        assert sanitize_fts5_query("NOT ready") == "not ready"
+        assert sanitize_fts5_query("cats AND dogs NEAR birds") == "cats and dogs near birds"
+        # An explicit phrase is already a literal, so it is left untouched.
+        assert sanitize_fts5_query('"NOT ready" today') == '"NOT ready" today'
+
     def test_sanitize_fts5_query_empties_a_punctuation_only_query(self):
         assert sanitize_fts5_query("???") == ""
         assert sanitize_fts5_query("!!! ***") == ""
@@ -3881,8 +3924,18 @@ class TestSummaryDAG:
         query = "8416 OR vendored OR vendoring OR plugin-only OR external context-engine OR generic host support OR hermes-lcm stays external OR no vendoring"
         results = dag.search(query, session_id="s1", limit=5, sort="relevance")
 
-        assert len(results) == 1
-        assert results[0].node_id == target
+        # Review findings 1 + 5: see the MessageStore twin. Conjunction of every
+        # word typed, so nothing matches; "cleanly" now means no syntax error,
+        # no full-table fallback, and no OR broadening into the filler node.
+        assert results == []
+
+        hits = dag.search(
+            "plugin-only context-engine hermes-lcm stays external",
+            session_id="s1",
+            limit=5,
+            sort="relevance",
+        )
+        assert [node.node_id for node in hits] == [target]
 
     def test_search_like_fallback_applies_sql_limit(self, dag):
         for idx in range(80):

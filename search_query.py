@@ -60,9 +60,38 @@ def _fts5_safe_char(char: str) -> str:
     return char if (char.isalnum() or char.isspace()) else " "
 
 
+def _lower_operator_tokens(text: str) -> str:
+    return " ".join(
+        token.lower() if token in _BOOLEAN_OPERATORS else token
+        for token in text.split(" ")
+    )
+
+
+def _neutralize_bare_operators(sanitized: str) -> str:
+    """Lowercase bare AND/OR/NOT/NEAR outside quoted phrases.
+
+    FTS5 operators are only operators in UPPERCASE, so lowercasing turns them
+    back into ordinary barewords. Without this a raw question SILENTLY ACQUIRES
+    boolean semantics it never asked for: ``Portland, OR hotel`` sanitized to
+    ``Portland OR hotel`` and broadened to a disjunction, while a leading
+    ``NOT ready`` was a syntax error that dumped the query onto the LIKE
+    full-scan. Raw and deliberate queries share one unmarked entry point, so the
+    raw reading has to be the safe one. Quoted phrases are left alone: an
+    explicit ``"NEAR"`` is already a literal, not an operator.
+    """
+    out: list[str] = []
+    last = 0
+    for match in _QUOTED_PHRASE_RE.finditer(sanitized):
+        out.append(_lower_operator_tokens(sanitized[last:match.start()]))
+        out.append(match.group(0))
+        last = match.end()
+    out.append(_lower_operator_tokens(sanitized[last:]))
+    return "".join(out)
+
+
 def sanitize_fts5_query(query: str) -> str:
     """Reduce a query to FTS5-safe terms, preserving balanced phrase quotes."""
-    return _sanitize_query(query, _fts5_safe_char)
+    return _neutralize_bare_operators(_sanitize_query(query, _fts5_safe_char))
 
 
 def sanitize_like_query(query: str) -> str:
