@@ -147,6 +147,19 @@ def _summary_hit(engine, node_id):
     }
 
 
+def _non_strict(engine):
+    """Pin a case to the pre-F35 delivery by disabling reference-strict.
+
+    These cases exercise answer_ready MECHANICS (session diversity, the
+    hydration budget, the response cap) using summary hits, which the default
+    reference-strict delivery no longer hands out as evidence. Running them on
+    the disabled path keeps them exercising the mechanic they were written for
+    and doubles as the byte-identity guarantee for the opt-out.
+    """
+    engine._config.recall_reference_strict = False
+    return engine
+
+
 def _patch_summary_arm(monkeypatch, hits):
     monkeypatch.setattr(
         lcm_tools,
@@ -664,6 +677,7 @@ def test_recall_reports_query_embedding_provider_and_usage(recall_engine, monkey
 def test_answer_ready_applies_stable_post_rank_session_diversity(
     recall_engine, monkeypatch
 ):
+    _non_strict(recall_engine)
     node_ids = []
     for index in range(7):
         node_ids.append(
@@ -768,6 +782,7 @@ def test_answer_ready_centers_message_content_on_exact_chunk_span(
 def test_answer_ready_expands_summary_ref_with_2400_char_bound(
     recall_engine, monkeypatch
 ):
+    _non_strict(recall_engine)
     summary = "kanban dashboard sprint " + "summary-evidence " * 240
     node = _add_summary(
         recall_engine,
@@ -798,6 +813,7 @@ def test_answer_ready_expands_summary_ref_with_2400_char_bound(
 def test_answer_ready_expands_only_first_eight_and_reports_policy(
     recall_engine, monkeypatch
 ):
+    _non_strict(recall_engine)
     node_ids = [
         _add_summary(
             recall_engine,
@@ -843,6 +859,7 @@ def test_answer_ready_expands_only_first_eight_and_reports_policy(
 def test_answer_ready_enforces_complete_response_cap_and_marks_query_truncation(
     recall_engine, monkeypatch
 ):
+    _non_strict(recall_engine)
     node = _add_summary(
         recall_engine,
         "bounded summary evidence",
