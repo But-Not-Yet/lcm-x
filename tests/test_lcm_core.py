@@ -8,6 +8,7 @@ import sqlite3
 import sys
 import threading
 import time
+import unicodedata
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -1899,6 +1900,18 @@ class TestMessageStore:
         assert requires_like_fallback("東京") is True
         assert requires_like_fallback("launch \U0001F680") is True
 
+    def test_search_matches_a_decomposed_accent_against_the_index(self, store):
+        """Review finding 6: unicode61 folds `naïve` to `naive`, so a decomposed
+        query must compose rather than split into `nai ve` and match nothing."""
+        target = store.append("sess1", {"role": "user", "content": "a naïve approach"})
+        store._search_like = lambda *args, **kwargs: pytest.fail(
+            "decomposed accent fell back to the LIKE full-scan"
+        )
+
+        results = store.search("nai\u0308ve", session_id="sess1")  # NFD
+
+        assert [row["store_id"] for row in results] == [target]
+
     def test_search_does_not_let_a_raw_query_acquire_or_semantics(self, store):
         """Review finding 5: `Portland, OR hotel` must stay a conjunction of the
         words the user typed, not broaden into a disjunction."""
@@ -3299,6 +3312,19 @@ class TestDbBootstrapGuards:
     def test_sanitize_fts5_query_leaves_clean_queries_unchanged(self):
         assert sanitize_fts5_query("docker deploy notes") == "docker deploy notes"
         assert sanitize_fts5_query("東京 memo") == "東京 memo"
+
+    def test_sanitize_fts5_query_composes_decomposed_accents(self):
+        # Review finding 6: str.isalnum() is not unicode61's boundary. A
+        # decomposed accent split the token ("nai ve") while the index holds
+        # the folded "naive", so the sanitized query matched zero rows.
+        decomposed = "naïve"  # NFD: base + combining diaeresis
+        assert len(decomposed) == 6
+        sanitized = sanitize_fts5_query(decomposed)
+        assert sanitized == "naïve"  # NFC, one token, no split
+        assert sanitized == unicodedata.normalize("NFC", decomposed)
+        # A combining mark that does not compose stays inside its token.
+        virama = "क्ष"
+        assert sanitize_fts5_query(virama) == virama
 
     def test_sanitize_fts5_query_neutralizes_bare_boolean_operators(self):
         # Review finding 5: a raw question must never acquire operator semantics.

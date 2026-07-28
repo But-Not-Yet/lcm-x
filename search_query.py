@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Callable, List
 
 _CJK_RE = re.compile(
@@ -56,8 +57,16 @@ def _fts5_safe_char(char: str) -> str:
     the index in its term form; the default unicode61 tokenizer splits the
     INDEXED text on exactly the same boundary, so no term is lost by the
     substitution.
+
+    ``str.isalnum()`` alone is NOT that boundary: a combining mark is not
+    alphanumeric, so a decomposed ``naïve`` (``nai`` + U+0308) split into
+    ``nai ve`` while unicode61 indexes the word as ``naive`` — zero rows where
+    the raw query matched. Marks therefore stay inside the token, and
+    ``sanitize_fts5_query`` composes the query first.
     """
-    return char if (char.isalnum() or char.isspace()) else " "
+    if char.isalnum() or char.isspace():
+        return char
+    return char if unicodedata.category(char).startswith("M") else " "
 
 
 def _lower_operator_tokens(text: str) -> str:
@@ -90,8 +99,15 @@ def _neutralize_bare_operators(sanitized: str) -> str:
 
 
 def sanitize_fts5_query(query: str) -> str:
-    """Reduce a query to FTS5-safe terms, preserving balanced phrase quotes."""
-    return _neutralize_bare_operators(_sanitize_query(query, _fts5_safe_char))
+    """Reduce a query to FTS5-safe terms, preserving balanced phrase quotes.
+
+    Composed (NFC) first so a decomposed accent is one alphanumeric character
+    rather than a base plus a combining mark, which is what unicode61 folds and
+    indexes. The LIKE path deliberately does NOT normalize: it is a literal
+    substring match against stored bytes, so it must not re-spell the query.
+    """
+    composed = unicodedata.normalize("NFC", query or "")
+    return _neutralize_bare_operators(_sanitize_query(composed, _fts5_safe_char))
 
 
 def sanitize_like_query(query: str) -> str:
