@@ -1386,3 +1386,301 @@ def test_rerank_does_not_splice_voyage_score_onto_rrf_scale(recall_engine, monke
     # Had the 0.9 voyage score been spliced onto the RRF scale it would dwarf the
     # ~0.016 RRF score; the reported score must stay RRF-scaled.
     assert all(hit["score"] < 0.1 for hit in payload["hits"])
+
+
+# -- Reference-strict delivery (FINDING-F35) ----------------------------------
+#
+# The #168 sanitization fix woke the summary arm's internal FTS queries, so
+# uncitable kind:"summary" hits started reaching consumers that validate every
+# evidence reference and fail CLOSED on an unreferenced card. These cases pin
+# the invariant: no hit lacking a validated (store_id, char_start, char_end)
+# source span is delivered, an omitted hit is backfilled by the next-ranked
+# citable one, and the omission count is surfaced rather than silent.
+
+
+def _message_entry(store_id, *, session_id="session-a", chunk_span=None):
+    hit = {
+        "kind": "message_excerpt",
+        "store_id": store_id,
+        "session_id": session_id,
+    }
+    if chunk_span is not None:
+        hit["chunk_span"] = chunk_span
+    return {"hit": hit}
+
+
+def _summary_entry(node_id, *, session_id="session-s", store_id=None):
+    hit = {"kind": "summary", "node_id": node_id, "session_id": session_id}
+    if store_id is not None:
+        hit["store_id"] = store_id
+    return {"hit": hit}
+
+
+def test_reference_strict_backfills_past_every_uncitable_candidate_shape():
+    """The three uncitable shapes lose their slot to the next citable hit.
+
+    Candidates 1 and 4 are uncitable summaries (the second carries the #164a
+    ``store_id``, which names lineage rather than a citation); candidate 6 is a
+    message that reached a post-hydration slot with no chunk span of its own.
+    All three are skipped and the selection continues down the ranking, so the
+    delivered count still reaches ``limit``.
+    """
+    span = {"char_start": 0, "char_end": 40}
+    ordered = [
+        _summary_entry(901),
+        _message_entry(1, chunk_span=span),
+        _message_entry(2, chunk_span=span),
+        _summary_entry(902, store_id=7),
+        _message_entry(3, chunk_span=span),
+        _message_entry(4),  # no chunk span, and slot 3 is past expanded_limit=2
+        _message_entry(5, chunk_span=span),
+        _message_entry(6, chunk_span=span),
+    ]
+
+    selected, dropped, unreferenced = lcm_tools._lcm_recall_citable_entries(
+        ordered,
+        limit=5,
+        per_session_limit=5,
+        expanded_limit=2,
+    )
+
+    assert [entry["hit"]["store_id"] for entry in selected] == [1, 2, 3, 5, 6]
+    assert len(selected) == 5
+    assert unreferenced == 3
+    assert dropped == 0
+
+
+def test_reference_strict_admits_an_unspanned_message_inside_the_hydration_budget():
+    """Slot position decides: a chunk-span-less message is citable while the
+    hydration budget still covers it (it will carry content_offset), and only
+    becomes uncitable once it falls past that budget."""
+    ordered = [_message_entry(index) for index in range(1, 5)]
+
+    selected, _dropped, unreferenced = lcm_tools._lcm_recall_citable_entries(
+        ordered,
+        limit=4,
+        per_session_limit=5,
+        expanded_limit=2,
+    )
+
+    assert [entry["hit"]["store_id"] for entry in selected] == [1, 2]
+    assert unreferenced == 2
+
+
+def test_reference_strict_skips_uncitable_before_it_consumes_session_quota():
+    """An undelivered hit must not spend the per-session density budget it was
+    never going to occupy."""
+    ordered = [_summary_entry(900 + index, session_id="session-a") for index in range(3)]
+    ordered += [_message_entry(index, session_id="session-a") for index in range(1, 6)]
+
+    selected, dropped, unreferenced = lcm_tools._lcm_recall_citable_entries(
+        ordered,
+        limit=5,
+        per_session_limit=5,
+        expanded_limit=8,
+    )
+
+    assert [entry["hit"]["store_id"] for entry in selected] == [1, 2, 3, 4, 5]
+    assert unreferenced == 3
+    assert dropped == 0
+
+
+def _only_vector_arms(monkeypatch):
+    """Silence the FTS arm so summary-arm and chunk-arm ranks interleave.
+
+    Seeded messages match the query lexically too, and that extra arm lifts them
+    clear above the summary hits — which would leave the uncitable candidates
+    below the cut and never exercise the backfill.
+    """
+    monkeypatch.setattr(lcm_tools, "_lcm_recall_fts_arm", lambda *_a, **_k: ([], None))
+
+
+def _seed_citable_messages(engine, count, *, sessions=("session-a", "session-b")):
+    """Seed messages that the chunk arm can retrieve with a verbatim span."""
+    match = "kanban dashboard sprint"
+    store_ids = []
+    for index in range(count):
+        content = f"{match} evidence body {index} " + "filler " * 20
+        store_id = engine._store.append(
+            sessions[index % len(sessions)],
+            {"role": "user", "content": content},
+            source="chat",
+        )
+        store_ids.append(store_id)
+        _seed_chunk_vectors(engine, [(store_id, 0, 0, len(content), [1.0, 0.0])])
+    return store_ids
+
+
+def test_reference_strict_delivers_only_citable_hits_and_reports_the_omissions(
+    recall_engine, monkeypatch
+):
+    """End-to-end: a mixed hit set delivers messages only, backfilled to LIMIT,
+    with the uncitable summaries counted in provenance meta."""
+    _only_vector_arms(monkeypatch)
+    store_ids = _seed_citable_messages(recall_engine, 10)
+    node_ids = [
+        _add_summary(
+            recall_engine,
+            f"kanban dashboard sprint rollup {index}",
+            session_id="session-s",
+            created_at=10.0,
+            latest_at=time.time(),
+        )
+        for index in range(3)
+    ]
+    _patch_summary_arm(
+        monkeypatch,
+        [_summary_hit(recall_engine, node_id) for node_id in node_ids],
+    )
+
+    payload = _recall(
+        recall_engine,
+        monkeypatch,
+        detail="answer_ready",
+        scope_bias=0.0,
+        limit=6,
+    )
+
+    hits = payload["hits"]
+    assert len(hits) == 6, "omitted summaries must be backfilled, not lost"
+    assert {hit["kind"] for hit in hits} == {"message_excerpt"}
+    assert all(hit["store_id"] in store_ids for hit in hits)
+    # Every delivered hit resolves to a truthful span in a real stored row.
+    assert all(
+        lcm_tools._lcm_recall_item_is_referenced(hit) for hit in hits
+    )
+    policy = payload["provenance"]["answer_ready"]
+    assert policy["reference_strict"] is True
+    assert policy["unreferenced_dropped_count"] == len(node_ids)
+    assert policy["unreferenced_omitted_count"] == 0
+
+
+def test_reference_strict_drops_the_164a_message_sourced_summary_too(
+    recall_engine, monkeypatch
+):
+    """#164a populated store_id from ``source_ids[0]``. A leaf node's source_ids
+    lists EVERY message it summarizes and its text is generated prose, so that
+    store_id is lineage, not a citation — the hit stays undelivered."""
+    _only_vector_arms(monkeypatch)
+    store_ids = _seed_citable_messages(recall_engine, 4)
+    node = _add_summary(
+        recall_engine,
+        "kanban dashboard sprint rollup",
+        session_id="session-s",
+        created_at=10.0,
+        latest_at=time.time(),
+        source_ids=store_ids,
+    )
+    summary_hit = _summary_hit(recall_engine, node)
+    summary_hit["store_id"] = store_ids[0]
+    _patch_summary_arm(monkeypatch, [summary_hit])
+
+    payload = _recall(
+        recall_engine,
+        monkeypatch,
+        detail="answer_ready",
+        scope_bias=0.0,
+        limit=4,
+    )
+
+    assert all(hit["kind"] == "message_excerpt" for hit in payload["hits"])
+    assert payload["provenance"]["answer_ready"]["unreferenced_dropped_count"] == 1
+
+
+def test_reference_strict_include_summaries_returns_nothing_rather_than_uncitable(
+    recall_engine, monkeypatch
+):
+    """include='summaries' with the citation-bearing detail asks for citable
+    delivery of non-citable material. The honest answer is an empty result plus
+    the omission count — not a carve-out that reinstates the defect."""
+    node_ids = [
+        _add_summary(
+            recall_engine,
+            f"kanban dashboard sprint rollup {index}",
+            session_id=f"session-{index}",
+            created_at=10.0,
+        )
+        for index in range(3)
+    ]
+    _patch_summary_arm(
+        monkeypatch,
+        [_summary_hit(recall_engine, node_id) for node_id in node_ids],
+    )
+
+    payload = _recall(
+        recall_engine,
+        monkeypatch,
+        include="summaries",
+        detail="answer_ready",
+        scope_bias=0.0,
+        limit=5,
+    )
+
+    assert payload["hits"] == []
+    assert payload["total_results"] == 0
+    assert payload["provenance"]["answer_ready"]["unreferenced_dropped_count"] == 3
+
+
+def test_reference_strict_leaves_the_snippets_default_untouched(
+    recall_engine, monkeypatch
+):
+    """The default detail makes no source-span claim and carries no hydration,
+    so strictness must not cost it evidence."""
+    node = _add_summary(
+        recall_engine,
+        "kanban dashboard sprint rollup",
+        session_id="session-a",
+        created_at=10.0,
+    )
+    _seed_summary_vectors(recall_engine, [(node, [1.0, 0.0])])
+
+    payload = _recall(recall_engine, monkeypatch, include="summaries", limit=5)
+
+    assert [hit["node_id"] for hit in payload["hits"]] == [node]
+    assert "answer_ready" not in payload["provenance"]
+
+
+def test_reference_strict_disabled_never_enters_the_new_delivery_path(
+    recall_engine, monkeypatch
+):
+    """Flag-off inertness: with the opt-out set, none of the reference-strict
+    code runs and the response carries none of its provenance keys, so delivery
+    is byte-identical to the pre-F35 path by construction."""
+    _non_strict(recall_engine)
+    _seed_citable_messages(recall_engine, 4)
+    node_ids = [
+        _add_summary(
+            recall_engine,
+            f"kanban dashboard sprint rollup {index}",
+            session_id="session-s",
+            created_at=10.0,
+            latest_at=time.time(),
+        )
+        for index in range(2)
+    ]
+    _patch_summary_arm(
+        monkeypatch,
+        [_summary_hit(recall_engine, node_id) for node_id in node_ids],
+    )
+
+    def _forbidden(*_args, **_kwargs):
+        raise AssertionError("reference-strict code ran on the disabled path")
+
+    monkeypatch.setattr(lcm_tools, "_lcm_recall_citable_entries", _forbidden)
+    monkeypatch.setattr(lcm_tools, "_lcm_recall_item_is_referenced", _forbidden)
+
+    payload = _recall(
+        recall_engine,
+        monkeypatch,
+        detail="answer_ready",
+        scope_bias=0.0,
+        limit=6,
+    )
+
+    # The legacy path still delivers the (uncitable) summaries it always did.
+    assert any(hit["kind"] == "summary" for hit in payload["hits"])
+    policy = payload["provenance"]["answer_ready"]
+    assert "reference_strict" not in policy
+    assert "unreferenced_dropped_count" not in policy
+    assert "unreferenced_omitted_count" not in policy
+    assert "reference_policy" not in policy
