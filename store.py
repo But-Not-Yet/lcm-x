@@ -44,6 +44,7 @@ from .search_query import (
     normalize_search_sort,
     requires_like_fallback,
     sanitize_fts5_query,
+    sanitize_like_query,
     AGE_DECAY_RATE,
     should_apply_directness_rank_adjustment,
 )
@@ -1097,7 +1098,8 @@ class MessageStore:
                conversation_id: str | None = None,
                role: str | None = None,
                time_from: float | None = None,
-               time_to: float | None = None) -> List[Dict[str, Any]]:
+               time_to: float | None = None,
+               allow_operators: bool = False) -> List[Dict[str, Any]]:
         """FTS5 search across raw messages.
 
         Retrieval contract:
@@ -1108,11 +1110,17 @@ class MessageStore:
         - ``source='unknown'`` means the explicit unknown-source bucket, with
           legacy blank-source rows treated as equivalent for back-compat
         - ``conversation_id`` limits rows to one gateway conversation/session key
+        - ``allow_operators`` marks a query the CALLER composed as FTS5 syntax,
+          keeping its bare AND/OR/NOT/NEAR. Never set it for user or agent text
         """
-        safe_query = sanitize_fts5_query(query)
+        safe_query = sanitize_fts5_query(query, allow_operators=allow_operators)
         terms = extract_search_terms(safe_query)
         phrases = extract_quoted_phrases(safe_query)
-        if requires_like_fallback(query):
+        # LIKE is the fallback for text sanitization LOSES (CJK/emoji) and for a
+        # query with no term left after it. A raw natural-language question is
+        # NOT one of those: it sanitizes to a term form the index answers, so it
+        # stays on the FTS path (F31 §3).
+        if requires_like_fallback(query, safe_query):
             return self._search_like(
                 query,
                 session_id=session_id,
@@ -1228,7 +1236,9 @@ class MessageStore:
                      role: str | None = None,
                      time_from: float | None = None,
                      time_to: float | None = None) -> List[Dict[str, Any]]:
-        safe_query = sanitize_fts5_query(query)
+        # LIKE keeps every character the index cannot spell (emoji, punctuation)
+        # because substring matching is the only way to find those rows.
+        safe_query = sanitize_like_query(query)
         terms = extract_search_terms(safe_query)
         phrases = extract_quoted_phrases(safe_query)
         if not terms:

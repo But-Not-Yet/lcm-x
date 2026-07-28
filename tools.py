@@ -3701,6 +3701,23 @@ def _lcm_recall_fts_arm(
     return hits, None
 
 
+def _lcm_recall_scan_bounds(engine: "LCMEngine") -> dict[str, Any]:
+    """Full-corpus scan settings shared by both vector arms.
+
+    lcm_recall promises "all conversations, all time", so both arms scan the
+    WHOLE corpus in ``recall_scan_rows``-sized batches. The optional cap and
+    latency budget default to 0 (no early stop); either one firing degrades the
+    arm to ``coverage='bounded'``, which the caller already discloses.
+    """
+    return {
+        "full_scan": True,
+        "scan_max_rows": max(0, int(getattr(engine._config, "recall_scan_max_rows", 0))),
+        "scan_budget_s": max(
+            0.0, float(getattr(engine._config, "recall_scan_budget_s", 0.0))
+        ),
+    }
+
+
 def _lcm_recall_summary_arm(
     engine: "LCMEngine",
     *,
@@ -3723,6 +3740,7 @@ def _lcm_recall_summary_arm(
             source=None,
             vector_store_cls=VectorStore,
             scan_rows=max(1, int(getattr(engine._config, "recall_scan_rows", 25_000))),
+            **_lcm_recall_scan_bounds(engine),
         ),
         remaining_s=deadline - time.monotonic(),
         name="lcm-recall-summary-knn",
@@ -3779,6 +3797,7 @@ def _lcm_recall_chunk_arm(
             source=None,
             vector_store_cls=VectorStore,
             scan_rows=max(1, int(getattr(engine._config, "recall_scan_rows", 25_000))),
+            **_lcm_recall_scan_bounds(engine),
         ),
         remaining_s=deadline - time.monotonic(),
         name="lcm-recall-chunk-knn",
