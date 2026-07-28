@@ -164,7 +164,7 @@ def _patch_summary_arm(monkeypatch, hits):
     monkeypatch.setattr(
         lcm_tools,
         "_lcm_recall_summary_arm",
-        lambda *_args, **_kwargs: (list(hits), "full", len(hits), len(hits)),
+        lambda *_args, **_kwargs: (list(hits), "full", len(hits), len(hits), []),
     )
 
 
@@ -496,8 +496,8 @@ def test_answer_ready_delta_is_opt_in_and_returns_only_novel_exact_refs(
         "session-b", {"role": "user", "content": "kanban dashboard sprint beta"}
     )
     monkeypatch.setattr(lcm_tools, "resolve_provider", lambda _config: MockProvider())
-    monkeypatch.setattr(lcm_tools, "_lcm_recall_summary_arm", lambda *_a, **_k: ([], "none", 0, 0))
-    monkeypatch.setattr(lcm_tools, "_lcm_recall_chunk_arm", lambda *_a, **_k: ([], "none", 0, 0))
+    monkeypatch.setattr(lcm_tools, "_lcm_recall_summary_arm", lambda *_a, **_k: ([], "none", 0, 0, []))
+    monkeypatch.setattr(lcm_tools, "_lcm_recall_chunk_arm", lambda *_a, **_k: ([], "none", 0, 0, []))
 
     primary = _recall(
         recall_engine,
@@ -1684,3 +1684,85 @@ def test_reference_strict_disabled_never_enters_the_new_delivery_path(
     assert "unreferenced_dropped_count" not in policy
     assert "unreferenced_omitted_count" not in policy
     assert "reference_policy" not in policy
+
+
+# -- Cross-model review of PR #174 (four mandatory P2 findings) ---------------
+
+
+def test_summary_only_session_still_yields_citable_evidence_in_strict_mode(
+    recall_engine, monkeypatch
+):
+    """FINDING 1: strict mode must not amputate the summary arm.
+
+    RRF keys a summary by node and a message by store_id, so dropping summary
+    entries after fusion leaves message scores and order exactly as if the arm
+    had never run. Here the gold session is reachable ONLY by summary
+    similarity -- its messages share no query term and have no chunk vectors --
+    so if the arm's influence were lost the session would contribute nothing.
+    """
+    store_ids = [
+        recall_engine._store.append(
+            "session-gold",
+            {"role": "user", "content": f"the quarterly budget reconciliation note {index}"},
+            source="chat",
+        )
+        for index in range(3)
+    ]
+    node = _add_summary(
+        recall_engine,
+        "kanban dashboard sprint rollup",
+        session_id="session-gold",
+        created_at=10.0,
+        source_ids=store_ids,
+    )
+    _seed_summary_vectors(recall_engine, [(node, [1.0, 0.0])])
+
+    payload = _recall(
+        recall_engine,
+        monkeypatch,
+        detail="answer_ready",
+        scope_bias=0.0,
+        limit=5,
+    )
+
+    hits = payload["hits"]
+    assert hits, "the summary-only session must still reach the caller"
+    assert {hit["kind"] for hit in hits} == {"message_excerpt"}
+    assert {hit["store_id"] for hit in hits} <= set(store_ids)
+    # Real rows, cited truthfully -- not the node's generated prose.
+    assert all(hit["session_id"] == "session-gold" for hit in hits)
+    assert all(hit["content_offset"] == 0 for hit in hits)
+    assert "kanban dashboard sprint rollup" not in json.dumps(hits)
+
+
+def test_summary_nodes_come_back_as_non_evidence_leads(recall_engine, monkeypatch):
+    """FINDING 1: adaptive retrieval's summary-lead path keeps working.
+
+    ``_extract_search_leads`` walks the whole tool payload for locator handles,
+    so surfacing the node ids in provenance restores the drill-down path that
+    dropping summary hits would otherwise have closed -- without putting
+    generated prose back into evidence.
+    """
+    node = _add_summary(
+        recall_engine,
+        "kanban dashboard sprint rollup",
+        session_id="session-gold",
+        created_at=10.0,
+        source_ids=[
+            recall_engine._store.append(
+                "session-gold", {"role": "user", "content": "budget note"}, source="chat"
+            )
+        ],
+    )
+    _seed_summary_vectors(recall_engine, [(node, [1.0, 0.0])])
+
+    payload = _recall(
+        recall_engine, monkeypatch, detail="answer_ready", scope_bias=0.0, limit=5
+    )
+
+    leads = payload["provenance"]["answer_ready"]["summary_leads"]
+    assert [lead["node_id"] for lead in leads] == [node]
+    assert leads[0]["session_id"] == "session-gold"
+    # A locator, never the summary text.
+    assert "summary" not in leads[0]
+    assert "snippet" not in leads[0]

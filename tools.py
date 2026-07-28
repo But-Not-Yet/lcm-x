@@ -284,6 +284,11 @@ _LCM_RECALL_VALID_INCLUDE = frozenset({"all", "summaries", "verbatim"})
 _LCM_RECALL_VALID_DETAIL = frozenset({"snippets", "answer_ready"})
 _LCM_RECALL_ANSWER_READY_PER_SESSION_LIMIT = 5
 _LCM_RECALL_ANSWER_READY_EXPANDED_HIT_LIMIT = 8
+# Bounded per-node fan-out when reference-strict delivery carries summary-KNN
+# relevance onto the source messages beneath a ranked node. Small on purpose:
+# the point is to make the SESSION reachable with citable evidence, and the FTS
+# and chunk arms are what rank individual messages inside it.
+_LCM_RECALL_SUMMARY_SOURCE_PER_NODE = 4
 _LCM_RECALL_ANSWER_READY_CONTENT_CHARS = 2_400
 # Recency boost half-life (30 days) and its floor: a memory's rank_score is
 # multiplied by 2**(-age/half_life), clamped so age never zeroes an otherwise
@@ -3816,6 +3821,84 @@ def _lcm_recall_scan_bounds(engine: "LCMEngine") -> dict[str, Any]:
     }
 
 
+def _lcm_recall_summary_source_hits(
+    engine: "LCMEngine",
+    nodes: list[tuple[Any, float]],
+    *,
+    current: str | None,
+    candidate_limit: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Carry summary-KNN relevance onto the nodes' SOURCE MESSAGES.
+
+    Reference-strict delivery cannot hand out a summary, and simply dropping the
+    hits would silently amputate the arm: RRF keys a summary by node and a
+    message by store_id, so with rerank off (the default) removing summary
+    entries after fusion leaves every message score and the whole order exactly
+    as if the arm had never run -- a session reachable ONLY by summary KNN would
+    contribute no evidence at all.
+
+    So the arm emits ordinary ``message_excerpt`` candidates for the rows beneath
+    each ranked node, in node-rank order. They are NOT the summary wearing a
+    message's content: each is a real row with its own identity, its own verbatim
+    excerpt and its own truthful ``content_offset``, fused by RRF against the FTS
+    and chunk arms like any other candidate and competing on merit rather than
+    inheriting the node's slot. The node handles come back separately as
+    non-evidence leads.
+
+    Bounded fan-out: within a node there is no per-message relevance signal (that
+    is what the FTS and chunk arms are for), so a deterministic ``store_id``-
+    ordered slice per node is taken and the arm stays inside its candidate
+    budget. The purpose is to make the SESSION reachable with citable evidence,
+    not to rank inside it.
+    """
+    leads: list[dict[str, Any]] = []
+    ordered_ids: list[int] = []
+    seen: set[int] = set()
+    for node, _score in nodes:
+        lead: dict[str, Any] = {"node_id": node.node_id, "session_id": node.session_id}
+        hint = _lcm_recall_summary_expand_hint({"session_id": node.session_id})
+        if hint:
+            lead["expand_hint"] = hint
+        leads.append(lead)
+        if len(ordered_ids) >= candidate_limit:
+            continue
+        for store_id in engine._dag.source_message_ids(
+            node.node_id, limit=_LCM_RECALL_SUMMARY_SOURCE_PER_NODE
+        ):
+            if store_id in seen:
+                continue
+            seen.add(store_id)
+            ordered_ids.append(store_id)
+
+    hits: list[dict[str, Any]] = []
+    if ordered_ids:
+        rows = engine._store.get_batch(ordered_ids[:candidate_limit])
+        for store_id in ordered_ids[:candidate_limit]:
+            row = rows.get(store_id)
+            if row is None:
+                continue
+            content = str(row.get("content") or "")
+            if not content:
+                continue
+            session_id = row.get("session_id")
+            hit = {
+                "kind": "message_excerpt",
+                "store_id": store_id,
+                "session_id": session_id,
+                "source": row.get("source") or "",
+                "role": row.get("role"),
+                "timestamp": row.get("timestamp") or 0,
+                # The excerpt is the row's own prefix, so offset 0 is the truth
+                # here rather than the fabricated default a consumer would guess.
+                "content_offset": 0,
+                "snippet": content[:_LCM_RECALL_SNIPPET_CHARS],
+                "from_current_session": bool(current) and session_id == current,
+            }
+            hit["expand_hint"] = _lcm_recall_excerpt_expand_hint(hit)
+            hits.append(hit)
+    return hits, leads
+
+
 def _lcm_recall_summary_arm(
     engine: "LCMEngine",
     *,
@@ -3823,6 +3906,7 @@ def _lcm_recall_summary_arm(
     provider: Any,
     candidate_limit: int,
     deadline: float,
+    reference_strict: bool = False,
 ) -> tuple[list[dict[str, Any]], str]:
     """Summary KNN arm: embedded summaries across ALL sessions (no filter)."""
     knn_results = _run_within_deadline(
@@ -3846,7 +3930,7 @@ def _lcm_recall_summary_arm(
     coverage = knn_results.coverage
     ranked_rows = list(knn_results)
     if coverage == "none" or not ranked_rows:
-        return [], coverage, knn_results.scanned, knn_results.total
+        return [], coverage, knn_results.scanned, knn_results.total, []
     nodes = _run_within_deadline(
         lambda: hydrate_semantic_nodes(
             engine,
@@ -3858,6 +3942,11 @@ def _lcm_recall_summary_arm(
         name="lcm-recall-summary-hydrate",
     )
     current = engine.current_session_id
+    if reference_strict:
+        source_hits, leads = _lcm_recall_summary_source_hits(
+            engine, nodes, current=current, candidate_limit=candidate_limit
+        )
+        return source_hits, coverage, knn_results.scanned, knn_results.total, leads
     hits: list[dict[str, Any]] = []
     for node, _score in nodes:
         source_store_id = (
@@ -3876,7 +3965,7 @@ def _lcm_recall_summary_arm(
         }
         hit["expand_hint"] = _lcm_recall_summary_expand_hint(hit)
         hits.append(hit)
-    return hits, coverage, knn_results.scanned, knn_results.total
+    return hits, coverage, knn_results.scanned, knn_results.total, []
 
 
 def _lcm_recall_chunk_arm(
@@ -4068,6 +4157,10 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
     run_chunk = include in {"all", "verbatim"}
 
     arm_hits: dict[str, list[dict[str, Any]]] = {}
+    # Node handles from the summary arm. Reference-strict delivery routes summary
+    # relevance through the source messages, so the nodes themselves are surfaced
+    # here as non-evidence drill-down leads instead of as hits.
+    summary_leads: list[dict[str, Any]] = []
     coverage: dict[str, str] = {}
     degraded_reasons: list[str] = []
     embedding_query_metrics: list[dict[str, Any]] = []
@@ -4175,12 +4268,13 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
             if query_vector is not None:
                 if run_summary:
                     try:
-                        hits, cov, scanned, total = _lcm_recall_summary_arm(
+                        hits, cov, scanned, total, summary_leads = _lcm_recall_summary_arm(
                             engine,
                             query_vector=query_vector,
                             provider=provider,
                             candidate_limit=candidate_limit,
                             deadline=deadline,
+                            reference_strict=reference_strict,
                         )
                         arm_hits["summary"] = hits
                         coverage["summary"] = cov
@@ -4497,6 +4591,7 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
             expansion["reference_strict"] = True
             expansion["unreferenced_dropped_count"] = unreferenced_dropped
             expansion["unreferenced_omitted_count"] = unreferenced_omitted
+            expansion["summary_leads"] = summary_leads
             expansion["reference_policy"] = (
                 "no hit lacking a validated (store_id, char_start, char_end) source "
                 "span is delivered; dropped candidates are backfilled by the "
