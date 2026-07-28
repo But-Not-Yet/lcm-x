@@ -13,6 +13,7 @@ import math
 import sqlite3
 import struct
 import threading
+import time
 import uuid
 from collections import OrderedDict
 from contextlib import contextmanager
@@ -70,6 +71,10 @@ _CHUNK_TASK = "chunk"
 # profile table, each keyed by its own canonical identity (task is part of the
 # identity hash), so their vectors never collide.
 _SUPPORTED_TASKS = frozenset({_DEFAULT_TASK, _CHUNK_TASK})
+
+# Candidate-enumeration sentinel: SQLite reads a negative LIMIT as "no limit",
+# so a full-corpus scan enumerates every live candidate for the identity.
+_SCAN_ALL_ROWS = -1
 
 # SQLite caps host parameters per statement (SQLITE_MAX_VARIABLE_NUMBER); a
 # single ``WHERE id IN (?, ?, ...)`` over tens of thousands of ids overflows it
@@ -1322,8 +1327,11 @@ class VectorStore:
         what ``coverage='bounded'`` signals. The source-lineage filter is a
         recursive descendant walk, so it is applied to the already-bounded id
         set afterward (and fails closed when provenance is unverifiable).
+
+        ``limit=_SCAN_ALL_ROWS`` enumerates every live candidate (the batched
+        full-corpus scan bounds memory per BATCH, not per corpus).
         """
-        if limit <= 0:
+        if limit == 0:
             return []
         if conversation_ids is not None and not list(conversation_ids):
             return []
@@ -1443,21 +1451,77 @@ class VectorStore:
         return rowids, out_ids, kinds, vectors
 
     @staticmethod
+    def _rank_key(row: tuple[int, str, float, str]) -> tuple[float, int, str]:
+        """Sort key for one ``(rowid, embedded_id, score, kind)`` candidate."""
+        return (-float(row[2]), -int(row[0]), str(row[1]))
+
+    @classmethod
     def _ranked(
+        cls,
         rowids: Sequence[int],
         embedded_ids: Sequence[str],
         kinds: Sequence[str],
         scores: Sequence[float],
         limit: int,
     ) -> list[tuple[str, float, str]]:
-        ranked = sorted(
-            zip(rowids, embedded_ids, scores, kinds),
-            key=lambda row: (-float(row[2]), -int(row[0]), str(row[1])),
-        )
+        ranked = sorted(zip(rowids, embedded_ids, scores, kinds), key=cls._rank_key)
         return [
             (str(embedded_id), float(score), str(kind))
             for _, embedded_id, score, kind in ranked[:limit]
         ]
+
+    def _scan_ranked(
+        self,
+        *,
+        candidate_ids: Sequence[str],
+        batch_rows: int,
+        budget_s: float,
+        limit: int,
+        score_batch: Any,
+    ) -> tuple[list[tuple[str, float, str]], int, bool]:
+        """Score every candidate in ``batch_rows`` chunks, keeping a running top-k.
+
+        ``batch_rows`` bounds PEAK MEMORY (one batch of vectors resident at a
+        time), not the corpus reached: the whole candidate set is scored, so a
+        memory older than the batch size stays retrievable. That is the fix for
+        the 25k recency window that made 86% of a 185k-vector corpus invisible
+        to semantic recall (FINDING-F31 §2).
+
+        ``budget_s`` (0 = no early stop, the default) is the only thing that can
+        cut the scan short; when it does, the caller degrades to
+        ``coverage='bounded'`` and the existing disclosure names the ratio.
+        Returns ``(ranked top-k, candidates scored, stopped early)``.
+        """
+        best: list[tuple[int, str, float, str]] = []
+        scanned = 0
+        stopped_early = False
+        started = time.monotonic()
+        for start in range(0, len(candidate_ids), batch_rows):
+            batch = candidate_ids[start:start + batch_rows]
+            rowids, embedded_ids, kinds, scores = score_batch(batch)
+            scanned += len(batch)
+            best.extend(
+                (int(rowid), str(embedded_id), float(score), str(kind))
+                for rowid, embedded_id, score, kind in zip(
+                    rowids, embedded_ids, scores, kinds
+                )
+            )
+            if len(best) > limit:
+                best.sort(key=self._rank_key)
+                del best[limit:]
+            exhausted = start + batch_rows >= len(candidate_ids)
+            if not exhausted and budget_s > 0 and (time.monotonic() - started) >= budget_s:
+                stopped_early = True
+                break
+        best.sort(key=self._rank_key)
+        return (
+            [
+                (embedded_id, score, kind)
+                for _, embedded_id, score, kind in best[:limit]
+            ],
+            scanned,
+            stopped_early,
+        )
 
     def _source_allowed_ids(self, table: str, source: str) -> set[str]:
         """Root candidate ids whose source subtree reaches a message with ``source``.
@@ -1852,6 +1916,9 @@ class VectorStore:
         conversation_ids: Sequence[str] | None = None,
         source: str | None = None,
         provider: str | None = None,
+        full_scan: bool = False,
+        scan_max_rows: int = 0,
+        scan_budget_s: float = 0.0,
     ) -> KNNResult:
         k = int(k)
         if k <= 0:
@@ -1913,9 +1980,11 @@ class VectorStore:
             # approximate (recall@M) result, not exact like the exact-scan 'full'.
             return KNNResult(candidates, coverage="full_approx")
 
-        limit = max(0, self.bounded_scan_rows)
-        # Probe at most bound+1 through the indexed candidate query. This
-        # determines full-vs-bounded coverage without COUNT(*) scanning the
+        probe_limit, scan_limit = self._scan_limits(
+            full_scan=full_scan, scan_max_rows=scan_max_rows
+        )
+        # Probe one past the scan limit through the indexed candidate query.
+        # This determines full-vs-bounded coverage without COUNT(*) scanning the
         # entire identity on every request.
         try:
             probed_ids = self._bounded_candidate_ids(
@@ -1924,61 +1993,83 @@ class VectorStore:
                 until=until,
                 conversation_ids=conversation_ids,
                 source=source,
-                limit=limit + 1,
+                limit=probe_limit,
             )
         except _UnverifiableProvenance:
             return KNNResult(coverage="none", reason="unverifiable_provenance")
         if not probed_ids:
             return KNNResult(coverage="none")
-        bounded_ids = probed_ids[:limit]
+        scan_ids = probed_ids if scan_limit is None else probed_ids[:scan_limit]
         candidate_coverage = (
             "bounded"
-            if source is not None or len(probed_ids) > limit
+            if source is not None
+            or (scan_limit is not None and len(probed_ids) > scan_limit)
             else "full"
         )
 
         if numpy is not None:
-            rowids, embedded_ids, kinds, matrix = self._numpy_rows(
-                numpy,
-                identity,
-                dim,
-                bounded_ids,
-                dtype,
-            )
             query_array = numpy.asarray(query, dtype=numpy.float32)
-            scores = matrix @ query_array
-            coverage = candidate_coverage
-        else:
-            # Bound the candidate enumeration at the SQL layer: the column
-            # filters + ORDER BY source latest_at DESC + LIMIT run inside SQLite, so
-            # neither the result set nor host memory enumerates the whole
-            # corpus. Filters live in the WHERE clause (applied before the
-            # bound), so a filtered match inside the bounded window is not lost;
-            # only the source-lineage walk runs on the already-bounded set.
-            rowids, embedded_ids, kinds, vectors = self._load_vectors_for_ids(
-                identity,
-                dim,
-                bounded_ids,
-                dtype,
-            )
-            scores = [
-                sum(value * query_value for value, query_value in zip(vector, query))
-                for vector in vectors
-            ]
-            coverage = candidate_coverage
 
-        candidates = self._ranked(
-            rowids,
-            embedded_ids,
-            kinds,
-            scores,
-            k,
+            def score_batch(batch_ids: Sequence[str]) -> tuple[Any, Any, Any, Any]:
+                rowids, embedded_ids, kinds, matrix = self._numpy_rows(
+                    numpy,
+                    identity,
+                    dim,
+                    batch_ids,
+                    dtype,
+                )
+                return rowids, embedded_ids, kinds, matrix @ query_array
+        else:
+            # The candidate enumeration itself runs at the SQL layer: the column
+            # filters + ORDER BY source latest_at DESC run inside SQLite, and
+            # only ONE batch of vectors is decoded into host memory at a time.
+            # Filters live in the WHERE clause, so a filtered match is never
+            # lost; only the source-lineage walk runs on the enumerated set.
+            def score_batch(batch_ids: Sequence[str]) -> tuple[Any, Any, Any, Any]:
+                rowids, embedded_ids, kinds, vectors = self._load_vectors_for_ids(
+                    identity,
+                    dim,
+                    batch_ids,
+                    dtype,
+                )
+                return rowids, embedded_ids, kinds, [
+                    sum(value * query_value for value, query_value in zip(vector, query))
+                    for vector in vectors
+                ]
+
+        candidates, scanned_rows, stopped_early = self._scan_ranked(
+            candidate_ids=scan_ids,
+            batch_rows=max(1, self.bounded_scan_rows),
+            budget_s=scan_budget_s,
+            limit=k,
+            score_batch=score_batch,
         )
+        coverage = "bounded" if stopped_early else candidate_coverage
         scanned = total = None
         if coverage == "bounded":
-            scanned = len(bounded_ids)
+            scanned = scanned_rows
             total = self._count_embedded_vectors(identity, chunk=False)
         return KNNResult(candidates, coverage=coverage, scanned=scanned, total=total)
+
+    def _scan_limits(
+        self, *, full_scan: bool, scan_max_rows: int
+    ) -> tuple[int, int | None]:
+        """Resolve ``(candidate probe limit, hard scan cap)`` for one KNN call.
+
+        Default (``full_scan=False``) keeps the historical recency window:
+        ``bounded_scan_rows`` candidates, probed one deeper so a larger corpus
+        reports ``coverage='bounded'``. ``full_scan=True`` (the lcm_recall
+        contract) enumerates the WHOLE corpus and uses ``bounded_scan_rows``
+        only as the scan's batch size; ``scan_max_rows`` (0 = unlimited) is the
+        escape hatch for a pathological corpus and is disclosed as bounded
+        exactly like the recency window was.
+        """
+        if not full_scan:
+            bound = max(0, self.bounded_scan_rows)
+            return bound + 1, bound
+        if scan_max_rows > 0:
+            return scan_max_rows + 1, scan_max_rows
+        return _SCAN_ALL_ROWS, None
 
     # -- Chunk corpus ------------------------------------------------------
     #
@@ -2263,8 +2354,11 @@ class VectorStore:
         chunk maps DIRECTLY to one raw message, so the source filter is a plain
         indexed column match (no recursive lineage walk) and needs no
         fail-open/closed budget.
+
+        ``limit=_SCAN_ALL_ROWS`` enumerates every live candidate (the batched
+        full-corpus scan bounds memory per BATCH, not per corpus).
         """
-        if limit <= 0:
+        if limit == 0:
             return []
         if conversation_ids is not None and not list(conversation_ids):
             return []
@@ -2381,13 +2475,16 @@ class VectorStore:
         conversation_ids: Sequence[str] | None = None,
         source: str | None = None,
         provider: str | None = None,
+        full_scan: bool = False,
+        scan_max_rows: int = 0,
+        scan_budget_s: float = 0.0,
     ) -> KNNResult:
         """Bounded-candidate chunk KNN with the summary coverage contract.
 
         Coverage is full|bounded|none exactly as for summaries: ``none`` when
         the corpus/identity is unbackfilled or a requested filter is
-        unverifiable (missing message column), ``bounded`` when more candidates
-        exist than the scan bound, ``full`` otherwise.
+        unverifiable (missing message column), ``bounded`` when the scan was
+        cut short by a hard cap or latency budget, ``full`` otherwise.
         """
         k = int(k)
         if k <= 0:
@@ -2446,41 +2543,55 @@ class VectorStore:
             # keeps only M=mult*k survivors -> approximate top-k, not exact.
             return KNNResult(candidates, coverage="full_approx")
 
-        limit = max(0, self.bounded_scan_rows)
+        probe_limit, scan_limit = self._scan_limits(
+            full_scan=full_scan, scan_max_rows=scan_max_rows
+        )
         probed_ids = self._bounded_chunk_candidate_ids(
             identity,
             since=since,
             until=until,
             conversation_ids=conversation_ids,
             source=source,
-            limit=limit + 1,
+            limit=probe_limit,
         )
         if not probed_ids:
             return KNNResult(coverage="none")
-        bounded_ids = probed_ids[:limit]
-        candidate_coverage = "bounded" if len(probed_ids) > limit else "full"
+        scan_ids = probed_ids if scan_limit is None else probed_ids[:scan_limit]
+        candidate_coverage = (
+            "bounded"
+            if scan_limit is not None and len(probed_ids) > scan_limit
+            else "full"
+        )
 
         if numpy is not None:
-            rowids, chunk_ids, kinds, matrix = self._numpy_chunk_rows(
-                numpy, identity, dim, bounded_ids, dtype
-            )
             query_array = numpy.asarray(query, dtype=numpy.float32)
-            scores = matrix @ query_array
-            coverage = candidate_coverage
-        else:
-            rowids, chunk_ids, kinds, vectors = self._load_chunk_vectors_for_ids(
-                identity, dim, bounded_ids, dtype
-            )
-            scores = [
-                sum(value * query_value for value, query_value in zip(vector, query))
-                for vector in vectors
-            ]
-            coverage = candidate_coverage
 
-        candidates = self._ranked(rowids, chunk_ids, kinds, scores, k)
+            def score_batch(batch_ids: Sequence[str]) -> tuple[Any, Any, Any, Any]:
+                rowids, chunk_ids, kinds, matrix = self._numpy_chunk_rows(
+                    numpy, identity, dim, batch_ids, dtype
+                )
+                return rowids, chunk_ids, kinds, matrix @ query_array
+        else:
+            def score_batch(batch_ids: Sequence[str]) -> tuple[Any, Any, Any, Any]:
+                rowids, chunk_ids, kinds, vectors = self._load_chunk_vectors_for_ids(
+                    identity, dim, batch_ids, dtype
+                )
+                return rowids, chunk_ids, kinds, [
+                    sum(value * query_value for value, query_value in zip(vector, query))
+                    for vector in vectors
+                ]
+
+        candidates, scanned_rows, stopped_early = self._scan_ranked(
+            candidate_ids=scan_ids,
+            batch_rows=max(1, self.bounded_scan_rows),
+            budget_s=scan_budget_s,
+            limit=k,
+            score_batch=score_batch,
+        )
+        coverage = "bounded" if stopped_early else candidate_coverage
         scanned = total = None
         if coverage == "bounded":
-            scanned = len(bounded_ids)
+            scanned = scanned_rows
             total = self._count_embedded_vectors(identity, chunk=True)
         return KNNResult(candidates, coverage=coverage, scanned=scanned, total=total)
 

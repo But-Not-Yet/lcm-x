@@ -994,9 +994,10 @@ def test_recall_uses_recall_timeout_budget(recall_engine, monkeypatch):
 
 
 def test_bounded_chunk_coverage_surfaces_as_degraded(recall_engine, monkeypatch):
-    """SCAN-1: a recency-bounded chunk arm reports a degraded_reasons entry naming
-    the arm + scanned/total, instead of silently truncating."""
-    recall_engine._config.recall_scan_rows = 1
+    """SCAN-1: a chunk arm capped by recall_scan_max_rows reports a
+    degraded_reasons entry naming the arm + scanned/total, instead of silently
+    truncating."""
+    recall_engine._config.recall_scan_max_rows = 1
     ids = []
     for i in range(3):
         sid = recall_engine._store.append(
@@ -1014,6 +1015,62 @@ def test_bounded_chunk_coverage_surfaces_as_degraded(recall_engine, monkeypatch)
     assert payload["degraded"] is True
     assert "chunk arm coverage bounded" in payload["degraded_reason"]
     assert "of 3 vectors" in payload["degraded_reason"]
+
+
+def test_recall_scan_batches_the_whole_corpus_and_reaches_the_oldest(
+    recall_engine, monkeypatch
+):
+    """F31 §2: recall_scan_rows is a BATCH SIZE, not a recency window.
+
+    The gold vector is the OLDEST message in a corpus more than 2x the batch
+    size — exactly the shape that collapsed all-gold recall to 0.000 when the
+    scan only scored the most-recent rows.
+    """
+    recall_engine._config.recall_scan_rows = 2  # batch size; corpus is 7 vectors
+    seeded = []
+    # The gold message is appended FIRST, so every later filler is more recent:
+    # under the old recency window it aged straight out of the scan.
+    gold = recall_engine._store.append(
+        CURRENT, {"role": "user", "content": "kanban dashboard sprint gold"}
+    )
+    seeded.append((gold, [1.0, 0.0]))
+    for i in range(6):
+        sid = recall_engine._store.append(
+            CURRENT, {"role": "user", "content": f"unrelated filler note {i}"}
+        )
+        seeded.append((sid, [0.0, 1.0]))
+    _seed_chunk_vectors(
+        recall_engine,
+        [(sid, 0, 0, 20, vector) for sid, vector in seeded],
+    )
+
+    payload = _recall(recall_engine, monkeypatch, include="verbatim", limit=1)
+
+    assert payload["provenance"]["coverage"].get("chunk") == "full"
+    assert [hit["store_id"] for hit in payload["hits"]] == [gold]
+
+
+def test_recall_scan_reports_no_degraded_reason_by_default(recall_engine, monkeypatch):
+    """Default config has no cap and no latency budget, so nothing truncates."""
+    assert recall_engine._config.recall_scan_max_rows == 0
+    assert recall_engine._config.recall_scan_budget_s == 0.0
+    recall_engine._config.recall_scan_rows = 1  # one vector per batch
+    ids = [
+        recall_engine._store.append(
+            CURRENT, {"role": "user", "content": f"kanban dashboard sprint chunk {i}"}
+        )
+        for i in range(5)
+    ]
+    _seed_chunk_vectors(
+        recall_engine,
+        [(sid, 0, 0, 20, [1.0, 0.0]) for sid in ids],
+    )
+
+    payload = _recall(recall_engine, monkeypatch, include="verbatim", limit=10)
+
+    assert payload["provenance"]["coverage"].get("chunk") == "full"
+    assert "degraded_reason" not in payload
+    assert {hit["store_id"] for hit in payload["hits"]} == set(ids)
 
 
 def test_two_stage_full_approx_coverage_surfaces_as_approximate(recall_engine, monkeypatch):

@@ -392,6 +392,122 @@ def test_bounded_scan_uses_source_recency_after_newest_first_backfill(
 
 
 
+def _seed_scan_corpus(dag, store, size, *, gold_vector, filler_vector):
+    """Seed ``size`` summaries whose OLDEST carries ``gold_vector``."""
+    store.register_profile("scan", "local", 3)
+    gold = _add_summary(dag, created_at=1.0)
+    _record_embedding(store, gold, "summary", "scan", gold_vector)
+    for index in range(1, size):
+        node = _add_summary(dag, created_at=1.0 + index)
+        _record_embedding(store, node, "summary", "scan", filler_vector)
+    return gold
+
+
+def test_full_scan_batches_the_whole_corpus_and_reaches_the_oldest(tmp_path):
+    """F31 §2: with full_scan the bound is a BATCH SIZE, not a recency window.
+
+    The gold vector is the OLDEST of a corpus more than 2x the batch size —
+    the exact shape that made 86% of a 185k-vector store invisible and drove
+    all-gold recall to 0.000 as content aged out.
+    """
+    db_path = tmp_path / "full-scan.db"
+    dag = SummaryDAG(db_path)
+    store = VectorStore(db_path, bounded_scan_rows=3)  # 3-row batches, 7 vectors
+    try:
+        gold = _seed_scan_corpus(
+            dag, store, 7, gold_vector=[1.0, 0.0, 0.0], filler_vector=[0.0, 1.0, 0.0]
+        )
+
+        windowed = store.knn([1.0, 0.0, 0.0], k=1, model="scan")
+        assert windowed.coverage == "bounded"
+        assert [row[0] for row in windowed] != [str(gold)]  # aged out of the window
+
+        result = store.knn([1.0, 0.0, 0.0], k=1, model="scan", full_scan=True)
+
+        assert result.coverage == "full"
+        assert result.reason is None
+        assert [row[0] for row in result] == [str(gold)]
+    finally:
+        store.close()
+        dag.close()
+
+
+def test_full_scan_without_numpy_also_reaches_the_oldest(tmp_path, monkeypatch):
+    """The pure-Python scoring path batches identically (no numpy install)."""
+    db_path = tmp_path / "full-scan-nonumpy.db"
+    dag = SummaryDAG(db_path)
+    store = VectorStore(db_path, bounded_scan_rows=2)
+    try:
+        gold = _seed_scan_corpus(
+            dag, store, 5, gold_vector=[1.0, 0.0, 0.0], filler_vector=[0.0, 1.0, 0.0]
+        )
+
+        def unavailable():
+            raise ImportError("numpy not installed")
+
+        monkeypatch.setattr(vector_store_module, "_load_numpy", unavailable)
+        result = store.knn([1.0, 0.0, 0.0], k=1, model="scan", full_scan=True)
+
+        assert result.coverage == "full"
+        assert [row[0] for row in result] == [str(gold)]
+    finally:
+        store.close()
+        dag.close()
+
+
+def test_full_scan_max_rows_caps_the_scan_and_discloses_it(tmp_path):
+    """scan_max_rows is the pathological-corpus escape hatch, and it discloses."""
+    db_path = tmp_path / "full-scan-capped.db"
+    dag = SummaryDAG(db_path)
+    store = VectorStore(db_path, bounded_scan_rows=2)
+    try:
+        gold = _seed_scan_corpus(
+            dag, store, 6, gold_vector=[1.0, 0.0, 0.0], filler_vector=[0.0, 1.0, 0.0]
+        )
+
+        result = store.knn(
+            [1.0, 0.0, 0.0], k=1, model="scan", full_scan=True, scan_max_rows=2
+        )
+
+        assert result.coverage == "bounded"
+        assert result.scanned == 2
+        assert result.total == 6
+        assert [row[0] for row in result] != [str(gold)]
+    finally:
+        store.close()
+        dag.close()
+
+
+def test_full_scan_budget_stops_early_and_reports_bounded(tmp_path, monkeypatch):
+    """An exhausted latency budget is the only thing that truncates a default
+    scan, and it degrades to the same disclosed 'bounded' coverage."""
+    db_path = tmp_path / "full-scan-budget.db"
+    dag = SummaryDAG(db_path)
+    store = VectorStore(db_path, bounded_scan_rows=2)
+    try:
+        gold = _seed_scan_corpus(
+            dag, store, 6, gold_vector=[1.0, 0.0, 0.0], filler_vector=[0.0, 1.0, 0.0]
+        )
+        # A clock that advances a second per reading: the budget is spent after
+        # the first batch, so the scan stops with 4 of 6 vectors unscored.
+        ticks = iter(range(1_000))
+        monkeypatch.setattr(
+            vector_store_module.time, "monotonic", lambda: float(next(ticks))
+        )
+
+        result = store.knn(
+            [1.0, 0.0, 0.0], k=1, model="scan", full_scan=True, scan_budget_s=0.5
+        )
+
+        assert result.coverage == "bounded"
+        assert result.scanned == 2
+        assert result.total == 6
+        assert [row[0] for row in result] != [str(gold)]
+    finally:
+        store.close()
+        dag.close()
+
+
 def test_bounded_scan_keeps_null_latest_at_legacy_rows_by_created_at(
     tmp_path, monkeypatch
 ):
