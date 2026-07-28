@@ -478,6 +478,64 @@ def test_multi_batch_scan_does_not_populate_or_thrash_the_matrix_cache(tmp_path)
         dag.close()
 
 
+def test_multi_batch_scan_releases_matrices_warmed_before_it(tmp_path, monkeypatch):
+    """Delta-review residual on finding 2: cache=False keeps NEW batches out of
+    the LRU but leaves matrices warmed by EARLIER calls resident for the pooled
+    store's whole lifetime — the reviewer's probe measured cache_before=4 /
+    cache_after=4 across a two-batch scan, i.e. ~192MB coexisting with the
+    streamed batch. The invariant: at first-batch allocation, nothing is left.
+    """
+    numpy = pytest.importorskip("numpy")
+    db_path = tmp_path / "cache-release.db"
+    dag = SummaryDAG(db_path)
+    store = VectorStore(db_path, bounded_scan_rows=2)  # 2-row batches, 8 vectors
+    try:
+        _seed_scan_corpus(
+            dag, store, 8, gold_vector=[1.0, 0.0, 0.0], filler_vector=[0.0, 1.0, 0.0]
+        )
+        identity = str(store._current_profile()["identity_hash"])
+        ids = store._bounded_candidate_ids(
+            identity,
+            since=None,
+            until=None,
+            conversation_ids=None,
+            source=None,
+            limit=vector_store_module._SCAN_ALL_ROWS,
+        )
+        # Warm the summary LRU to capacity the way earlier bounded calls would,
+        # and plant sentinels in the sibling caches that are additive to it.
+        for index in range(store._MATRIX_CACHE_MAX_ENTRIES):
+            store._numpy_rows(numpy, identity, 3, ids[index:index + 2])
+        store._chunk_matrix_cache[("sentinel", 0, ())] = ([], [], [], None)
+        store._binary_matrix_cache[("sentinel", 0)] = ([], None)
+        store._chunk_binary_matrix_cache[("sentinel", 0)] = ([], None)
+        cache_before = len(store._matrix_cache)
+        assert cache_before == store._MATRIX_CACHE_MAX_ENTRIES
+
+        observed: list[tuple[int, int]] = []
+        original = store._load_matrix
+
+        def probe(np, identity_hash, dim, embedded_ids, dtype):
+            observed.append((len(store._matrix_cache), len(store._chunk_matrix_cache)))
+            return original(np, identity_hash, dim, embedded_ids, dtype)
+
+        monkeypatch.setattr(store, "_load_matrix", probe)
+        result = store.knn([1.0, 0.0, 0.0], k=1, model="scan", full_scan=True)
+
+        assert result.coverage == "full"
+        assert len(observed) == 4  # 8 vectors, 2 per batch
+        # Released BEFORE the first batch is allocated, and never repopulated.
+        assert observed[0] == (0, 0)
+        assert all(sizes == (0, 0) for sizes in observed)
+        assert len(store._matrix_cache) == 0
+        assert len(store._chunk_matrix_cache) == 0
+        assert len(store._binary_matrix_cache) == 0
+        assert len(store._chunk_binary_matrix_cache) == 0
+    finally:
+        store.close()
+        dag.close()
+
+
 def test_single_batch_scan_still_caches_its_matrix(tmp_path):
     """The warm pooled-store path is unchanged when one batch covers the corpus."""
     db_path = tmp_path / "cache-single.db"

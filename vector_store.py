@@ -1488,6 +1488,29 @@ class VectorStore:
             for _, embedded_id, score, kind in ranked[:limit]
         ]
 
+    def _release_matrix_caches(self) -> None:
+        """Drop every cached matrix before a streamed scan allocates its batches.
+
+        ``cache=False`` alone keeps NEW batches out of the LRU but does nothing
+        about what is already in it, and the retrieval-core pool keeps a store
+        alive for the whole process. A probe over a two-batch scan measured
+        cache_before=4 / cache_after=4: four warm matrices (~192MB of summary
+        float32 at a 25k batch, before the separate chunk cache) coexisting with
+        the streamed batch, which is not the one-batch bound this batching
+        promises. Both float32 caches and both binary-prescreen caches are
+        released, since all four are retained scan state.
+
+        Safe against a concurrent reader on a shared pooled store: clearing only
+        drops the dict entries. A caller mid-scan holds its own reference to the
+        tuple it was handed, so its matrix stays alive until it returns and is
+        freed normally afterwards.
+        """
+        with self._cache_lock:
+            self._matrix_cache.clear()
+            self._chunk_matrix_cache.clear()
+            self._binary_matrix_cache.clear()
+            self._chunk_binary_matrix_cache.clear()
+
     def _scan_ranked(
         self,
         *,
@@ -1523,6 +1546,12 @@ class VectorStore:
         scanned = 0
         stopped_early = False
         cache_batches = len(candidate_ids) <= batch_rows
+        if not cache_batches:
+            # Keeping the new batches OUT of the cache is only half the bound:
+            # matrices warmed by EARLIER calls stay resident for the pooled
+            # store's whole lifetime. Release them before the first batch is
+            # allocated, so peak really is one batch.
+            self._release_matrix_caches()
         started = time.monotonic()
         for start in range(0, len(candidate_ids), batch_rows):
             batch = candidate_ids[start:start + batch_rows]
