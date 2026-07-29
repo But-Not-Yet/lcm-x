@@ -17,7 +17,8 @@ This repo also publishes GitHub Releases. This file is the repo-root release sur
   backfill contract. (stephenschoettler/hermes-lcm#434, carried verbatim)
 - Preserved a direct source `store_id` on summary recall hits so strict evidence renderers can validate
   source identity. (#164)
-- Three fork-side review rounds on the consolidated train (35 → 11 → 6 findings, zero HIGH+ by round 3):
+- Four fork-side review rounds on the consolidated train (35 → 11 → 6 → 8 findings, every one fixed,
+  refuted in writing, or deferred to a filed issue):
   absolute-deadline stops on all scan paths, exact-shape verification of preserved schema families before
   stamp downgrades, deadline-interruptible summary lineage expansion, delta refs rebuilt after response-cap
   eviction, spend-ledger completeness on chunked backfills, and the benchmark evidence trail (`bench/`, F20–F37).
