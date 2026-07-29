@@ -4,6 +4,24 @@ This repo also publishes GitHub Releases. This file is the repo-root release sur
 
 ## Unreleased
 
+### Benchmark-driven retrieval scaling, evidence provenance, and citable delivery (PR stephenschoettler/hermes-lcm#436)
+
+- Removed the large-corpus recall ceilings: full summary/chunk corpus scans in bounded batches (was a 25k-vector
+  recency window that blinded semantic recall at scale), and in-product sanitization of raw natural-language
+  FTS queries (was FTS5-reject → LIKE scan → timeout → empty results). Re-measured on a 389×-scaled store:
+  recall cliff eliminated, raw-query empty rate 100% → 0%. (#167, #168, #169)
+- Reference-strict citable delivery: no evidence hit lacking a validated source reference is delivered;
+  uncitable summary hits become non-evidence leads with citable backfill. Eliminates a measured 1.6%
+  fail-close loss at full scale (0/500 on the confirm run). (#164, #174)
+- Made the query-path embedding spend guard configurable with a generous default while preserving the exempt
+  backfill contract. (stephenschoettler/hermes-lcm#434, carried verbatim)
+- Preserved a direct source `store_id` on summary recall hits so strict evidence renderers can validate
+  source identity. (#164)
+- Three fork-side review rounds on the consolidated train (35 → 11 → 6 findings, zero HIGH+ by round 3):
+  absolute-deadline stops on all scan paths, exact-shape verification of preserved schema families before
+  stamp downgrades, deadline-interruptible summary lineage expansion, delta refs rebuilt after response-cap
+  eviction, spend-ledger completeness on chunked backfills, and the benchmark evidence trail (`bench/`, F20–F37).
+
 ## v0.20.0 - 2026-07-23
 
 Release focus: Lossless-Claw parity plus the merged cross-session recall and temporal retrieval stack.
