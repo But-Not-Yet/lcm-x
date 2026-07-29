@@ -474,7 +474,7 @@ def _verify_query_view_schema(conn: sqlite3.Connection) -> list[str]:
         str(row[0])
         for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' "
-            "AND name LIKE 'lcm_query_%'"
+            "AND name LIKE 'lcm_query%'"
         )
     }
     missing.extend(

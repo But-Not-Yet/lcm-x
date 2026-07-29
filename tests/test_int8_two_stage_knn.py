@@ -9,8 +9,10 @@ reported, and stage-1 recall@M meets the spec bar on a synthetic 5k set.
 from __future__ import annotations
 
 import sqlite3
+import sys
 
 import numpy as np
+import hermes_lcm.vector_store as vector_store_module
 
 from hermes_lcm.vector_store import (
     EmbeddingIdentity,
@@ -23,6 +25,17 @@ from hermes_lcm.vector_store import (
 
 MODEL = "voyage-context-4"
 PROVIDER = "voyage"
+
+
+def _expire_after_first_prescreen_batch() -> float:
+    frame = sys._getframe(1)
+    return (
+        2.0
+        if frame.f_code.co_name == "_two_stage_rank"
+        and frame.f_locals.get("start") == 0
+        and frame.f_locals.get("end") == 1
+        else 0.0
+    )
 
 
 def _seed_messages(db_path, count, *, session="s", source="hist", ts0=0.0):
@@ -144,7 +157,7 @@ def test_two_stage_reports_full_coverage(tmp_path):
         vs.close()
 
 
-def test_chunk_deadline_bounds_a_synced_binary_prescreen(tmp_path):
+def test_chunk_deadline_bounds_a_synced_binary_prescreen(tmp_path, monkeypatch):
     db_path = tmp_path / "lcm.db"
     _seed_messages(db_path, 2)
     vs = VectorStore(db_path, bounded_scan_rows=1)
@@ -169,18 +182,23 @@ def test_chunk_deadline_bounds_a_synced_binary_prescreen(tmp_path):
         unbounded = vs.knn_chunks(
             [1.0, 0.0, 0.0, 0.0], k=1, model=MODEL, provider=PROVIDER
         )
+        monkeypatch.setattr(
+            vector_store_module,
+            "_monotonic",
+            _expire_after_first_prescreen_batch,
+        )
         expired = vs.knn_chunks(
             [1.0, 0.0, 0.0, 0.0],
             k=1,
             model=MODEL,
             provider=PROVIDER,
             full_scan=True,
-            deadline=-1.0,
+            deadline=1.0,
         )
 
         assert unbounded.coverage == "full_approx"
         assert expired.coverage == "bounded"
-        assert expired.scanned == 0
+        assert expired.scanned == 1
         assert expired.total == 2
     finally:
         vs.close()

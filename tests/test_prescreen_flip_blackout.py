@@ -16,6 +16,8 @@ reporting ``coverage='full'``. These assert the two guarantees the fix adds:
 """
 from __future__ import annotations
 
+import sys
+
 import hermes_lcm.vector_store as vector_store_module
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.dag import SummaryDAG, SummaryNode
@@ -25,6 +27,17 @@ from hermes_lcm.vector_store import VectorStore, _pack_sign_bits
 MODEL = "flip-model"
 PROVIDER = "local"
 DIM = 3
+
+
+def _expire_after_first_prescreen_batch() -> float:
+    frame = sys._getframe(1)
+    return (
+        2.0
+        if frame.f_code.co_name == "_two_stage_rank"
+        and frame.f_locals.get("start") == 0
+        and frame.f_locals.get("end") == 1
+        else 0.0
+    )
 
 
 def _add_summary(dag: SummaryDAG, *, created_at: float) -> int:
@@ -190,11 +203,10 @@ def test_deadline_bounds_a_synced_binary_summary_prescreen(tmp_path, monkeypatch
     _record(store, _add_summary(dag, created_at=2.0), [0.0, 1.0, 0.0])
 
     unbounded = store.knn([1.0, 0.0, 0.0], k=1, model=MODEL, full_scan=True)
-    ticks = iter((0.0, 0.0, 0.0, 2.0))
     monkeypatch.setattr(
-        vector_store_module.time,
-        "monotonic",
-        lambda: next(ticks, 2.0),
+        vector_store_module,
+        "_monotonic",
+        _expire_after_first_prescreen_batch,
     )
     expired = store.knn(
         [1.0, 0.0, 0.0], k=1, model=MODEL, full_scan=True, deadline=1.0

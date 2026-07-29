@@ -293,7 +293,7 @@ def test_classify_genuinely_newer_on_unknown_query_family_table(tmp_path):
     _build_v5_db(db_path)
     conn = sqlite3.connect(db_path)
     try:
-        conn.execute("CREATE TABLE lcm_query_future_widgets (id TEXT)")
+        conn.execute("CREATE TABLE lcm_querycache (id TEXT)")
         conn.commit()
     finally:
         conn.close()
@@ -304,8 +304,11 @@ def test_classify_genuinely_newer_on_unknown_query_family_table(tmp_path):
             classify_version_mismatch(conn)
             == db_bootstrap.VERSION_MISMATCH_GENUINELY_NEWER
         )
+        result = remediate_interim_schema_stamp(conn, apply=True)
     finally:
         conn.close()
+    assert result["status"] == "refused"
+    assert _stored_version(db_path) == db_bootstrap.SCHEMA_VERSION + 1
 
 
 def test_classify_genuinely_newer_on_unknown_table(tmp_path):

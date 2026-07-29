@@ -535,6 +535,52 @@ def test_answer_ready_delta_is_opt_in_and_returns_only_novel_exact_refs(
     assert exhausted["delta"]["termination_reason"] == "no_novel_exact_ref"
 
 
+def test_answer_ready_delta_refs_match_hits_after_response_cap_eviction(
+    recall_engine, monkeypatch
+):
+    contents = [
+        f"kanban dashboard sprint evidence-{index} " + (str(index) * 2_300)
+        for index in range(3)
+    ]
+    store_ids = [
+        recall_engine._store.append(
+            f"session-{index}", {"role": "user", "content": content}
+        )
+        for index, content in enumerate(contents)
+    ]
+    all_refs = {
+        f"lcm:{store_id}:0-{len(content)}"
+        for store_id, content in zip(store_ids, contents)
+    }
+    monkeypatch.setattr(lcm_tools, "_LCM_RECALL_RESPONSE_CHAR_CAP", 6_000)
+    monkeypatch.setattr(
+        lcm_tools,
+        "_lcm_recall_summary_arm",
+        lambda *_a, **_k: ([], "none", 0, 0, []),
+    )
+    monkeypatch.setattr(
+        lcm_tools,
+        "_lcm_recall_chunk_arm",
+        lambda *_a, **_k: ([], "none", 0, 0),
+    )
+
+    payload = _recall(
+        recall_engine,
+        monkeypatch,
+        include="verbatim",
+        detail="answer_ready",
+        limit=3,
+        seen_refs=[],
+    )
+
+    delivered_refs = [hit["exact_ref"] for hit in payload["hits"]]
+    assert payload["provenance"]["answer_ready"]["response_truncated"] is True
+    assert payload["delta"]["novel_refs"] == delivered_refs
+    assert payload["delta"]["novel_ref_count"] == len(delivered_refs)
+    assert all_refs - set(delivered_refs)
+    assert not (all_refs - set(delivered_refs)) & set(payload["delta"]["novel_refs"])
+
+
 def test_answer_ready_baseline_bytes_ignore_disabled_occurrence_extension(
     recall_engine, monkeypatch
 ):
