@@ -257,6 +257,52 @@ def test_classify_interim_stamp_with_current_query_and_trajectory_tables(tmp_pat
 
 
 @pytest.mark.parametrize(
+    "ddl",
+    (
+        """
+        CREATE TRIGGER lcm_query_future_trigger
+        AFTER INSERT ON lcm_query_views
+        BEGIN
+            SELECT 1;
+        END;
+        """,
+        """
+        CREATE INDEX lcm_query_future_index
+        ON lcm_query_views(view_id);
+        """,
+    ),
+)
+def test_classify_genuinely_newer_on_unknown_query_schema_object(
+    tmp_path, ddl
+):
+    db_path = tmp_path / "lcm.db"
+    _build_v5_db(db_path)
+    asset_root = tmp_path / "assets"
+    asset_root.mkdir()
+    _add_current_query_and_trajectory_tables(db_path, asset_root)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(ddl)
+        conn.commit()
+    finally:
+        conn.close()
+    _stamp(db_path, db_bootstrap.SCHEMA_VERSION + 1)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        assert (
+            classify_version_mismatch(conn)
+            == db_bootstrap.VERSION_MISMATCH_GENUINELY_NEWER
+        )
+        result = remediate_interim_schema_stamp(conn, apply=True)
+    finally:
+        conn.close()
+
+    assert result["status"] == "refused"
+    assert _stored_version(db_path) == db_bootstrap.SCHEMA_VERSION + 1
+
+
+@pytest.mark.parametrize(
     ("table", "column"),
     (
         ("lcm_query_views", "future_query_column"),

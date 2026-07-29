@@ -396,6 +396,9 @@ def main() -> int:
     golden = golden_gate(ctx)
     print(f"  {golden['passed']}/{golden['total']} byte-identical; "
           f"failures={golden['failures'][:10]}", flush=True)
+    if golden["passed"] != golden["total"]:
+        print("GOLDEN GATE FAILED -- aborting before sweep", flush=True)
+        return 1
 
     ground = load_ground_truth(ctx)
     ceiling = measure_ceiling(ctx, ground["recovery_targets"])

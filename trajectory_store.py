@@ -1693,10 +1693,6 @@ class TrajectoryStore:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 self._conn.execute(
-                    "UPDATE lcm_trajectory_state_embedding_profiles "
-                    "SET active = 0 WHERE active = 1",
-                )
-                self._conn.execute(
                     """
                     INSERT INTO lcm_trajectory_state_embedding_profiles(
                         profile_digest, provider, model_name, dim,
@@ -1746,6 +1742,13 @@ class TrajectoryStore:
             "billed_tokens": probe_billed_tokens,
         }
 
+        def _emit_progress() -> None:
+            if progress_callback is not None:
+                progress_callback(dict(stats))
+
+        if probe_provider_calls:
+            _emit_progress()
+
         # Partition pending states into single-request documents and the
         # oversize (chunked) minority, both packed to the same item/token caps.
         normal: list[tuple[int, str, str, int]] = []  # (state_id, doc, sha, tokens)
@@ -1784,10 +1787,6 @@ class TrajectoryStore:
                 except Exception:
                     self._conn.rollback()
                     raise
-
-        def _emit_progress() -> None:
-            if progress_callback is not None:
-                progress_callback(dict(stats))
 
         # --- normal single-request states -------------------------------------
         batch_ids: list[int] = []
@@ -2717,7 +2716,8 @@ class TrajectoryStore:
         folded = query.casefold()
         if any(term in folded for term in ("protocol", "workflow", "procedure", "steps")):
             return "procedure"
-        if any(term in folded for term in _TEMPORAL_TERMS):
+        words = set(re.findall(r"[a-z0-9]+", folded))
+        if words.intersection(_TEMPORAL_TERMS):
             return "temporal"
         if (
             any(character in query for character in ",;")

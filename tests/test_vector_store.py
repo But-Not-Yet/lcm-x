@@ -587,13 +587,22 @@ def test_full_scan_budget_stops_early_and_reports_bounded(tmp_path, monkeypatch)
         gold = _seed_scan_corpus(
             dag, store, 6, gold_vector=[1.0, 0.0, 0.0], filler_vector=[0.0, 1.0, 0.0]
         )
-        # A clock that advances a second per reading: the budget is spent after
-        # the first batch, so the scan stops with 4 of 6 vectors unscored.
+        # Spend the budget while loading the first batch, so the scan stops with
+        # 4 of 6 vectors unscored. Candidate enumeration itself stays at t=0;
+        # its separate regression below proves that it shares this budget.
         with monkeypatch.context() as clock_patch:
-            ticks = iter(range(1_000))
+            now = [0.0]
+            original_load = VectorStore._load_vectors_for_ids
+
+            def timed_load(self, *args, **kwargs):
+                loaded = original_load(self, *args, **kwargs)
+                now[0] = 1.0
+                return loaded
+
             clock_patch.setattr(
-                vector_store_module, "_monotonic", lambda: float(next(ticks))
+                vector_store_module, "_monotonic", lambda: now[0]
             )
+            clock_patch.setattr(VectorStore, "_load_vectors_for_ids", timed_load)
             result = store.knn(
                 [1.0, 0.0, 0.0],
                 k=1,
@@ -611,6 +620,47 @@ def test_full_scan_budget_stops_early_and_reports_bounded(tmp_path, monkeypatch)
         dag.close()
 
 
+def test_full_scan_budget_includes_candidate_enumeration(tmp_path, monkeypatch):
+    db_path = tmp_path / "full-scan-enumeration-budget.db"
+    dag = SummaryDAG(db_path)
+    store = VectorStore(db_path, bounded_scan_rows=2)
+    try:
+        _seed_scan_corpus(
+            dag,
+            store,
+            6,
+            gold_vector=[1.0, 0.0, 0.0],
+            filler_vector=[0.0, 1.0, 0.0],
+        )
+        now = [0.0]
+        original = VectorStore._bounded_candidate_ids
+
+        def slow_enumeration(self, *args, **kwargs):
+            candidate_ids = original(self, *args, **kwargs)
+            now[0] = 1.0
+            return candidate_ids
+
+        monkeypatch.setattr(vector_store_module, "_monotonic", lambda: now[0])
+        monkeypatch.setattr(
+            VectorStore, "_bounded_candidate_ids", slow_enumeration
+        )
+
+        result = store.knn(
+            [1.0, 0.0, 0.0],
+            k=1,
+            model="scan",
+            full_scan=True,
+            scan_budget_s=0.5,
+        )
+
+        assert result.coverage == "bounded"
+        assert result.scanned == 0
+        assert result == []
+    finally:
+        store.close()
+        dag.close()
+
+
 def test_full_scan_absolute_deadline_stops_between_batches(tmp_path, monkeypatch):
     """The operation deadline remains a hard stop when the relative scan budget
     is disabled (zero), so recall cannot start another full batch after expiry."""
@@ -622,10 +672,18 @@ def test_full_scan_absolute_deadline_stops_between_batches(tmp_path, monkeypatch
             dag, store, 6, gold_vector=[1.0, 0.0, 0.0], filler_vector=[0.0, 1.0, 0.0]
         )
         with monkeypatch.context() as clock_patch:
-            ticks = iter((0.0, 0.0, 2.0))
+            now = [0.0]
+            original_load = VectorStore._load_vectors_for_ids
+
+            def timed_load(self, *args, **kwargs):
+                loaded = original_load(self, *args, **kwargs)
+                now[0] = 2.0
+                return loaded
+
             clock_patch.setattr(
-                vector_store_module, "_monotonic", lambda: next(ticks)
+                vector_store_module, "_monotonic", lambda: now[0]
             )
+            clock_patch.setattr(VectorStore, "_load_vectors_for_ids", timed_load)
             result = store.knn(
                 [1.0, 0.0, 0.0],
                 k=1,
