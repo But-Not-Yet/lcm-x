@@ -294,6 +294,10 @@ _LCM_RECALL_SUMMARY_SOURCE_PER_NODE = 4
 # cursor in waves: a bounded number of batched reads per request rather than one
 # read per candidate it has to skip.
 _LCM_RECALL_STRICT_READ_WAVE = 32
+# How many density-blocked candidates the walk keeps in rank order awaiting a
+# possible refund. Bounded because no more slots can ever be handed back than
+# were admitted, so a reserve the size of the response cap is always enough.
+_LCM_RECALL_STRICT_DEFER_RESERVE = _LCM_RECALL_LIMIT_CAP
 _LCM_RECALL_ANSWER_READY_CONTENT_CHARS = 2_400
 # Recency boost half-life (30 days) and its floor: a memory's rank_score is
 # multiplied by 2**(-age/half_life), clamped so age never zeroes an otherwise
@@ -3618,6 +3622,100 @@ def _lcm_recall_citable_entries(
     return selected, selector.diversity_dropped, selector.unreferenced_dropped
 
 
+class _LcmRecallSelectionLedger:
+    """Per-entry lifecycle, and every resource an entry holds while it is live.
+
+    Session density, the hydration budget and row retention used to be three
+    counters maintained by hand at four call sites, and each review round found a
+    different seam where one of them leaked: a refund that never happened, a
+    refund applied twice, a store that stayed pinned after its entry was let go.
+    All three are consequences of ONE fact -- whether an entry is still live --
+    so they are DERIVED from that fact here instead of tracked alongside it.
+
+    ``PENDING -> ADMITTED -> (DELIVERED | RELEASED)``. Transitions are one-way.
+    Resources are charged on ADMITTED and refunded exactly once on RELEASED;
+    DELIVERED is terminal and keeps them. A second release is a counted no-op,
+    not a second refund -- the double-refund that let three hits through a cap
+    of two.
+    """
+
+    ADMITTED = "admitted"
+    DELIVERED = "delivered"
+    RELEASED = "released"
+
+    def __init__(self) -> None:
+        # Keyed by id(); the entry itself is held so the id cannot be recycled.
+        self._records: dict[int, dict[str, Any]] = {}
+        self._session_counts: dict[str, int] = {}
+        self._live_stores: dict[int, int] = {}
+        self._live = 0
+        self.double_releases = 0
+
+    def state(self, entry: dict[str, Any]) -> str | None:
+        record = self._records.get(id(entry))
+        return record["state"] if record else None
+
+    @property
+    def live_count(self) -> int:
+        """ADMITTED or DELIVERED -- the entries currently holding resources."""
+        return self._live
+
+    def delivered_entries(self) -> list[dict[str, Any]]:
+        return [
+            record["entry"]
+            for record in self._records.values()
+            if record["state"] == self.DELIVERED
+        ]
+
+    def session_count(self, session_key: str) -> int:
+        return self._session_counts.get(session_key, 0)
+
+    def holds_store(self, store_id: Any) -> bool:
+        return store_id is not None and int(store_id) in self._live_stores
+
+    def admit(
+        self, entry: dict[str, Any], *, session_key: str, store_id: Any
+    ) -> None:
+        """PENDING -> ADMITTED, charging every resource in this one place."""
+        self._records[id(entry)] = {
+            "entry": entry,
+            "state": self.ADMITTED,
+            "session_key": session_key,
+            "store_id": None if store_id is None else int(store_id),
+        }
+        self._session_counts[session_key] = self._session_counts.get(session_key, 0) + 1
+        if store_id is not None:
+            key = int(store_id)
+            self._live_stores[key] = self._live_stores.get(key, 0) + 1
+        self._live += 1
+
+    def deliver(self, entry: dict[str, Any]) -> bool:
+        """ADMITTED -> DELIVERED. Terminal; the entry keeps what it holds."""
+        record = self._records.get(id(entry))
+        if record is None or record["state"] != self.ADMITTED:
+            return False
+        record["state"] = self.DELIVERED
+        return True
+
+    def release(self, entry: dict[str, Any]) -> bool:
+        """ADMITTED -> RELEASED, refunding once. Idempotent by construction."""
+        record = self._records.get(id(entry))
+        if record is None or record["state"] != self.ADMITTED:
+            self.double_releases += 1
+            return False
+        record["state"] = self.RELEASED
+        session_key = record["session_key"]
+        if self._session_counts.get(session_key):
+            self._session_counts[session_key] -= 1
+        store_id = record["store_id"]
+        if store_id is not None and self._live_stores.get(store_id):
+            self._live_stores[store_id] -= 1
+            if not self._live_stores[store_id]:
+                del self._live_stores[store_id]
+        self._live -= 1
+        return True
+
+
 class _LcmRecallStrictSelector:
     """Rank-ordered admission that VERIFIES a candidate before it is admitted.
 
@@ -3626,22 +3724,32 @@ class _LcmRecallStrictSelector:
     makes the mode meaningful: a candidate is admitted only once its delivered
     text has been found at its claimed offset in the CURRENT row.
 
-    Verifying BEFORE admission rather than after is what keeps the invariant
-    whole. A candidate that fails never becomes a result, so it cannot consume a
-    session-density slot that a valid lower-ranked candidate needs; the walk just
-    continues, which IS the backfill -- there is no separate replacement pass for
-    another code path (delta shaping, say) to bypass. Reads stay batched: the
-    walk prefetches a wave of rows ahead of the cursor, so a run costs a bounded
-    number of batched reads rather than one read per replacement.
+    Verifying BEFORE admission is what keeps the invariant whole. A candidate
+    that fails never becomes a result, so it cannot spend a session slot a valid
+    lower-ranked candidate needs; the walk simply continues, which IS the
+    backfill -- there is no separate replacement pass for another stage to
+    bypass. Reads stay batched: the walk prefetches a wave of rows ahead of the
+    cursor, and remembers what it ATTEMPTED, so a row the store does not have
+    settles the candidate instead of dragging in the rest of the corpus.
+
+    Two rejections, two different lifetimes. Failing the shape test or
+    verification is a PERMANENT property of the candidate, so it is discarded and
+    its row released. Being over the session cap is not -- density is a
+    refundable resource, and a later stage handing back a slot (delta dropping a
+    reference the caller already holds) can make a blocked candidate admissible.
+    Those are DEFERRED in rank order and reconsidered on the next wave, which is
+    what lets a refund actually reach the ranking instead of arriving after the
+    walk has consumed it. The reserve is bounded, because no more slots can ever
+    be refunded than were admitted.
 
     Two candidate shapes are proved differently. Inside the hydration budget the
     delivered text is a window cut from the row, so the row's existence IS the
     proof and the same snapshot is handed to hydration. Past that budget the hit
     ships its own excerpt, so the excerpt must be found at its offset. When a row
-    surfaced through several arms, each arm's representation is tried in turn:
-    an FTS match window is not a verbatim prefix and will not verify, but the
-    chunk or summary-source representation of the same row does, and delivering
-    that is not a swap -- it is the same row, quoted somewhere it really says.
+    surfaced through several arms, each arm's representation is tried in turn: an
+    FTS match window is not a verbatim prefix and will not verify, but the chunk
+    or summary-source representation of the same row does, and delivering that is
+    not a swap -- it is the same row, quoted somewhere it really says.
     """
 
     def __init__(
@@ -3652,6 +3760,7 @@ class _LcmRecallStrictSelector:
         per_session_limit: int,
         expanded_limit: int,
         wave_size: int = _LCM_RECALL_STRICT_READ_WAVE,
+        defer_reserve: int = _LCM_RECALL_STRICT_DEFER_RESERVE,
     ) -> None:
         self._ordered = ordered
         self._engine = engine
@@ -3659,19 +3768,34 @@ class _LcmRecallStrictSelector:
         self._per_session_limit = per_session_limit
         self._expanded_limit = expanded_limit
         self._wave_size = max(1, wave_size)
-        self._session_counts: dict[str, int] = {}
-        self._admitted = 0
+        self._defer_reserve = max(0, defer_reserve)
+        self._deferred: list[dict[str, Any]] = []
+        self._density_dropped = 0
         self._examining = 0
         self._prefetched_to = 0
         self._attempted: set[int] = set()
-        self._admitted_stores: set[int] = set()
+        self.ledger = _LcmRecallSelectionLedger()
         self.rows: dict[int, dict[str, Any]] = {}
         self.batched_reads = 0
-        self.diversity_dropped = 0
         self.unreferenced_dropped = 0
 
+    @property
+    def diversity_dropped(self) -> int:
+        """Candidates the density cap kept out, including those still deferred."""
+        return self._density_dropped + len(self._deferred)
+
     def exhausted(self) -> bool:
-        return self._cursor >= len(self._ordered)
+        return self._cursor >= len(self._ordered) and not self._deferred
+
+    def deliver(self, entry: dict[str, Any]) -> bool:
+        return self.ledger.deliver(entry)
+
+    def release(self, entry: dict[str, Any]) -> bool:
+        """Hand back the slot an entry a later stage discarded never used."""
+        released = self.ledger.release(entry)
+        if released:
+            self._forget(entry["hit"].get("store_id"))
+        return released
 
     def _prefetch(self) -> bool:
         """Read the next wave of candidate rows in ONE batch.
@@ -3716,12 +3840,17 @@ class _LcmRecallStrictSelector:
         return self.rows.get(store_id)
 
     def _forget(self, store_id: Any) -> None:
-        """Drop a row no delivered hit depends on, bounding retention."""
+        """Drop a row nothing live or still-in-play depends on."""
         if store_id is None:
             return
         store_id = int(store_id)
-        if store_id not in self._admitted_stores:
-            self.rows.pop(store_id, None)
+        if self.ledger.holds_store(store_id):
+            return
+        if any(
+            entry["hit"].get("store_id") == store_id for entry in self._deferred
+        ):
+            return
+        self.rows.pop(store_id, None)
 
     def _verify(self, entry: dict[str, Any], *, hydratable: bool) -> bool:
         """Prove this candidate can be cited, adopting a representation if needed."""
@@ -3763,30 +3892,34 @@ class _LcmRecallStrictSelector:
             else f"missing:{_hit_identity(hit)!r}"
         )
 
-    def release(self, entry: dict[str, Any]) -> None:
-        """Give back the slot an admitted candidate turned out not to use.
+    def _admit(self, entry: dict[str, Any]) -> None:
+        hit = entry["hit"]
+        self.ledger.admit(
+            entry,
+            session_key=self._session_key(hit),
+            store_id=hit.get("store_id"),
+        )
 
-        Session density bounds what the caller RECEIVES. A candidate that a
-        later shaping stage discards -- delta dropping a reference the caller
-        already holds -- was never delivered, so holding its slot would let
-        already-seen rows crowd out the novel ones still waiting in the ranking.
-        Releasing also restores the hydration budget it had reserved.
-        """
-        session_key = self._session_key(entry["hit"])
-        if self._session_counts.get(session_key):
-            self._session_counts[session_key] -= 1
-        if self._admitted:
-            self._admitted -= 1
+    def _take_deferred(self) -> dict[str, Any] | None:
+        """Reconsider density-blocked candidates a refund may have unblocked."""
+        for index, entry in enumerate(self._deferred):
+            session_key = self._session_key(entry["hit"])
+            if self.ledger.session_count(session_key) < self._per_session_limit:
+                del self._deferred[index]
+                self._admit(entry)
+                return entry
+        return None
 
-    def take(self, count: int) -> list[dict[str, Any]]:
-        """Admit up to ``count`` further VERIFIED candidates, resuming the walk."""
-        taken: list[dict[str, Any]] = []
-        while self._cursor < len(self._ordered) and len(taken) < count:
+    def _next_admissible(self) -> dict[str, Any] | None:
+        admitted = self._take_deferred()
+        if admitted is not None:
+            return admitted
+        while self._cursor < len(self._ordered):
             entry = self._ordered[self._cursor]
             self._examining = self._cursor
             self._cursor += 1
             hit = entry["hit"]
-            hydratable = self._admitted < self._expanded_limit
+            hydratable = self.ledger.live_count < self._expanded_limit
             if _lcm_recall_reference_shape(hit, hydratable=hydratable) is None:
                 self.unreferenced_dropped += 1
                 self._forget(hit.get("store_id"))
@@ -3796,18 +3929,35 @@ class _LcmRecallStrictSelector:
                 self._forget(hit.get("store_id"))
                 continue
             session_key = self._session_key(hit)
-            if self._session_counts.get(session_key, 0) >= self._per_session_limit:
-                self.diversity_dropped += 1
-                self._forget(hit.get("store_id"))
+            if self.ledger.session_count(session_key) >= self._per_session_limit:
+                # Refundable, so hold it in rank order rather than discarding it
+                # -- but only up to the reserve, since no more slots can be
+                # refunded than were admitted.
+                if len(self._deferred) < self._defer_reserve:
+                    self._deferred.append(entry)
+                else:
+                    self._density_dropped += 1
+                    self._forget(hit.get("store_id"))
                 continue
-            self._session_counts[session_key] = (
-                self._session_counts.get(session_key, 0) + 1
-            )
-            self._admitted += 1
-            if hit.get("store_id") is not None:
-                self._admitted_stores.add(int(hit["store_id"]))
+            self._admit(entry)
+            return entry
+        return self._take_deferred()
+
+    def take(self, target: int) -> list[dict[str, Any]]:
+        """Top the live set up to ``target`` verified candidates.
+
+        Expressed as a target rather than a count so a slot handed back between
+        waves is immediately reusable: the next wave asks for whatever the
+        response is still missing.
+        """
+        taken: list[dict[str, Any]] = []
+        while self.ledger.live_count < target:
+            entry = self._next_admissible()
+            if entry is None:
+                break
             taken.append(entry)
         return taken
+
 
 
 def _lcm_recall_content_window(
@@ -4698,7 +4848,7 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
                 and len(selected_entries) < limit
                 and not strict_selector.exhausted()
             ):
-                more = strict_selector.take(limit - len(selected_entries))
+                more = strict_selector.take(limit)
                 if not more:
                     break
                 answer_ready_content.update(
@@ -4805,6 +4955,8 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
             response_cap_truncated = True
             break
         response_chars += item_chars
+        if reference_strict:
+            strict_selector.deliver(entry)
         hits_out.append(item)
         if len(hits_out) >= limit:
             break

@@ -2253,3 +2253,210 @@ def test_rejected_candidate_rows_are_not_retained():
     assert len(selector.rows) <= 2, (
         f"retained {len(selector.rows)} rows after rejecting 99 candidates"
     )
+
+
+# -- Delta-4 review: the selection ledger --------------------------------------
+
+
+def test_refund_reaches_the_ranking_when_limit_exceeds_the_session_cap(
+    recall_engine, monkeypatch
+):
+    """FINDING 1: selection must not consume the ranking before refunds land.
+
+    Asking for more than one session can supply made the first wave walk to
+    EXHAUSTION -- admitting 5, density-dropping the other 15 -- so when delta
+    shaping released the five seen entries there was nothing left to resume
+    into. A density block is refundable, unlike a shape or verification
+    failure, so those candidates are held in rank order instead of consumed.
+    """
+    _only_vector_arms(monkeypatch)
+    store_ids = _seed_citable_messages(recall_engine, 20, sessions=("session-a",))
+
+    first = _recall(
+        recall_engine,
+        monkeypatch,
+        detail="answer_ready",
+        include="verbatim",
+        scope_bias=0.0,
+        limit=10,
+    )
+    # One session, cap 5 -- the response can never exceed the cap.
+    assert len(first["hits"]) == 5
+    seen = [
+        f"lcm:{hit['store_id']}:{hit['content_offset']}-"
+        f"{hit['content_offset'] + hit['content_returned_chars']}"
+        for hit in first["hits"]
+    ]
+
+    delta = _recall(
+        recall_engine,
+        monkeypatch,
+        detail="answer_ready",
+        include="verbatim",
+        scope_bias=0.0,
+        limit=10,
+        seen_refs=seen,
+    )
+
+    assert len(delta["hits"]) == 5, "the refund must reach the deferred candidates"
+    assert not ({hit["exact_ref"] for hit in delta["hits"]} & set(seen))
+    assert {hit["store_id"] for hit in delta["hits"]} <= set(store_ids)
+
+
+def test_double_release_is_a_counted_no_op_not_a_second_refund():
+    """FINDING 2: refunds are per-entry, not aggregate decrements.
+
+    Releasing one entry twice used to give the session two slots back, letting
+    three hits through a cap of two.
+    """
+    ordered = [
+        _message_entry(index, session_id="session-a") for index in range(1, 6)
+    ]
+    engine = _stub_engine(range(1, 6))
+    selector = lcm_tools._LcmRecallStrictSelector(
+        ordered, engine=engine, per_session_limit=2, expanded_limit=0
+    )
+
+    taken = selector.take(2)
+    assert len(taken) == 2
+
+    assert selector.release(taken[0]) is True
+    assert selector.release(taken[0]) is False, "second release must be a no-op"
+    assert selector.release(taken[0]) is False
+    assert selector.ledger.double_releases == 2
+    assert selector.ledger.live_count == 1
+    assert selector.ledger.session_count("session-a") == 1
+
+    # Exactly ONE slot came back, so the cap of two still holds.
+    selector.take(2)
+    assert selector.ledger.session_count("session-a") == 2
+
+
+def test_released_entry_stops_pinning_its_row():
+    """FINDING 2: retention is derived from the ledger, not a parallel set.
+
+    Released stores stayed in the admitted-store set, so eviction never fired
+    and 100 admitted-then-released entries retained all 100 rows.
+    """
+    ordered = [
+        _message_entry(index, session_id=f"session-{index}")
+        for index in range(1, 101)
+    ]
+    engine = _stub_engine(range(1, 101))
+    selector = lcm_tools._LcmRecallStrictSelector(
+        ordered, engine=engine, per_session_limit=5, expanded_limit=0, wave_size=32
+    )
+
+    for _ in range(100):
+        taken = selector.take(selector.ledger.live_count + 1)
+        if not taken:
+            break
+        selector.release(taken[0])
+
+    assert selector.ledger.live_count == 0
+    assert len(selector.rows) <= 32, (
+        f"retained {len(selector.rows)} rows with nothing live"
+    )
+
+
+def test_ledger_invariants_hold_under_a_randomized_transition_sequence():
+    """Property check: no admit/deliver/release interleaving can break the books.
+
+    Three rounds of review each found a different counter leaking at a different
+    seam, so the accounting is exercised as a state machine rather than only at
+    the seams already known to have failed.
+    """
+    import random
+
+    rng = random.Random(20260729)
+    per_session_limit = 3
+    wave_size = 16
+    reserve = 25
+    sessions = [f"session-{index % 7}" for index in range(1, 121)]
+    ordered = [
+        _message_entry(index, session_id=sessions[index - 1])
+        for index in range(1, 121)
+    ]
+    engine = _stub_engine(range(1, 121))
+    selector = lcm_tools._LcmRecallStrictSelector(
+        ordered,
+        engine=engine,
+        per_session_limit=per_session_limit,
+        expanded_limit=0,
+        wave_size=wave_size,
+        defer_reserve=reserve,
+    )
+    ledger = selector.ledger
+    admitted: list[dict] = []
+    delivered: list[dict] = []
+    released: list[dict] = []
+
+    def check(step):
+        # per-session live count never exceeds the cap
+        for key in {selector._session_key(e["hit"]) for e in ordered}:
+            assert ledger.session_count(key) <= per_session_limit, f"step {step}: {key}"
+        # refunds are never double-applied: the books agree with the records
+        live = [e for e in admitted if ledger.state(e) in ("admitted", "delivered")]
+        assert ledger.live_count == len(live), f"step {step}: live drift"
+        assert sum(ledger._session_counts.values()) == ledger.live_count, (
+            f"step {step}: session totals drift"
+        )
+        # a released entry never returns to a live state
+        for entry in released:
+            assert ledger.state(entry) == "released", f"step {step}: state reversed"
+        # retention stays bounded by the wave plus what is still in play
+        assert len(selector.rows) <= wave_size + ledger.live_count + reserve, (
+            f"step {step}: retained {len(selector.rows)}"
+        )
+
+    for step in range(200):
+        action = rng.random()
+        if action < 0.4:
+            for entry in selector.take(ledger.live_count + rng.randint(1, 4)):
+                admitted.append(entry)
+        elif action < 0.6 and admitted:
+            entry = rng.choice(admitted)
+            if ledger.deliver(entry):
+                delivered.append(entry)
+        elif action < 0.9 and admitted:
+            entry = rng.choice(admitted)
+            if selector.release(entry):
+                released.append(entry)
+        elif released:
+            before = ledger.live_count
+            assert selector.release(rng.choice(released)) is False
+            assert ledger.live_count == before, f"step {step}: double release refunded"
+        check(step)
+
+    assert delivered, "the sequence must actually deliver something"
+    assert set(map(id, ledger.delivered_entries())) == set(map(id, delivered))
+    assert ledger.double_releases > 0, "the sequence must exercise double release"
+
+
+def test_take_tops_up_to_a_target_rather_than_adding_a_count():
+    """A wave asks for what the response is still MISSING.
+
+    Expressed as a count, a wave after a partial refund would admit a full
+    count on top of what is already live and overshoot the response; expressed
+    as a target, a refunded slot is exactly what the next wave refills.
+    """
+    ordered = [
+        _message_entry(index, session_id=f"session-{index}")
+        for index in range(1, 21)
+    ]
+    selector = lcm_tools._LcmRecallStrictSelector(
+        ordered,
+        engine=_stub_engine(range(1, 21)),
+        per_session_limit=5,
+        expanded_limit=0,
+    )
+
+    taken = selector.take(5)
+    assert len(taken) == 5 and selector.ledger.live_count == 5
+    assert selector.take(5) == [], "already at the target -- nothing to add"
+    assert selector.ledger.live_count == 5
+
+    assert selector.release(taken[0]) is True
+    assert selector.ledger.live_count == 4
+    assert len(selector.take(5)) == 1, "a wave refills exactly the freed slot"
+    assert selector.ledger.live_count == 5
