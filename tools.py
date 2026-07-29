@@ -3767,12 +3767,11 @@ class _LcmRecallStrictSelector:
         self._per_session_limit = per_session_limit
         self._expanded_limit = expanded_limit
         self._wave_size = max(1, wave_size)
-        # Where to resume when a refund frees a slot: the earliest position
-        # holding a candidate that was skipped for a REVERSIBLE reason -- the
-        # density cap, or a post-budget rejection that an in-budget slot would
-        # judge by a weaker rule. Only the position is kept; the candidates stay
-        # in the ranking.
-        self._resume_from: int | None = None
+        # How far the ranking is known to be SETTLED. Monotone: an entry the
+        # ledger knows, or one rejected in-budget, can never become admissible
+        # again, so this only ever advances. It is a scan hint, never a source
+        # of truth -- the resume point itself is derived on demand.
+        self._settled_prefix = 0
         self._blocked: set[int] = set()
         # id(entry) -> the budget the rejection was made under.
         self._rejected: dict[int, bool] = {}
@@ -3804,15 +3803,15 @@ class _LcmRecallStrictSelector:
         released = self.ledger.release(entry)
         if released:
             self._forget(entry["hit"].get("store_id"))
-            # The freed slot belongs to the best-ranked candidate the cap kept
-            # out, which may be anywhere behind the cursor. Rewind to it rather
-            # than holding those candidates in a buffer: they are already in the
-            # ranking, so a POSITION is all that has to be remembered, and no
-            # bound on a buffer can then discard a valid row.
-            if self._resume_from is not None:
-                self._cursor = min(self._cursor, self._resume_from)
+            # Resume from the earliest candidate that could still be admitted.
+            # DERIVED, never stored: a remembered resume position is state that
+            # outlives its precondition -- cleared by one rewind, not re-armed by
+            # the next skip, and a candidate silently becomes unreachable. Asking
+            # the ranking costs a scan and cannot go stale.
+            resume = self._earliest_revisitable()
+            if resume < self._cursor:
+                self._cursor = resume
                 self._prefetched_to = min(self._prefetched_to, self._cursor)
-                self._resume_from = None
         return released
 
     def _prefetch(self) -> bool:
@@ -3938,11 +3937,28 @@ class _LcmRecallStrictSelector:
             store_id=hit.get("store_id"),
         )
 
-    def _mark_resume(self) -> None:
-        """Remember the earliest position a refund would have to come back to."""
-        position = self._cursor - 1
-        if self._resume_from is None or position < self._resume_from:
-            self._resume_from = position
+    def _is_settled(self, entry: dict[str, Any]) -> bool:
+        """True when this candidate can never be admitted, whatever happens next.
+
+        Terminal for exactly two reasons: the ledger already knows it (admitted,
+        delivered or released -- none of which return to the pool), or it was
+        rejected IN-BUDGET, which means the row itself is unusable. Everything
+        else -- density-blocked, post-budget rejected -- is revisitable by
+        definition, because the only thing standing in its way is a budget a
+        refund can give back.
+        """
+        return (
+            self.ledger.state(entry) is not None
+            or self._rejected.get(id(entry)) is True
+        )
+
+    def _earliest_revisitable(self) -> int:
+        """Position of the first candidate a refund could still make admissible."""
+        index = self._settled_prefix
+        while index < len(self._ordered) and self._is_settled(self._ordered[index]):
+            index += 1
+        self._settled_prefix = index
+        return index
 
     def _next_admissible(self) -> dict[str, Any] | None:
         """Walk forward to the next candidate that can be admitted right now.
@@ -3979,11 +3995,6 @@ class _LcmRecallStrictSelector:
             ):
                 self._rejected[id(entry)] = hydratable
                 self._blocked.discard(id(entry))
-                # Reversible: judged by the post-budget rule, this candidate is
-                # still admissible in-budget, so a refund must bring the walk
-                # back to it exactly as it does for a density block.
-                if not hydratable:
-                    self._mark_resume()
                 self._forget(hit.get("store_id"))
                 continue
             session_key = self._session_key(hit)
@@ -3992,7 +4003,6 @@ class _LcmRecallStrictSelector:
                 # candidate is not consumed -- only its POSITION is remembered,
                 # and the row it is not using is released. It stays in the
                 # ranking, so no bound on a buffer can discard it.
-                self._mark_resume()
                 self._blocked.add(id(entry))
                 self._forget(hit.get("store_id"))
                 continue

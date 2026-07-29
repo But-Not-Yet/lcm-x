@@ -2363,12 +2363,34 @@ def test_released_entry_stops_pinning_its_row():
     )
 
 
-def test_ledger_invariants_hold_under_a_randomized_transition_sequence():
-    """Property check: no admit/deliver/release interleaving can break the books.
+def _has_subsequence(history, pattern):
+    """True when `pattern` appears in order (not necessarily adjacently)."""
+    index = 0
+    for event in history:
+        if index < len(pattern) and pattern[index](event):
+            index += 1
+    return index == len(pattern)
 
-    Three rounds of review each found a different counter leaking at a different
-    seam, so the accounting is exercised as a state machine rather than only at
-    the seams already known to have failed.
+
+def _is(name):
+    return lambda event: event == name
+
+
+def _startswith(prefix):
+    return lambda event: event.startswith(prefix)
+
+
+def test_ledger_invariants_hold_under_a_randomized_transition_sequence():
+    """Property check: no interleaving of the lifecycle can break the books.
+
+    Each review round found a different piece of walk state leaking at a
+    different seam, so the accounting is exercised as a state machine rather
+    than only at the seams already known to have failed.
+
+    The reach assertions are on per-candidate HISTORIES, not on aggregate
+    counters: a seed can easily satisfy "some row was deleted" and "some
+    post-budget rejection happened" without those ever meeting in one
+    candidate's life, which is precisely where the bugs have been living.
     """
     import random
 
@@ -2376,11 +2398,10 @@ def test_ledger_invariants_hold_under_a_randomized_transition_sequence():
     per_session_limit = 3
     wave_size = 16
     # expanded_limit > 0 so the SAME candidate can be judged in-budget or
-    # post-budget as the live count moves across the threshold -- the transition
-    # that makes a rejection's rule matter. A third of the candidates carry an
-    # excerpt that does not match their row: admissible in-budget (where the
-    # text is cut from the row) and not post-budget (where it must be found at
-    # its offset), so post-budget rejections are inside the generated space.
+    # post-budget as the live count crosses the threshold -- the transition that
+    # makes a rejection's rule matter. A third of the candidates carry an excerpt
+    # that does not match their row: admissible in-budget (where the text is cut
+    # from the row) and not post-budget (where it must be found at its offset).
     expanded_limit = 4
     sessions = [f"session-{index % 7}" for index in range(1, 121)]
     ordered = [
@@ -2399,38 +2420,71 @@ def test_ledger_invariants_hold_under_a_randomized_transition_sequence():
         expanded_limit=expanded_limit,
         wave_size=wave_size,
     )
-    deleted: set[int] = set()
     ledger = selector.ledger
     admitted: list[dict] = []
     delivered: list[dict] = []
     released: list[dict] = []
+    deleted: set[int] = set()
+    by_store = {entry["hit"]["store_id"]: entry for entry in ordered}
+    history: dict[int, list[str]] = {id(entry): ["untouched"] for entry in ordered}
+
+    def status_of(entry):
+        state = ledger.state(entry)
+        if state is not None:
+            return state
+        if id(entry) in selector._blocked:
+            return "blocked"
+        rejected = selector._rejected.get(id(entry))
+        if rejected is True:
+            return "rejected-in"
+        if rejected is False:
+            return "rejected-post"
+        return "untouched"
+
+    def record(entry, event):
+        log = history[id(entry)]
+        if log[-1] != event:
+            log.append(event)
+
+    def observe():
+        """Append each candidate's status change, and note released rows."""
+        for entry in ordered:
+            status = status_of(entry)
+            record(entry, status)
+            if status in ("blocked", "rejected-post"):
+                if entry["hit"]["store_id"] not in selector.rows:
+                    record(entry, "evicted")
 
     def check(step):
-        # per-session live count never exceeds the cap
         for key in {selector._session_key(e["hit"]) for e in ordered}:
             assert ledger.session_count(key) <= per_session_limit, f"step {step}: {key}"
-        # refunds are never double-applied: the books agree with the records
         live = [e for e in admitted if ledger.state(e) in ("admitted", "delivered")]
         assert ledger.live_count == len(live), f"step {step}: live drift"
         assert sum(ledger._session_counts.values()) == ledger.live_count, (
             f"step {step}: session totals drift"
         )
-        # a released entry never returns to a live state
         for entry in released:
             assert ledger.state(entry) == "released", f"step {step}: state reversed"
-        # retention stays bounded by the wave plus what is live -- a
-        # density-blocked candidate keeps its POSITION, never its row
         assert len(selector.rows) <= wave_size + ledger.live_count, (
             f"step {step}: retained {len(selector.rows)}"
         )
 
+    def refund(entry):
+        if selector.release(entry):
+            released.append(entry)
+            # A refund happened while every unsettled candidate waited.
+            for other in ordered:
+                if not selector._is_settled(other):
+                    record(other, "refund")
+            return True
+        return False
+
     for step in range(200):
         action = rng.random()
-        if action < 0.35:
-            for entry in selector.take(ledger.live_count + rng.randint(1, 4)):
+        if action < 0.32:
+            for entry in selector.take(ledger.live_count + rng.randint(1, 6)):
                 store_id = entry["hit"]["store_id"]
-                # Admission must rest on the row as it stands NOW: the walk
-                # holds it, and it was never deleted behind the proof.
+                # Admission must rest on the row as it stands NOW.
                 assert store_id in selector.rows, (
                     f"step {step}: admitted {store_id} without holding its row"
                 )
@@ -2438,43 +2492,68 @@ def test_ledger_invariants_hold_under_a_randomized_transition_sequence():
                     f"step {step}: admitted {store_id} on a stale proof"
                 )
                 admitted.append(entry)
-        elif action < 0.45:
-            # Delete a row nothing live depends on -- the eviction-then-refetch
-            # path, where a blocked candidate's row disappears while it waits.
-            candidates = [
+        elif action < 0.42:
+            # Prefer deleting a row whose candidate is waiting with its row
+            # already released -- the blocked -> evicted -> deleted path.
+            waiting = [
                 sid
-                for sid in range(1, 121)
+                for sid, entry in by_store.items()
+                if sid not in deleted
+                and not ledger.holds_store(sid)
+                and status_of(entry) in ("blocked", "rejected-post")
+                and sid not in selector.rows
+            ]
+            pool = waiting or [
+                sid
+                for sid in by_store
                 if sid not in deleted and not ledger.holds_store(sid)
             ]
-            if candidates:
-                victim = rng.choice(candidates)
+            if pool:
+                victim = rng.choice(pool)
                 engine._store.drop(victim)
                 selector.rows.pop(victim, None)
                 deleted.add(victim)
-        elif action < 0.6 and admitted:
+                record(by_store[victim], "row-deleted")
+        elif action < 0.54 and admitted:
             entry = rng.choice(admitted)
             if ledger.deliver(entry):
                 delivered.append(entry)
-        elif action < 0.9 and admitted:
-            entry = rng.choice(admitted)
-            if selector.release(entry):
-                released.append(entry)
+        elif action < 0.80 and admitted:
+            refund(rng.choice(admitted))
+        elif action < 0.90 and admitted:
+            # DRAIN: hand back every live slot at once. Without this the live
+            # count rarely falls under the hydration budget, so a post-budget
+            # rejection is only ever re-judged post-budget and the
+            # rejected-then-revisited-in-budget transition stays unreachable.
+            for entry in list(admitted):
+                if ledger.state(entry) == "admitted":
+                    refund(entry)
         elif released:
             before = ledger.live_count
             assert selector.release(rng.choice(released)) is False
             assert ledger.live_count == before, f"step {step}: double release refunded"
+        observe()
         check(step)
 
     assert delivered, "the sequence must actually deliver something"
     assert set(map(id, ledger.delivered_entries())) == set(map(id, delivered))
     assert ledger.double_releases > 0, "the sequence must exercise double release"
-    # The generator must actually reach the family this round was about, or the
-    # family sits outside the tested space and the property proves nothing here.
-    assert deleted, "no row was ever deleted mid-walk"
+
+    # -- Reach, proved on HISTORIES: the family must be inside the tested space,
+    #    and aggregate counters cannot show that these events ever MET. --
+    logs = list(history.values())
     assert any(
-        under is False for under in selector._rejected.values()
-    ), "no post-budget rejection was generated"
-    assert selector.batched_reads > wave_size // 4, "no refetch pressure generated"
+        _has_subsequence(
+            log,
+            [_is("blocked"), _is("evicted"), _is("row-deleted"), _is("refund"),
+             _startswith("rejected")],
+        )
+        for log in logs
+    ), "no candidate lived blocked -> evicted -> deleted -> refund -> re-examined"
+    assert any(
+        _has_subsequence(log, [_is("rejected-post"), _is("refund"), _is("admitted")])
+        for log in logs
+    ), "no candidate was post-budget rejected then revisited in-budget"
 
 
 def test_take_tops_up_to_a_target_rather_than_adding_a_count():
@@ -2631,3 +2710,52 @@ def test_row_deleted_while_blocked_is_reverified_before_admission():
     )
     assert not selector.ledger.holds_store(2)
     assert selector.unreferenced_dropped == 1
+
+
+def test_reversible_rejection_stays_reachable_after_a_partial_refund():
+    """DELTA-7: the resume point must be DERIVED, not remembered.
+
+    A stored resume cursor is state that outlives its precondition. The first
+    rewind consumes it, and a later walk that SKIPS an already-rejected
+    post-budget candidate never re-arms it -- so once the cursor has moved past
+    that candidate, no subsequent refund can reach it and it is permanently
+    unreachable although it is admissible again.
+
+    The interleaving that exposes it: a density block earlier in the ranking
+    takes the one stored resume slot, the rewind spends it, the next walk steps
+    over the rejected candidate, and only then do the remaining refunds land.
+    """
+    # 2 carries an excerpt that does not match its row: rejected post-budget,
+    # admissible in-budget where the text is cut from the row instead.
+    ordered = [
+        _message_entry(1, session_id="session-a"),
+        _message_entry(2, session_id="session-a"),
+        _message_entry(3, session_id="session-b", snippet="not in the row"),
+        _message_entry(4, session_id="session-c"),
+        _message_entry(5, session_id="session-d"),
+    ]
+    engine = _stub_engine([1, 2, 3, 4, 5])
+    selector = lcm_tools._LcmRecallStrictSelector(
+        ordered, engine=engine, per_session_limit=1, expanded_limit=1
+    )
+
+    first = selector.take(5)
+    assert [e["hit"]["store_id"] for e in first] == [1, 4, 5]
+    assert id(ordered[1]) in selector._blocked, "2 is held by the density cap"
+    assert selector._rejected.get(id(ordered[2])) is False, "3 is post-budget rejected"
+
+    # The density block takes the single stored resume slot; this refund spends it.
+    assert selector.release(first[0]) is True
+    assert [e["hit"]["store_id"] for e in selector.take(3)] == [2]
+
+    # This walk stepped OVER candidate 3 without re-arming any stored resume.
+    assert selector.release(first[1]) is True
+    assert selector.take(3) == []
+    assert selector.release(first[2]) is True
+    assert selector.release(ordered[1]) is True
+    assert selector.ledger.live_count == 0
+
+    regained = selector.take(1)
+    assert [e["hit"]["store_id"] for e in regained] == [3], (
+        "a revisitable candidate must never become unreachable"
+    )
