@@ -262,6 +262,7 @@ def test_expansion_can_fill_a_pure_lexical_miss(tmp_path):
 
 def test_expansion_can_fill_a_termless_lexical_miss(tmp_path):
     store = _build_invisible_semantic_store(tmp_path)
+    provider = store.embedding_provider
 
     baseline = store.query("🚀", image_limit=0)
     baseline_telemetry = store.last_query_telemetry()
@@ -269,6 +270,7 @@ def test_expansion_can_fill_a_termless_lexical_miss(tmp_path):
     assert explicit_off == baseline == ()
     assert store.last_query_telemetry() == baseline_telemetry
 
+    query_calls_before = provider.query_calls
     expanded = store.query(
         "🚀",
         image_limit=0,
@@ -278,6 +280,8 @@ def test_expansion_can_fill_a_termless_lexical_miss(tmp_path):
 
     assert len(expanded) == 1
     assert expanded[0].match_kind == "state_semantic"
+    assert provider.query_calls == query_calls_before + 1
+    assert store.last_query_telemetry()["source_candidate_ranks"] == []
 
 
 def test_quota_caps_admissions(tmp_path):
@@ -559,6 +563,53 @@ def test_interrupted_profile_rebuild_leaves_no_active_profile_until_cutover(
     ).fetchone()[0] == 1
 
 
+def test_forced_same_profile_rebuild_discards_prior_rows(tmp_path):
+    asset_root = tmp_path / "assets"
+    asset_root.mkdir()
+    initial = StateVectorProvider()
+    store = TrajectoryStore(
+        tmp_path / "lcm.db", _identity(), asset_root=asset_root,
+        embedding_provider=initial,
+    )
+    store.insert(_source(
+        asset_root,
+        trajectory_id="answerpath",
+        ordinal=0,
+        goal="Update the account settings",
+        texts=(
+            "widget configuration export panel form",
+            "alpha-answer success banner",
+            "logout footer copyright notice",
+        ),
+    ))
+    store.finalize(["answerpath"])
+    completed = store.build_state_semantic_index(initial)
+
+    interrupted = InterruptingStateVectorProvider(
+        model_id=initial.model_id, fail_after=1
+    )
+    with pytest.raises(RuntimeError, match="interrupted backfill"):
+        store.build_state_semantic_index(
+            interrupted,
+            resume=False,
+            batch_max_items=1,
+            batch_token_budget=100_000,
+        )
+
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM lcm_trajectory_state_embeddings "
+        "WHERE profile_digest = ?",
+        (completed["profile_digest"],),
+    ).fetchone()[0] == 1
+
+    interrupted.fail_after = None
+    resumed = store.build_state_semantic_index(
+        interrupted, batch_max_items=1, batch_token_budget=100_000
+    )
+    assert resumed["already_embedded"] == 1
+    assert resumed["states_embedded"] == 2
+
+
 def test_dimension_probe_is_bounded_by_document_token_budget(tmp_path):
     asset_root = tmp_path / "assets"
     asset_root.mkdir()
@@ -667,6 +718,38 @@ def test_oversize_chunks_pack_by_item_and_token_budgets(tmp_path):
     assert stats["states_embedded"] == 1
     assert provider.request_token_counts
     assert max(provider.request_token_counts) <= 9
+
+
+def test_smaller_batch_budget_routes_normal_document_through_chunks(tmp_path):
+    asset_root = tmp_path / "assets"
+    asset_root.mkdir()
+    provider = RequestBudgetProvider(token_limit=5)
+    store = TrajectoryStore(
+        tmp_path / "lcm.db",
+        _identity(),
+        asset_root=asset_root,
+        embedding_provider=provider,
+    )
+    store.insert(_source(
+        asset_root,
+        trajectory_id="batch-budget",
+        ordinal=0,
+        goal="Honor the request cap",
+        texts=("alpha-answer " + ("token " * 20),),
+    ))
+    store.finalize(["batch-budget"])
+
+    stats = store.build_state_semantic_index(
+        provider,
+        document_token_budget=50,
+        batch_token_budget=5,
+        batch_max_items=4,
+    )
+
+    assert stats["states_embedded"] == 1
+    assert stats["chunked_states"] == 1
+    assert provider.request_token_counts
+    assert max(provider.request_token_counts) <= 5
 
 
 def test_oversize_progress_can_stop_between_chunks_with_partial_spend(tmp_path):

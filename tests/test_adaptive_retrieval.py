@@ -285,6 +285,15 @@ def test_requirements_digest_distinguishes_descriptions():
     assert requirements_digest([ceo]) != requirements_digest([cfo])
 
 
+def test_requirement_description_rejects_surrogate_code_points():
+    with pytest.raises(ValueError, match="surrogate code points"):
+        EvidenceRequirement.parse({
+            "slot_id": "role_holder",
+            "description": "the CEO of \ud800Acme",
+            "minimum_refs": 1,
+        })
+
+
 def test_max_sized_requirements_validate_and_digest(tmp_path):
     requirements = [
         {
