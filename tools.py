@@ -3717,11 +3717,26 @@ class _LcmRecallStrictSelector:
         if hydratable:
             # Hydration cuts the delivered window out of this very row.
             return True
-        span = _lcm_recall_verified_span(hit, row)
-        if span is None:
-            return False
-        entry["_strict_span"] = span
-        return True
+        for candidate in [hit, *entry.get("_alternates", [])]:
+            probe = {
+                "kind": hit.get("kind"),
+                "store_id": hit.get("store_id"),
+                "snippet": candidate.get("snippet"),
+                "content_offset": candidate.get("content_offset"),
+            }
+            span = _lcm_recall_verified_span(probe, row)
+            if span is None:
+                continue
+            if candidate is not hit:
+                # Same row, quoted where it really says it.
+                hit["snippet"] = candidate.get("snippet")
+                hit["content_offset"] = candidate.get("content_offset")
+                if candidate.get("chunk_span"):
+                    hit["chunk_span"] = candidate["chunk_span"]
+                hit["expand_hint"] = _lcm_recall_excerpt_expand_hint(hit)
+            entry["_strict_span"] = span
+            return True
+        return False
 
     def take(self, count: int) -> list[dict[str, Any]]:
         """Admit up to ``count`` further VERIFIED candidates, resuming the walk."""
@@ -4497,12 +4512,33 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
     chunk_by_store: dict[Any, dict[str, Any]] = {}
     for chunk_hit in arm_hits.get("chunk", []):
         chunk_by_store.setdefault(chunk_hit.get("store_id"), chunk_hit)
+    # Every OTHER arm's representation of the same row is kept alongside the
+    # fused base rather than discarded. Fusion picks one base per identity (the
+    # earliest arm, so FTS when it hit), but an FTS snippet is a match window
+    # with markers -- not a verbatim span -- so a row whose only surviving
+    # representation is the FTS one cannot be cited beyond the hydration budget
+    # even though the chunk or summary-source excerpt of that same row could be.
+    # Reference-strict verification tries these in order and delivers the first
+    # that the row actually supports.
+    alternates_by_store: dict[Any, list[dict[str, Any]]] = {}
+    for arm_name in ("summary", "chunk"):
+        for other_hit in arm_hits.get(arm_name, []):
+            if other_hit.get("kind") != "message_excerpt":
+                continue
+            alternates_by_store.setdefault(other_hit.get("store_id"), []).append(
+                other_hit
+            )
     chunk_arm_index = arm_order.index("chunk") if "chunk" in arm_order else None
     fts_arm_index = arm_order.index("fts") if "fts" in arm_order else None
     for entry in ordered:
         hit = entry["hit"]
         if hit.get("kind") != "message_excerpt":
             continue
+        entry["_alternates"] = [
+            other
+            for other in alternates_by_store.get(hit.get("store_id"), [])
+            if other is not hit
+        ]
         chunk_hit = chunk_by_store.get(hit.get("store_id"))
         if chunk_hit is None:
             continue

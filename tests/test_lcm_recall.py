@@ -2043,6 +2043,54 @@ def test_failed_candidate_does_not_spend_session_quota():
     assert dropped == 0, "a hit that was never delivered cannot be a diversity drop"
 
 
+def test_fusion_keeps_a_rows_citable_representation_when_fts_is_the_base(
+    recall_engine, monkeypatch
+):
+    """FINDING 3: fusion picks ONE base per row; it must not lose the others.
+
+    Nine rows surface through BOTH the FTS arm and the summary-source arm, and
+    none through the chunk arm -- so the existing chunk reconciliation cannot
+    help. FTS wins the fused base by arm order, but an FTS snippet is a match
+    window taken from deep inside the row while the hit claims offset 0, so past
+    the hydration budget the ninth row was dropped even though the
+    summary-source representation of that same row (its verbatim prefix) is
+    perfectly citable.
+    """
+    match = "kanban dashboard sprint"
+    contents = {}
+    for index in range(9):
+        session = f"session-{index}"
+        store_id = recall_engine._store.append(
+            session,
+            {"role": "user", "content": "lead " * 60 + match + f" tail {index}"},
+            source="chat",
+        )
+        contents[store_id] = recall_engine._store.get(store_id)["content"]
+        node = _add_summary(
+            recall_engine,
+            f"{match} rollup {index}",
+            session_id=session,
+            created_at=10.0,
+            source_ids=[store_id],
+        )
+        _seed_summary_vectors(recall_engine, [(node, [1.0, 0.0])])
+
+    payload = _recall(
+        recall_engine,
+        monkeypatch,
+        detail="answer_ready",
+        scope_bias=0.0,
+        limit=9,
+    )
+
+    assert len(payload["hits"]) == 9, "no row may be lost to its FTS representation"
+    for hit in payload["hits"]:
+        content = contents[hit["store_id"]]
+        start = hit["content_offset"]
+        text = hit.get("content") or hit["snippet"]
+        assert content[start:start + len(text)] == text
+
+
 def test_selection_reads_rows_in_batches_not_one_per_candidate():
     """FINDING 4: the single-batch contract must survive replacement.
 
