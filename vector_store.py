@@ -1924,7 +1924,6 @@ class VectorStore:
         remaining = deadline - _monotonic()
         if remaining <= 0:
             raise _PrescreenDeadlineExpired()
-        uri = f"{self.db_path.resolve().as_uri()}?mode=ro"
         conn: sqlite3.Connection | None = None
         expired = [False]
 
@@ -1934,6 +1933,29 @@ class VectorStore:
                 return 1
             return 0
 
+        db_path = str(self.db_path)
+        query = db_path.partition("?")[2]
+        in_memory = (
+            db_path == ":memory:"
+            or db_path.startswith("file::memory:")
+            or any(part == "mode=memory" for part in query.split("&"))
+        )
+        if in_memory:
+            with self._write_lock:
+                try:
+                    self._conn.set_progress_handler(interrupt_if_expired, 1000)
+                    loaded = loader(self)
+                    if _monotonic() >= deadline:
+                        raise _PrescreenDeadlineExpired()
+                    return loaded
+                except sqlite3.OperationalError as exc:
+                    if expired[0] or _monotonic() >= deadline:
+                        raise _PrescreenDeadlineExpired() from exc
+                    raise
+                finally:
+                    self._conn.set_progress_handler(None, 0)
+
+        uri = f"{self.db_path.resolve().as_uri()}?mode=ro"
         try:
             conn = sqlite3.connect(
                 uri,
@@ -1958,6 +1980,10 @@ class VectorStore:
         finally:
             if conn is not None:
                 conn.close()
+
+    def _read_with_deadline(self, loader, deadline: float | None):
+        """Run a candidate read through the shared interruptible read path."""
+        return self._load_binary_with_deadline(loader, deadline)
 
     @staticmethod
     def _binary_rows_to_matrix(numpy: Any, rows: Sequence[sqlite3.Row]) -> tuple[list[str], Any]:
@@ -2067,6 +2093,7 @@ class VectorStore:
         scan_budget_s: float = 0.0,
         deadline: float | None = None,
     ) -> KNNResult:
+        operation_started = _monotonic()
         k = int(k)
         if k <= 0:
             return KNNResult(coverage="none")
@@ -2164,20 +2191,37 @@ class VectorStore:
         probe_limit, scan_limit = self._scan_limits(
             full_scan=full_scan, scan_max_rows=scan_max_rows
         )
+        scan_deadline = deadline
+        if scan_budget_s > 0:
+            budget_deadline = operation_started + scan_budget_s
+            scan_deadline = (
+                budget_deadline
+                if scan_deadline is None
+                else min(scan_deadline, budget_deadline)
+            )
         # Probe one past the scan limit through the indexed candidate query.
         # This determines full-vs-bounded coverage without COUNT(*) scanning the
         # entire identity on every request.
         try:
-            probed_ids = self._bounded_candidate_ids(
-                identity,
-                since=since,
-                until=until,
-                conversation_ids=conversation_ids,
-                source=source,
-                limit=probe_limit,
+            probed_ids = self._read_with_deadline(
+                lambda reader: reader._bounded_candidate_ids(
+                    identity,
+                    since=since,
+                    until=until,
+                    conversation_ids=conversation_ids,
+                    source=source,
+                    limit=probe_limit,
+                ),
+                scan_deadline,
             )
         except _UnverifiableProvenance:
             return KNNResult(coverage="none", reason="unverifiable_provenance")
+        except _PrescreenDeadlineExpired as exc:
+            return KNNResult(
+                coverage="bounded",
+                scanned=exc.scanned,
+                total=self._count_embedded_vectors(identity, chunk=False),
+            )
         if not probed_ids:
             return KNNResult(coverage="none")
         scan_ids = probed_ids if scan_limit is None else probed_ids[:scan_limit]
@@ -2227,7 +2271,7 @@ class VectorStore:
             candidate_ids=scan_ids,
             batch_rows=max(1, self.bounded_scan_rows),
             budget_s=scan_budget_s,
-            deadline=deadline,
+            deadline=scan_deadline,
             limit=k,
             score_batch=score_batch,
         )
@@ -2702,6 +2746,7 @@ class VectorStore:
         cut short by a hard cap, latency budget, or operation deadline, and
         ``full`` when the requested candidate set was scanned completely.
         """
+        operation_started = _monotonic()
         k = int(k)
         if k <= 0:
             return KNNResult(coverage="none")
@@ -2798,14 +2843,32 @@ class VectorStore:
         probe_limit, scan_limit = self._scan_limits(
             full_scan=full_scan, scan_max_rows=scan_max_rows
         )
-        probed_ids = self._bounded_chunk_candidate_ids(
-            identity,
-            since=since,
-            until=until,
-            conversation_ids=conversation_ids,
-            source=source,
-            limit=probe_limit,
-        )
+        scan_deadline = deadline
+        if scan_budget_s > 0:
+            budget_deadline = operation_started + scan_budget_s
+            scan_deadline = (
+                budget_deadline
+                if scan_deadline is None
+                else min(scan_deadline, budget_deadline)
+            )
+        try:
+            probed_ids = self._read_with_deadline(
+                lambda reader: reader._bounded_chunk_candidate_ids(
+                    identity,
+                    since=since,
+                    until=until,
+                    conversation_ids=conversation_ids,
+                    source=source,
+                    limit=probe_limit,
+                ),
+                scan_deadline,
+            )
+        except _PrescreenDeadlineExpired as exc:
+            return KNNResult(
+                coverage="bounded",
+                scanned=exc.scanned,
+                total=self._count_embedded_vectors(identity, chunk=True),
+            )
         if not probed_ids:
             return KNNResult(coverage="none")
         scan_ids = probed_ids if scan_limit is None else probed_ids[:scan_limit]
@@ -2841,7 +2904,7 @@ class VectorStore:
             candidate_ids=scan_ids,
             batch_rows=max(1, self.bounded_scan_rows),
             budget_s=scan_budget_s,
-            deadline=deadline,
+            deadline=scan_deadline,
             limit=k,
             score_batch=score_batch,
         )

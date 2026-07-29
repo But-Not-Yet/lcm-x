@@ -517,6 +517,11 @@ def _verify_query_view_schema(conn: sqlite3.Connection) -> list[str]:
         missing.extend(
             f"{object_type}:{name}" for name in sorted(names - actual)
         )
+        gated = {name for name in actual if name.startswith("lcm_query")}
+        missing.extend(
+            f"unexpected-{object_type}:{name}"
+            for name in sorted(gated - names)
+        )
     return missing
 
 

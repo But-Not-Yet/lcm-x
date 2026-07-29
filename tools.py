@@ -5186,8 +5186,13 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
             response["query"] = original_query[:4_096]
             expansion["query_truncated"] = len(response["query"]) < len(original_query)
             encoded = json.dumps(response, ensure_ascii=False)
-        while len(encoded) > _LCM_RECALL_RESPONSE_CHAR_CAP and response["hits"]:
-            response["hits"].pop()
+        while len(encoded) > _LCM_RECALL_RESPONSE_CHAR_CAP and (
+            response["hits"] or expansion.get("summary_leads")
+        ):
+            if response["hits"]:
+                response["hits"].pop()
+            else:
+                expansion["summary_leads"].pop()
             response["total_results"] = len(response["hits"])
             expansion["response_truncated"] = True
             expansion["expanded_hit_count"] = sum(

@@ -460,7 +460,9 @@ def test_backfill_is_idempotent_and_resumable(tmp_path):
     assert provider.document_calls == 0
 
 
-def test_profile_activates_only_after_resumed_backfill_completes(tmp_path):
+def test_profile_replacement_keeps_old_active_until_resumed_backfill_completes(
+    tmp_path,
+):
     asset_root = tmp_path / "assets"
     asset_root.mkdir()
     initial = StateVectorProvider()
@@ -481,6 +483,8 @@ def test_profile_activates_only_after_resumed_backfill_completes(tmp_path):
     ))
     store.finalize(["answerpath"])
     store.build_state_semantic_index(initial)
+    prior = store.active_state_semantic_profile()
+    assert prior is not None
 
     interrupted = InterruptingStateVectorProvider(
         model_id="fake-state-v2", fail_after=1
@@ -490,7 +494,13 @@ def test_profile_activates_only_after_resumed_backfill_completes(tmp_path):
             interrupted, batch_max_items=1, batch_token_budget=100_000
         )
 
-    assert store.active_state_semantic_profile() is None
+    active_during_backfill = store.active_state_semantic_profile()
+    assert active_during_backfill is not None
+    assert active_during_backfill["profile_digest"] == prior["profile_digest"]
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM lcm_trajectory_state_embedding_profiles "
+        "WHERE active = 1"
+    ).fetchone()[0] == 1
     staged = store._conn.execute(
         """
         SELECT profile_digest, active
@@ -500,6 +510,7 @@ def test_profile_activates_only_after_resumed_backfill_completes(tmp_path):
         ("fake-state-v2",),
     ).fetchone()
     assert staged is not None and int(staged["active"]) == 0
+    assert staged["profile_digest"] != active_during_backfill["profile_digest"]
     staged_count = store._conn.execute(
         "SELECT COUNT(*) FROM lcm_trajectory_state_embeddings "
         "WHERE profile_digest = ?",
@@ -516,6 +527,11 @@ def test_profile_activates_only_after_resumed_backfill_completes(tmp_path):
     assert resumed["states_embedded"] == 2
     assert active is not None
     assert active["model_name"] == "fake-state-v2"
+    assert active["profile_digest"] == staged["profile_digest"]
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM lcm_trajectory_state_embedding_profiles "
+        "WHERE active = 1"
+    ).fetchone()[0] == 1
 
 
 def test_dimension_probe_is_bounded_by_document_token_budget(tmp_path):
@@ -671,6 +687,49 @@ def test_oversize_progress_can_stop_between_chunks_with_partial_spend(tmp_path):
     assert ledger[-1]["provider_calls"] == provider.query_calls + provider.document_calls
     assert ledger[-1]["billed_tokens"] == provider.usage_tokens_total
     assert ledger[-1]["states_embedded"] == 0
+
+
+def test_dimension_probe_progress_can_stop_before_document_request(tmp_path):
+    asset_root = tmp_path / "assets"
+    asset_root.mkdir()
+    provider = StateVectorProvider()
+    store = TrajectoryStore(
+        tmp_path / "lcm.db",
+        _identity(),
+        asset_root=asset_root,
+        embedding_provider=provider,
+    )
+    store.insert(
+        _source(
+            asset_root,
+            trajectory_id="probe-cap",
+            ordinal=0,
+            goal="Trip the cap after the dimension probe",
+            texts=("alpha-answer account settings",),
+        )
+    )
+    store.finalize(["probe-cap"])
+    ledger: list[dict] = []
+
+    class CostCapExceeded(RuntimeError):
+        pass
+
+    def record_progress(stats):
+        ledger.append(dict(stats))
+        raise CostCapExceeded("probe spent the test cap")
+
+    with pytest.raises(CostCapExceeded, match="probe spent the test cap"):
+        store.build_state_semantic_index(
+            provider,
+            progress_callback=record_progress,
+        )
+
+    assert provider.query_calls == 1
+    assert provider.document_calls == 0
+    assert len(ledger) == 1
+    assert ledger[0]["provider_calls"] == 1
+    assert ledger[0]["billed_tokens"] == 1
+    assert ledger[0]["states_embedded"] == 0
 
 
 def test_state_query_provider_failure_degrades_to_lexical(tmp_path):
