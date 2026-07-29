@@ -2149,3 +2149,48 @@ def test_hydration_reuses_the_rows_selection_already_read(
     assert len(payload["hits"]) == 8
     # Selection's wave read is the only row read; hydration reuses it.
     assert len(calls) == 1, f"expected one batched read, got {len(calls)}"
+
+
+# -- Delta-3 review ------------------------------------------------------------
+
+
+def test_seen_delta_results_do_not_spend_session_quota(recall_engine, monkeypatch):
+    """FINDING 1: an entry the caller already has was never delivered either.
+
+    Quota is charged when the walk admits a candidate, but delta shaping drops
+    already-seen references afterwards. With 20 citable rows in ONE session and
+    the first five seen, the session budget was spent on those five and every
+    replacement then failed the density check -- 0 results and 15 diversity
+    drops with 15 novel rows still available.
+    """
+    _only_vector_arms(monkeypatch)
+    store_ids = _seed_citable_messages(recall_engine, 20, sessions=("session-a",))
+
+    first = _recall(
+        recall_engine,
+        monkeypatch,
+        detail="answer_ready",
+        include="verbatim",
+        scope_bias=0.0,
+        limit=5,
+    )
+    assert len(first["hits"]) == 5
+    seen = [
+        f"lcm:{hit['store_id']}:{hit['content_offset']}-"
+        f"{hit['content_offset'] + hit['content_returned_chars']}"
+        for hit in first["hits"]
+    ]
+
+    delta = _recall(
+        recall_engine,
+        monkeypatch,
+        detail="answer_ready",
+        include="verbatim",
+        scope_bias=0.0,
+        limit=5,
+        seen_refs=seen,
+    )
+
+    assert len(delta["hits"]) == 5, "seen entries must refund the slot they never used"
+    assert not ({hit["exact_ref"] for hit in delta["hits"]} & set(seen))
+    assert {hit["store_id"] for hit in delta["hits"]} <= set(store_ids)

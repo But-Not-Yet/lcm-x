@@ -3708,6 +3708,7 @@ class _LcmRecallStrictSelector:
             pass
         return self.rows.get(store_id)
 
+
     def _verify(self, entry: dict[str, Any], *, hydratable: bool) -> bool:
         """Prove this candidate can be cited, adopting a representation if needed."""
         hit = entry["hit"]
@@ -3738,6 +3739,31 @@ class _LcmRecallStrictSelector:
             return True
         return False
 
+    @staticmethod
+    def _session_key(hit: dict[str, Any]) -> str:
+        raw_session_id = hit.get("session_id")
+        # Missing session identities must not collapse into one synthetic session.
+        return (
+            str(raw_session_id)
+            if raw_session_id not in {None, ""}
+            else f"missing:{_hit_identity(hit)!r}"
+        )
+
+    def release(self, entry: dict[str, Any]) -> None:
+        """Give back the slot an admitted candidate turned out not to use.
+
+        Session density bounds what the caller RECEIVES. A candidate that a
+        later shaping stage discards -- delta dropping a reference the caller
+        already holds -- was never delivered, so holding its slot would let
+        already-seen rows crowd out the novel ones still waiting in the ranking.
+        Releasing also restores the hydration budget it had reserved.
+        """
+        session_key = self._session_key(entry["hit"])
+        if self._session_counts.get(session_key):
+            self._session_counts[session_key] -= 1
+        if self._admitted:
+            self._admitted -= 1
+
     def take(self, count: int) -> list[dict[str, Any]]:
         """Admit up to ``count`` further VERIFIED candidates, resuming the walk."""
         taken: list[dict[str, Any]] = []
@@ -3753,12 +3779,7 @@ class _LcmRecallStrictSelector:
             if not self._verify(entry, hydratable=hydratable):
                 self.unreferenced_dropped += 1
                 continue
-            raw_session_id = hit.get("session_id")
-            session_key = (
-                str(raw_session_id)
-                if raw_session_id not in {None, ""}
-                else f"missing:{_hit_identity(hit)!r}"
-            )
+            session_key = self._session_key(hit)
             if self._session_counts.get(session_key, 0) >= self._per_session_limit:
                 self.diversity_dropped += 1
                 continue
@@ -4590,7 +4611,12 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
     # stable post-rank diversity before bounded exact-ref hydration.
     diversity_dropped = 0
     if detail == "answer_ready":
-        selection_limit = _LCM_RECALL_LIMIT_CAP if delta_requested else limit
+        # Take only what the response can hold. Delta used to select the whole
+        # 25-candidate cap up front and filter afterwards, which walked the
+        # ranking to exhaustion while already-seen entries held session quota --
+        # the refill then had nothing left to resume into. Selecting a wave at a
+        # time lets a released slot be reused by the next wave.
+        selection_limit = limit
         expanded_limit = (
             _LCM_RECALL_LIMIT_CAP
             if delta_requested
@@ -4621,16 +4647,27 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
         )
         if delta_requested:
             def _novel(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-                return [
-                    entry
-                    for entry in entries
-                    if entry["hit"].get("kind") != "summary"
-                    if (exact_ref := _lcm_recall_exact_ref(
+                """Keep the entries carrying a reference the caller lacks.
+
+                A discarded entry hands its session slot back: it is not part of
+                the response, so it must not count against the density budget
+                that decides which novel rows can still be delivered.
+                """
+                kept: list[dict[str, Any]] = []
+                for entry in entries:
+                    exact_ref = (
+                        None
+                        if entry["hit"].get("kind") == "summary"
+                        else _lcm_recall_exact_ref(
                             entry["hit"],
                             answer_ready_content.get(_hit_identity(entry["hit"])),
-                        )) is not None
-                    and exact_ref not in seen_refs
-                ]
+                        )
+                    )
+                    if exact_ref is not None and exact_ref not in seen_refs:
+                        kept.append(entry)
+                    elif reference_strict:
+                        strict_selector.release(entry)
+                return kept
 
             selected_entries = _novel(selected_entries)
             # Delta shaping discards entries the caller has already seen, so it
