@@ -110,6 +110,8 @@ class H5Context:
             "SELECT source_id FROM lcm_trajectory_sources WHERE trajectory_id = ?",
             (trajectory_id,),
         ).fetchone()
+        if row is None:
+            raise RuntimeError(f"{domain}/{trajectory_id} missing from frozen DB")
         return int(row[0])
 
     # -- exact pool membership --------------------------------------------
@@ -168,7 +170,7 @@ class H5Context:
                     any_pooled = True
                 if expression:
                     source_id = self.traj_source_id(domain, target["trajectory_id"])
-                    rows = store._fts_rows(expression, 100000, source_ids=[source_id])
+                    rows = store._fts_rows(expression, 1, source_ids=[source_id])
                     if rows:
                         any_match = True
             per_case[qid] = (

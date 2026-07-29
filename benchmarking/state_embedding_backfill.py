@@ -30,9 +30,10 @@ from typing import Any
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# voyage-4 document-embedding price ($/1M tokens); mirrors command.py's
-# _VOYAGE_USD_PER_MILLION_TOKENS (the table the #141 sizing used).
-_VOYAGE_USD_PER_MILLION_TOKENS = {
+# WARNING: fallback for standalone contexts where command.py's canonical
+# _VOYAGE_USD_PER_MILLION_TOKENS table cannot be imported. Keep this duplicate
+# synchronized; drift here changes spend estimates.
+_FALLBACK_VOYAGE_USD_PER_MILLION_TOKENS = {
     "voyage-4-large": 0.12,
     "voyage-4": 0.06,
     "voyage-4-lite": 0.02,
@@ -43,6 +44,7 @@ _VOYAGE_USD_PER_MILLION_TOKENS = {
 
 
 def _bootstrap_package(repo_root: Path) -> Any:
+    """Register the plugin dir as the ``hermes_lcm`` package (mirrors conftest)."""
     pkg = "hermes_lcm"
     if pkg in sys.modules:
         return sys.modules[pkg]
@@ -72,9 +74,28 @@ def _bootstrap_package(repo_root: Path) -> Any:
         setattr(mod, py_file.stem, sub_mod)
         try:
             sub_spec.loader.exec_module(sub_mod)
-        except Exception:
-            pass
+        except Exception as exc:
+            sys.modules.pop(sub_name, None)
+            if getattr(mod, py_file.stem, None) is sub_mod:
+                delattr(mod, py_file.stem)
+            print(
+                f"warning: failed to bootstrap {sub_name}: {exc!r}",
+                file=sys.stderr,
+            )
     return mod
+
+
+def _voyage_pricing_table() -> dict[str, float]:
+    try:
+        from hermes_lcm.command import _VOYAGE_USD_PER_MILLION_TOKENS
+    except Exception as exc:
+        print(
+            f"warning: canonical command.py pricing unavailable ({exc!r}); "
+            "using standalone fallback",
+            file=sys.stderr,
+        )
+        return _FALLBACK_VOYAGE_USD_PER_MILLION_TOKENS
+    return _VOYAGE_USD_PER_MILLION_TOKENS
 
 
 def _open_store(db_path: Path, asset_root: Path):
@@ -118,101 +139,102 @@ def main() -> int:
     asset_root = args.asset_root or args.db.parent
     store = _open_store(args.db, asset_root)
 
-    provider = ts.create_trajectory_embedding_provider(
-        args.provider, args.model, timeout_seconds=args.timeout, for_backfill=True,
-    )
-    rate = _VOYAGE_USD_PER_MILLION_TOKENS.get(args.model, 0.06)
-    args.ledger.parent.mkdir(parents=True, exist_ok=True)
-    started = time.perf_counter()
-    checkpoint_state = {"logged_50pct": False}
+    try:
+        provider = ts.create_trajectory_embedding_provider(
+            args.provider, args.model, timeout_seconds=args.timeout, for_backfill=True,
+        )
+        rate = _voyage_pricing_table().get(args.model, 0.06)
+        args.ledger.parent.mkdir(parents=True, exist_ok=True)
+        started = time.perf_counter()
+        checkpoint_state = {"logged_50pct": False}
 
-    def _projected(stats: dict[str, Any]) -> tuple[float, float]:
-        cost = stats["billed_tokens"] / 1e6 * rate
-        embedded = max(1, stats["states_embedded"])
-        pending = max(1, stats["pending"])
-        projected_tokens = stats["billed_tokens"] / embedded * pending
-        projected_cost = projected_tokens / 1e6 * rate
-        return cost, projected_cost
+        def _projected(stats: dict[str, Any]) -> tuple[float, float]:
+            cost = stats["billed_tokens"] / 1e6 * rate
+            embedded = max(1, stats["states_embedded"])
+            pending = max(1, stats["pending"])
+            projected_tokens = stats["billed_tokens"] / embedded * pending
+            projected_cost = projected_tokens / 1e6 * rate
+            return cost, projected_cost
 
-    class _AbortCostCap(RuntimeError):
-        pass
+        class _AbortCostCap(RuntimeError):
+            pass
 
-    def _callback(stats: dict[str, Any]) -> None:
-        cost, projected_cost = _projected(stats)
+        def _callback(stats: dict[str, Any]) -> None:
+            cost, projected_cost = _projected(stats)
+            elapsed = time.perf_counter() - started
+            record = {
+                "ts": time.time(),
+                "db": str(args.db),
+                "model": args.model,
+                "states_embedded": stats["states_embedded"],
+                "pending": stats["pending"],
+                "chunked_states": stats["chunked_states"],
+                "provider_calls": stats["provider_calls"],
+                "billed_tokens": stats["billed_tokens"],
+                "cost_usd": round(cost, 6),
+                "projected_total_usd": round(projected_cost, 6),
+                "elapsed_s": round(elapsed, 1),
+            }
+            with args.ledger.open("a") as handle:
+                handle.write(json.dumps(record) + "\n")
+            done = stats["states_embedded"]
+            pending = stats["pending"]
+            if pending and not checkpoint_state["logged_50pct"] and done >= pending / 2:
+                checkpoint_state["logged_50pct"] = True
+                print(f"[CHECKPOINT 50%] {done}/{pending} states, spent ${cost:.4f}, "
+                      f"projected total ${projected_cost:.4f} (cap ${args.cost_cap})",
+                      flush=True)
+            if projected_cost > args.cost_cap:
+                raise _AbortCostCap(
+                    f"projected total ${projected_cost:.2f} exceeds cap ${args.cost_cap:.2f} "
+                    f"after {done} states (${cost:.4f} spent)"
+                )
+            if stats["provider_calls"] % 25 == 0:
+                print(f"  {done}/{pending} embedded, {stats['provider_calls']} calls, "
+                      f"${cost:.4f} spent, ~${projected_cost:.4f} projected "
+                      f"({elapsed:.0f}s)", flush=True)
+
+        print(f"== state backfill: {args.db} (model={args.model}, rate=${rate}/M) ==",
+              flush=True)
+        try:
+            stats = store.build_state_semantic_index(
+                provider,
+                resume=not args.no_resume,
+                batch_max_items=args.batch_items,
+                progress_callback=_callback,
+            )
+        except _AbortCostCap as exc:
+            print(f"ABORTED (cost cap): {exc}", flush=True)
+            return 2
+
         elapsed = time.perf_counter() - started
-        record = {
-            "ts": time.time(),
+        cost = stats["billed_tokens"] / 1e6 * rate
+        summary = {
             "db": str(args.db),
+            "provider": args.provider,
             "model": args.model,
-            "states_embedded": stats["states_embedded"],
-            "pending": stats["pending"],
+            "rate_usd_per_million": rate,
+            "profile_digest": stats["profile_digest"],
+            "dim": stats["dim"],
+            "total_states": stats["total_states"],
+            "already_embedded_at_start": stats["already_embedded"],
+            "pending_at_start": stats["pending"],
+            "states_embedded_this_run": stats["states_embedded"],
             "chunked_states": stats["chunked_states"],
             "provider_calls": stats["provider_calls"],
             "billed_tokens": stats["billed_tokens"],
             "cost_usd": round(cost, 6),
-            "projected_total_usd": round(projected_cost, 6),
-            "elapsed_s": round(elapsed, 1),
+            "runtime_s": round(elapsed, 1),
+            "status": stats["status"],
         }
-        with args.ledger.open("a") as handle:
-            handle.write(json.dumps(record) + "\n")
-        done = stats["states_embedded"]
-        pending = stats["pending"]
-        if pending and not checkpoint_state["logged_50pct"] and done >= pending / 2:
-            checkpoint_state["logged_50pct"] = True
-            print(f"[CHECKPOINT 50%] {done}/{pending} states, spent ${cost:.4f}, "
-                  f"projected total ${projected_cost:.4f} (cap ${args.cost_cap})",
-                  flush=True)
-        if projected_cost > args.cost_cap:
-            raise _AbortCostCap(
-                f"projected total ${projected_cost:.2f} exceeds cap ${args.cost_cap:.2f} "
-                f"after {done} states (${cost:.4f} spent)"
-            )
-        if stats["provider_calls"] % 25 == 0:
-            print(f"  {done}/{pending} embedded, {stats['provider_calls']} calls, "
-                  f"${cost:.4f} spent, ~${projected_cost:.4f} projected "
-                  f"({elapsed:.0f}s)", flush=True)
-
-    print(f"== state backfill: {args.db} (model={args.model}, rate=${rate}/M) ==",
-          flush=True)
-    try:
-        stats = store.build_state_semantic_index(
-            provider,
-            resume=not args.no_resume,
-            batch_max_items=args.batch_items,
-            progress_callback=_callback,
-        )
-    except _AbortCostCap as exc:
-        print(f"ABORTED (cost cap): {exc}", flush=True)
+        if args.summary is not None:
+            args.summary.parent.mkdir(parents=True, exist_ok=True)
+            args.summary.write_text(json.dumps(summary, indent=2))
+        print("== DONE ==", flush=True)
+        print(json.dumps(summary, indent=2), flush=True)
+        return 0
+    finally:
         store.close()
-        return 2
-
-    elapsed = time.perf_counter() - started
-    cost = stats["billed_tokens"] / 1e6 * rate
-    summary = {
-        "db": str(args.db),
-        "provider": args.provider,
-        "model": args.model,
-        "rate_usd_per_million": rate,
-        "profile_digest": stats["profile_digest"],
-        "dim": stats["dim"],
-        "total_states": stats["total_states"],
-        "already_embedded_at_start": stats["already_embedded"],
-        "pending_at_start": stats["pending"],
-        "states_embedded_this_run": stats["states_embedded"],
-        "chunked_states": stats["chunked_states"],
-        "provider_calls": stats["provider_calls"],
-        "billed_tokens": stats["billed_tokens"],
-        "cost_usd": round(cost, 6),
-        "runtime_s": round(elapsed, 1),
-        "status": stats["status"],
-    }
-    store.close()
-    if args.summary is not None:
-        args.summary.parent.mkdir(parents=True, exist_ok=True)
-        args.summary.write_text(json.dumps(summary, indent=2))
-    print("== DONE ==", flush=True)
-    print(json.dumps(summary, indent=2), flush=True)
-    return 0
 
 
 if __name__ == "__main__":

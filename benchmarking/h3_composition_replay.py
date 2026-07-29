@@ -37,6 +37,7 @@ import sqlite3
 import statistics
 import sys
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -85,9 +86,20 @@ def _bootstrap_package(repo_root: Path) -> Any:
         setattr(mod, py_file.stem, sub_mod)
         try:
             sub_spec.loader.exec_module(sub_mod)
-        except Exception:
-            pass  # unrelated modules (engine needs `agent`) may fail; ignore
+        except Exception as exc:
+            sys.modules.pop(sub_name, None)
+            if getattr(mod, py_file.stem, None) is sub_mod:
+                delattr(mod, py_file.stem)
+            print(
+                f"warning: failed to bootstrap {sub_name}: {exc!r}",
+                file=sys.stderr,
+            )
     return mod
+
+
+@lru_cache(maxsize=None)
+def _read_trace(path: str) -> dict[str, Any]:
+    return json.loads(Path(path).read_text())
 
 
 def _question_text(question_field: Any) -> str:
@@ -169,7 +181,7 @@ class ReplayContext:
             self.h31 / "query_traces" / domain / "query_traces" / qid
             / "hermes_lcm_semantic_telemetry.json"
         )
-        return json.loads(path.read_text())
+        return _read_trace(str(path))
 
     def _injected_ranks(self, qid: str) -> list[tuple[int, float]]:
         ranks = sorted(self.trace(qid)["source_candidate_ranks"], key=lambda r: r["rank"])
@@ -356,7 +368,7 @@ def measure_latency(ctx: ReplayContext, sample_qids: list[str], knob_kwargs: dic
     return {
         "p50_ms": _percentile(latencies, 50),
         "p95_ms": _percentile(latencies, 95),
-        "mean_ms": statistics.fmean(latencies),
+        "mean_ms": statistics.fmean(latencies) if latencies else 0.0,
     }
 
 
@@ -437,6 +449,7 @@ def main() -> int:
         "baseline_latency": baseline_latency,
         "sweep": results,
     }
+    args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, indent=2))
     print(f"\nwrote {args.out}")
     return 0 if golden["passed"] == golden["total"] else 1
