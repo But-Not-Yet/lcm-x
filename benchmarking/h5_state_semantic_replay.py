@@ -146,6 +146,7 @@ def main() -> int:
     parser.add_argument("--latency-sample", type=int, default=50)
     parser.add_argument("--quotas", type=int, nargs="+", default=[4, 8, 16])
     args = parser.parse_args()
+    args.out.parent.mkdir(parents=True, exist_ok=True)
 
     if not os.environ.get("VOYAGE_API_KEY", "").strip():
         print("VOYAGE_API_KEY is not set -- the state arm needs a query embedder",

@@ -11,6 +11,7 @@ from hermes_lcm.adaptive_retrieval import (
     MAX_CANDIDATE_REFS,
     MAX_CONTEXT_CHARS,
     MAX_CONTEXT_TOKENS,
+    MAX_REQUIREMENTS,
     MAX_RETRIEVAL_ROUNDS,
     EvidenceRequirement,
     requirements_digest,
@@ -282,6 +283,34 @@ def test_requirements_digest_distinguishes_descriptions():
         {"slot_id": "role_holder", "description": "the CFO of Acme", "minimum_refs": 1}
     )
     assert requirements_digest([ceo]) != requirements_digest([cfo])
+
+
+def test_max_sized_requirements_validate_and_digest(tmp_path):
+    requirements = [
+        {
+            "slot_id": f"slot{index:02d}" + "x" * (64 - len(f"slot{index:02d}")),
+            "description": "d" * 256,
+            "minimum_refs": 1,
+        }
+        for index in range(MAX_REQUIREMENTS)
+    ]
+
+    parsed = [EvidenceRequirement.parse(item) for item in requirements]
+
+    assert len({item.slot_id for item in parsed}) == MAX_REQUIREMENTS
+    assert len(requirements_digest(parsed)) == 64
+    engine = _engine(tmp_path)
+    try:
+        started = _call(
+            engine,
+            action="start",
+            question="Find the requested evidence.",
+            identity=_identity(),
+            requirements=requirements,
+        )
+        assert started["status"] == "active"
+    finally:
+        engine.shutdown()
 
 
 def test_cached_view_is_not_reused_across_different_requirement_descriptions(tmp_path):

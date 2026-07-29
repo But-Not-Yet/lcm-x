@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+import sqlite3
 import struct
 
 import pytest
@@ -257,6 +258,26 @@ def test_expansion_can_fill_a_pure_lexical_miss(tmp_path):
     assert _admitted(store)[0]["state_id"] == _state_id(
         store, expanded[0].trajectory_id, expanded[0].state_index
     )
+
+
+def test_expansion_can_fill_a_termless_lexical_miss(tmp_path):
+    store = _build_invisible_semantic_store(tmp_path)
+
+    baseline = store.query("🚀", image_limit=0)
+    baseline_telemetry = store.last_query_telemetry()
+    explicit_off = store.query("🚀", image_limit=0, state_semantic_quota=0)
+    assert explicit_off == baseline == ()
+    assert store.last_query_telemetry() == baseline_telemetry
+
+    expanded = store.query(
+        "🚀",
+        image_limit=0,
+        include_adjacent=False,
+        state_semantic_quota=1,
+    )
+
+    assert len(expanded) == 1
+    assert expanded[0].match_kind == "state_semantic"
 
 
 def test_quota_caps_admissions(tmp_path):
@@ -685,6 +706,50 @@ def test_oversize_progress_can_stop_between_chunks_with_partial_spend(tmp_path):
             batch_token_budget=5,
             batch_max_items=1,
             progress_callback=record_progress,
+        )
+
+    assert provider.document_calls == 1
+    assert ledger[-1]["provider_calls"] == provider.query_calls + provider.document_calls
+    assert ledger[-1]["billed_tokens"] == provider.usage_tokens_total
+    assert ledger[-1]["states_embedded"] == 0
+
+
+def test_normal_batch_persist_failure_still_ledgers_spend(tmp_path):
+    asset_root = tmp_path / "assets"
+    asset_root.mkdir()
+    provider = StateVectorProvider()
+    store = TrajectoryStore(
+        tmp_path / "lcm.db",
+        _identity(),
+        asset_root=asset_root,
+        embedding_provider=provider,
+    )
+    store.insert(
+        _source(
+            asset_root,
+            trajectory_id="persist-failure",
+            ordinal=0,
+            goal="Preserve spend before persistence",
+            texts=("alpha-answer account settings",),
+        )
+    )
+    store.finalize(["persist-failure"])
+    store._ensure_state_semantic_schema()
+    store._conn.execute(
+        """
+        CREATE TRIGGER fail_state_embedding_insert
+        BEFORE INSERT ON lcm_trajectory_state_embeddings
+        BEGIN
+            SELECT RAISE(FAIL, 'simulated persist failure');
+        END
+        """
+    )
+    ledger: list[dict] = []
+
+    with pytest.raises(sqlite3.IntegrityError, match="simulated persist failure"):
+        store.build_state_semantic_index(
+            provider,
+            progress_callback=lambda stats: ledger.append(dict(stats)),
         )
 
     assert provider.document_calls == 1
