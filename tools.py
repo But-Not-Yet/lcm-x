@@ -289,6 +289,11 @@ _LCM_RECALL_ANSWER_READY_EXPANDED_HIT_LIMIT = 8
 # the point is to make the SESSION reachable with citable evidence, and the FTS
 # and chunk arms are what rank individual messages inside it.
 _LCM_RECALL_SUMMARY_SOURCE_PER_NODE = 4
+# How many candidate rows reference-strict selection reads per batch while it
+# walks the ranking. Verification needs the row, so the walk reads AHEAD of the
+# cursor in waves: a bounded number of batched reads per request rather than one
+# read per candidate it has to skip.
+_LCM_RECALL_STRICT_READ_WAVE = 32
 _LCM_RECALL_ANSWER_READY_CONTENT_CHARS = 2_400
 # Recency boost half-life (30 days) and its floor: a memory's rank_score is
 # multiplied by 2**(-age/half_life), clamped so age never zeroes an otherwise
@@ -3594,94 +3599,143 @@ def _lcm_recall_verified_span(
     return offset, len(text)
 
 
-def _lcm_recall_strict_rows(
-    engine: "LCMEngine",
-    entries: list[dict[str, Any]],
-    answer_ready_content: dict[tuple, dict[str, Any]],
-) -> dict[int, dict[str, Any]]:
-    """Read the current rows the un-hydrated admitted candidates claim to quote.
-
-    Hydration already read the row for every in-budget slot and cut the window
-    out of it, so those spans are true by construction. The candidates past that
-    budget were admitted on a chunk index alone -- one batched read (never a
-    query per hit) gives them the same standard of proof.
-    """
-    store_ids = [
-        int(entry["hit"]["store_id"])
-        for entry in entries
-        if entry["hit"].get("kind") != "summary"
-        and entry["hit"].get("store_id") is not None
-        and _hit_identity(entry["hit"]) not in answer_ready_content
-    ]
-    return engine._store.get_batch(store_ids) if store_ids else {}
-
-
 def _lcm_recall_citable_entries(
     ordered: list[dict[str, Any]],
     *,
     limit: int,
     per_session_limit: int,
     expanded_limit: int,
+    engine: "LCMEngine" | None = None,
 ) -> tuple[list[dict[str, Any]], int, int]:
-    """Reference-strict selection with no reserve (kept for direct unit use)."""
+    """Reference-strict selection helper (kept for direct unit use)."""
     selector = _LcmRecallStrictSelector(
-        ordered, per_session_limit=per_session_limit, expanded_limit=expanded_limit
+        ordered,
+        engine=engine,
+        per_session_limit=per_session_limit,
+        expanded_limit=expanded_limit,
     )
     selected = selector.take(limit)
     return selected, selector.diversity_dropped, selector.unreferenced_dropped
 
 
 class _LcmRecallStrictSelector:
-    """Reference-strict variant of :func:`_lcm_recall_diverse_entries`, resumable.
+    """Rank-ordered admission that VERIFIES a candidate before it is admitted.
 
-    Same stable rank-preserving selection with bounded session density, with one
-    added admission rule: a candidate that cannot plausibly carry a validated
-    source reference at the slot it would occupy is skipped. Because the rule
-    filters the RANKED CANDIDATE LIST rather than the finished result, selection
-    simply continues down the ranking -- an omitted hit is backfilled by the
-    next-ranked citable one and the delivered count stays at ``limit``.
+    Reference-strict replacement for :func:`_lcm_recall_diverse_entries`. Same
+    stable rank-preserving walk with bounded session density, plus the rule that
+    makes the mode meaningful: a candidate is admitted only once its delivered
+    text has been found at its claimed offset in the CURRENT row.
 
-    The walk is RESUMABLE because admission is only a prediction: a candidate can
-    still fail verification against its current row once the response is being
-    shaped (a deleted row, a stale chunk span). Stopping dead at ``limit`` would
-    then underfill while citable candidates sat unexamined just below the cut, so
-    the caller draws a replacement with :meth:`take` and the walk picks up where
-    it left off -- same rules, same session ledger, counters advanced only over
-    what was actually examined. A run that needs no replacement therefore walks
-    exactly as far as the non-resumable version did and reports the identical
-    ``diversity_dropped``; with nothing uncitable at all it is the identity, so
-    delivery stays byte-identical.
+    Verifying BEFORE admission rather than after is what keeps the invariant
+    whole. A candidate that fails never becomes a result, so it cannot consume a
+    session-density slot that a valid lower-ranked candidate needs; the walk just
+    continues, which IS the backfill -- there is no separate replacement pass for
+    another code path (delta shaping, say) to bypass. Reads stay batched: the
+    walk prefetches a wave of rows ahead of the cursor, so a run costs a bounded
+    number of batched reads rather than one read per replacement.
 
-    The reference check runs BEFORE the session-density check so a candidate that
-    is never delivered cannot consume session quota.
+    Two candidate shapes are proved differently. Inside the hydration budget the
+    delivered text is a window cut from the row, so the row's existence IS the
+    proof and the same snapshot is handed to hydration. Past that budget the hit
+    ships its own excerpt, so the excerpt must be found at its offset. When a row
+    surfaced through several arms, each arm's representation is tried in turn:
+    an FTS match window is not a verbatim prefix and will not verify, but the
+    chunk or summary-source representation of the same row does, and delivering
+    that is not a swap -- it is the same row, quoted somewhere it really says.
     """
 
     def __init__(
         self,
         ordered: list[dict[str, Any]],
         *,
+        engine: "LCMEngine" | None,
         per_session_limit: int,
         expanded_limit: int,
+        wave_size: int = _LCM_RECALL_STRICT_READ_WAVE,
     ) -> None:
         self._ordered = ordered
+        self._engine = engine
         self._cursor = 0
         self._per_session_limit = per_session_limit
         self._expanded_limit = expanded_limit
+        self._wave_size = max(1, wave_size)
         self._session_counts: dict[str, int] = {}
         self._admitted = 0
+        self._examining = 0
+        self._prefetched_to = 0
+        self.rows: dict[int, dict[str, Any]] = {}
+        self.batched_reads = 0
         self.diversity_dropped = 0
         self.unreferenced_dropped = 0
 
+    def exhausted(self) -> bool:
+        return self._cursor >= len(self._ordered)
+
+    def _prefetch(self) -> bool:
+        """Read the next wave of candidate rows in ONE batch.
+
+        Starts at the candidate being examined -- NOT after it -- so the row the
+        walk needs right now is always inside the wave it triggers.
+        """
+        if self._engine is None:
+            return False
+        wanted: list[int] = []
+        index = max(self._examining, self._prefetched_to)
+        while index < len(self._ordered) and len(wanted) < self._wave_size:
+            hit = self._ordered[index]["hit"]
+            index += 1
+            store_id = hit.get("store_id")
+            if hit.get("kind") == "summary" or store_id is None:
+                continue
+            store_id = int(store_id)
+            if store_id in self.rows or store_id in wanted:
+                continue
+            wanted.append(store_id)
+        if index == self._prefetched_to:
+            return False
+        self._prefetched_to = index
+        if not wanted:
+            return True
+        self.batched_reads += 1
+        self.rows.update(self._engine._store.get_batch(wanted))
+        return True
+
+    def _row_for(self, store_id: Any) -> dict[str, Any] | None:
+        if store_id is None:
+            return None
+        store_id = int(store_id)
+        while store_id not in self.rows and self._prefetch():
+            pass
+        return self.rows.get(store_id)
+
+    def _verify(self, entry: dict[str, Any], *, hydratable: bool) -> bool:
+        """Prove this candidate can be cited, adopting a representation if needed."""
+        hit = entry["hit"]
+        row = self._row_for(hit.get("store_id"))
+        if row is None or not str(row.get("content") or ""):
+            return False
+        if hydratable:
+            # Hydration cuts the delivered window out of this very row.
+            return True
+        span = _lcm_recall_verified_span(hit, row)
+        if span is None:
+            return False
+        entry["_strict_span"] = span
+        return True
+
     def take(self, count: int) -> list[dict[str, Any]]:
-        """Admit up to ``count`` further candidates, resuming the ranked walk."""
+        """Admit up to ``count`` further VERIFIED candidates, resuming the walk."""
         taken: list[dict[str, Any]] = []
         while self._cursor < len(self._ordered) and len(taken) < count:
             entry = self._ordered[self._cursor]
+            self._examining = self._cursor
             self._cursor += 1
             hit = entry["hit"]
-            if _lcm_recall_reference_shape(
-                hit, hydratable=self._admitted < self._expanded_limit
-            ) is None:
+            hydratable = self._admitted < self._expanded_limit
+            if _lcm_recall_reference_shape(hit, hydratable=hydratable) is None:
+                self.unreferenced_dropped += 1
+                continue
+            if not self._verify(entry, hydratable=hydratable):
                 self.unreferenced_dropped += 1
                 continue
             raw_session_id = hit.get("session_id")
@@ -3735,8 +3789,16 @@ def _lcm_recall_answer_ready_content(
     *,
     query: str,
     expanded_limit: int = _LCM_RECALL_ANSWER_READY_EXPANDED_HIT_LIMIT,
+    rows_by_id: dict[int, dict[str, Any]] | None = None,
 ) -> dict[tuple, dict[str, Any]]:
-    """Hydrate selected exact refs with bounded reads and no retrieval search."""
+    """Hydrate selected exact refs with bounded reads and no retrieval search.
+
+    ``rows_by_id`` lets a caller that has ALREADY read these rows hand them over
+    instead of paying for a second read. Reference-strict selection verifies each
+    candidate against its row before admitting it, so reusing that same snapshot
+    also removes the window in which a row could vanish between the two reads and
+    leave an admitted candidate unhydrated.
+    """
     selected = entries[:expanded_limit]
     store_ids = [
         int(entry["hit"]["store_id"])
@@ -3744,7 +3806,9 @@ def _lcm_recall_answer_ready_content(
         if entry["hit"].get("kind") == "message_excerpt"
         and entry["hit"].get("store_id") is not None
     ]
-    stored_by_id = engine._store.get_batch(store_ids)
+    stored_by_id = (
+        rows_by_id if rows_by_id is not None else engine._store.get_batch(store_ids)
+    )
     hydrated: dict[tuple, dict[str, Any]] = {}
 
     for entry in selected:
@@ -4499,33 +4563,63 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
         if reference_strict:
             strict_selector = _LcmRecallStrictSelector(
                 ordered,
+                engine=engine,
                 per_session_limit=_LCM_RECALL_ANSWER_READY_PER_SESSION_LIMIT,
                 expanded_limit=expanded_limit,
             )
             selected_entries = strict_selector.take(selection_limit)
+            strict_rows = strict_selector.rows
         else:
             selected_entries, diversity_dropped = _lcm_recall_diverse_entries(
                 ordered,
                 limit=selection_limit,
                 per_session_limit=_LCM_RECALL_ANSWER_READY_PER_SESSION_LIMIT,
             )
+            strict_rows = None
         answer_ready_content = _lcm_recall_answer_ready_content(
             engine,
             selected_entries,
             query=query,
             expanded_limit=expanded_limit,
+            rows_by_id=strict_rows,
         )
         if delta_requested:
-            selected_entries = [
-                entry
-                for entry in selected_entries
-                if entry["hit"].get("kind") != "summary"
-                if (exact_ref := _lcm_recall_exact_ref(
-                        entry["hit"],
-                        answer_ready_content.get(_hit_identity(entry["hit"])),
-                    )) is not None
-                and exact_ref not in seen_refs
-            ][:limit]
+            def _novel(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                return [
+                    entry
+                    for entry in entries
+                    if entry["hit"].get("kind") != "summary"
+                    if (exact_ref := _lcm_recall_exact_ref(
+                            entry["hit"],
+                            answer_ready_content.get(_hit_identity(entry["hit"])),
+                        )) is not None
+                    and exact_ref not in seen_refs
+                ]
+
+            selected_entries = _novel(selected_entries)
+            # Delta shaping discards entries the caller has already seen, so it
+            # too must be able to draw on the ranked tail -- otherwise the mode
+            # silently returns short while valid candidates remain, which is the
+            # very underfill the resumable walk exists to prevent.
+            while (
+                reference_strict
+                and len(selected_entries) < limit
+                and not strict_selector.exhausted()
+            ):
+                more = strict_selector.take(limit - len(selected_entries))
+                if not more:
+                    break
+                answer_ready_content.update(
+                    _lcm_recall_answer_ready_content(
+                        engine,
+                        more,
+                        query=query,
+                        expanded_limit=len(more),
+                        rows_by_id=strict_selector.rows,
+                    )
+                )
+                selected_entries.extend(_novel(more))
+            selected_entries = selected_entries[:limit]
     else:
         selected_entries = ordered
         diversity_dropped = 0
@@ -4534,20 +4628,7 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
     response_chars = 0
     response_cap_truncated = False
     unreferenced_omitted = 0
-    # Reference-strict shaping validates each admitted candidate against the row
-    # as it stands NOW: hydration already read the row for the in-budget slots,
-    # and this one batched read covers the rest, so no delivered span is taken on
-    # trust from a chunk index that may have gone stale.
-    strict_rows: dict[int, dict[str, Any]] = {}
-    if reference_strict:
-        strict_rows = _lcm_recall_strict_rows(
-            engine, selected_entries, answer_ready_content
-        )
-    pending = list(selected_entries)
-    cursor = 0
-    while cursor < len(pending):
-        entry = pending[cursor]
-        cursor += 1
+    for entry in selected_entries:
         hit = entry["hit"]
         arms = sorted({arm_order[index] for index in entry["ranks"].keys()})
         item: dict[str, Any] = {
@@ -4612,32 +4693,19 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
                     ),
                 }
         if reference_strict:
-            # Admission was a prediction; this is the truth check. Publish the
-            # span the delivered text ACTUALLY occupies so a consumer never has
-            # to guess an offset, and refill from the ranked tail when a
-            # candidate fails -- stopping short here would underfill while
-            # citable candidates sat unexamined just below the cut.
+            # Selection already proved this candidate against its row, so there
+            # is nothing left to re-check here -- only the proven span to
+            # PUBLISH, so a consumer never has to guess an offset. (__init__.py's
+            # _answer_ready_baseline substitutes 0 when the field is absent.)
             if hydrated is not None:
-                # The window was cut from the row this same request, so it is
-                # true by construction and needs no second read.
                 span = (
                     int(hydrated["content_offset"]),
                     int(hydrated["content_returned_chars"]),
                 )
             else:
-                if item.get("content_offset") is None:
-                    item["content_offset"] = hit.get("content_offset")
-                span = _lcm_recall_verified_span(
-                    item, strict_rows.get(item.get("store_id"))
-                )
+                span = entry.get("_strict_span")
             if span is None:
                 unreferenced_omitted += 1
-                refill = strict_selector.take(1)
-                if refill:
-                    pending.extend(refill)
-                    strict_rows.update(
-                        _lcm_recall_strict_rows(engine, refill, answer_ready_content)
-                    )
                 continue
             item["content_offset"], item["content_returned_chars"] = span
         item_chars = len(json.dumps(item, ensure_ascii=False))

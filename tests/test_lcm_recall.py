@@ -1398,12 +1398,46 @@ def test_rerank_does_not_splice_voyage_score_onto_rrf_scale(recall_engine, monke
 # citable one, and the omission count is surfaced rather than silent.
 
 
-def _message_entry(store_id, *, session_id="session-a", chunk_span=None):
+def _stub_row_text(store_id):
+    return f"row-{store_id} verbatim body text"
+
+
+class _StubStore:
+    """Minimal store for the selection unit tests; counts batched reads."""
+
+    def __init__(self, store_ids):
+        self._rows = {
+            store_id: {"content": _stub_row_text(store_id)} for store_id in store_ids
+        }
+        self.batch_calls = []
+
+    def get_batch(self, store_ids):
+        self.batch_calls.append(list(store_ids))
+        return {sid: self._rows[sid] for sid in store_ids if sid in self._rows}
+
+
+def _stub_engine(store_ids):
+    return SimpleNamespace(_store=_StubStore(store_ids))
+
+
+def _message_entry(
+    store_id, *, session_id="session-a", chunk_span=None, citable=True, snippet=None
+):
+    """A ranked candidate.
+
+    ``citable=False`` omits the offset a hit needs to be cited without hydration
+    (the shape a pure-FTS hit has). ``snippet`` overrides the excerpt so a
+    candidate can be citable-SHAPED yet fail verification against its row -- the
+    case that forces the walk to keep reading.
+    """
     hit = {
         "kind": "message_excerpt",
         "store_id": store_id,
         "session_id": session_id,
     }
+    if citable:
+        hit["content_offset"] = 0
+        hit["snippet"] = _stub_row_text(store_id) if snippet is None else snippet
     if chunk_span is not None:
         hit["chunk_span"] = chunk_span
     return {"hit": hit}
@@ -1432,7 +1466,7 @@ def test_reference_strict_backfills_past_every_uncitable_candidate_shape():
         _message_entry(2, chunk_span=span),
         _summary_entry(902, store_id=7),
         _message_entry(3, chunk_span=span),
-        _message_entry(4),  # no chunk span, and slot 3 is past expanded_limit=2
+        _message_entry(4, citable=False),  # no offset, and slot 3 is past expanded_limit=2
         _message_entry(5, chunk_span=span),
         _message_entry(6, chunk_span=span),
     ]
@@ -1442,6 +1476,7 @@ def test_reference_strict_backfills_past_every_uncitable_candidate_shape():
         limit=5,
         per_session_limit=5,
         expanded_limit=2,
+        engine=_stub_engine(range(1, 10)),
     )
 
     assert [entry["hit"]["store_id"] for entry in selected] == [1, 2, 3, 5, 6]
@@ -1454,13 +1489,14 @@ def test_reference_strict_admits_an_unspanned_message_inside_the_hydration_budge
     """Slot position decides: a chunk-span-less message is citable while the
     hydration budget still covers it (it will carry content_offset), and only
     becomes uncitable once it falls past that budget."""
-    ordered = [_message_entry(index) for index in range(1, 5)]
+    ordered = [_message_entry(index, citable=False) for index in range(1, 5)]
 
     selected, _dropped, unreferenced = lcm_tools._lcm_recall_citable_entries(
         ordered,
         limit=4,
         per_session_limit=5,
         expanded_limit=2,
+        engine=_stub_engine(range(1, 5)),
     )
 
     assert [entry["hit"]["store_id"] for entry in selected] == [1, 2]
@@ -1478,6 +1514,7 @@ def test_reference_strict_skips_uncitable_before_it_consumes_session_quota():
         limit=5,
         per_session_limit=5,
         expanded_limit=8,
+        engine=_stub_engine(range(1, 6)),
     )
 
     assert [entry["hit"]["store_id"] for entry in selected] == [1, 2, 3, 4, 5]
@@ -1671,7 +1708,6 @@ def test_reference_strict_disabled_never_enters_the_new_delivery_path(
 
     monkeypatch.setattr(lcm_tools, "_LcmRecallStrictSelector", _forbidden)
     monkeypatch.setattr(lcm_tools, "_lcm_recall_verified_span", _forbidden)
-    monkeypatch.setattr(lcm_tools, "_lcm_recall_strict_rows", _forbidden)
 
     payload = _recall(
         recall_engine,
@@ -1922,3 +1958,146 @@ def test_stale_chunk_span_never_becomes_a_strict_reference(
     assert delivered <= set(other)
     for hit in payload["hits"]:
         assert isinstance(hit["content_offset"], int)
+
+
+# -- Delta-2 review: verification folded INTO the selection walk --------------
+#
+# Findings 1, 2 and 4 all came from verification living AFTER admission as a
+# separate refill pass: delta shaping could bypass the pass, a failed candidate
+# had already spent its session quota, and each replacement paid its own read.
+# Verifying before admitting removes all three by construction; finding 3 is the
+# independent one -- fusion must keep every citable representation of a row.
+
+
+def test_delta_mode_draws_replacements_from_the_ranked_tail(
+    recall_engine, monkeypatch
+):
+    """FINDING 1: delta shaping must not silently return short.
+
+    It discards entries whose refs the caller has already seen, which is the
+    same underfill the resumable walk exists to prevent -- valid tail candidates
+    were left unexamined while the response came back one hit light.
+    """
+    _only_vector_arms(monkeypatch)
+    store_ids = _seed_citable_messages(
+        recall_engine, 30, sessions=tuple(f"session-{i}" for i in range(6))
+    )
+
+    # Delta selects a 25-candidate wave up front, so the caller must have seen
+    # enough of that wave that satisfying `limit` REQUIRES the ranked tail.
+    first = _recall(
+        recall_engine,
+        monkeypatch,
+        detail="answer_ready",
+        include="verbatim",
+        scope_bias=0.0,
+        limit=25,
+    )
+    assert len(first["hits"]) == 25
+    seen = [
+        f"lcm:{hit['store_id']}:{hit['content_offset']}-"
+        f"{hit['content_offset'] + hit['content_returned_chars']}"
+        for hit in first["hits"][:20]
+    ]
+
+    delta = _recall(
+        recall_engine,
+        monkeypatch,
+        detail="answer_ready",
+        include="verbatim",
+        scope_bias=0.0,
+        limit=8,
+        seen_refs=seen,
+    )
+
+    assert len(delta["hits"]) == 8, "seen refs must be replaced, not just removed"
+    assert not ({hit["exact_ref"] for hit in delta["hits"]} & set(seen))
+    assert {hit["store_id"] for hit in delta["hits"]} <= set(store_ids)
+
+
+def test_failed_candidate_does_not_spend_session_quota():
+    """FINDING 2: quota is for DELIVERED hits.
+
+    Charging it at admission let five failing same-session candidates exhaust
+    the per-session budget and block a valid sixth, returning nothing at all.
+    """
+    per_session = 5
+    # Citable-SHAPED but unverifiable, so each one reaches the quota check --
+    # a shape-rejected candidate never gets that far and proves nothing here.
+    ordered = [
+        _message_entry(index, session_id="session-a", snippet="not in the row")
+        for index in range(1, 6)
+    ]
+    ordered.append(_message_entry(99, session_id="session-a"))
+
+    selected, dropped, unreferenced = lcm_tools._lcm_recall_citable_entries(
+        ordered,
+        limit=5,
+        per_session_limit=per_session,
+        expanded_limit=0,
+        engine=_stub_engine([*range(1, 6), 99]),
+    )
+
+    assert [entry["hit"]["store_id"] for entry in selected] == [99]
+    assert unreferenced == 5
+    assert dropped == 0, "a hit that was never delivered cannot be a diversity drop"
+
+
+def test_selection_reads_rows_in_batches_not_one_per_candidate():
+    """FINDING 4: the single-batch contract must survive replacement.
+
+    Verifying per replacement made the reader a query-per-candidate path (55
+    singleton reads on an 80-candidate repro).
+    """
+    # Citable-SHAPED but unverifiable: each one must be read before it can be
+    # rejected, which is exactly the path that used to read one row at a time.
+    ordered = [
+        _message_entry(index, session_id=f"session-{index}", snippet="not in the row")
+        for index in range(1, 80)
+    ]
+    ordered.append(_message_entry(99, session_id="session-99"))
+    engine = _stub_engine([*range(1, 80), 99])
+
+    selected, _dropped, unreferenced = lcm_tools._lcm_recall_citable_entries(
+        ordered,
+        limit=1,
+        per_session_limit=5,
+        expanded_limit=0,
+        engine=engine,
+    )
+
+    assert [entry["hit"]["store_id"] for entry in selected] == [99]
+    assert unreferenced == 79
+    calls = engine._store.batch_calls
+    assert len(calls) <= 4, f"expected batched reads, got {len(calls)} for 80 candidates"
+    assert max(len(call) for call in calls) > 1, "reads must actually be batched"
+
+
+def test_hydration_reuses_the_rows_selection_already_read(
+    recall_engine, monkeypatch
+):
+    """The verified snapshot is handed to hydration, so an admitted candidate
+    cannot go unhydrated because the row vanished between two separate reads."""
+    _only_vector_arms(monkeypatch)
+    _seed_citable_messages(recall_engine, 10)
+    calls = []
+    real_get_batch = recall_engine._store.get_batch
+
+    def counting_get_batch(ids):
+        calls.append(list(ids))
+        return real_get_batch(ids)
+
+    monkeypatch.setattr(recall_engine._store, "get_batch", counting_get_batch)
+
+    payload = _recall(
+        recall_engine,
+        monkeypatch,
+        detail="answer_ready",
+        include="verbatim",
+        scope_bias=0.0,
+        limit=8,
+    )
+
+    assert len(payload["hits"]) == 8
+    # Selection's wave read is the only row read; hydration reuses it.
+    assert len(calls) == 1, f"expected one batched read, got {len(calls)}"
