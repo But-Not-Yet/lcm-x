@@ -2371,7 +2371,6 @@ def test_ledger_invariants_hold_under_a_randomized_transition_sequence():
     rng = random.Random(20260729)
     per_session_limit = 3
     wave_size = 16
-    reserve = 25
     sessions = [f"session-{index % 7}" for index in range(1, 121)]
     ordered = [
         _message_entry(index, session_id=sessions[index - 1])
@@ -2384,7 +2383,6 @@ def test_ledger_invariants_hold_under_a_randomized_transition_sequence():
         per_session_limit=per_session_limit,
         expanded_limit=0,
         wave_size=wave_size,
-        defer_reserve=reserve,
     )
     ledger = selector.ledger
     admitted: list[dict] = []
@@ -2404,8 +2402,9 @@ def test_ledger_invariants_hold_under_a_randomized_transition_sequence():
         # a released entry never returns to a live state
         for entry in released:
             assert ledger.state(entry) == "released", f"step {step}: state reversed"
-        # retention stays bounded by the wave plus what is still in play
-        assert len(selector.rows) <= wave_size + ledger.live_count + reserve, (
+        # retention stays bounded by the wave plus what is live -- a
+        # density-blocked candidate keeps its POSITION, never its row
+        assert len(selector.rows) <= wave_size + ledger.live_count, (
             f"step {step}: retained {len(selector.rows)}"
         )
 
@@ -2460,3 +2459,56 @@ def test_take_tops_up_to_a_target_rather_than_adding_a_count():
     assert selector.ledger.live_count == 4
     assert len(selector.take(5)) == 1, "a wave refills exactly the freed slot"
     assert selector.ledger.live_count == 5
+
+
+def test_long_seen_run_does_not_discard_novel_rows_behind_the_cap(
+    recall_engine, monkeypatch
+):
+    """DELTA-5: refunds are sequential, so no bounded buffer can hold the queue.
+
+    A reserve sized to "no more slots than were admitted" assumed refunds
+    happen against SIMULTANEOUS admissions. Delta processing admits and
+    releases in sequence, so a long run of already-seen references can refund
+    far more slots than were ever live at once. With 100 ranked rows in one
+    session, a cap of 5 and the first 30 references seen, the reserve filled
+    with rows 6-30 and rows 31-100 were discarded outright -- the response came
+    back EMPTY even though rows 31-35 were novel, citable and still ranked.
+
+    Candidates are already rank-ordered, so a blocked one is rediscoverable by
+    POSITION; nothing needs to be stored, and nothing can be dropped.
+    """
+    _only_vector_arms(monkeypatch)
+    store_ids = _seed_citable_messages(recall_engine, 100, sessions=("session-a",))
+
+    seen: list[str] = []
+    while len(seen) < 30:
+        page = _recall(
+            recall_engine,
+            monkeypatch,
+            detail="answer_ready",
+            include="verbatim",
+            scope_bias=0.0,
+            limit=10,
+            **({"seen_refs": list(seen)} if seen else {}),
+        )
+        assert page["hits"], f"went empty after {len(seen)} seen refs"
+        seen.extend(
+            f"lcm:{hit['store_id']}:{hit['content_offset']}-"
+            f"{hit['content_offset'] + hit['content_returned_chars']}"
+            for hit in page["hits"]
+        )
+
+    after = _recall(
+        recall_engine,
+        monkeypatch,
+        detail="answer_ready",
+        include="verbatim",
+        scope_bias=0.0,
+        limit=10,
+        seen_refs=seen[:30],
+    )
+
+    assert after["hits"], "novel rows behind the cap must remain reachable"
+    assert not ({hit["exact_ref"] for hit in after["hits"]} & set(seen[:30]))
+    assert {hit["store_id"] for hit in after["hits"]} <= set(store_ids)
+    assert all(hit["content_offset"] is not None for hit in after["hits"])
