@@ -517,7 +517,11 @@ def _verify_query_view_schema(conn: sqlite3.Connection) -> list[str]:
         missing.extend(
             f"{object_type}:{name}" for name in sorted(names - actual)
         )
-        gated = {name for name in actual if name.startswith("lcm_query")}
+        # Real index names carry the idx_ prefix (idx_lcm_query_*); gating on
+        # the bare table prefix would make the index half of this fail-closed
+        # check unable to match any legitimately-named extra index.
+        gate_prefix = "idx_lcm_query" if object_type == "index" else "lcm_query"
+        gated = {name for name in actual if name.startswith(gate_prefix)}
         missing.extend(
             f"unexpected-{object_type}:{name}"
             for name in sorted(gated - names)

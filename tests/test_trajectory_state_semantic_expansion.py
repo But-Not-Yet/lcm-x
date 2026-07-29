@@ -460,9 +460,15 @@ def test_backfill_is_idempotent_and_resumable(tmp_path):
     assert provider.document_calls == 0
 
 
-def test_profile_replacement_keeps_old_active_until_resumed_backfill_completes(
+def test_interrupted_profile_rebuild_leaves_no_active_profile_until_cutover(
     tmp_path,
 ):
+    # The vector upsert conflicts on state_id alone, so a staged rebuild
+    # overwrites the previous profile's vectors as it goes. The previous
+    # profile therefore CANNOT keep serving during a rebuild (it would serve
+    # a mixed index) — staging deactivates it up front, and readers degrade
+    # to lexical until the atomic cutover at completion. Profile-scoped
+    # embeddings are the tracked prerequisite for rebuild availability.
     asset_root = tmp_path / "assets"
     asset_root.mkdir()
     initial = StateVectorProvider()
@@ -494,13 +500,11 @@ def test_profile_replacement_keeps_old_active_until_resumed_backfill_completes(
             interrupted, batch_max_items=1, batch_token_budget=100_000
         )
 
-    active_during_backfill = store.active_state_semantic_profile()
-    assert active_during_backfill is not None
-    assert active_during_backfill["profile_digest"] == prior["profile_digest"]
+    assert store.active_state_semantic_profile() is None
     assert store._conn.execute(
         "SELECT COUNT(*) FROM lcm_trajectory_state_embedding_profiles "
         "WHERE active = 1"
-    ).fetchone()[0] == 1
+    ).fetchone()[0] == 0
     staged = store._conn.execute(
         """
         SELECT profile_digest, active
@@ -510,7 +514,7 @@ def test_profile_replacement_keeps_old_active_until_resumed_backfill_completes(
         ("fake-state-v2",),
     ).fetchone()
     assert staged is not None and int(staged["active"]) == 0
-    assert staged["profile_digest"] != active_during_backfill["profile_digest"]
+    assert staged["profile_digest"] != prior["profile_digest"]
     staged_count = store._conn.execute(
         "SELECT COUNT(*) FROM lcm_trajectory_state_embeddings "
         "WHERE profile_digest = ?",

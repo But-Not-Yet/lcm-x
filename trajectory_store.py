@@ -1692,6 +1692,17 @@ class TrajectoryStore:
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
+                # Deactivate the serving profile BEFORE staging: the vector
+                # upsert below conflicts on state_id alone, so a staged rebuild
+                # progressively overwrites the previous profile's vectors — an
+                # "active" predecessor would keep serving a mixed index.
+                # Availability-during-rebuild needs profile-scoped embeddings
+                # ((profile_digest, state_id) identity) first; tracked in the
+                # fork issue for the next train.
+                self._conn.execute(
+                    "UPDATE lcm_trajectory_state_embedding_profiles "
+                    "SET active = 0 WHERE active = 1",
+                )
                 self._conn.execute(
                     """
                     INSERT INTO lcm_trajectory_state_embedding_profiles(

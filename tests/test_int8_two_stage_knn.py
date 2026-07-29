@@ -9,7 +9,6 @@ reported, and stage-1 recall@M meets the spec bar on a synthetic 5k set.
 from __future__ import annotations
 
 import sqlite3
-import sys
 
 import numpy as np
 import hermes_lcm.vector_store as vector_store_module
@@ -27,15 +26,10 @@ MODEL = "voyage-context-4"
 PROVIDER = "voyage"
 
 
-def _expire_after_first_prescreen_batch() -> float:
-    frame = sys._getframe(1)
-    return (
-        2.0
-        if frame.f_code.co_name == "_two_stage_rank"
-        and frame.f_locals.get("start") == 0
-        and frame.f_locals.get("end") == 1
-        else 0.0
-    )
+def _expire_after_first_prescreen_batch(deadline, scanned_rows):
+    """Position-keyed deadline stub: expire once the first prescreen batch
+    has completed (scanned_rows >= 1), regardless of clock call patterns."""
+    return deadline is not None and scanned_rows >= 1
 
 
 def _seed_messages(db_path, count, *, session="s", source="hist", ts0=0.0):
@@ -239,7 +233,7 @@ def test_chunk_deadline_bounds_a_synced_binary_prescreen(tmp_path, monkeypatch):
         )
         monkeypatch.setattr(
             vector_store_module,
-            "_monotonic",
+            "_prescreen_deadline_expired",
             _expire_after_first_prescreen_batch,
         )
         expired = vs.knn_chunks(
@@ -248,7 +242,9 @@ def test_chunk_deadline_bounds_a_synced_binary_prescreen(tmp_path, monkeypatch):
             model=MODEL,
             provider=PROVIDER,
             full_scan=True,
-            deadline=1.0,
+            # Genuinely-future deadline: only the patched position-keyed seam
+            # trips; the real clock never expires the load path.
+            deadline=vector_store_module._monotonic() + 60.0,
         )
 
         assert unbounded.coverage == "full_approx"
