@@ -60,6 +60,7 @@ _MESSAGE_SELECT_COLUMNS = (
     "tool_calls, tool_name, timestamp, token_estimate, pinned, conversation_id, "
     "ingested_at, observed_at, observed_at_source"
 )
+_MESSAGE_SELECT_COLUMN_COUNT = len(_MESSAGE_SELECT_COLUMNS.split(","))
 _UNKNOWN_SOURCE = "unknown"
 
 
@@ -630,7 +631,7 @@ class MessageStore:
                 "truncated": False,
                 "observed_at_missing_rows": 0,
             }
-        message_column_count = len(_MESSAGE_SELECT_COLUMNS.split(","))
+        message_column_count = _MESSAGE_SELECT_COLUMN_COUNT
         total_rows = int(rows[0][message_column_count] or 0)
         snapshot_max_store_id = int(rows[0][message_column_count + 1] or 0)
         observed_at_missing_rows = int(rows[0][message_column_count + 2] or 0)
@@ -1200,7 +1201,7 @@ class MessageStore:
             raw_primary_values: list[float] = []
             for r in rows:
                 d = self._row_to_dict(r)
-                base_columns = len(_MESSAGE_SELECT_COLUMNS.split(","))
+                base_columns = _MESSAGE_SELECT_COLUMN_COUNT
                 d["search_rank"] = r[base_columns] if len(r) > base_columns else None
                 d["snippet"] = r[base_columns + 1] if len(r) > (base_columns + 1) else ""
                 d["_directness_score"] = _message_directness_score(d.get("role"), d.get("content"), terms, phrases)

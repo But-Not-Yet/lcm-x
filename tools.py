@@ -294,10 +294,6 @@ _LCM_RECALL_SUMMARY_SOURCE_PER_NODE = 4
 # cursor in waves: a bounded number of batched reads per request rather than one
 # read per candidate it has to skip.
 _LCM_RECALL_STRICT_READ_WAVE = 32
-# How many density-blocked candidates the walk keeps in rank order awaiting a
-# possible refund. Bounded because no more slots can ever be handed back than
-# were admitted, so a reserve the size of the response cap is always enough.
-_LCM_RECALL_STRICT_DEFER_RESERVE = _LCM_RECALL_LIMIT_CAP
 _LCM_RECALL_ANSWER_READY_CONTENT_CHARS = 2_400
 # Recency boost half-life (30 days) and its floor: a memory's rank_score is
 # multiplied by 2**(-age/half_life), clamped so age never zeroes an otherwise
@@ -4253,6 +4249,7 @@ def _lcm_recall_summary_source_hits(
     *,
     current: str | None,
     candidate_limit: int,
+    lead_limit: int,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Carry summary-KNN relevance onto the nodes' SOURCE MESSAGES.
 
@@ -4281,11 +4278,17 @@ def _lcm_recall_summary_source_hits(
     ordered_ids: list[int] = []
     seen: set[int] = set()
     for node, _score in nodes:
-        lead: dict[str, Any] = {"node_id": node.node_id, "session_id": node.session_id}
-        hint = _lcm_recall_summary_expand_hint({"session_id": node.session_id})
-        if hint:
-            lead["expand_hint"] = hint
-        leads.append(lead)
+        if len(leads) < max(0, lead_limit):
+            lead: dict[str, Any] = {
+                "node_id": node.node_id,
+                "session_id": node.session_id,
+                "from_current_session": bool(current)
+                and node.session_id == current,
+            }
+            hint = _lcm_recall_summary_expand_hint(lead)
+            if hint:
+                lead["expand_hint"] = hint
+            leads.append(lead)
         if len(ordered_ids) >= candidate_limit:
             continue
         for store_id in engine._dag.source_message_ids(
@@ -4331,9 +4334,10 @@ def _lcm_recall_summary_arm(
     query_vector: list[float],
     provider: Any,
     candidate_limit: int,
+    lead_limit: int,
     deadline: float,
     reference_strict: bool = False,
-) -> tuple[list[dict[str, Any]], str]:
+) -> tuple[list[dict[str, Any]], str, int | None, int | None, list[dict[str, Any]]]:
     """Summary KNN arm: embedded summaries across ALL sessions (no filter)."""
     knn_results = _run_within_deadline(
         lambda: run_knn(
@@ -4370,7 +4374,11 @@ def _lcm_recall_summary_arm(
     current = engine.current_session_id
     if reference_strict:
         source_hits, leads = _lcm_recall_summary_source_hits(
-            engine, nodes, current=current, candidate_limit=candidate_limit
+            engine,
+            nodes,
+            current=current,
+            candidate_limit=candidate_limit,
+            lead_limit=lead_limit,
         )
         return source_hits, coverage, knn_results.scanned, knn_results.total, leads
     hits: list[dict[str, Any]] = []
@@ -4699,6 +4707,7 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
                             query_vector=query_vector,
                             provider=provider,
                             candidate_limit=candidate_limit,
+                            lead_limit=limit,
                             deadline=deadline,
                             reference_strict=reference_strict,
                         )

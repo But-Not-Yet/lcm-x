@@ -1517,6 +1517,7 @@ class VectorStore:
         candidate_ids: Sequence[str],
         batch_rows: int,
         budget_s: float,
+        deadline: float | None,
         limit: int,
         score_batch: Any,
     ) -> tuple[list[tuple[str, float, str]], int, bool]:
@@ -1528,9 +1529,10 @@ class VectorStore:
         the 25k recency window that made 86% of a 185k-vector corpus invisible
         to semantic recall (FINDING-F31 §2).
 
-        ``budget_s`` (0 = no early stop, the default) is the only thing that can
-        cut the scan short; when it does, the caller degrades to
-        ``coverage='bounded'`` and the existing disclosure names the ratio.
+        ``budget_s`` (0 = no relative early stop, the default) and the caller's
+        absolute operation ``deadline`` can cut the scan short; when either
+        does, the caller degrades to ``coverage='bounded'`` and the existing
+        disclosure names the ratio.
         Returns ``(ranked top-k, candidates scored, stopped early)``.
 
         A MULTI-BATCH sweep streams past the matrix LRU (``cache=False``). The
@@ -1554,6 +1556,9 @@ class VectorStore:
             self._release_matrix_caches()
         started = time.monotonic()
         for start in range(0, len(candidate_ids), batch_rows):
+            if deadline is not None and time.monotonic() >= deadline:
+                stopped_early = True
+                break
             batch = candidate_ids[start:start + batch_rows]
             rowids, embedded_ids, kinds, scores = score_batch(batch, cache_batches)
             scanned += len(batch)
@@ -1567,9 +1572,16 @@ class VectorStore:
                 best.sort(key=self._rank_key)
                 del best[limit:]
             exhausted = start + batch_rows >= len(candidate_ids)
-            if not exhausted and budget_s > 0 and (time.monotonic() - started) >= budget_s:
-                stopped_early = True
-                break
+            if not exhausted:
+                budget_expired = (
+                    budget_s > 0 and (time.monotonic() - started) >= budget_s
+                )
+                deadline_expired = (
+                    deadline is not None and time.monotonic() >= deadline
+                )
+                if budget_expired or deadline_expired:
+                    stopped_early = True
+                    break
         best.sort(key=self._rank_key)
         return (
             [
@@ -1976,6 +1988,7 @@ class VectorStore:
         full_scan: bool = False,
         scan_max_rows: int = 0,
         scan_budget_s: float = 0.0,
+        deadline: float | None = None,
     ) -> KNNResult:
         k = int(k)
         if k <= 0:
@@ -2108,6 +2121,7 @@ class VectorStore:
             candidate_ids=scan_ids,
             batch_rows=max(1, self.bounded_scan_rows),
             budget_s=scan_budget_s,
+            deadline=deadline,
             limit=k,
             score_batch=score_batch,
         )
@@ -2572,13 +2586,15 @@ class VectorStore:
         full_scan: bool = False,
         scan_max_rows: int = 0,
         scan_budget_s: float = 0.0,
+        deadline: float | None = None,
     ) -> KNNResult:
-        """Bounded-candidate chunk KNN with the summary coverage contract.
+        """Chunk KNN with the summary coverage contract.
 
         Coverage is full|bounded|none exactly as for summaries: ``none`` when
         the corpus/identity is unbackfilled or a requested filter is
         unverifiable (missing message column), ``bounded`` when the scan was
-        cut short by a hard cap or latency budget, ``full`` otherwise.
+        cut short by a hard cap, latency budget, or operation deadline, and
+        ``full`` when the requested candidate set was scanned completely.
         """
         k = int(k)
         if k <= 0:
@@ -2689,6 +2705,7 @@ class VectorStore:
             candidate_ids=scan_ids,
             batch_rows=max(1, self.bounded_scan_rows),
             budget_s=scan_budget_s,
+            deadline=deadline,
             limit=k,
             score_batch=score_batch,
         )

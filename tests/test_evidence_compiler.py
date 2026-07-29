@@ -850,6 +850,46 @@ def test_persist_compiled_view_releases_lease_on_publish_failure(tmp_path, monke
     assert retried_result["persistence"]["status"] == "published"
 
 
+def test_persist_compiled_view_cleanup_failure_does_not_escape(tmp_path, monkeypatch):
+    engine = _engine(tmp_path)
+    query_views = QueryViewStore(engine._config.database_path)
+    engine._query_views = query_views
+    source = _append(engine, "Maya owns the Atlas rollout.")
+    selector = _selector(
+        _claim("owner", source, "atlas-owner", entity="Maya", role="user")
+    )
+    try:
+        monkeypatch.setattr(
+            QueryViewStore,
+            "publish_ready",
+            lambda self, token, **kwargs: (_ for _ in ()).throw(
+                ValueError("original publish failure")
+            ),
+        )
+        monkeypatch.setattr(
+            QueryViewStore,
+            "mark_failed",
+            lambda self, token, error: (_ for _ in ()).throw(
+                RuntimeError("cleanup failure")
+            ),
+        )
+
+        result = compile_evidence(
+            "Who owns the Atlas rollout?",
+            engine=engine,
+            baseline_refs=[source],
+            selector=selector,
+            enabled=True,
+            persist_view=True,
+        )
+    finally:
+        query_views.close()
+        engine._store.close()
+
+    assert result["persistence"]["status"] == "error"
+    assert result["persistence"]["reason_code"] == "query_view_publish_failed"
+
+
 def test_selective_persistence_rejects_generic_or_ungrounded_state(tmp_path):
     engine = _engine(tmp_path)
     query_views = QueryViewStore(engine._config.database_path)

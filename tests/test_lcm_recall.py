@@ -1812,6 +1812,48 @@ def test_summary_nodes_come_back_as_non_evidence_leads(recall_engine, monkeypatc
     assert "snippet" not in leads[0]
 
 
+def test_summary_leads_preserve_current_context_and_obey_response_limit(
+    recall_engine, monkeypatch
+):
+    node_ids = []
+    for index, session_id in enumerate((CURRENT, "session-a", "session-b")):
+        source_id = recall_engine._store.append(
+            session_id,
+            {"role": "user", "content": f"budget note {index}"},
+            source="chat",
+        )
+        node_ids.append(_add_summary(
+            recall_engine,
+            f"kanban dashboard sprint rollup {index}",
+            session_id=session_id,
+            created_at=float(index + 1),
+            source_ids=[source_id],
+        ))
+    _seed_summary_vectors(
+        recall_engine,
+        [
+            (node_ids[0], [1.0, 0.0]),
+            (node_ids[1], [0.0, 1.0]),
+            (node_ids[2], [0.0, 1.0]),
+        ],
+    )
+
+    payload = _recall(
+        recall_engine,
+        monkeypatch,
+        include="summaries",
+        detail="answer_ready",
+        scope_bias=0.0,
+        limit=1,
+    )
+
+    leads = payload["provenance"]["answer_ready"]["summary_leads"]
+    assert len(leads) == 1
+    assert leads[0]["node_id"] == node_ids[0]
+    assert leads[0]["from_current_session"] is True
+    assert leads[0]["expand_hint"] == f"lcm_expand(node_id={node_ids[0]})"
+
+
 def test_admitted_hit_publishes_the_true_chunk_offset_not_zero(
     recall_engine, monkeypatch
 ):
