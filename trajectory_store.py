@@ -1852,6 +1852,7 @@ class TrajectoryStore:
                 stats["billed_tokens"] += max(
                     0, int(getattr(active_provider, "last_usage_tokens", 0) or 0)
                 )
+                _emit_progress()
             pooled = [sum(values) / len(chunk_vectors) for values in zip(*chunk_vectors)]
             normalized = _normalized_vector(pooled, expected_dim=dim)
             _persist([(state_id, document_sha, _pack_vector(normalized))])

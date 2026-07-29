@@ -39,6 +39,8 @@ from .sqlite_util import _is_sqlite_locked_error
 
 logger = logging.getLogger(__name__)
 
+_monotonic = time.monotonic
+
 # Vectors are float32 in native little-endian order by default. These are
 # recorded as part of the canonical profile identity so a dtype/byteorder change
 # is detectable rather than silently reinterpreting stored bytes.
@@ -1561,9 +1563,9 @@ class VectorStore:
             # store's whole lifetime. Release them before the first batch is
             # allocated, so peak really is one batch.
             self._release_matrix_caches()
-        started = time.monotonic()
+        started = _monotonic()
         for start in range(0, len(candidate_ids), batch_rows):
-            if deadline is not None and time.monotonic() >= deadline:
+            if deadline is not None and _monotonic() >= deadline:
                 stopped_early = True
                 break
             batch = candidate_ids[start:start + batch_rows]
@@ -1581,10 +1583,10 @@ class VectorStore:
             exhausted = start + batch_rows >= len(candidate_ids)
             if not exhausted:
                 budget_expired = (
-                    budget_s > 0 and (time.monotonic() - started) >= budget_s
+                    budget_s > 0 and (_monotonic() - started) >= budget_s
                 )
                 deadline_expired = (
-                    deadline is not None and time.monotonic() >= deadline
+                    deadline is not None and _monotonic() >= deadline
                 )
                 if budget_expired or deadline_expired:
                     stopped_early = True
@@ -1892,11 +1894,11 @@ class VectorStore:
         sign-bit matrix across calls (keyed on data_version for cross-process
         invalidation), which is what makes back-to-back two-stage recalls cheap.
         """
-        if deadline is not None and time.monotonic() >= deadline:
+        if deadline is not None and _monotonic() >= deadline:
             raise _PrescreenDeadlineExpired()
         if not cacheable:
             loaded = loader()
-            if deadline is not None and time.monotonic() >= deadline:
+            if deadline is not None and _monotonic() >= deadline:
                 raise _PrescreenDeadlineExpired()
             return loaded
         with self._cache_lock:
@@ -1904,11 +1906,11 @@ class VectorStore:
             cached = cache.get(key)
             if cached is not None:
                 cache.move_to_end(key)
-                if deadline is not None and time.monotonic() >= deadline:
+                if deadline is not None and _monotonic() >= deadline:
                     raise _PrescreenDeadlineExpired()
                 return cached
             loaded = loader()
-            if deadline is not None and time.monotonic() >= deadline:
+            if deadline is not None and _monotonic() >= deadline:
                 raise _PrescreenDeadlineExpired()
             cache[key] = loaded
             while len(cache) > self._MATRIX_CACHE_MAX_ENTRIES:
@@ -1919,7 +1921,7 @@ class VectorStore:
         """Run a full binary load on an interruptible read-only connection."""
         if deadline is None:
             return loader(self)
-        remaining = deadline - time.monotonic()
+        remaining = deadline - _monotonic()
         if remaining <= 0:
             raise _PrescreenDeadlineExpired()
         uri = f"{self.db_path.resolve().as_uri()}?mode=ro"
@@ -1927,7 +1929,7 @@ class VectorStore:
         expired = [False]
 
         def interrupt_if_expired() -> int:
-            if time.monotonic() >= deadline:
+            if _monotonic() >= deadline:
                 expired[0] = True
                 return 1
             return 0
@@ -1946,11 +1948,11 @@ class VectorStore:
             reader._write_lock = threading.RLock()
             reader._cache_lock = threading.RLock()
             loaded = loader(reader)
-            if time.monotonic() >= deadline:
+            if _monotonic() >= deadline:
                 raise _PrescreenDeadlineExpired()
             return loaded
         except sqlite3.OperationalError as exc:
-            if expired[0] or time.monotonic() >= deadline:
+            if expired[0] or _monotonic() >= deadline:
                 raise _PrescreenDeadlineExpired() from exc
             raise
         finally:
@@ -2015,14 +2017,14 @@ class VectorStore:
         hamming = numpy.empty(n, dtype=numpy.uint32)
         prescreen_rows = min(max(1, self.bounded_scan_rows), 4096)
         for start in range(0, n, prescreen_rows):
-            if deadline is not None and time.monotonic() >= deadline:
+            if deadline is not None and _monotonic() >= deadline:
                 raise _PrescreenDeadlineExpired(start)
             end = min(n, start + prescreen_rows)
             xor = numpy.bitwise_xor(
                 binary_matrix[start:end, :width], query_bits[:width]
             )
             hamming[start:end] = popcount[xor].sum(axis=1)
-            if deadline is not None and time.monotonic() >= deadline:
+            if deadline is not None and _monotonic() >= deadline:
                 raise _PrescreenDeadlineExpired(end)
         m = min(n, max(k, self.knn_prescreen_multiplier * k))
         if m < n:
@@ -2035,18 +2037,18 @@ class VectorStore:
             if chunk
             else self._load_vectors_for_ids
         )
-        if deadline is not None and time.monotonic() >= deadline:
+        if deadline is not None and _monotonic() >= deadline:
             raise _PrescreenDeadlineExpired(n)
         rowids, out_ids, kinds, vectors = loader(
             identity_hash, dim, survivor_ids, dtype
         )
-        if deadline is not None and time.monotonic() >= deadline:
+        if deadline is not None and _monotonic() >= deadline:
             raise _PrescreenDeadlineExpired(n)
         if not vectors:
             return []
         matrix = numpy.asarray(vectors, dtype=numpy.float32)
         scores = matrix @ numpy.asarray(query, dtype=numpy.float32)
-        if deadline is not None and time.monotonic() >= deadline:
+        if deadline is not None and _monotonic() >= deadline:
             raise _PrescreenDeadlineExpired(n)
         return self._ranked(rowids, out_ids, kinds, scores, k)
 

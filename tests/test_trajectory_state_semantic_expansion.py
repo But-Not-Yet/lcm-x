@@ -628,6 +628,51 @@ def test_oversize_chunks_pack_by_item_and_token_budgets(tmp_path):
     assert max(provider.request_token_counts) <= 9
 
 
+def test_oversize_progress_can_stop_between_chunks_with_partial_spend(tmp_path):
+    asset_root = tmp_path / "assets"
+    asset_root.mkdir()
+    provider = StateVectorProvider()
+    store = TrajectoryStore(
+        tmp_path / "lcm.db",
+        _identity(),
+        asset_root=asset_root,
+        embedding_provider=provider,
+    )
+    store.insert(
+        _source(
+            asset_root,
+            trajectory_id="oversize-cap",
+            ordinal=0,
+            goal="Trip the cap between chunk requests",
+            texts=("alpha-answer " + ("token " * 100),),
+        )
+    )
+    store.finalize(["oversize-cap"])
+    ledger: list[dict] = []
+
+    class CostCapExceeded(RuntimeError):
+        pass
+
+    def record_progress(stats):
+        ledger.append(dict(stats))
+        if stats["billed_tokens"] > 1:
+            raise CostCapExceeded("low test cap exceeded")
+
+    with pytest.raises(CostCapExceeded, match="low test cap"):
+        store.build_state_semantic_index(
+            provider,
+            document_token_budget=5,
+            batch_token_budget=5,
+            batch_max_items=1,
+            progress_callback=record_progress,
+        )
+
+    assert provider.document_calls == 1
+    assert ledger[-1]["provider_calls"] == provider.query_calls + provider.document_calls
+    assert ledger[-1]["billed_tokens"] == provider.usage_tokens_total
+    assert ledger[-1]["states_embedded"] == 0
+
+
 def test_state_query_provider_failure_degrades_to_lexical(tmp_path):
     provider = StateVectorProvider()
     store = _build_invisible_semantic_store(tmp_path, provider=provider)

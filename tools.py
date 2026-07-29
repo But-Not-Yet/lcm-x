@@ -4306,6 +4306,7 @@ def _lcm_recall_summary_source_hits(
         read_dag = copy.copy(engine._dag)
         read_store._conn = conn
         read_dag._conn = conn
+        read_store._write_lock = threading.RLock()
         read_dag._db_lock = threading.RLock()
 
         leads: list[dict[str, Any]] = []
@@ -4336,8 +4337,9 @@ def _lcm_recall_summary_source_hits(
         require_remaining("message hydration")
 
         hits: list[dict[str, Any]] = []
-        if ordered_ids:
-            rows = read_store.get_batch(ordered_ids[:candidate_limit])
+        rows = (
+            read_store.get_batch(ordered_ids[:candidate_limit]) if ordered_ids else {}
+        )
         for store_id in ordered_ids[:candidate_limit]:
             require_remaining("message shaping")
             row = rows.get(store_id)
@@ -5190,6 +5192,23 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
             expansion["response_truncated"] = True
             expansion["expanded_hit_count"] = sum(
                 "content" in hit for hit in response["hits"]
+            )
+            encoded = json.dumps(response, ensure_ascii=False)
+        if delta_requested:
+            novel_refs = [
+                hit["exact_ref"]
+                for hit in response["hits"]
+                if hit.get("exact_ref")
+            ]
+            response["delta"].update(
+                {
+                    "novel_ref_count": len(novel_refs),
+                    "novel_refs": novel_refs,
+                    "progress": bool(novel_refs),
+                    "termination_reason": (
+                        None if novel_refs else "no_novel_exact_ref"
+                    ),
+                }
             )
             encoded = json.dumps(response, ensure_ascii=False)
         return encoded

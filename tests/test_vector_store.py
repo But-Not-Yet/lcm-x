@@ -592,7 +592,7 @@ def test_full_scan_budget_stops_early_and_reports_bounded(tmp_path, monkeypatch)
         with monkeypatch.context() as clock_patch:
             ticks = iter(range(1_000))
             clock_patch.setattr(
-                vector_store_module.time, "monotonic", lambda: float(next(ticks))
+                vector_store_module, "_monotonic", lambda: float(next(ticks))
             )
             result = store.knn(
                 [1.0, 0.0, 0.0],
@@ -624,7 +624,7 @@ def test_full_scan_absolute_deadline_stops_between_batches(tmp_path, monkeypatch
         with monkeypatch.context() as clock_patch:
             ticks = iter((0.0, 0.0, 2.0))
             clock_patch.setattr(
-                vector_store_module.time, "monotonic", lambda: next(ticks)
+                vector_store_module, "_monotonic", lambda: next(ticks)
             )
             result = store.knn(
                 [1.0, 0.0, 0.0],
