@@ -589,14 +589,51 @@ def test_full_scan_budget_stops_early_and_reports_bounded(tmp_path, monkeypatch)
         )
         # A clock that advances a second per reading: the budget is spent after
         # the first batch, so the scan stops with 4 of 6 vectors unscored.
-        ticks = iter(range(1_000))
-        monkeypatch.setattr(
-            vector_store_module.time, "monotonic", lambda: float(next(ticks))
-        )
+        with monkeypatch.context() as clock_patch:
+            ticks = iter(range(1_000))
+            clock_patch.setattr(
+                vector_store_module.time, "monotonic", lambda: float(next(ticks))
+            )
+            result = store.knn(
+                [1.0, 0.0, 0.0],
+                k=1,
+                model="scan",
+                full_scan=True,
+                scan_budget_s=0.5,
+            )
 
-        result = store.knn(
-            [1.0, 0.0, 0.0], k=1, model="scan", full_scan=True, scan_budget_s=0.5
+        assert result.coverage == "bounded"
+        assert result.scanned == 2
+        assert result.total == 6
+        assert [row[0] for row in result] != [str(gold)]
+    finally:
+        store.close()
+        dag.close()
+
+
+def test_full_scan_absolute_deadline_stops_between_batches(tmp_path, monkeypatch):
+    """The operation deadline remains a hard stop when the relative scan budget
+    is disabled (zero), so recall cannot start another full batch after expiry."""
+    db_path = tmp_path / "full-scan-deadline.db"
+    dag = SummaryDAG(db_path)
+    store = VectorStore(db_path, bounded_scan_rows=2)
+    try:
+        gold = _seed_scan_corpus(
+            dag, store, 6, gold_vector=[1.0, 0.0, 0.0], filler_vector=[0.0, 1.0, 0.0]
         )
+        with monkeypatch.context() as clock_patch:
+            ticks = iter((0.0, 0.0, 2.0))
+            clock_patch.setattr(
+                vector_store_module.time, "monotonic", lambda: next(ticks)
+            )
+            result = store.knn(
+                [1.0, 0.0, 0.0],
+                k=1,
+                model="scan",
+                full_scan=True,
+                scan_budget_s=0.0,
+                deadline=1.0,
+            )
 
         assert result.coverage == "bounded"
         assert result.scanned == 2

@@ -266,6 +266,7 @@ def run_knn(
             full_scan=full_scan,
             scan_max_rows=scan_max_rows,
             scan_budget_s=scan_budget_s,
+            deadline=deadline,
         ),
     )
 
@@ -314,6 +315,7 @@ def run_chunk_knn(
             full_scan=full_scan,
             scan_max_rows=scan_max_rows,
             scan_budget_s=scan_budget_s,
+            deadline=deadline,
         ),
     )
 

@@ -1013,7 +1013,12 @@ def _persist_compiled_view(result: dict[str, Any], *, engine: Any) -> None:
         return
     except Exception as exc:
         if token is not None:
-            store.mark_failed(token, str(exc))
+            try:
+                store.mark_failed(token, str(exc))
+            except Exception:
+                # Cleanup is best-effort and must never replace the publish
+                # failure that selected this response contract.
+                pass
         result["persistence"].update(
             {"status": "error", "reason_code": "query_view_publish_failed"}
         )

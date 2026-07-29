@@ -199,8 +199,16 @@ def test_classify_interim_stamp_with_query_view_and_trajectory_marker_tables(tmp
     conn = sqlite3.connect(db_path)
     try:
         assert classify_version_mismatch(conn) == db_bootstrap.VERSION_MISMATCH_INTERIM_STAMP
+        result = remediate_interim_schema_stamp(conn, apply=True)
     finally:
         conn.close()
+    assert result["status"] == "ok"
+    assert result["dropped_tables"] == []
+    assert _stored_version(db_path) == db_bootstrap.SCHEMA_VERSION
+    assert {
+        "lcm_query_views",
+        "lcm_trajectory_corpora",
+    } <= _table_names(db_path)
 
 
 def test_classify_genuinely_newer_on_unknown_table(tmp_path):

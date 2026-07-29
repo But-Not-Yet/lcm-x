@@ -444,11 +444,14 @@ class TrajectoryStore:
         self._last_semantic_attempt: TrajectorySemanticAttempt | None = None
         self._last_query_telemetry: dict[str, Any] | None = None
         # Lazily-populated per-STATE semantic matrix cache (issue #142): the
-        # tuple is ``(profile_digest, state_ids, matrix)`` where ``matrix`` is a
-        # normalized float32 array (numpy when available, else a list of tuples)
-        # so query-time state ranking is a single mat-vec instead of a per-row
-        # SQL + Python dot loop. Reset whenever a state backfill rewrites rows.
-        self._state_semantic_cache: tuple[str, list[int], Any] | None = None
+        # tuple is ``(profile_digest, freshness, state_ids, matrix)`` where
+        # ``freshness`` is the profile row count/latest-write marker and
+        # ``matrix`` is a normalized float32 array (numpy when available, else a
+        # list of tuples). The marker also catches supported same-profile
+        # rewrites that occur outside this instance's explicit cache reset.
+        self._state_semantic_cache: (
+            tuple[str, tuple[int, float], list[int], Any] | None
+        ) = None
         self._lock = threading.RLock()
         self._conn = self._open_connection()
         try:
@@ -1418,13 +1421,34 @@ class TrajectoryStore:
         cap). Uses the shared cl100k encoder -- the same tokenizer the provider's
         packing uses to gate the caps -- and falls back to a conservative
         character window if the encoder is unavailable."""
-        from .tokens import _get_encoder
+        from .tokens import _fallback_token_estimate, _get_encoder
 
         encoder = _get_encoder()
         if encoder is None:
-            # ~4 chars/token is the module's own char fallback; stay under budget.
-            span = max(1, token_budget * 4)
-            return [document[i:i + span] for i in range(0, len(document), span)]
+            # Use the shared estimator itself rather than ``budget * 4``:
+            # the estimator includes a rounding token and deliberately assigns
+            # denser budgets to non-ASCII text, so a flat character window can
+            # exceed the same limit that selected this path.
+            chunks: list[str] = []
+            start = 0
+            while start < len(document):
+                low = 1
+                high = min(len(document) - start, max(1, token_budget * 4))
+                accepted = 0
+                while low <= high:
+                    middle = (low + high) // 2
+                    piece = document[start:start + middle]
+                    if _fallback_token_estimate(piece) <= token_budget:
+                        accepted = middle
+                        low = middle + 1
+                    else:
+                        high = middle - 1
+                # A one-character piece always estimates to one token, but keep
+                # forward progress explicit if that estimator contract changes.
+                accepted = max(1, accepted)
+                chunks.append(document[start:start + accepted])
+                start += accepted
+            return chunks or [document]
         token_ids = encoder.encode(document)
         chunks: list[str] = []
         for start in range(0, len(token_ids), token_budget):
@@ -1512,6 +1536,9 @@ class TrajectoryStore:
             probe_doc = self._state_embed_document(
                 all_states[0]["text"], all_states[0]["url"], int(all_states[0]["state_id"])
             )
+            probe_doc = self._state_token_chunks(
+                probe_doc, document_token_budget
+            )[0]
             probe_vector = _normalized_vector(active_provider.embed_query(probe_doc))
             dim = len(probe_vector)
 
@@ -1524,8 +1551,7 @@ class TrajectoryStore:
             try:
                 self._conn.execute(
                     "UPDATE lcm_trajectory_state_embedding_profiles "
-                    "SET active = 0 WHERE active = 1 AND profile_digest != ?",
-                    (profile_digest,),
+                    "SET active = 0 WHERE active = 1",
                 )
                 self._conn.execute(
                     """
@@ -1533,10 +1559,9 @@ class TrajectoryStore:
                         profile_digest, provider, model_name, dim,
                         document_version, source_manifest_digest,
                         state_count, active, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
                     ON CONFLICT(profile_digest) DO UPDATE SET
-                        state_count = excluded.state_count,
-                        active = 1
+                        state_count = excluded.state_count
                     """,
                     (
                         profile_digest,
@@ -1683,6 +1708,33 @@ class TrajectoryStore:
 
         # A rewrite invalidates any cached query-time matrix.
         self._state_semantic_cache = None
+        embedded_count = int(
+            self._conn.execute(
+                "SELECT COUNT(*) FROM lcm_trajectory_state_embeddings "
+                "WHERE profile_digest = ?",
+                (profile_digest,),
+            ).fetchone()[0]
+        )
+        if embedded_count != total_states:
+            raise TrajectoryStoreError(
+                "state semantic profile is incomplete after backfill"
+            )
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute(
+                    "UPDATE lcm_trajectory_state_embedding_profiles "
+                    "SET active = 0 WHERE active = 1"
+                )
+                self._conn.execute(
+                    "UPDATE lcm_trajectory_state_embedding_profiles "
+                    "SET active = 1 WHERE profile_digest = ?",
+                    (profile_digest,),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
         stats["status"] = "current" if not pending else "built"
         return stats
 
@@ -1869,9 +1921,22 @@ class TrajectoryStore:
         tuples for a pure-Python fallback -- the state vectors were normalized at
         backfill, so a query-vector dot product is cosine similarity either way.
         """
+        freshness_row = self._conn.execute(
+            """
+            SELECT COUNT(*), COALESCE(MAX(embedded_at), 0.0)
+            FROM lcm_trajectory_state_embeddings
+            WHERE profile_digest = ?
+            """,
+            (profile_digest,),
+        ).fetchone()
+        freshness = (int(freshness_row[0]), float(freshness_row[1]))
         cache = self._state_semantic_cache
-        if cache is not None and cache[0] == profile_digest:
-            return cache[1], cache[2]
+        if (
+            cache is not None
+            and cache[0] == profile_digest
+            and cache[1] == freshness
+        ):
+            return cache[2], cache[3]
         rows = self._conn.execute(
             """
             SELECT state_id, vector FROM lcm_trajectory_state_embeddings
@@ -1892,7 +1957,9 @@ class TrajectoryStore:
                 matrix = _np.zeros((0, int(dim)), dtype="<f4")
         except Exception:
             matrix = [_unpack_vector(bytes(row["vector"]), int(dim)) for row in rows]
-        self._state_semantic_cache = (profile_digest, state_ids, matrix)
+        self._state_semantic_cache = (
+            profile_digest, freshness, state_ids, matrix
+        )
         return state_ids, matrix
 
     def _semantic_state_ranks(
@@ -1916,7 +1983,12 @@ class TrajectoryStore:
         )
         if not state_ids:
             return []
+        self._semantic_usage["query_calls"] += 1
         query_vector = _normalized_vector(provider.embed_query(query), expected_dim=dim)
+        self._semantic_usage["query_tokens"] += max(
+            0,
+            int(getattr(provider, "last_usage_tokens", 0) or 0),
+        )
         try:
             import numpy as _np
 
@@ -3160,11 +3232,15 @@ class TrajectoryStore:
         # (default), no provider, or no active state index skip this entirely and
         # reproduce current bytes. Independent of the adjacency arm above.
         state_semantic_admitted: list[dict[str, Any]] = []
-        if state_semantic_quota > 0 and rows:
+        if state_semantic_quota > 0:
             pool_ids = {int(row["state_id"]) for row in rows}
-            ranked_states = self._semantic_state_ranks(
-                query, state_semantic_quota + len(pool_ids) + 16
-            )
+            try:
+                ranked_states = self._semantic_state_ranks(
+                    query, state_semantic_quota + len(pool_ids) + 16
+                )
+            except Exception:
+                self._semantic_usage["fallbacks"] += 1
+                ranked_states = []
             score_by_state = {sid: score for sid, score in ranked_states}
             arm_semantic = [
                 {"state_id": sid}

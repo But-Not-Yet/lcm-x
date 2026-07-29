@@ -16,7 +16,11 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+import struct
 
+import pytest
+
+import hermes_lcm.tokens as token_module
 from hermes_lcm.trajectory_store import (
     CorpusIdentity,
     TrajectorySource,
@@ -40,6 +44,8 @@ class StateVectorProvider:
     def __init__(self) -> None:
         self.last_usage_tokens = 0
         self.document_calls = 0
+        self.query_calls = 0
+        self.fail_queries = False
 
     @staticmethod
     def _vector(text: str) -> list[float]:
@@ -56,8 +62,36 @@ class StateVectorProvider:
         return [self._vector(t) for t in texts]
 
     def embed_query(self, text):  # noqa: ARG002
+        self.query_calls += 1
+        if self.fail_queries:
+            raise RuntimeError("simulated query provider failure")
         self.last_usage_tokens = 1
         return [1.0, 0.0, 0.0]
+
+
+class InterruptingStateVectorProvider(StateVectorProvider):
+    def __init__(self, *, model_id: str, fail_after: int | None) -> None:
+        super().__init__()
+        self.model_id = model_id
+        self.fail_after = fail_after
+
+    def embed_documents(self, texts):
+        if self.fail_after is not None and self.document_calls >= self.fail_after:
+            raise RuntimeError("simulated interrupted backfill")
+        return super().embed_documents(texts)
+
+
+class ProbeBudgetProvider(StateVectorProvider):
+    def __init__(self, token_limit: int) -> None:
+        super().__init__()
+        self.token_limit = token_limit
+        self.probe_documents: list[str] = []
+
+    def embed_query(self, text):
+        self.probe_documents.append(str(text))
+        if token_module.count_tokens(str(text)) > self.token_limit:
+            raise ValueError("probe exceeded provider token limit")
+        return super().embed_query(text)
 
 
 def _identity() -> CorpusIdentity:
@@ -186,6 +220,26 @@ def test_expansion_pulls_lexically_invisible_state_into_pool(tmp_path):
     by_state = {entry["state_id"]: entry for entry in _admitted(store)}
     assert answer in by_state
     assert by_state[answer]["rank"] == 1  # the alpha state is the top-ranked
+
+
+def test_expansion_can_fill_a_pure_lexical_miss(tmp_path):
+    """The semantic tail exists for underfill, including an empty FTS pool."""
+    store = _build_invisible_semantic_store(tmp_path)
+    baseline = store.query("lexically absent zephyr phrase", image_limit=0)
+    assert baseline == ()
+
+    expanded = store.query(
+        "lexically absent zephyr phrase",
+        image_limit=0,
+        include_adjacent=False,
+        state_semantic_quota=1,
+    )
+
+    assert len(expanded) == 1
+    assert expanded[0].match_kind == "state_semantic"
+    assert _admitted(store)[0]["state_id"] == _state_id(
+        store, expanded[0].trajectory_id, expanded[0].state_index
+    )
 
 
 def test_quota_caps_admissions(tmp_path):
@@ -389,9 +443,105 @@ def test_backfill_is_idempotent_and_resumable(tmp_path):
     assert provider.document_calls == 0
 
 
+def test_profile_activates_only_after_resumed_backfill_completes(tmp_path):
+    asset_root = tmp_path / "assets"
+    asset_root.mkdir()
+    initial = StateVectorProvider()
+    store = TrajectoryStore(
+        tmp_path / "lcm.db", _identity(), asset_root=asset_root,
+        embedding_provider=initial,
+    )
+    store.insert(_source(
+        asset_root,
+        trajectory_id="answerpath",
+        ordinal=0,
+        goal="Update the account settings",
+        texts=(
+            "widget configuration export panel form",
+            "alpha-answer success banner",
+            "logout footer copyright notice",
+        ),
+    ))
+    store.finalize(["answerpath"])
+    store.build_state_semantic_index(initial)
+
+    interrupted = InterruptingStateVectorProvider(
+        model_id="fake-state-v2", fail_after=1
+    )
+    with pytest.raises(RuntimeError, match="interrupted backfill"):
+        store.build_state_semantic_index(
+            interrupted, batch_max_items=1, batch_token_budget=100_000
+        )
+
+    assert store.active_state_semantic_profile() is None
+    staged = store._conn.execute(
+        """
+        SELECT profile_digest, active
+        FROM lcm_trajectory_state_embedding_profiles
+        WHERE model_name = ?
+        """,
+        ("fake-state-v2",),
+    ).fetchone()
+    assert staged is not None and int(staged["active"]) == 0
+    staged_count = store._conn.execute(
+        "SELECT COUNT(*) FROM lcm_trajectory_state_embeddings "
+        "WHERE profile_digest = ?",
+        (staged["profile_digest"],),
+    ).fetchone()[0]
+    assert staged_count == 1
+
+    interrupted.fail_after = None
+    resumed = store.build_state_semantic_index(
+        interrupted, batch_max_items=1, batch_token_budget=100_000
+    )
+    active = store.active_state_semantic_profile()
+    assert resumed["already_embedded"] == 1
+    assert resumed["states_embedded"] == 2
+    assert active is not None
+    assert active["model_name"] == "fake-state-v2"
+
+
+def test_dimension_probe_is_bounded_by_document_token_budget(tmp_path):
+    asset_root = tmp_path / "assets"
+    asset_root.mkdir()
+    provider = ProbeBudgetProvider(token_limit=5)
+    store = TrajectoryStore(
+        tmp_path / "lcm.db", _identity(), asset_root=asset_root,
+        embedding_provider=provider,
+    )
+    store.insert(_source(
+        asset_root,
+        trajectory_id="answerpath",
+        ordinal=0,
+        goal="Update the account settings",
+        texts=("alpha-answer " + ("token " * 100),),
+    ))
+    store.finalize(["answerpath"])
+
+    stats = store.build_state_semantic_index(
+        provider, document_token_budget=5, batch_token_budget=50
+    )
+
+    assert stats["states_embedded"] == 1
+    assert provider.probe_documents
+    assert token_module.count_tokens(provider.probe_documents[0]) <= 5
+
+
+def test_fallback_chunks_obey_the_shared_token_estimator(tmp_path, monkeypatch):
+    monkeypatch.setattr(token_module, "_get_encoder", lambda: None)
+    store = object.__new__(TrajectoryStore)
+    document = "漢字かな交じり文" * 20
+
+    chunks = store._state_token_chunks(document, token_budget=5)
+
+    assert "".join(chunks) == document
+    assert len(chunks) > 1
+    assert all(token_module._fallback_token_estimate(chunk) <= 5 for chunk in chunks)
+
+
 def test_chunked_path_pools_oversize_documents(tmp_path):
-    """A document over the (test-lowered) per-document token budget takes the
-    chunked path and still yields exactly one usable per-state vector."""
+    """Every document over the test-lowered token budget takes the chunk path
+    and each state still yields exactly one usable vector."""
     asset_root = tmp_path / "assets"
     asset_root.mkdir()
     provider = StateVectorProvider()
@@ -414,7 +564,9 @@ def test_chunked_path_pools_oversize_documents(tmp_path):
     stats = store.build_state_semantic_index(
         provider, document_token_budget=5, batch_token_budget=50, batch_max_items=4
     )
-    assert stats["chunked_states"] == 1
+    # Both documents exceed five cl100k tokens; the old expectation of one
+    # chunked state confused word count with the provider tokenizer.
+    assert stats["chunked_states"] == 2
     assert stats["states_embedded"] == 2
     oversize = _state_id(store, "answerpath", 1)
     row = store._conn.execute(
@@ -422,6 +574,64 @@ def test_chunked_path_pools_oversize_documents(tmp_path):
         (oversize,),
     ).fetchone()
     assert row is not None and len(bytes(row["vector"])) == stats["dim"] * 4
+
+
+def test_state_query_provider_failure_degrades_to_lexical(tmp_path):
+    provider = StateVectorProvider()
+    store = _build_invisible_semantic_store(tmp_path, provider=provider)
+    baseline = store.query(_QUERY, image_limit=0)
+    fallbacks_before = store.semantic_metrics()["fallbacks"]
+    provider.fail_queries = True
+
+    degraded = store.query(
+        _QUERY, image_limit=0, state_semantic_quota=8
+    )
+
+    assert [hit.exact_ref for hit in degraded] == [
+        hit.exact_ref for hit in baseline
+    ]
+    assert store.semantic_metrics()["fallbacks"] == fallbacks_before + 1
+
+
+def test_state_query_embedding_is_counted_in_semantic_usage(tmp_path):
+    provider = StateVectorProvider()
+    store = _build_invisible_semantic_store(tmp_path, provider=provider)
+    before = store.semantic_metrics()
+
+    store.query(_QUERY, image_limit=0, state_semantic_quota=1)
+
+    after = store.semantic_metrics()
+    assert after["query_calls"] == before["query_calls"] + 1
+    assert after["query_tokens"] == before["query_tokens"] + 1
+
+
+def test_state_matrix_cache_refreshes_after_same_profile_rewrite(tmp_path):
+    provider = StateVectorProvider()
+    store = _build_invisible_semantic_store(tmp_path, provider=provider)
+    alpha = _state_id(store, "answerpath", 2)
+    beta = _state_id(store, "othertask", 0)
+    assert store._semantic_state_ranks("query", 1)[0][0] == alpha
+
+    store._conn.execute(
+        """
+        UPDATE lcm_trajectory_state_embeddings
+        SET vector = CASE state_id
+                WHEN ? THEN ?
+                WHEN ? THEN ?
+                ELSE vector
+            END,
+            embedded_at = embedded_at + 1000
+        WHERE state_id IN (?, ?)
+        """,
+        (
+            alpha, struct.pack("<3f", 0.0, 0.0, 1.0),
+            beta, struct.pack("<3f", 1.0, 0.0, 0.0),
+            alpha, beta,
+        ),
+    )
+    store._conn.commit()
+
+    assert store._semantic_state_ranks("query", 1)[0][0] == beta
 
 
 def test_arm_inert_without_provider_or_index(tmp_path):
