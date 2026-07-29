@@ -1415,6 +1415,10 @@ class _StubStore:
         self.batch_calls.append(list(store_ids))
         return {sid: self._rows[sid] for sid in store_ids if sid in self._rows}
 
+    def drop(self, store_id):
+        """Delete a row, as supported cleanup does mid-request."""
+        self._rows.pop(store_id, None)
+
 
 def _stub_engine(store_ids):
     return SimpleNamespace(_store=_StubStore(store_ids))
@@ -2371,9 +2375,20 @@ def test_ledger_invariants_hold_under_a_randomized_transition_sequence():
     rng = random.Random(20260729)
     per_session_limit = 3
     wave_size = 16
+    # expanded_limit > 0 so the SAME candidate can be judged in-budget or
+    # post-budget as the live count moves across the threshold -- the transition
+    # that makes a rejection's rule matter. A third of the candidates carry an
+    # excerpt that does not match their row: admissible in-budget (where the
+    # text is cut from the row) and not post-budget (where it must be found at
+    # its offset), so post-budget rejections are inside the generated space.
+    expanded_limit = 4
     sessions = [f"session-{index % 7}" for index in range(1, 121)]
     ordered = [
-        _message_entry(index, session_id=sessions[index - 1])
+        _message_entry(
+            index,
+            session_id=sessions[index - 1],
+            snippet="not in the row" if index % 3 == 0 else None,
+        )
         for index in range(1, 121)
     ]
     engine = _stub_engine(range(1, 121))
@@ -2381,9 +2396,10 @@ def test_ledger_invariants_hold_under_a_randomized_transition_sequence():
         ordered,
         engine=engine,
         per_session_limit=per_session_limit,
-        expanded_limit=0,
+        expanded_limit=expanded_limit,
         wave_size=wave_size,
     )
+    deleted: set[int] = set()
     ledger = selector.ledger
     admitted: list[dict] = []
     delivered: list[dict] = []
@@ -2410,9 +2426,31 @@ def test_ledger_invariants_hold_under_a_randomized_transition_sequence():
 
     for step in range(200):
         action = rng.random()
-        if action < 0.4:
+        if action < 0.35:
             for entry in selector.take(ledger.live_count + rng.randint(1, 4)):
+                store_id = entry["hit"]["store_id"]
+                # Admission must rest on the row as it stands NOW: the walk
+                # holds it, and it was never deleted behind the proof.
+                assert store_id in selector.rows, (
+                    f"step {step}: admitted {store_id} without holding its row"
+                )
+                assert store_id not in deleted, (
+                    f"step {step}: admitted {store_id} on a stale proof"
+                )
                 admitted.append(entry)
+        elif action < 0.45:
+            # Delete a row nothing live depends on -- the eviction-then-refetch
+            # path, where a blocked candidate's row disappears while it waits.
+            candidates = [
+                sid
+                for sid in range(1, 121)
+                if sid not in deleted and not ledger.holds_store(sid)
+            ]
+            if candidates:
+                victim = rng.choice(candidates)
+                engine._store.drop(victim)
+                selector.rows.pop(victim, None)
+                deleted.add(victim)
         elif action < 0.6 and admitted:
             entry = rng.choice(admitted)
             if ledger.deliver(entry):
@@ -2430,6 +2468,13 @@ def test_ledger_invariants_hold_under_a_randomized_transition_sequence():
     assert delivered, "the sequence must actually deliver something"
     assert set(map(id, ledger.delivered_entries())) == set(map(id, delivered))
     assert ledger.double_releases > 0, "the sequence must exercise double release"
+    # The generator must actually reach the family this round was about, or the
+    # family sits outside the tested space and the property proves nothing here.
+    assert deleted, "no row was ever deleted mid-walk"
+    assert any(
+        under is False for under in selector._rejected.values()
+    ), "no post-budget rejection was generated"
+    assert selector.batched_reads > wave_size // 4, "no refetch pressure generated"
 
 
 def test_take_tops_up_to_a_target_rather_than_adding_a_count():
@@ -2512,3 +2557,77 @@ def test_long_seen_run_does_not_discard_novel_rows_behind_the_cap(
     assert not ({hit["exact_ref"] for hit in after["hits"]} & set(seen[:30]))
     assert {hit["store_id"] for hit in after["hits"]} <= set(store_ids)
     assert all(hit["content_offset"] is not None for hit in after["hits"])
+
+
+# -- Delta-6 review: cache coherence across a rewind ---------------------------
+
+
+def test_post_budget_rejection_does_not_bar_a_later_in_budget_admission():
+    """DELTA-6 FINDING 1: a rejection is only as durable as its rule.
+
+    The two budgets prove different things. In-budget, the delivered text is a
+    window cut from the row, so the row existing IS the proof. Post-budget, the
+    hit ships its own excerpt, which must be found at its offset. A candidate
+    carrying an excerpt that does not match its row therefore fails post-budget
+    and passes in-budget -- but the rejection was remembered without its rule,
+    so once a refund made the candidate in-budget again it stayed skipped and
+    the response underfilled.
+    """
+    # Excerpt does not match the row: post-budget it cannot be cited, in-budget
+    # it can, because hydration cuts the text from the row itself.
+    ordered = [
+        _message_entry(1, session_id="session-a"),
+        _message_entry(2, session_id="session-b", snippet="not in the row"),
+    ]
+    engine = _stub_engine([1, 2])
+    selector = lcm_tools._LcmRecallStrictSelector(
+        ordered, engine=engine, per_session_limit=5, expanded_limit=1
+    )
+
+    first = selector.take(1)
+    assert [e["hit"]["store_id"] for e in first] == [1]
+    # Live == expanded_limit, so candidate 2 is judged post-budget and rejected.
+    assert selector.take(2) == []
+    assert selector.unreferenced_dropped == 1
+
+    # The refund puts the budget back; candidate 2 is now admissible in-budget.
+    assert selector.release(first[0]) is True
+    regained = selector.take(1)
+    assert [e["hit"]["store_id"] for e in regained] == [2], (
+        "a post-budget rejection must not bar an in-budget admission"
+    )
+    assert selector.unreferenced_dropped == 0
+
+
+def test_row_deleted_while_blocked_is_reverified_before_admission():
+    """DELTA-6 FINDING 2: cached proof is void once its row is let go.
+
+    A blocked candidate releases its row. If that row is then deleted, a refund
+    rewinding to the candidate must NOT admit it on the strength of the earlier
+    verification -- the bytes it was proved against are gone.
+    """
+    ordered = [
+        _message_entry(1, session_id="session-a"),
+        _message_entry(2, session_id="session-a"),
+        _message_entry(3, session_id="session-b"),
+    ]
+    engine = _stub_engine([1, 2, 3])
+    selector = lcm_tools._LcmRecallStrictSelector(
+        ordered, engine=engine, per_session_limit=1, expanded_limit=8
+    )
+
+    taken = selector.take(2)
+    assert [e["hit"]["store_id"] for e in taken] == [1, 3]
+    # Candidate 2 was verified, then blocked on session-a's cap, so its row was
+    # released. Delete it from the store while it waits.
+    assert 2 not in selector.rows
+    engine._store.drop(2)
+
+    assert selector.release(taken[0]) is True
+    regained = selector.take(2)
+
+    assert [e["hit"]["store_id"] for e in regained] == [], (
+        "a deleted row must be re-proved, not admitted from a stale proof"
+    )
+    assert not selector.ledger.holds_store(2)
+    assert selector.unreferenced_dropped == 1

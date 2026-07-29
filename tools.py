@@ -3767,18 +3767,26 @@ class _LcmRecallStrictSelector:
         self._per_session_limit = per_session_limit
         self._expanded_limit = expanded_limit
         self._wave_size = max(1, wave_size)
-        # Where to resume when a refund frees a slot: the position of the
-        # earliest density-blocked candidate still waiting, plus the identities
-        # of those candidates so they can be counted without being stored.
-        self._blocked_from: int | None = None
+        # Where to resume when a refund frees a slot: the earliest position
+        # holding a candidate that was skipped for a REVERSIBLE reason -- the
+        # density cap, or a post-budget rejection that an in-budget slot would
+        # judge by a weaker rule. Only the position is kept; the candidates stay
+        # in the ranking.
+        self._resume_from: int | None = None
         self._blocked: set[int] = set()
+        # id(entry) -> the budget the rejection was made under.
+        self._rejected: dict[int, bool] = {}
         self._examining = 0
         self._prefetched_to = 0
         self._missing: set[int] = set()
         self.ledger = _LcmRecallSelectionLedger()
         self.rows: dict[int, dict[str, Any]] = {}
         self.batched_reads = 0
-        self.unreferenced_dropped = 0
+
+    @property
+    def unreferenced_dropped(self) -> int:
+        """Candidates currently held out for want of a validated reference."""
+        return len(self._rejected)
 
     @property
     def diversity_dropped(self) -> int:
@@ -3801,47 +3809,65 @@ class _LcmRecallStrictSelector:
             # than holding those candidates in a buffer: they are already in the
             # ranking, so a POSITION is all that has to be remembered, and no
             # bound on a buffer can then discard a valid row.
-            if self._blocked_from is not None:
-                self._cursor = min(self._cursor, self._blocked_from)
+            if self._resume_from is not None:
+                self._cursor = min(self._cursor, self._resume_from)
                 self._prefetched_to = min(self._prefetched_to, self._cursor)
-                self._blocked_from = None
+                self._resume_from = None
         return released
 
     def _prefetch(self) -> bool:
-        """Read the next wave of candidate rows in ONE batch.
+        """Read the next WINDOW of candidate rows in ONE batch.
 
-        Starts at the candidate being examined -- NOT after it -- so the row the
-        walk needs right now is always inside the wave it triggers.
+        The window is a span of POSITIONS, not a quota of new ids. Counting new
+        ids instead lets a window that mostly hits rows already held scan far
+        past itself to fill its quota, so every rewind pulls in another wave and
+        retention grows without bound. Advancing by position keeps read-ahead --
+        and therefore retention -- inside a single window.
+
+        Starts at the candidate being examined, NOT after it, so the row the walk
+        needs right now is always inside the window it triggers.
         """
         if self._engine is None:
             return False
-        wanted: list[int] = []
-        index = max(self._examining, self._prefetched_to)
-        while index < len(self._ordered) and len(wanted) < self._wave_size:
+        start = max(self._examining, self._prefetched_to)
+        if start >= len(self._ordered):
+            return False
+        window: list[int] = []
+        index = start
+        while index < len(self._ordered) and index - start < self._wave_size:
             hit = self._ordered[index]["hit"]
             index += 1
             store_id = hit.get("store_id")
             if hit.get("kind") == "summary" or store_id is None:
                 continue
             store_id = int(store_id)
-            if store_id in self.rows or store_id in self._missing or store_id in wanted:
-                continue
-            wanted.append(store_id)
-        if index == self._prefetched_to:
-            return False
+            if store_id not in window:
+                window.append(store_id)
         self._prefetched_to = index
-        if not wanted:
-            return True
-        self.batched_reads += 1
-        fetched = self._engine._store.get_batch(wanted)
-        # A row the store does not have is remembered as MISSING, or the walk
-        # cannot tell "not fetched yet" from "fetched and absent" and keeps
-        # calling for waves that can never contain it. Rows merely evicted stay
-        # re-fetchable, which is what lets the walk revisit a candidate it
-        # skipped earlier without holding its row all along.
-        self._missing.update(sid for sid in wanted if sid not in fetched)
-        self.rows.update(fetched)
+        wanted = [
+            store_id
+            for store_id in window
+            if store_id not in self.rows and store_id not in self._missing
+        ]
+        if wanted:
+            self.batched_reads += 1
+            fetched = self._engine._store.get_batch(wanted)
+            # A row the store does not have is remembered as MISSING, or the walk
+            # cannot tell "not fetched yet" from "fetched and absent" and keeps
+            # calling for windows that can never contain it. Rows merely evicted
+            # stay re-fetchable, which is what lets the walk revisit a candidate
+            # it skipped earlier without holding its row all along.
+            self._missing.update(sid for sid in wanted if sid not in fetched)
+            self.rows.update(fetched)
+        self._trim_rows(window)
         return True
+
+    def _trim_rows(self, window: list[int]) -> None:
+        """Hold only the current window and whatever is live."""
+        keep = set(window)
+        for store_id in list(self.rows):
+            if store_id not in keep and not self.ledger.holds_store(store_id):
+                del self.rows[store_id]
 
     def _row_for(self, store_id: Any) -> dict[str, Any] | None:
         if store_id is None:
@@ -3912,12 +3938,17 @@ class _LcmRecallStrictSelector:
             store_id=hit.get("store_id"),
         )
 
+    def _mark_resume(self) -> None:
+        """Remember the earliest position a refund would have to come back to."""
+        position = self._cursor - 1
+        if self._resume_from is None or position < self._resume_from:
+            self._resume_from = position
+
     def _next_admissible(self) -> dict[str, Any] | None:
         """Walk forward to the next candidate that can be admitted right now.
 
-        Entries the ledger already knows (live or released) and entries already
-        proved unciteable are skipped without being re-examined, so a rewind
-        costs a scan rather than a second round of reads.
+        Entries the ledger already knows (live or released) are skipped, as are
+        entries whose rejection still applies under the current budget.
         """
         while self._cursor < len(self._ordered):
             entry = self._ordered[self._cursor]
@@ -3926,38 +3957,50 @@ class _LcmRecallStrictSelector:
             hit = entry["hit"]
             if self.ledger.state(entry) is not None:
                 continue
-            if entry.get("_strict_rejected"):
-                continue
             hydratable = self.ledger.live_count < self._expanded_limit
-            # Verification is remembered per candidate, but only for the budget
-            # it was proved under: an in-budget candidate is proved by its row
-            # existing, which is a weaker claim than the excerpt check a
-            # post-budget slot needs.
-            if entry.get("_strict_verified") != hydratable:
-                if _lcm_recall_reference_shape(hit, hydratable=hydratable) is None or (
-                    not self._verify(entry, hydratable=hydratable)
-                ):
-                    entry["_strict_rejected"] = True
-                    self._blocked.discard(id(entry))
-                    self.unreferenced_dropped += 1
-                    self._forget(hit.get("store_id"))
-                    continue
-                entry["_strict_verified"] = hydratable
+            # A rejection is only as durable as the rule that produced it. An
+            # IN-BUDGET rejection means the row itself is unusable -- missing,
+            # empty, or not a message at all -- which no later budget can undo.
+            # A POST-BUDGET rejection only means the candidate's own excerpt did
+            # not check out, and that same candidate is still admissible
+            # in-budget, where the delivered text is a window cut from the row
+            # rather than an excerpt it carried. Skipping it there would underfill
+            # against a rule that no longer applies.
+            rejected_under = self._rejected.get(id(entry))
+            if rejected_under is True or (rejected_under is False and not hydratable):
+                continue
+            # Verification is deliberately NOT carried across examinations. It is
+            # only valid while the row it was proved against is still held, and a
+            # blocked candidate releases its row -- which may then be rewritten or
+            # deleted before a refund brings the walk back. Re-proving against the
+            # row as REFETCHED is what makes the rewind safe.
+            if _lcm_recall_reference_shape(hit, hydratable=hydratable) is None or (
+                not self._verify(entry, hydratable=hydratable)
+            ):
+                self._rejected[id(entry)] = hydratable
+                self._blocked.discard(id(entry))
+                # Reversible: judged by the post-budget rule, this candidate is
+                # still admissible in-budget, so a refund must bring the walk
+                # back to it exactly as it does for a density block.
+                if not hydratable:
+                    self._mark_resume()
+                self._forget(hit.get("store_id"))
+                continue
             session_key = self._session_key(hit)
             if self.ledger.session_count(session_key) >= self._per_session_limit:
                 # Refundable, unlike a shape or verification failure, so the
                 # candidate is not consumed -- only its POSITION is remembered,
                 # and the row it is not using is released. It stays in the
                 # ranking, so no bound on a buffer can discard it.
-                if self._blocked_from is None:
-                    self._blocked_from = self._cursor - 1
+                self._mark_resume()
                 self._blocked.add(id(entry))
                 self._forget(hit.get("store_id"))
                 continue
-            # Admission needs the row back: hydration reads from this snapshot,
-            # and this candidate may have had its row released while blocked.
-            self._row_for(hit.get("store_id"))
+            # No blind refetch here: verification above just proved this
+            # candidate against the row as it stands and left that row held, so
+            # hydration reads the same bytes the admission was granted on.
             self._blocked.discard(id(entry))
+            self._rejected.pop(id(entry), None)
             self._admit(entry)
             return entry
         return None
