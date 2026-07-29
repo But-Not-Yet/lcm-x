@@ -16,4 +16,7 @@
 
 V1 delivery flag: none. Items 1–7 remain default-off or change only an already-expired operation; item 8–11 changes do not alter default delivered-hit selection.
 
-Explicit exclusions were not changed: `store.py:1123` query semantics, arbitrary summary source-row selection, `tests/test_lcm_engine.py`, `test_stress_release_check.py`, and `benchmarking/`.
+Round-1 follow-through: the stress-CLI FTS marker normalization in
+`benchmarking/stress.py` landed with the round, and the final stress smoke passed.
+
+Explicit exclusions were not changed: `store.py:1123` query semantics, arbitrary summary source-row selection, and `tests/test_lcm_engine.py`; no benchmarking change beyond the documented stress-CLI fix belonged to round 1.

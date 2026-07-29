@@ -7,6 +7,7 @@ ladder used by later semantic retrieval work.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import logging
 import math
@@ -86,6 +87,12 @@ _SOURCE_LINEAGE_WORK_LIMIT = 4096
 
 class _UnverifiableProvenance(RuntimeError):
     """A requested provenance filter could not be checked completely."""
+
+
+class _PrescreenDeadlineExpired(TimeoutError):
+    def __init__(self, scanned: int = 0) -> None:
+        super().__init__("binary prescreen deadline expired")
+        self.scanned = max(0, int(scanned))
 
 
 def _require_supported_identity(identity: "EmbeddingIdentity") -> None:
@@ -1876,7 +1883,7 @@ class VectorStore:
 
     def _cached_binary_matrix(
         self, cache: "OrderedDict[tuple[str, int], tuple[list[str], Any]]",
-        identity_hash: str, loader, *, cacheable: bool,
+        identity_hash: str, loader, *, cacheable: bool, deadline: float | None,
     ) -> tuple[list[str], Any]:
         """Load a full-corpus binary matrix, caching only the UNFILTERED case.
 
@@ -1885,19 +1892,70 @@ class VectorStore:
         sign-bit matrix across calls (keyed on data_version for cross-process
         invalidation), which is what makes back-to-back two-stage recalls cheap.
         """
+        if deadline is not None and time.monotonic() >= deadline:
+            raise _PrescreenDeadlineExpired()
         if not cacheable:
-            return loader()
+            loaded = loader()
+            if deadline is not None and time.monotonic() >= deadline:
+                raise _PrescreenDeadlineExpired()
+            return loaded
         with self._cache_lock:
             key = (identity_hash, self._data_version(identity_hash))
             cached = cache.get(key)
             if cached is not None:
                 cache.move_to_end(key)
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise _PrescreenDeadlineExpired()
                 return cached
             loaded = loader()
+            if deadline is not None and time.monotonic() >= deadline:
+                raise _PrescreenDeadlineExpired()
             cache[key] = loaded
             while len(cache) > self._MATRIX_CACHE_MAX_ENTRIES:
                 cache.popitem(last=False)
             return loaded
+
+    def _load_binary_with_deadline(self, loader, deadline: float | None):
+        """Run a full binary load on an interruptible read-only connection."""
+        if deadline is None:
+            return loader(self)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _PrescreenDeadlineExpired()
+        uri = f"{self.db_path.resolve().as_uri()}?mode=ro"
+        conn: sqlite3.Connection | None = None
+        expired = [False]
+
+        def interrupt_if_expired() -> int:
+            if time.monotonic() >= deadline:
+                expired[0] = True
+                return 1
+            return 0
+
+        try:
+            conn = sqlite3.connect(
+                uri,
+                uri=True,
+                timeout=max(0.001, remaining),
+                check_same_thread=False,
+            )
+            conn.row_factory = sqlite3.Row
+            conn.set_progress_handler(interrupt_if_expired, 1000)
+            reader = copy.copy(self)
+            reader._conn = conn
+            reader._write_lock = threading.RLock()
+            reader._cache_lock = threading.RLock()
+            loaded = loader(reader)
+            if time.monotonic() >= deadline:
+                raise _PrescreenDeadlineExpired()
+            return loaded
+        except sqlite3.OperationalError as exc:
+            if expired[0] or time.monotonic() >= deadline:
+                raise _PrescreenDeadlineExpired() from exc
+            raise
+        finally:
+            if conn is not None:
+                conn.close()
 
     @staticmethod
     def _binary_rows_to_matrix(numpy: Any, rows: Sequence[sqlite3.Row]) -> tuple[list[str], Any]:
@@ -1935,6 +1993,7 @@ class VectorStore:
         binary_matrix: Any,
         *,
         chunk: bool,
+        deadline: float | None,
     ) -> list[tuple[str, float, str]]:
         """Stage-1 Hamming prescreen over ``binary_matrix`` then stage-2 rescore.
 
@@ -1953,8 +2012,18 @@ class VectorStore:
         # the dim so this should not happen).
         width = min(binary_matrix.shape[1], int(query_bits.shape[0]))
         popcount = numpy.asarray(_POPCOUNT_TABLE, dtype=numpy.uint16)
-        xor = numpy.bitwise_xor(binary_matrix[:, :width], query_bits[:width])
-        hamming = popcount[xor].sum(axis=1)
+        hamming = numpy.empty(n, dtype=numpy.uint32)
+        prescreen_rows = min(max(1, self.bounded_scan_rows), 4096)
+        for start in range(0, n, prescreen_rows):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise _PrescreenDeadlineExpired(start)
+            end = min(n, start + prescreen_rows)
+            xor = numpy.bitwise_xor(
+                binary_matrix[start:end, :width], query_bits[:width]
+            )
+            hamming[start:end] = popcount[xor].sum(axis=1)
+            if deadline is not None and time.monotonic() >= deadline:
+                raise _PrescreenDeadlineExpired(end)
         m = min(n, max(k, self.knn_prescreen_multiplier * k))
         if m < n:
             survivors = numpy.argpartition(hamming, m - 1)[:m]
@@ -1966,13 +2035,19 @@ class VectorStore:
             if chunk
             else self._load_vectors_for_ids
         )
+        if deadline is not None and time.monotonic() >= deadline:
+            raise _PrescreenDeadlineExpired(n)
         rowids, out_ids, kinds, vectors = loader(
             identity_hash, dim, survivor_ids, dtype
         )
+        if deadline is not None and time.monotonic() >= deadline:
+            raise _PrescreenDeadlineExpired(n)
         if not vectors:
             return []
         matrix = numpy.asarray(vectors, dtype=numpy.float32)
         scores = matrix @ numpy.asarray(query, dtype=numpy.float32)
+        if deadline is not None and time.monotonic() >= deadline:
+            raise _PrescreenDeadlineExpired(n)
         return self._ranked(rowids, out_ids, kinds, scores, k)
 
     def knn(
@@ -2035,21 +2110,50 @@ class VectorStore:
             and self._binary_fully_synced(identity, chunk=False)
         ):
             unfiltered = since is None and until is None and conversation_ids is None
-            binary_ids, binary_matrix = self._cached_binary_matrix(
-                self._binary_matrix_cache,
-                identity,
-                lambda: self._load_embedding_binary_matrix(
-                    numpy, identity, since=since, until=until,
-                    conversation_ids=conversation_ids,
-                ),
-                cacheable=unfiltered,
-            )
+            try:
+                binary_ids, binary_matrix = self._cached_binary_matrix(
+                    self._binary_matrix_cache,
+                    identity,
+                    lambda: self._load_binary_with_deadline(
+                        lambda reader: reader._load_embedding_binary_matrix(
+                            numpy,
+                            identity,
+                            since=since,
+                            until=until,
+                            conversation_ids=conversation_ids,
+                        ),
+                        deadline,
+                    ),
+                    cacheable=unfiltered,
+                    deadline=deadline,
+                )
+            except _PrescreenDeadlineExpired as exc:
+                return KNNResult(
+                    coverage="bounded",
+                    scanned=exc.scanned,
+                    total=self._count_embedded_vectors(identity, chunk=False),
+                )
             if binary_matrix.shape[0] == 0:
                 return KNNResult(coverage="none")
-            candidates = self._two_stage_rank(
-                numpy, identity, dim, dtype, query, k, binary_ids, binary_matrix,
-                chunk=False,
-            )
+            try:
+                candidates = self._two_stage_rank(
+                    numpy,
+                    identity,
+                    dim,
+                    dtype,
+                    query,
+                    k,
+                    binary_ids,
+                    binary_matrix,
+                    chunk=False,
+                    deadline=deadline,
+                )
+            except _PrescreenDeadlineExpired as exc:
+                return KNNResult(
+                    coverage="bounded",
+                    scanned=exc.scanned,
+                    total=len(binary_ids),
+                )
             # coverage='full_approx' (FIX 2): the whole corpus is REACHED, but
             # stage-1 Hamming keeps only M=mult*k survivors, so top-k is an
             # approximate (recall@M) result, not exact like the exact-scan 'full'.
@@ -2640,21 +2744,51 @@ class VectorStore:
                 since is None and until is None
                 and conversation_ids is None and source is None
             )
-            binary_ids, binary_matrix = self._cached_binary_matrix(
-                self._chunk_binary_matrix_cache,
-                identity,
-                lambda: self._load_chunk_binary_matrix(
-                    numpy, identity, since=since, until=until,
-                    conversation_ids=conversation_ids, source=source,
-                ),
-                cacheable=unfiltered,
-            )
+            try:
+                binary_ids, binary_matrix = self._cached_binary_matrix(
+                    self._chunk_binary_matrix_cache,
+                    identity,
+                    lambda: self._load_binary_with_deadline(
+                        lambda reader: reader._load_chunk_binary_matrix(
+                            numpy,
+                            identity,
+                            since=since,
+                            until=until,
+                            conversation_ids=conversation_ids,
+                            source=source,
+                        ),
+                        deadline,
+                    ),
+                    cacheable=unfiltered,
+                    deadline=deadline,
+                )
+            except _PrescreenDeadlineExpired as exc:
+                return KNNResult(
+                    coverage="bounded",
+                    scanned=exc.scanned,
+                    total=self._count_embedded_vectors(identity, chunk=True),
+                )
             if binary_matrix.shape[0] == 0:
                 return KNNResult(coverage="none")
-            candidates = self._two_stage_rank(
-                numpy, identity, dim, dtype, query, k, binary_ids, binary_matrix,
-                chunk=True,
-            )
+            try:
+                candidates = self._two_stage_rank(
+                    numpy,
+                    identity,
+                    dim,
+                    dtype,
+                    query,
+                    k,
+                    binary_ids,
+                    binary_matrix,
+                    chunk=True,
+                    deadline=deadline,
+                )
+            except _PrescreenDeadlineExpired as exc:
+                return KNNResult(
+                    coverage="bounded",
+                    scanned=exc.scanned,
+                    total=len(binary_ids),
+                )
             # coverage='full_approx' (FIX 2): whole corpus reached, but stage-1
             # keeps only M=mult*k survivors -> approximate top-k, not exact.
             return KNNResult(candidates, coverage="full_approx")

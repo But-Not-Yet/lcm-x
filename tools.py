@@ -4250,6 +4250,7 @@ def _lcm_recall_summary_source_hits(
     current: str | None,
     candidate_limit: int,
     lead_limit: int,
+    deadline: float,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Carry summary-KNN relevance onto the nodes' SOURCE MESSAGES.
 
@@ -4274,35 +4275,71 @@ def _lcm_recall_summary_source_hits(
     budget. The purpose is to make the SESSION reachable with citable evidence,
     not to rank inside it.
     """
-    leads: list[dict[str, Any]] = []
-    ordered_ids: list[int] = []
-    seen: set[int] = set()
-    for node, _score in nodes:
-        if len(leads) < max(0, lead_limit):
-            lead: dict[str, Any] = {
-                "node_id": node.node_id,
-                "session_id": node.session_id,
-                "from_current_session": bool(current)
-                and node.session_id == current,
-            }
-            hint = _lcm_recall_summary_expand_hint(lead)
-            if hint:
-                lead["expand_hint"] = hint
-            leads.append(lead)
-        if len(ordered_ids) >= candidate_limit:
-            continue
-        for store_id in engine._dag.source_message_ids(
-            node.node_id, limit=_LCM_RECALL_SUMMARY_SOURCE_PER_NODE
-        ):
-            if store_id in seen:
-                continue
-            seen.add(store_id)
-            ordered_ids.append(store_id)
+    def require_remaining(stage: str) -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"summary source expansion deadline exhausted before {stage}")
+        return remaining
 
-    hits: list[dict[str, Any]] = []
-    if ordered_ids:
-        rows = engine._store.get_batch(ordered_ids[:candidate_limit])
+    require_remaining("database connection")
+    db_path = Path(engine._store.db_path).resolve()
+    uri = f"{db_path.as_uri()}?mode=ro"
+    conn: sqlite3.Connection | None = None
+    expired = [False]
+
+    def interrupt_if_expired() -> int:
+        if time.monotonic() >= deadline:
+            expired[0] = True
+            return 1
+        return 0
+
+    try:
+        conn = sqlite3.connect(
+            uri,
+            uri=True,
+            timeout=max(0.001, require_remaining("database connection")),
+        )
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only=ON")
+        conn.set_progress_handler(interrupt_if_expired, 1000)
+        read_store = copy.copy(engine._store)
+        read_dag = copy.copy(engine._dag)
+        read_store._conn = conn
+        read_dag._conn = conn
+        read_dag._db_lock = threading.RLock()
+
+        leads: list[dict[str, Any]] = []
+        ordered_ids: list[int] = []
+        seen: set[int] = set()
+        for node, _score in nodes:
+            require_remaining("lineage traversal")
+            if len(leads) < max(0, lead_limit):
+                lead: dict[str, Any] = {
+                    "node_id": node.node_id,
+                    "session_id": node.session_id,
+                    "from_current_session": bool(current)
+                    and node.session_id == current,
+                }
+                hint = _lcm_recall_summary_expand_hint(lead)
+                if hint:
+                    lead["expand_hint"] = hint
+                leads.append(lead)
+            if len(ordered_ids) >= candidate_limit:
+                continue
+            for store_id in read_dag.source_message_ids(
+                node.node_id, limit=_LCM_RECALL_SUMMARY_SOURCE_PER_NODE
+            ):
+                if store_id in seen:
+                    continue
+                seen.add(store_id)
+                ordered_ids.append(store_id)
+        require_remaining("message hydration")
+
+        hits: list[dict[str, Any]] = []
+        if ordered_ids:
+            rows = read_store.get_batch(ordered_ids[:candidate_limit])
         for store_id in ordered_ids[:candidate_limit]:
+            require_remaining("message shaping")
             row = rows.get(store_id)
             if row is None:
                 continue
@@ -4325,7 +4362,14 @@ def _lcm_recall_summary_source_hits(
             }
             hit["expand_hint"] = _lcm_recall_excerpt_expand_hint(hit)
             hits.append(hit)
-    return hits, leads
+        return hits, leads
+    except sqlite3.OperationalError as exc:
+        if expired[0] or time.monotonic() >= deadline:
+            raise TimeoutError("summary source expansion deadline exhausted") from exc
+        raise
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def _lcm_recall_summary_arm(
@@ -4379,6 +4423,7 @@ def _lcm_recall_summary_arm(
             current=current,
             candidate_limit=candidate_limit,
             lead_limit=lead_limit,
+            deadline=deadline,
         )
         return source_hits, coverage, knn_results.scanned, knn_results.total, leads
     hits: list[dict[str, Any]] = []

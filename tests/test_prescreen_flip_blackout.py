@@ -16,6 +16,7 @@ reporting ``coverage='full'``. These assert the two guarantees the fix adds:
 """
 from __future__ import annotations
 
+import hermes_lcm.vector_store as vector_store_module
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.dag import SummaryDAG, SummaryNode
 from hermes_lcm.vector_store import VectorStore, _pack_sign_bits
@@ -171,5 +172,37 @@ def test_scan_bounds_route_a_synced_binary_identity_to_the_exact_scan(tmp_path):
         [1.0, 0.0, 0.0], k=1, model=MODEL, full_scan=True, scan_budget_s=0.0001
     )
     assert budgeted.coverage in {"full", "bounded"}  # exact path, never full_approx
+    store.close()
+    dag.close()
+
+
+def test_deadline_bounds_a_synced_binary_summary_prescreen(tmp_path, monkeypatch):
+    """An expired deadline bounds the prescreen without changing its live path."""
+    db_path = tmp_path / "deadline-prescreen.db"
+    dag = SummaryDAG(db_path)
+    store = VectorStore(
+        db_path,
+        config=LCMConfig(embedding_binary_prescreen=True),
+        bounded_scan_rows=1,
+    )
+    store.register_profile(MODEL, PROVIDER, DIM)
+    _record(store, _add_summary(dag, created_at=1.0), [1.0, 0.0, 0.0])
+    _record(store, _add_summary(dag, created_at=2.0), [0.0, 1.0, 0.0])
+
+    unbounded = store.knn([1.0, 0.0, 0.0], k=1, model=MODEL, full_scan=True)
+    ticks = iter((0.0, 0.0, 0.0, 2.0))
+    monkeypatch.setattr(
+        vector_store_module.time,
+        "monotonic",
+        lambda: next(ticks, 2.0),
+    )
+    expired = store.knn(
+        [1.0, 0.0, 0.0], k=1, model=MODEL, full_scan=True, deadline=1.0
+    )
+
+    assert unbounded.coverage == "full_approx"
+    assert expired.coverage == "bounded"
+    assert expired.scanned == 1
+    assert expired.total == 2
     store.close()
     dag.close()

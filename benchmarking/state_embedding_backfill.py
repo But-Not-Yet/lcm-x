@@ -98,6 +98,21 @@ def _voyage_pricing_table() -> dict[str, float]:
     return _VOYAGE_USD_PER_MILLION_TOKENS
 
 
+def _resolve_rate(model: str, assumed_rate: float | None) -> float:
+    if assumed_rate is not None:
+        rate = float(assumed_rate)
+        if rate <= 0:
+            raise ValueError("--assume-rate must be greater than zero")
+        return rate
+    pricing = _voyage_pricing_table()
+    if model not in pricing:
+        raise ValueError(
+            f"no pricing entry for model {model!r}; pass --assume-rate "
+            "USD-per-million-tokens to make the cost-cap assumption explicit"
+        )
+    return float(pricing[model])
+
+
 def _open_store(db_path: Path, asset_root: Path):
     ts = sys.modules["hermes_lcm.trajectory_store"]
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
@@ -131,10 +146,21 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--cost-cap", type=float, default=10.0,
                         help="abort if projected total cost exceeds this (USD)")
+    parser.add_argument(
+        "--assume-rate",
+        type=float,
+        default=None,
+        metavar="USD_PER_MILLION",
+        help="explicit USD-per-million-token rate for a model absent from pricing",
+    )
     parser.add_argument("--no-resume", action="store_true")
     args = parser.parse_args()
 
     _bootstrap_package(_REPO_ROOT)
+    try:
+        rate = _resolve_rate(args.model, args.assume_rate)
+    except ValueError as exc:
+        parser.error(str(exc))
     ts = sys.modules["hermes_lcm.trajectory_store"]
     asset_root = args.asset_root or args.db.parent
     store = _open_store(args.db, asset_root)
@@ -143,7 +169,6 @@ def main() -> int:
         provider = ts.create_trajectory_embedding_provider(
             args.provider, args.model, timeout_seconds=args.timeout, for_backfill=True,
         )
-        rate = _voyage_pricing_table().get(args.model, 0.06)
         args.ledger.parent.mkdir(parents=True, exist_ok=True)
         started = time.perf_counter()
         checkpoint_state = {"logged_50pct": False}
