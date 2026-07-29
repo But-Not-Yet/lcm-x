@@ -267,7 +267,7 @@ def test_classify_interim_stamp_with_current_query_and_trajectory_tables(tmp_pat
         END;
         """,
         """
-        CREATE INDEX lcm_query_future_index
+        CREATE INDEX idx_lcm_query_future
         ON lcm_query_views(view_id);
         """,
     ),

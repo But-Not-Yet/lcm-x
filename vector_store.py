@@ -41,6 +41,20 @@ logger = logging.getLogger(__name__)
 
 _monotonic = time.monotonic
 
+
+def _prescreen_deadline_expired(deadline: float | None, scanned_rows: int) -> bool:
+    """Deadline check for the binary-prescreen loop, position-aware.
+
+    ``scanned_rows`` is how many rows have completed when the check runs (the
+    batch's ``start`` before scoring, its ``end`` after). Tests patch THIS
+    seam keyed on position — not the process clock, call counts, or frame
+    inspection — so a loop refactor cannot silently disable the covered
+    branch.
+    """
+    del scanned_rows
+    return deadline is not None and _monotonic() >= deadline
+
+
 # Vectors are float32 in native little-endian order by default. These are
 # recorded as part of the canonical profile identity so a dtype/byteorder change
 # is detectable rather than silently reinterpreting stored bytes.
@@ -2043,14 +2057,14 @@ class VectorStore:
         hamming = numpy.empty(n, dtype=numpy.uint32)
         prescreen_rows = min(max(1, self.bounded_scan_rows), 4096)
         for start in range(0, n, prescreen_rows):
-            if deadline is not None and _monotonic() >= deadline:
+            if _prescreen_deadline_expired(deadline, start):
                 raise _PrescreenDeadlineExpired(start)
             end = min(n, start + prescreen_rows)
             xor = numpy.bitwise_xor(
                 binary_matrix[start:end, :width], query_bits[:width]
             )
             hamming[start:end] = popcount[xor].sum(axis=1)
-            if deadline is not None and _monotonic() >= deadline:
+            if _prescreen_deadline_expired(deadline, end):
                 raise _PrescreenDeadlineExpired(end)
         m = min(n, max(k, self.knn_prescreen_multiplier * k))
         if m < n:

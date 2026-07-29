@@ -16,7 +16,6 @@ reporting ``coverage='full'``. These assert the two guarantees the fix adds:
 """
 from __future__ import annotations
 
-import sys
 
 import hermes_lcm.vector_store as vector_store_module
 from hermes_lcm.config import LCMConfig
@@ -29,15 +28,10 @@ PROVIDER = "local"
 DIM = 3
 
 
-def _expire_after_first_prescreen_batch() -> float:
-    frame = sys._getframe(1)
-    return (
-        2.0
-        if frame.f_code.co_name == "_two_stage_rank"
-        and frame.f_locals.get("start") == 0
-        and frame.f_locals.get("end") == 1
-        else 0.0
-    )
+def _expire_after_first_prescreen_batch(deadline, scanned_rows):
+    """Position-keyed deadline stub: expire once the first prescreen batch
+    has completed (scanned_rows >= 1), regardless of clock call patterns."""
+    return deadline is not None and scanned_rows >= 1
 
 
 def _add_summary(dag: SummaryDAG, *, created_at: float) -> int:
@@ -205,11 +199,17 @@ def test_deadline_bounds_a_synced_binary_summary_prescreen(tmp_path, monkeypatch
     unbounded = store.knn([1.0, 0.0, 0.0], k=1, model=MODEL, full_scan=True)
     monkeypatch.setattr(
         vector_store_module,
-        "_monotonic",
+        "_prescreen_deadline_expired",
         _expire_after_first_prescreen_batch,
     )
     expired = store.knn(
-        [1.0, 0.0, 0.0], k=1, model=MODEL, full_scan=True, deadline=1.0
+        [1.0, 0.0, 0.0],
+        k=1,
+        model=MODEL,
+        full_scan=True,
+        # A genuinely-future deadline: only the patched position-keyed seam
+        # trips; the real clock never expires the load path.
+        deadline=vector_store_module._monotonic() + 60.0,
     )
 
     assert unbounded.coverage == "full_approx"
