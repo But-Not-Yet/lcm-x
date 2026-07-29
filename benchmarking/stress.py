@@ -310,7 +310,7 @@ def deterministic_summary(*, text: str, source_tokens: int, token_budget: int, d
 
 def deterministic_expand_answer(*, prompt: str, context_blocks: list[dict[str, Any]], model: str, max_tokens: int, timeout: float) -> str:
     del prompt, model, max_tokens, timeout
-    serialized = json.dumps(context_blocks, ensure_ascii=False)
+    serialized = _fts_plain(json.dumps(context_blocks, ensure_ascii=False))
     canaries = sorted(set(re.findall(r"CANARY_[A-Z0-9_]+\s*=\s*[A-Z0-9_:-]+", serialized)))
     return "Deterministic expansion answer. " + ("; ".join(canaries[:20]) if canaries else "No canaries found.")
 
@@ -462,8 +462,22 @@ def _externalized_payload_files(hermes_home: str | Path) -> list[Path]:
     return sorted(payload_dir.glob("*.json"))
 
 
+_FTS_SNIPPET_MARKERS = re.compile(r">>>|<<<")
+
+
+def _fts_plain(serialized: str) -> str:
+    """Undo FTS5 snippet() match markers so containment checks see contiguous tokens.
+
+    store.py renders grep snippets via snippet(messages_fts, 0, '>>>', '<<<', ...),
+    which splits a planted token like CANARY_SCOPE_A_000 into
+    >>>CANARY<<<_>>>SCOPE<<<_... — checks in BOTH directions (recall canaries AND
+    leak/secret detection) must match against the marker-free text.
+    """
+    return _FTS_SNIPPET_MARKERS.sub("", serialized)
+
+
 def _json_contains(payload: Any, *needles: str) -> bool:
-    serialized = json.dumps(payload, ensure_ascii=False)
+    serialized = _fts_plain(json.dumps(payload, ensure_ascii=False))
     return all(needle in serialized for needle in needles)
 
 
@@ -559,7 +573,7 @@ def _case_multi_cycle_canary_recall(run: StressRun) -> None:
         for index in run.tier.multi_sample_indexes:
             cid = f"CANARY_LONG_{index:04d}"
             grep = run.call_tool(engine, "lcm_grep", {"query": cid, "limit": 5, "sort": "relevance"})
-            hay = json.dumps(grep, ensure_ascii=False)
+            hay = _fts_plain(json.dumps(grep, ensure_ascii=False))
             if cid not in hay or expected[cid] not in hay:
                 missed.append({"canary": cid, "grep": grep})
                 continue
@@ -574,7 +588,7 @@ def _case_multi_cycle_canary_recall(run: StressRun) -> None:
             for store_id in store_ids[:5]:
                 expanded = run.call_tool(engine, "lcm_expand", {"store_id": store_id, "max_tokens": 500})
                 expanded_samples.append({"store_id": store_id, "expand": expanded})
-                ehay = json.dumps(expanded, ensure_ascii=False)
+                ehay = _fts_plain(json.dumps(expanded, ensure_ascii=False))
                 if cid in ehay and expected[cid] in ehay:
                     found_expanded = True
                     break
@@ -650,11 +664,11 @@ def _case_redaction_and_externalization_boundaries(run: StressRun) -> None:
         if leaked:
             run.fail(case, "sensitive_or_large_payload_leak", "Sensitive or oversized payload material was persisted raw across storage boundaries", {"leaked": leaked, "externalized_files": ext_files[:5]})
         grep_secret = run.call_tool(engine, "lcm_grep", {"query": secret_values[0], "limit": 10})
-        grep_secret_results_text = json.dumps(grep_secret.get("results", []), ensure_ascii=False)
+        grep_secret_results_text = _fts_plain(json.dumps(grep_secret.get("results", []), ensure_ascii=False))
         if secret_values[0] in grep_secret_results_text:
             run.fail(case, "grep_returns_raw_secret", "lcm_grep returned a raw secret after sensitive-pattern redaction was enabled", {"grep": grep_secret})
         grep_canary = run.call_tool(engine, "lcm_grep", {"query": "CANARY_SECRET_0001", "limit": 5})
-        if "CANARY_SECRET_0001" not in json.dumps(grep_canary, ensure_ascii=False):
+        if "CANARY_SECRET_0001" not in _fts_plain(json.dumps(grep_canary, ensure_ascii=False)):
             run.fail(case, "redaction_broke_nonsecret_recall", "Sensitive redaction/externalization broke ordinary canary recall", {"grep": grep_canary})
         run.record(case, "externalized_files", ext_files)
         run.record(case, "db_counts", _db_counts(db_path))
@@ -687,11 +701,11 @@ def _case_cross_session_scope_and_pagination(run: StressRun) -> None:
         cursor = load_a_1.get("next_cursor") or 0
         load_a_2 = run.call_tool(engine, "lcm_load_session", {"session_id": "scope-a", "limit": 7, "after_store_id": cursor, "max_content_chars": 80})
 
-        if "CANARY_SCOPE_A_000" in json.dumps(current_a.get("results", []), ensure_ascii=False):
+        if "CANARY_SCOPE_A_000" in _fts_plain(json.dumps(current_a.get("results", []), ensure_ascii=False)):
             run.fail(case, "current_scope_cross_session_leak", "lcm_grep current scope returned another session's raw content", {"current_result": current_a})
-        if "CANARY_SCOPE_A_000" not in json.dumps(all_a.get("results", []), ensure_ascii=False):
+        if "CANARY_SCOPE_A_000" not in _fts_plain(json.dumps(all_a.get("results", []), ensure_ascii=False)):
             run.fail(case, "all_scope_missing_cross_session_hit", "lcm_grep session_scope=all failed to find another session's raw content", {"all_result": all_a})
-        if "CANARY_SCOPE_A_000" not in json.dumps(explicit_a.get("results", []), ensure_ascii=False):
+        if "CANARY_SCOPE_A_000" not in _fts_plain(json.dumps(explicit_a.get("results", []), ensure_ascii=False)):
             run.fail(case, "explicit_session_scope_missing_hit", "lcm_grep session_scope=session failed to find the requested session content", {"explicit_result": explicit_a})
         rows1 = load_a_1.get("messages") or load_a_1.get("rows") or []
         rows2 = load_a_2.get("messages") or load_a_2.get("rows") or []
@@ -784,7 +798,7 @@ def _case_concurrent_read_write_smoke(run: StressRun) -> None:
         if thread_errors:
             run.fail(case, "concurrent_read_write_errors", "Concurrent read/write smoke produced lock or internal errors", {"errors": thread_errors[:20]})
         final = run.call_tool(engine, "lcm_grep", {"query": "CANARY_CONCURRENT_000", "limit": 5})
-        if "CANARY_CONCURRENT_000" not in json.dumps(final, ensure_ascii=False):
+        if "CANARY_CONCURRENT_000" not in _fts_plain(json.dumps(final, ensure_ascii=False)):
             run.fail(case, "concurrent_old_canary_missing", "Old canary missing after concurrent read/write stress", {"grep": final})
         run.record(case, "thread_errors_count", len(thread_errors))
         run.record(case, "final_old_canary", final)
