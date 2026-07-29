@@ -1244,7 +1244,12 @@ class AdaptiveRetrievalRegistry:
             return {"status": "building_elsewhere"}
         except Exception as exc:
             if token is not None:
-                self._query_views.mark_failed(token, str(exc))
+                try:
+                    self._query_views.mark_failed(token, str(exc))
+                except Exception:
+                    # Cleanup is best-effort and must never replace the build
+                    # failure that selected this response contract.
+                    pass
             return {"status": "failed", "reason": str(exc)[:500]}
 
     def finish(
