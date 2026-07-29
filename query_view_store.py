@@ -470,6 +470,17 @@ def _ensure_query_view_schema(conn: sqlite3.Connection) -> None:
 
 def _verify_query_view_schema(conn: sqlite3.Connection) -> list[str]:
     missing: list[str] = []
+    tables = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name LIKE 'lcm_query_%'"
+        )
+    }
+    missing.extend(
+        f"unexpected-table:{table}"
+        for table in sorted(tables - set(_REQUIRED_SCHEMA))
+    )
     for table, columns in _REQUIRED_SCHEMA.items():
         actual = {
             str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")
@@ -479,6 +490,10 @@ def _verify_query_view_schema(conn: sqlite3.Connection) -> list[str]:
         else:
             missing.extend(
                 f"column:{table}.{column}" for column in sorted(columns - actual)
+            )
+            missing.extend(
+                f"unexpected-column:{table}.{column}"
+                for column in sorted(actual - columns)
             )
     required_objects = {
         "index": {

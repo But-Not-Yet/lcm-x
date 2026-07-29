@@ -144,6 +144,48 @@ def test_two_stage_reports_full_coverage(tmp_path):
         vs.close()
 
 
+def test_chunk_deadline_bounds_a_synced_binary_prescreen(tmp_path):
+    db_path = tmp_path / "lcm.db"
+    _seed_messages(db_path, 2)
+    vs = VectorStore(db_path, bounded_scan_rows=1)
+    try:
+        i8 = _int8_identity(4)
+        vs.register_profile(MODEL, PROVIDER, 4, dtype="int8", task="chunk")
+        for idx, vec in enumerate(
+            ([1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0])
+        ):
+            vs.record_chunk_embedding(
+                f"{idx}:0",
+                MODEL,
+                vec,
+                store_id=idx,
+                chunk_index=0,
+                char_start=0,
+                char_end=1,
+                token_estimate=1,
+                identity=i8,
+            )
+
+        unbounded = vs.knn_chunks(
+            [1.0, 0.0, 0.0, 0.0], k=1, model=MODEL, provider=PROVIDER
+        )
+        expired = vs.knn_chunks(
+            [1.0, 0.0, 0.0, 0.0],
+            k=1,
+            model=MODEL,
+            provider=PROVIDER,
+            full_scan=True,
+            deadline=-1.0,
+        )
+
+        assert unbounded.coverage == "full_approx"
+        assert expired.coverage == "bounded"
+        assert expired.scanned == 0
+        assert expired.total == 2
+    finally:
+        vs.close()
+
+
 # -- Stage-1 Hamming recall@M on a synthetic 5k set (the spec bar) -----------
 
 

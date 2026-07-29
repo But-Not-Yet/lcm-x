@@ -46,6 +46,7 @@ class StateVectorProvider:
         self.document_calls = 0
         self.query_calls = 0
         self.fail_queries = False
+        self.usage_tokens_total = 0
 
     @staticmethod
     def _vector(text: str) -> list[float]:
@@ -59,6 +60,7 @@ class StateVectorProvider:
     def embed_documents(self, texts):
         self.document_calls += 1
         self.last_usage_tokens = sum(max(1, len(str(t)) // 4) for t in texts)
+        self.usage_tokens_total += self.last_usage_tokens
         return [self._vector(t) for t in texts]
 
     def embed_query(self, text):  # noqa: ARG002
@@ -66,6 +68,7 @@ class StateVectorProvider:
         if self.fail_queries:
             raise RuntimeError("simulated query provider failure")
         self.last_usage_tokens = 1
+        self.usage_tokens_total += self.last_usage_tokens
         return [1.0, 0.0, 0.0]
 
 
@@ -92,6 +95,20 @@ class ProbeBudgetProvider(StateVectorProvider):
         if token_module.count_tokens(str(text)) > self.token_limit:
             raise ValueError("probe exceeded provider token limit")
         return super().embed_query(text)
+
+
+class RequestBudgetProvider(StateVectorProvider):
+    def __init__(self, token_limit: int) -> None:
+        super().__init__()
+        self.token_limit = token_limit
+        self.request_token_counts: list[int] = []
+
+    def embed_documents(self, texts):
+        tokens = sum(token_module.count_tokens(str(text)) for text in texts)
+        self.request_token_counts.append(tokens)
+        if tokens > self.token_limit:
+            raise ValueError("request exceeded provider token limit")
+        return super().embed_documents(texts)
 
 
 def _identity() -> CorpusIdentity:
@@ -525,6 +542,8 @@ def test_dimension_probe_is_bounded_by_document_token_budget(tmp_path):
     assert stats["states_embedded"] == 1
     assert provider.probe_documents
     assert token_module.count_tokens(provider.probe_documents[0]) <= 5
+    assert stats["provider_calls"] == provider.query_calls + provider.document_calls
+    assert stats["billed_tokens"] == provider.usage_tokens_total
 
 
 def test_fallback_chunks_obey_the_shared_token_estimator(tmp_path, monkeypatch):
@@ -576,11 +595,45 @@ def test_chunked_path_pools_oversize_documents(tmp_path):
     assert row is not None and len(bytes(row["vector"])) == stats["dim"] * 4
 
 
+def test_oversize_chunks_pack_by_item_and_token_budgets(tmp_path):
+    asset_root = tmp_path / "assets"
+    asset_root.mkdir()
+    provider = RequestBudgetProvider(token_limit=9)
+    store = TrajectoryStore(
+        tmp_path / "lcm.db",
+        _identity(),
+        asset_root=asset_root,
+        embedding_provider=provider,
+    )
+    store.insert(
+        _source(
+            asset_root,
+            trajectory_id="oversize",
+            ordinal=0,
+            goal="Exercise chunk packing",
+            texts=("alpha-answer " + ("token " * 100),),
+        )
+    )
+    store.finalize(["oversize"])
+
+    stats = store.build_state_semantic_index(
+        provider,
+        document_token_budget=5,
+        batch_token_budget=9,
+        batch_max_items=4,
+    )
+
+    assert stats["states_embedded"] == 1
+    assert provider.request_token_counts
+    assert max(provider.request_token_counts) <= 9
+
+
 def test_state_query_provider_failure_degrades_to_lexical(tmp_path):
     provider = StateVectorProvider()
     store = _build_invisible_semantic_store(tmp_path, provider=provider)
     baseline = store.query(_QUERY, image_limit=0)
-    fallbacks_before = store.semantic_metrics()["fallbacks"]
+    metrics_before = store.semantic_metrics()
+    attempts_before = store.semantic_attempt_counters()
     provider.fail_queries = True
 
     degraded = store.query(
@@ -590,7 +643,12 @@ def test_state_query_provider_failure_degrades_to_lexical(tmp_path):
     assert [hit.exact_ref for hit in degraded] == [
         hit.exact_ref for hit in baseline
     ]
-    assert store.semantic_metrics()["fallbacks"] == fallbacks_before + 1
+    metrics_after = store.semantic_metrics()
+    attempts_after = store.semantic_attempt_counters()
+    assert metrics_after["fallbacks"] == metrics_before["fallbacks"] + 1
+    assert attempts_after["fallbacks_by_reason"].get("other", 0) == (
+        attempts_before["fallbacks_by_reason"].get("other", 0) + 1
+    )
 
 
 def test_state_query_embedding_is_counted_in_semantic_usage(tmp_path):

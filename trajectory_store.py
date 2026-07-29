@@ -24,6 +24,7 @@ from urllib.parse import quote, unquote
 
 from .db_bootstrap import (
     configure_connection,
+    get_fts_shadow_table_names,
     mark_migration_step_complete,
     refuse_schema_version_too_new,
     run_versioned_migrations,
@@ -48,6 +49,142 @@ TRAJECTORY_STATE_SEMANTIC_DOCUMENT_VERSION = "trajectory-state-semantic-document
 _STATE_EMBED_MAX_BATCH_ITEMS = 32
 _STATE_EMBED_DOCUMENT_TOKEN_BUDGET = int(27_000 * 0.9)
 _STATE_EMBED_BATCH_TOKEN_BUDGET = int(80_000 * 0.9)
+
+_TRAJECTORY_BASE_SCHEMA: dict[str, frozenset[str]] = {
+    "lcm_trajectory_corpora": frozenset({
+        "singleton", "identity_digest", "identity_json", "schema_version",
+        "corpus_uid", "haystack_digest", "source_manifest_digest",
+        "trajectory_count", "ingest_cursor", "status", "created_at",
+        "completed_at",
+    }),
+    "lcm_trajectory_sources": frozenset({
+        "source_id", "trajectory_id", "ordinal", "source_json", "source_sha256",
+        "goal", "start_url", "outcome", "state_count", "inserted_at",
+    }),
+    "lcm_trajectory_states": frozenset({
+        "state_id", "source_id", "state_index", "sequence_ordinal", "step",
+        "url", "incoming_action", "thoughts", "text", "search_text",
+        "observed_at", "observed_at_source", "occurred_at",
+        "occurred_at_source", "ingested_at",
+    }),
+    "lcm_trajectory_assets": frozenset({
+        "asset_id", "state_id", "relative_path", "sha256", "byte_size",
+    }),
+    "lcm_trajectory_ingest_receipts": frozenset({
+        "ordinal", "trajectory_id", "source_sha256", "committed_at",
+    }),
+    "lcm_trajectory_transitions": frozenset({
+        "transition_id", "source_id", "sequence_ordinal", "pre_state_id",
+        "post_state_id", "incoming_action",
+    }),
+}
+_TRAJECTORY_OPTIONAL_SCHEMAS: tuple[dict[str, frozenset[str]], ...] = (
+    {
+        "lcm_trajectory_embedding_profiles": frozenset({
+            "profile_digest", "provider", "model_name", "dim",
+            "document_version", "source_manifest_digest", "document_count",
+            "index_digest", "active", "created_at",
+        }),
+        "lcm_trajectory_embeddings": frozenset({
+            "source_id", "profile_digest", "document_sha256", "vector",
+            "embedded_at",
+        }),
+    },
+    {
+        "lcm_trajectory_state_embedding_profiles": frozenset({
+            "profile_digest", "provider", "model_name", "dim",
+            "document_version", "source_manifest_digest", "state_count",
+            "active", "created_at",
+        }),
+        "lcm_trajectory_state_embeddings": frozenset({
+            "state_id", "profile_digest", "document_sha256", "vector",
+            "embedded_at",
+        }),
+    },
+)
+
+
+def _verify_trajectory_schema(conn: sqlite3.Connection) -> list[str]:
+    """Return any non-current trajectory shape without mutating source data."""
+    findings: list[str] = []
+    tables = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name LIKE 'lcm_trajectory%'"
+        )
+    }
+    expected = dict(_TRAJECTORY_BASE_SCHEMA)
+    expected_fts = "lcm_trajectory_states_fts"
+    allowed = set(expected) | {expected_fts}
+    allowed.update(get_fts_shadow_table_names(expected_fts))
+    for optional in _TRAJECTORY_OPTIONAL_SCHEMAS:
+        if tables.intersection(optional):
+            expected.update(optional)
+            allowed.update(optional)
+
+    findings.extend(
+        f"unexpected-table:{table}" for table in sorted(tables - allowed)
+    )
+    for table, columns in expected.items():
+        actual = {
+            str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")
+        }
+        if not actual:
+            findings.append(f"table:{table}")
+            continue
+        findings.extend(
+            f"column:{table}.{column}" for column in sorted(columns - actual)
+        )
+        findings.extend(
+            f"unexpected-column:{table}.{column}"
+            for column in sorted(actual - columns)
+        )
+    if expected_fts not in tables:
+        findings.append(f"table:{expected_fts}")
+
+    required_objects = {
+        "index": {
+            "lcm_trajectory_states_source_sequence",
+            *(
+                {
+                    "lcm_trajectory_embedding_one_active",
+                    "lcm_trajectory_embeddings_profile",
+                }
+                if "lcm_trajectory_embeddings" in expected
+                else set()
+            ),
+            *(
+                {
+                    "lcm_trajectory_state_embedding_one_active",
+                    "lcm_trajectory_state_embeddings_profile",
+                }
+                if "lcm_trajectory_state_embeddings" in expected
+                else set()
+            ),
+        },
+        "trigger": {
+            "lcm_trajectory_fts_insert",
+            "lcm_trajectory_fts_delete",
+            "lcm_trajectory_fts_update",
+        },
+    }
+    for object_type, names in required_objects.items():
+        actual = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = ? "
+                "AND name LIKE 'lcm_trajectory%'",
+                (object_type,),
+            )
+        }
+        findings.extend(
+            f"{object_type}:{name}" for name in sorted(names - actual)
+        )
+        findings.extend(
+            f"unexpected-{object_type}:{name}" for name in sorted(actual - names)
+        )
+    return findings
 _MAX_CANDIDATES = 128
 _MAX_RESULTS = 24
 _MAX_IMAGES = 8
@@ -1514,6 +1651,8 @@ class TrajectoryStore:
         # dim is authoritative; otherwise probe one state.
         source_profile = self._semantic_profile()
         dim: int | None = None
+        probe_provider_calls = 0
+        probe_billed_tokens = 0
         if (
             source_profile is not None
             and str(source_profile["provider"]) == provider_name
@@ -1541,6 +1680,10 @@ class TrajectoryStore:
             )[0]
             probe_vector = _normalized_vector(active_provider.embed_query(probe_doc))
             dim = len(probe_vector)
+            probe_provider_calls = 1
+            probe_billed_tokens = max(
+                0, int(getattr(active_provider, "last_usage_tokens", 0) or 0)
+            )
 
         profile_digest = self._state_semantic_profile_digest(
             provider_name, model_name, dim, source_manifest_digest
@@ -1599,8 +1742,8 @@ class TrajectoryStore:
             "pending": len(pending),
             "states_embedded": 0,
             "chunked_states": 0,
-            "provider_calls": 0,
-            "billed_tokens": 0,
+            "provider_calls": probe_provider_calls,
+            "billed_tokens": probe_billed_tokens,
         }
 
         # Partition pending states into single-request documents and the
@@ -1688,8 +1831,18 @@ class TrajectoryStore:
         for state_id, document, document_sha in oversize:
             chunks = self._state_token_chunks(document, document_token_budget)
             chunk_vectors: list[tuple[float, ...]] = []
-            for start in range(0, len(chunks), batch_max_items):
-                sub = chunks[start:start + batch_max_items]
+            start = 0
+            while start < len(chunks):
+                sub: list[str] = []
+                sub_tokens = 0
+                while start < len(chunks) and len(sub) < batch_max_items:
+                    chunk = chunks[start]
+                    chunk_tokens = count_tokens(chunk)
+                    if sub and sub_tokens + chunk_tokens > batch_token_budget:
+                        break
+                    sub.append(chunk)
+                    sub_tokens += chunk_tokens
+                    start += 1
                 vectors = active_provider.embed_documents(sub)
                 if len(vectors) != len(sub):
                     raise ValueError("chunk embedding count does not match batch size")
@@ -3234,12 +3387,26 @@ class TrajectoryStore:
         state_semantic_admitted: list[dict[str, Any]] = []
         if state_semantic_quota > 0:
             pool_ids = {int(row["state_id"]) for row in rows}
+            state_attempt_started = time.monotonic()
             try:
                 ranked_states = self._semantic_state_ranks(
                     query, state_semantic_quota + len(pool_ids) + 16
                 )
-            except Exception:
+            except Exception as exc:
                 self._semantic_usage["fallbacks"] += 1
+                fallback_latency_ms = (
+                    time.monotonic() - state_attempt_started
+                ) * 1000.0
+                try:
+                    semantic_attempt = self._record_semantic_attempt(
+                        outcome="fallback",
+                        latency_ms=fallback_latency_ms,
+                        exception=exc,
+                    )
+                except Exception:
+                    semantic_attempt = self._record_minimal_fallback_attempt(
+                        latency_ms=fallback_latency_ms,
+                    )
                 ranked_states = []
             score_by_state = {sid: score for sid, score in ranked_states}
             arm_semantic = [

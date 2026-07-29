@@ -1,4 +1,4 @@
-# Regression report — stress CLI canary false negatives
+# Regression report — stress CLI canary false negatives (fixed)
 
 ## Affected test
 
@@ -6,8 +6,8 @@
 
 ## Verdict
 
-GENUINE REGRESSION. The stress CLI exits 1 even though `lcm_grep` returns the
-requested canary rows.
+GENUINE REGRESSION, FIXED. Before the fix, the stress CLI exited 1 even though
+`lcm_grep` returned the requested canary rows. The final smoke test exits 0.
 
 ## Mechanism
 
@@ -24,28 +24,33 @@ that string check false. The smoke run therefore reports:
 - `all_scope_missing_cross_session_hit`
 - `explicit_session_scope_missing_hit`
 
-This is a release-check CLI defect, not a retrieval miss and not a test
-environment assumption. Per `SPEC.md`, product code is unchanged and the test
-remains failing for the product-fix lane.
+This was a release-check CLI defect, not a retrieval miss and not a test
+environment assumption. `benchmarking/stress.py` now strips the FTS markers
+before every containment/scope assertion and reads all supported `lcm_grep`
+result containers (`results`, `matches`, and `data`).
 
 ## Minimal repro
 
-From worktree head `2edb8fc8e08cf533a4336e2d3d5c99d7772789b8`:
+Set `HERMES_CI_REPRO_ROOT` to the local CI-replica artifact directory described
+in the session-notes recipe, then run from the repository root:
 
 ```sh
-PYTHONPATH=/Volumes/LEXAR/Codex/session-notes/2026-07-29/hermes-mono-pr-rounds/artifacts/agent-stub \
-/Volumes/LEXAR/Codex/session-notes/2026-07-29/hermes-mono-pr-rounds/artifacts/venv-ci-repro/bin/python \
+PYTHONPATH="$HERMES_CI_REPRO_ROOT/agent-stub" \
+"$HERMES_CI_REPRO_ROOT/venv-ci-repro/bin/python" \
 scripts/lcm_stress_check.py \
-  --output /Volumes/LEXAR/Codex/session-notes/2026-07-29/hermes-mono-pr-rounds/artifacts/laneA-logs/stress-cli-repro \
+  --output .artifacts/stress-cli-repro \
   --tier smoke \
   --json
 ```
 
-Observed: exit 1, `failure_count: 3`, correct grep rows present with marker-split
-canary snippets, and empty stderr.
+Pre-fix: exit 1, `failure_count: 3`, correct grep rows present with marker-split
+canary snippets, and empty stderr. Final: exit 0, `failure_count: 0`, and
+`tests/test_stress_release_check.py::test_stress_cli_smoke_writes_results_summary_and_uses_output_sandbox`
+passes.
 
 ## Evidence
 
 - `laneA-logs/stress-cli-stdout.log`
 - `laneA-logs/stress-cli-stderr.log`
 - `laneA-logs/stress-cli-repro/results/stress-results.json`
+- `laneR2-logs/touched-area-final.xml`

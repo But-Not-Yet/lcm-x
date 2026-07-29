@@ -1007,6 +1007,23 @@ def test_recall_query_timeout_has_its_own_budget(monkeypatch, tmp_path):
     assert cfg.embedding_query_timeout_s == 3.0  # grep's deadline untouched
 
 
+def test_summary_source_expansion_refuses_an_expired_deadline(recall_engine):
+    node = SimpleNamespace(
+        node_id=1,
+        session_id="session-a",
+    )
+
+    with pytest.raises(TimeoutError, match="summary source expansion"):
+        lcm_tools._lcm_recall_summary_source_hits(
+            recall_engine,
+            [(node, 1.0)],
+            current=CURRENT,
+            candidate_limit=5,
+            lead_limit=1,
+            deadline=-1.0,
+        )
+
+
 def test_recall_arm_weights_default_and_env_lenient(monkeypatch, tmp_path):
     """B2: recall_arm_weights default to fts=0.5,summary=1,chunk=1 and the env
     override parses leniently -- unknown arms, malformed pairs, and non-numeric
