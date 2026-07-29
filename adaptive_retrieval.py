@@ -181,6 +181,10 @@ class EvidenceRequirement:
                 "requirement description must contain "
                 f"1..{MAX_REQUIREMENT_DESCRIPTION_CHARS} characters"
             )
+        if any(0xD800 <= ord(char) <= 0xDFFF for char in description):
+            raise ValueError(
+                "requirement description must not contain surrogate code points"
+            )
         raw_minimum = value.get("minimum_refs", 1)
         if isinstance(raw_minimum, bool):
             raise ValueError("minimum_refs must be an integer")

@@ -207,6 +207,21 @@ class ReplayContext:
         rows = store._fts_rows(expression, limit)
         return {int(row["state_id"]) for row in rows}
 
+    def fused_candidate_state_ids(
+        self, qid: str, **kwargs: Any
+    ) -> set[int]:
+        domain, text = self.questions[qid]
+        store = self.stores[domain]
+        store.injected = self._injected_ranks(qid)
+        store.query(
+            text, candidate_limit=128, limit=16, image_limit=0,
+            include_adjacent=True, text_char_limit=2000, **kwargs,
+        )
+        return {
+            int(row["state_id"])
+            for row in store.last_query_telemetry()["state_candidate_pool"]
+        }
+
     def ref_to_state_id(self, qid: str, ref: str) -> int | None:
         match = _REF_RE.match(ref)
         if not match:
@@ -275,13 +290,22 @@ def load_ground_truth(ctx: ReplayContext) -> dict[str, Any]:
     }
 
 
-def measure_ceiling(ctx: ReplayContext, recovery_targets: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """Per vanished ref: is its state present in global_rows top-128?"""
+def measure_ceiling(
+    ctx: ReplayContext,
+    recovery_targets: dict[str, dict[str, Any]],
+    *,
+    knob_kwargs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Per vanished ref: is its state present in the policy's candidate pool?"""
     per_ref: dict[str, dict[str, bool]] = {}
+    policy = knob_kwargs or {}
     for qid, info in recovery_targets.items():
         if not info["vanished"]:
             continue
-        top = ctx.global_top_state_ids(qid, 128)
+        if "arm_quota" in policy:
+            top = ctx.fused_candidate_state_ids(qid, **policy)
+        else:
+            top = ctx.global_top_state_ids(qid, 128)
         for ref in info["vanished"]:
             state_id = ctx.ref_to_state_id(qid, ref)
             per_ref.setdefault(qid, {})[ref] = state_id is not None and state_id in top
@@ -415,7 +439,14 @@ def main() -> int:
 
     results = []
     for knob in knobs:
-        row = evaluate_knob(ctx, ground, ceiling, knob)
+        knob_ceiling = (
+            measure_ceiling(
+                ctx, ground["recovery_targets"], knob_kwargs=knob
+            )
+            if "arm_quota" in knob
+            else ceiling
+        )
+        row = evaluate_knob(ctx, ground, knob_ceiling, knob)
         row["latency"] = measure_latency(ctx, sample, knob)
         row["latency_pct_vs_default"] = (
             (row["latency"]["p95_ms"] / baseline_latency["p95_ms"] - 1.0) * 100.0
