@@ -1810,6 +1810,11 @@ class TrajectoryStore:
             if not batch_docs:
                 return
             vectors = active_provider.embed_documents(batch_docs)
+            stats["provider_calls"] += 1
+            stats["billed_tokens"] += max(
+                0, int(getattr(active_provider, "last_usage_tokens", 0) or 0)
+            )
+            _emit_progress()
             if len(vectors) != len(batch_docs):
                 raise ValueError("state embedding count does not match batch size")
             packed = []
@@ -1817,10 +1822,6 @@ class TrajectoryStore:
                 normalized = _normalized_vector(vector, expected_dim=dim)
                 packed.append((sid, sha, _pack_vector(normalized)))
             _persist(packed)
-            stats["provider_calls"] += 1
-            stats["billed_tokens"] += max(
-                0, int(getattr(active_provider, "last_usage_tokens", 0) or 0)
-            )
             stats["states_embedded"] += len(packed)
             batch_ids, batch_docs, batch_shas, batch_tokens = [], [], [], 0
             _emit_progress()
@@ -3229,7 +3230,7 @@ class TrajectoryStore:
             _MAX_QUERY_TEXT_CHARS,
         )
         expression = self._fts_expression(query)
-        if not expression:
+        if not expression and state_semantic_quota == 0:
             self._last_query_telemetry = {
                 "semantic_attempt": None,
                 "source_candidate_ranks": [],
@@ -3238,7 +3239,9 @@ class TrajectoryStore:
             }
             return ()
         sharp_telemetry: dict[str, Any] | None = None
-        if sharp_token_budget > 0:
+        if not expression:
+            global_rows = []
+        elif sharp_token_budget > 0:
             global_rows, sharp_telemetry = self._sharp_fts_rows(
                 query, candidate_limit
             )
@@ -3295,7 +3298,7 @@ class TrajectoryStore:
             expression,
             candidate_limit,
             source_ids=[source_id for source_id, _score in semantic_ranks],
-        ) if semantic_ranks else []
+        ) if expression and semantic_ranks else []
 
         if semantic_ranks and scoped_rows:
             row_by_id: dict[int, sqlite3.Row] = {}
