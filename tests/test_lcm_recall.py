@@ -581,6 +581,54 @@ def test_answer_ready_delta_refs_match_hits_after_response_cap_eviction(
     assert not (all_refs - set(delivered_refs)) & set(payload["delta"]["novel_refs"])
 
 
+def test_answer_ready_response_cap_evicts_summary_leads_without_delta_refs(
+    recall_engine, monkeypatch
+):
+    response_cap = 6_000
+    summary_leads = [
+        {
+            "node_id": index,
+            "session_id": f"session-{index}-" + ("s" * 2_000),
+            "expand_hint": "x" * 2_000,
+        }
+        for index in range(3)
+    ]
+    monkeypatch.setattr(lcm_tools, "_LCM_RECALL_RESPONSE_CHAR_CAP", response_cap)
+    monkeypatch.setattr(
+        lcm_tools,
+        "_lcm_recall_summary_arm",
+        lambda *_a, **_k: (
+            [],
+            "full",
+            len(summary_leads),
+            len(summary_leads),
+            list(summary_leads),
+        ),
+    )
+    monkeypatch.setattr(
+        lcm_tools,
+        "_lcm_recall_chunk_arm",
+        lambda *_a, **_k: ([], "none", 0, 0),
+    )
+
+    payload = _recall(
+        recall_engine,
+        monkeypatch,
+        include="summaries",
+        detail="answer_ready",
+        limit=3,
+        seen_refs=[],
+    )
+
+    expansion = payload["provenance"]["answer_ready"]
+    assert payload["hits"] == []
+    assert len(expansion["summary_leads"]) < len(summary_leads)
+    assert len(json.dumps(payload, ensure_ascii=False)) <= response_cap
+    assert expansion["response_truncated"] is True
+    assert payload["delta"]["novel_refs"] == []
+    assert payload["delta"]["novel_ref_count"] == 0
+
+
 def test_answer_ready_baseline_bytes_ignore_disabled_occurrence_extension(
     recall_engine, monkeypatch
 ):

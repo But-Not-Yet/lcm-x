@@ -254,6 +254,17 @@ def test_c3_typed_queries_exact_title_template_and_budget(tmp_path: Path):
     assert sharp["rendered_text_tokens_after"] <= budget
 
 
+def test_question_template_matches_temporal_terms_as_whole_tokens():
+    assert (
+        TrajectoryStore._question_template("How do I update account settings?")
+        == "generic"
+    )
+    assert (
+        TrajectoryStore._question_template("What changed after yesterday?")
+        == "temporal"
+    )
+
+
 def _cap_row(
     state_id: int,
     trajectory_id: str,
