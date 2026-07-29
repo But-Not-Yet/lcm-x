@@ -3663,6 +3663,8 @@ class _LcmRecallStrictSelector:
         self._admitted = 0
         self._examining = 0
         self._prefetched_to = 0
+        self._attempted: set[int] = set()
+        self._admitted_stores: set[int] = set()
         self.rows: dict[int, dict[str, Any]] = {}
         self.batched_reads = 0
         self.diversity_dropped = 0
@@ -3688,7 +3690,7 @@ class _LcmRecallStrictSelector:
             if hit.get("kind") == "summary" or store_id is None:
                 continue
             store_id = int(store_id)
-            if store_id in self.rows or store_id in wanted:
+            if store_id in self._attempted or store_id in wanted:
                 continue
             wanted.append(store_id)
         if index == self._prefetched_to:
@@ -3697,6 +3699,11 @@ class _LcmRecallStrictSelector:
         if not wanted:
             return True
         self.batched_reads += 1
+        # ATTEMPTED, not merely returned: a row the store does not have must be
+        # remembered as looked-for, or the walk cannot tell "not fetched yet"
+        # from "fetched and absent" and keeps calling for waves that can never
+        # contain it -- pulling in the rest of the corpus to reject one row.
+        self._attempted.update(wanted)
         self.rows.update(self._engine._store.get_batch(wanted))
         return True
 
@@ -3704,10 +3711,17 @@ class _LcmRecallStrictSelector:
         if store_id is None:
             return None
         store_id = int(store_id)
-        while store_id not in self.rows and self._prefetch():
+        while store_id not in self._attempted and self._prefetch():
             pass
         return self.rows.get(store_id)
 
+    def _forget(self, store_id: Any) -> None:
+        """Drop a row no delivered hit depends on, bounding retention."""
+        if store_id is None:
+            return
+        store_id = int(store_id)
+        if store_id not in self._admitted_stores:
+            self.rows.pop(store_id, None)
 
     def _verify(self, entry: dict[str, Any], *, hydratable: bool) -> bool:
         """Prove this candidate can be cited, adopting a representation if needed."""
@@ -3775,18 +3789,23 @@ class _LcmRecallStrictSelector:
             hydratable = self._admitted < self._expanded_limit
             if _lcm_recall_reference_shape(hit, hydratable=hydratable) is None:
                 self.unreferenced_dropped += 1
+                self._forget(hit.get("store_id"))
                 continue
             if not self._verify(entry, hydratable=hydratable):
                 self.unreferenced_dropped += 1
+                self._forget(hit.get("store_id"))
                 continue
             session_key = self._session_key(hit)
             if self._session_counts.get(session_key, 0) >= self._per_session_limit:
                 self.diversity_dropped += 1
+                self._forget(hit.get("store_id"))
                 continue
             self._session_counts[session_key] = (
                 self._session_counts.get(session_key, 0) + 1
             )
             self._admitted += 1
+            if hit.get("store_id") is not None:
+                self._admitted_stores.add(int(hit["store_id"]))
             taken.append(entry)
         return taken
 

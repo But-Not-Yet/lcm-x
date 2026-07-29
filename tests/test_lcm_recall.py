@@ -2194,3 +2194,62 @@ def test_seen_delta_results_do_not_spend_session_quota(recall_engine, monkeypatc
     assert len(delta["hits"]) == 5, "seen entries must refund the slot they never used"
     assert not ({hit["exact_ref"] for hit in delta["hits"]} & set(seen))
     assert {hit["store_id"] for hit in delta["hits"]} <= set(store_ids)
+
+
+def test_a_missing_row_does_not_cascade_reads_or_retain_the_corpus():
+    """FINDING 2: 'not prefetched' and 'prefetched but absent' are different.
+
+    Without that distinction the walk kept calling for more waves looking for a
+    row that will never arrive, loading every remaining wave and retaining all
+    of it: 100 candidates with row 1 missing cost four reads [32,32,32,4] and
+    held 99 rows just to select row 2.
+    """
+    ordered = [
+        _message_entry(index, session_id=f"session-{index}")
+        for index in range(1, 101)
+    ]
+    engine = _stub_engine(range(2, 101))  # row 1 is gone
+
+    selector = lcm_tools._LcmRecallStrictSelector(
+        ordered,
+        engine=engine,
+        per_session_limit=5,
+        expanded_limit=0,
+        wave_size=32,
+    )
+    selected = selector.take(1)
+
+    assert [entry["hit"]["store_id"] for entry in selected] == [2]
+    calls = engine._store.batch_calls
+    assert len(calls) == 1, f"a missing row must not cascade waves: {[len(c) for c in calls]}"
+    assert len(selector.rows) <= 32, f"retained {len(selector.rows)} rows, expected one wave"
+
+
+def test_rejected_candidate_rows_are_not_retained():
+    """FINDING 2 (retention half): rows outside the active wave are released.
+
+    Reading in waves bounds the reads, but holding on to every row the walk
+    rejected would still grow with the corpus. Only rows a delivered hit
+    depends on -- hydration reads from this same snapshot -- need to survive.
+    """
+    ordered = [
+        _message_entry(index, session_id=f"session-{index}", snippet="not in the row")
+        for index in range(1, 100)
+    ]
+    ordered.append(_message_entry(100, session_id="session-100"))
+    engine = _stub_engine(range(1, 101))
+
+    selector = lcm_tools._LcmRecallStrictSelector(
+        ordered,
+        engine=engine,
+        per_session_limit=5,
+        expanded_limit=0,
+        wave_size=32,
+    )
+    selected = selector.take(1)
+
+    assert [entry["hit"]["store_id"] for entry in selected] == [100]
+    assert selector.unreferenced_dropped == 99
+    assert len(selector.rows) <= 2, (
+        f"retained {len(selector.rows)} rows after rejecting 99 candidates"
+    )
