@@ -1724,6 +1724,12 @@ class TrajectoryStore:
                         now,
                     ),
                 )
+                if not resume:
+                    self._conn.execute(
+                        "DELETE FROM lcm_trajectory_state_embeddings "
+                        "WHERE profile_digest = ?",
+                        (profile_digest,),
+                    )
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
@@ -1762,6 +1768,9 @@ class TrajectoryStore:
 
         # Partition pending states into single-request documents and the
         # oversize (chunked) minority, both packed to the same item/token caps.
+        request_document_token_budget = min(
+            document_token_budget, batch_token_budget
+        )
         normal: list[tuple[int, str, str, int]] = []  # (state_id, doc, sha, tokens)
         oversize: list[tuple[int, str, str]] = []  # (state_id, doc, sha)
         for row in pending:
@@ -1769,7 +1778,7 @@ class TrajectoryStore:
             document = self._state_embed_document(row["text"], row["url"], state_id)
             document_sha = _sha256_text(document)
             tokens = count_tokens(document)
-            if tokens > document_token_budget:
+            if tokens > request_document_token_budget:
                 oversize.append((state_id, document, document_sha))
             else:
                 normal.append((state_id, document, document_sha, tokens))
@@ -1840,7 +1849,9 @@ class TrajectoryStore:
 
         # --- oversize (chunked) states ----------------------------------------
         for state_id, document, document_sha in oversize:
-            chunks = self._state_token_chunks(document, document_token_budget)
+            chunks = self._state_token_chunks(
+                document, request_document_token_budget
+            )
             chunk_vectors: list[tuple[float, ...]] = []
             start = 0
             while start < len(chunks):
@@ -3259,41 +3270,42 @@ class TrajectoryStore:
             )
         semantic_ranks: list[tuple[int, float]] = []
         semantic_attempt: TrajectorySemanticAttempt | None = None
-        attempt_started = time.monotonic()
-        calls_before = self._semantic_usage["query_calls"]
-        try:
-            semantic_ranks = self._semantic_source_ranks(query)
-        except Exception as exc:
-            # Restore historical semantics FIRST, unconditionally, before any
-            # introspection can fail: the fallback counter must bump even if the
-            # (hostile) exception explodes during telemetry recording.
-            self._semantic_usage["fallbacks"] += 1
-            fallback_latency_ms = (time.monotonic() - attempt_started) * 1000.0
+        if expression:
+            attempt_started = time.monotonic()
+            calls_before = self._semantic_usage["query_calls"]
             try:
-                # Was a bare ``except Exception: fallbacks += 1`` that discarded
-                # the failure class/status. Now the typed reason survives -- and
-                # the whole record step is itself fenced so an exotic exception
-                # (kind/status_code/retry_after as raising properties) degrades
-                # to a clean FTS fallback instead of failing the query.
-                semantic_attempt = self._record_semantic_attempt(
-                    outcome="fallback",
-                    latency_ms=fallback_latency_ms,
-                    exception=exc,
-                )
-            except Exception:
-                semantic_attempt = self._record_minimal_fallback_attempt(
-                    latency_ms=fallback_latency_ms,
-                )
-        else:
-            # Only record a success when an embed was actually dispatched; an
-            # early return (no provider / profile mismatch) is a skip, not an
-            # attempt, and must not inflate the success count.
-            if self._semantic_usage["query_calls"] > calls_before:
-                semantic_attempt = self._record_semantic_attempt(
-                    outcome="success",
-                    latency_ms=(time.monotonic() - attempt_started) * 1000.0,
-                    exception=None,
-                )
+                semantic_ranks = self._semantic_source_ranks(query)
+            except Exception as exc:
+                # Restore historical semantics FIRST, unconditionally, before any
+                # introspection can fail: the fallback counter must bump even if the
+                # (hostile) exception explodes during telemetry recording.
+                self._semantic_usage["fallbacks"] += 1
+                fallback_latency_ms = (time.monotonic() - attempt_started) * 1000.0
+                try:
+                    # Was a bare ``except Exception: fallbacks += 1`` that discarded
+                    # the failure class/status. Now the typed reason survives -- and
+                    # the whole record step is itself fenced so an exotic exception
+                    # (kind/status_code/retry_after as raising properties) degrades
+                    # to a clean FTS fallback instead of failing the query.
+                    semantic_attempt = self._record_semantic_attempt(
+                        outcome="fallback",
+                        latency_ms=fallback_latency_ms,
+                        exception=exc,
+                    )
+                except Exception:
+                    semantic_attempt = self._record_minimal_fallback_attempt(
+                        latency_ms=fallback_latency_ms,
+                    )
+            else:
+                # Only record a success when an embed was actually dispatched; an
+                # early return (no provider / profile mismatch) is a skip, not an
+                # attempt, and must not inflate the success count.
+                if self._semantic_usage["query_calls"] > calls_before:
+                    semantic_attempt = self._record_semantic_attempt(
+                        outcome="success",
+                        latency_ms=(time.monotonic() - attempt_started) * 1000.0,
+                        exception=None,
+                    )
         scoped_rows = self._fts_rows(
             expression,
             candidate_limit,
