@@ -718,6 +718,49 @@ class SummaryDAG:
         ).fetchall()
         return [self._row_to_node(r) for r in rows]
 
+    def source_message_ids(self, node_id: int, *, limit: int) -> List[int]:
+        """Resolve a node to the store_ids of the messages underneath it.
+
+        Walks ``source_ids`` down through nested nodes to the ``messages`` leaves,
+        so a derived (depth > 0) node resolves to real rows rather than to the
+        child nodes it was built from. Ordered by store_id and bounded by
+        ``limit`` so a node summarizing a long session cannot flood a caller.
+
+        A node's own summary text is generated prose and is never a citation for
+        these rows; this is the lineage link, used to let the source MESSAGES be
+        retrieved and cited in their own right.
+        """
+        if limit <= 0:
+            return []
+        with self._db_lock:
+            rows = self._conn.execute(
+                """
+                WITH RECURSIVE source_walk(source_type, source_id) AS (
+                    SELECT n.source_type, CAST(j.value AS INTEGER)
+                    FROM summary_nodes n, json_each(n.source_ids) j
+                    WHERE n.node_id = ?
+
+                    UNION
+
+                    SELECT child.source_type, CAST(j.value AS INTEGER)
+                    FROM summary_nodes child
+                    JOIN source_walk walk
+                      ON walk.source_type = 'nodes'
+                     AND child.node_id = walk.source_id
+                    JOIN json_each(child.source_ids) j
+                )
+                SELECT DISTINCT m.store_id
+                FROM source_walk walk
+                JOIN messages m
+                  ON walk.source_type = 'messages'
+                 AND m.store_id = walk.source_id
+                ORDER BY m.store_id
+                LIMIT ?
+                """,
+                (node_id, limit),
+            ).fetchall()
+        return [int(row[0]) for row in rows]
+
     def _node_matches_source(
         self,
         node_id: int,

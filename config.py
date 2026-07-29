@@ -374,6 +374,7 @@ ENV_FIELD_SPECS: tuple[_EnvFieldSpec, ...] = (
     _EnvFieldSpec("recall_scan_rows", "LCM_RECALL_SCAN_ROWS", int),
     _EnvFieldSpec("recall_scan_max_rows", "LCM_RECALL_SCAN_MAX_ROWS", int),
     _EnvFieldSpec("recall_scan_budget_s", "LCM_RECALL_SCAN_BUDGET_S", float),
+    _EnvFieldSpec("recall_reference_strict", "LCM_RECALL_REFERENCE_STRICT", bool),
     _EnvFieldSpec("proactive_recall_enabled", "LCM_PROACTIVE_RECALL_ENABLED", bool),
     _EnvFieldSpec("proactive_recall_min_score", "LCM_PROACTIVE_RECALL_MIN_SCORE", float),
     _EnvFieldSpec("proactive_recall_budget_tokens", "LCM_PROACTIVE_RECALL_BUDGET_TOKENS", int),
@@ -659,6 +660,16 @@ class LCMConfig:
     recall_arm_weights: dict[str, float] = field(
         default_factory=lambda: dict(_DEFAULT_RECALL_ARM_WEIGHTS)
     )
+    # Reference-strict delivery for detail='answer_ready' (FINDING-F35 §2): a hit
+    # that cannot carry a truthful (store_id, char_start, char_end) source span is
+    # never delivered as evidence; the next-ranked citable hit takes its slot and
+    # the omission count is surfaced in provenance.answer_ready. ON by default --
+    # delivering evidence the product cannot cite is a correctness defect, and the
+    # consumers that validate references fail CLOSED on an unreferenced card, so a
+    # single uncitable hit destroys the whole response. Set False only for a host
+    # that renders recall without citations and wants summary hits back; disabled,
+    # the answer_ready response is byte-identical to the pre-F35 delivery.
+    recall_reference_strict: bool = True
     # -- Proactive memory injection (SPEC F, default-OFF) ---
     # At active-context assembly, embed the newest user message and run the
     # lcm_recall pipeline to surface cross-session memories the model would
