@@ -236,6 +236,13 @@ def test_chunk_deadline_bounds_a_synced_binary_prescreen(tmp_path, monkeypatch):
             "_prescreen_deadline_expired",
             _expire_after_first_prescreen_batch,
         )
+        monkeypatch.setattr(
+            vs,
+            "_count_embedded_vectors",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("deadline expiry must not start COUNT(*)")
+            ),
+        )
         expired = vs.knn_chunks(
             [1.0, 0.0, 0.0, 0.0],
             k=1,

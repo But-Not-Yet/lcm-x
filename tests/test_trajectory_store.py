@@ -12,6 +12,7 @@ import pytest
 
 from hermes_lcm.store import MessageStore
 from hermes_lcm.trajectory_store import (
+    TRAJECTORY_SCHEMA_VERSION,
     CorpusIdentity,
     CorpusIdentityError,
     ExactTrajectoryRefError,
@@ -189,6 +190,32 @@ def test_corpus_identity_is_strict_and_read_only_open_does_not_mutate(tmp_path: 
     finally:
         readonly.close()
     assert db_path.stat().st_mtime_ns == before
+
+
+def test_newer_trajectory_schema_is_rejected_before_fts_repair(tmp_path: Path):
+    db_path = tmp_path / "lcm.db"
+    asset_root = tmp_path / "assets"
+    asset_root.mkdir()
+    store = TrajectoryStore(db_path, _identity(), asset_root=asset_root)
+    store.close()
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE lcm_trajectory_corpora SET schema_version=? WHERE singleton=1",
+            (TRAJECTORY_SCHEMA_VERSION + 1,),
+        )
+        conn.execute("DROP TABLE lcm_trajectory_states_fts")
+        conn.commit()
+
+    with pytest.raises(CorpusIdentityError):
+        TrajectoryStore(db_path, _identity(), asset_root=asset_root)
+
+    with sqlite3.connect(db_path) as conn:
+        fts = conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE name='lcm_trajectory_states_fts'"
+        ).fetchone()
+    assert fts is None
 
 
 def test_insert_is_idempotent_and_conflicting_source_fails(trajectory_db):

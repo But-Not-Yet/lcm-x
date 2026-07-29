@@ -2174,7 +2174,6 @@ class VectorStore:
                 return KNNResult(
                     coverage="bounded",
                     scanned=exc.scanned,
-                    total=self._count_embedded_vectors(identity, chunk=False),
                 )
             if binary_matrix.shape[0] == 0:
                 return KNNResult(coverage="none")
@@ -2234,7 +2233,6 @@ class VectorStore:
             return KNNResult(
                 coverage="bounded",
                 scanned=exc.scanned,
-                total=self._count_embedded_vectors(identity, chunk=False),
             )
         if not probed_ids:
             return KNNResult(coverage="none")
@@ -2293,7 +2291,8 @@ class VectorStore:
         scanned = total = None
         if coverage == "bounded":
             scanned = scanned_rows
-            total = self._count_embedded_vectors(identity, chunk=False)
+            if not stopped_early:
+                total = self._count_embedded_vectors(identity, chunk=False)
         return KNNResult(candidates, coverage=coverage, scanned=scanned, total=total)
 
     def _scan_limits(
@@ -2827,7 +2826,6 @@ class VectorStore:
                 return KNNResult(
                     coverage="bounded",
                     scanned=exc.scanned,
-                    total=self._count_embedded_vectors(identity, chunk=True),
                 )
             if binary_matrix.shape[0] == 0:
                 return KNNResult(coverage="none")
@@ -2881,7 +2879,6 @@ class VectorStore:
             return KNNResult(
                 coverage="bounded",
                 scanned=exc.scanned,
-                total=self._count_embedded_vectors(identity, chunk=True),
             )
         if not probed_ids:
             return KNNResult(coverage="none")
@@ -2926,7 +2923,8 @@ class VectorStore:
         scanned = total = None
         if coverage == "bounded":
             scanned = scanned_rows
-            total = self._count_embedded_vectors(identity, chunk=True)
+            if not stopped_early:
+                total = self._count_embedded_vectors(identity, chunk=True)
         return KNNResult(candidates, coverage=coverage, scanned=scanned, total=total)
 
     def _current_chunk_profile(self) -> sqlite3.Row | None:

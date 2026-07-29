@@ -1209,6 +1209,7 @@ class AdaptiveRetrievalRegistry:
                     )
                     if key in raw_trace
                 }
+            selected_refs = {item.citation for item in selected}
             manifest = {
                 "closed_slots": sorted(state.slot_refs),
                 "open_slots": [],
@@ -1219,7 +1220,10 @@ class AdaptiveRetrievalRegistry:
                     "complete": True,
                     "requirements_digest": state.identity.requirements_digest,
                     "slot_refs": {
-                        key: list(value) for key, value in sorted(state.slot_refs.items())
+                        key: [
+                            ref for ref in value if ref in selected_refs
+                        ]
+                        for key, value in sorted(state.slot_refs.items())
                     },
                     "retrieval_rounds": len(state.rounds),
                     "candidate_refs": len(state.candidates),

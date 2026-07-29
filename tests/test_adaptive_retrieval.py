@@ -272,6 +272,46 @@ def test_exact_slot_closure_compute_finish_and_warm_reuse(tmp_path):
         engine.shutdown()
 
 
+def test_persisted_slot_refs_include_only_selected_evidence(tmp_path):
+    engine = _engine(tmp_path)
+    try:
+        paris_id = _append(engine, "I visited Paris.")
+        rome_id = _append(engine, "I visited Rome.")
+        started = _start(engine)
+        found = _call(
+            engine,
+            action="search",
+            retrieval_id=started["retrieval_id"],
+            missing_slot="visits",
+            tool="lcm_load_session",
+            tool_args={"session_id": "session-a", "limit": 8},
+        )
+        refs_by_store_id = {
+            item["store_id"]: item["citation"] for item in found["evidence"]
+        }
+        first_ref = refs_by_store_id[paris_id]
+        second_ref = refs_by_store_id[rome_id]
+
+        finished = _call(
+            engine,
+            action="finish",
+            retrieval_id=started["retrieval_id"],
+            resolved_slots=[{
+                "slot_id": "visits",
+                "evidence_refs": [first_ref, second_ref],
+            }],
+            selected_refs=[first_ref],
+        )
+        assert finished["query_view"]["persistence"]["status"] == "published"
+
+        warm = _start(engine)
+        assert warm["status"] == "ready"
+        assert warm["query_view"]["status"] == "hit"
+        assert [item["citation"] for item in warm["evidence"]] == [first_ref]
+    finally:
+        engine.shutdown()
+
+
 def test_requirements_digest_distinguishes_descriptions():
     """requirements_digest() must not collide two requirements that share
     slot_id/minimum_refs but describe different evidence -- description is

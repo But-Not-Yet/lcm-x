@@ -592,6 +592,7 @@ class TrajectoryStore:
         self._lock = threading.RLock()
         self._conn = self._open_connection()
         try:
+            self._validate_existing_schema_version()
             self._init_schema()
             self._bind_identity()
         except Exception:
@@ -624,6 +625,19 @@ class TrajectoryStore:
         conn.execute("PRAGMA foreign_keys=ON")
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _validate_existing_schema_version(self) -> None:
+        try:
+            row = self._conn.execute(
+                "SELECT schema_version FROM lcm_trajectory_corpora "
+                "WHERE singleton = 1"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return
+        if row is not None and int(row["schema_version"]) != TRAJECTORY_SCHEMA_VERSION:
+            raise CorpusIdentityError(
+                "trajectory database corpus identity does not match requested identity"
+            )
 
     def _init_schema(self) -> None:
         required = {
