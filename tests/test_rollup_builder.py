@@ -691,6 +691,25 @@ def test_rollup_scheduler_follow_up_slot_is_single_and_queue_fair():
     assert scheduler._follow_up_job is None
 
 
+def test_rollup_scheduler_releases_completed_owner_keys():
+    scheduler = engine_module._RollupMaintenanceScheduler(max_pending_jobs=2)
+    owner = object()
+    completed: list[int] = []
+
+    for index in range(128):
+        key = ("db", f"ephemeral-{index}")
+        assert scheduler.schedule(
+            key,
+            lambda index=index: completed.append(index),
+            owner=owner,
+        )
+        assert scheduler.drain_owner(owner, timeout=2)
+        assert owner not in scheduler._owned_keys
+        assert key not in scheduler._key_owners
+
+    assert completed == list(range(128))
+
+
 def test_rollup_scheduler_runs_same_key_after_cancelled_job():
     scheduler = engine_module._RollupMaintenanceScheduler(max_pending_jobs=1)
     key = ("db", "cancelled")

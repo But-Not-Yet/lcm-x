@@ -160,12 +160,42 @@ class _RollupMaintenanceScheduler:
         self._follow_up_job: Callable[[], None] | None = None
         self._running_follow_up = False
         self._exclusive_keys: set[tuple[str, str]] = set()
+        self._owned_keys: dict[object, set[tuple[str, str]]] = {}
+        self._key_owners: dict[tuple[str, str], set[object]] = {}
         self._worker: threading.Thread | None = None
+
+    def _track_owner_locked(
+        self,
+        key: tuple[str, str],
+        owner: object | None,
+    ) -> None:
+        if owner is None:
+            return
+        self._owned_keys.setdefault(owner, set()).add(key)
+        self._key_owners.setdefault(key, set()).add(owner)
+
+    def _release_key_owners_if_idle_locked(self, key: tuple[str, str]) -> None:
+        if (
+            key in self._queued_keys
+            or key in self._active_keys
+            or key in self._exclusive_keys
+            or self._follow_up_key == key
+        ):
+            return
+        for owner in self._key_owners.pop(key, set()):
+            owned = self._owned_keys.get(owner)
+            if owned is None:
+                continue
+            owned.discard(key)
+            if not owned:
+                self._owned_keys.pop(owner, None)
 
     def schedule(
         self,
         key: tuple[str, str],
         job: Callable[[], None],
+        *,
+        owner: object | None = None,
     ) -> bool:
         with self._condition:
             if key in self._exclusive_keys:
@@ -177,10 +207,12 @@ class _RollupMaintenanceScheduler:
                 )
                 return False
             if key in self._queued_keys:
+                self._track_owner_locked(key, owner)
                 return True
             if key in self._active_keys and not self._running_follow_up:
                 self._follow_up_key = key
                 self._follow_up_job = job
+                self._track_owner_locked(key, owner)
                 self._condition.notify_all()
                 return True
             if len(self._jobs) >= self._max_pending_jobs:
@@ -201,6 +233,7 @@ class _RollupMaintenanceScheduler:
                 self._worker = worker
             self._jobs.append((key, job))
             self._queued_keys.add(key)
+            self._track_owner_locked(key, owner)
             self._condition.notify_all()
             return True
 
@@ -249,6 +282,24 @@ class _RollupMaintenanceScheduler:
                 self._condition.wait(remaining)
             return True
 
+    def drain_owner(
+        self,
+        owner: object,
+        timeout: float | None = None,
+    ) -> bool:
+        """Wait until every outstanding key accepted for ``owner`` is idle."""
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        with self._condition:
+            while self._owned_keys.get(owner):
+                if deadline is None:
+                    self._condition.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._condition.wait(remaining)
+            return True
+
     def _run(self) -> None:
         while True:
             with self._condition:
@@ -278,6 +329,7 @@ class _RollupMaintenanceScheduler:
                         continue
                     self._active_keys.discard(key)
                     self._running_follow_up = False
+                    self._release_key_owners_if_idle_locked(key)
                     self._condition.notify_all()
                     break
 
@@ -528,9 +580,9 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
         self._host_fallback_compressor: Any = None
         self._host_fallback_session_id = ""
         self._host_fallback_import_warning_logged = False
-        # Keys scheduled by this engine are retained for deterministic test and
-        # diagnostic drains. Jobs themselves never use this engine's SQLite helpers.
-        self._rollup_maintenance_keys: set[tuple[str, str]] = set()
+        # The scheduler associates this identity only with outstanding work, so
+        # diagnostic drains do not retain every historical session key forever.
+        self._rollup_maintenance_owner = object()
 
     def clone_for_agent(self) -> "LCMEngine":
         """Return a fresh runtime engine for one AIAgent instance.
@@ -1547,8 +1599,11 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
                 finally:
                     private_dag.close()
 
-            if _ROLLUP_MAINTENANCE_SCHEDULER.schedule(key, maintain):
-                self._rollup_maintenance_keys.add(key)
+            _ROLLUP_MAINTENANCE_SCHEDULER.schedule(
+                key,
+                maintain,
+                owner=self._rollup_maintenance_owner,
+            )
         except Exception:
             # Maintenance is opportunistic; a scheduler/setup failure must never
             # turn a successful foreground session bind into a host failure.
@@ -1559,8 +1614,8 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
 
     def drain_rollup_maintenance(self, timeout: float | None = None) -> bool:
         """Wait for rollup jobs scheduled by this engine (tests and diagnostics)."""
-        return _ROLLUP_MAINTENANCE_SCHEDULER.drain(
-            set(self._rollup_maintenance_keys),
+        return _ROLLUP_MAINTENANCE_SCHEDULER.drain_owner(
+            self._rollup_maintenance_owner,
             timeout=timeout,
         )
 
