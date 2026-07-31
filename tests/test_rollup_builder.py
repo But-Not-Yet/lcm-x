@@ -1091,6 +1091,7 @@ def test_raw_ingest_does_not_prebuild_then_publication_drives_stale(tmp_path, mo
         try:
             engine.ingest([{"role": "user", "content": "raw only, no summary yet"}])
             engine._bind_lifecycle_state(scope, conversation_id="p1-conv")
+            assert engine.drain_rollup_maintenance(timeout=2)
             assert store.get_rollup("day", day.isoformat(), scope) is None
 
             node_id = _add_node(engine._dag, scope, day, "published leaf summary")
