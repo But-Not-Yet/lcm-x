@@ -4,6 +4,7 @@ Implements the ContextEngine ABC. Replaces the built-in ContextCompressor
 with a DAG-based summarization system that preserves every message.
 """
 
+import asyncio
 import copy
 import hashlib
 import json
@@ -260,7 +261,7 @@ class _RollupMaintenanceScheduler:
             while True:
                 try:
                     job()
-                except Exception:
+                except (Exception, asyncio.CancelledError):
                     logger.warning(
                         "LCM background temporal rollup maintenance failed for database=%s scope=%s",
                         key[0],

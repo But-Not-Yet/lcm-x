@@ -2488,9 +2488,11 @@ def _rollups_rebuild_text(tokens: list[str], engine) -> str:
             f"error: {type(exc).__name__}: {exc}",
         ])
     finally:
-        if store is not None:
-            store.close()
-        engine.release_rollup_operator_lease(lease_key)
+        try:
+            if store is not None:
+                store.close()
+        finally:
+            engine.release_rollup_operator_lease(lease_key)
 
     # ``complete`` is reserved for attempted targets that all reached ready.
     # Explicitly bounded, unattempted queued debt may coexist with complete.

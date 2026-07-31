@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import threading
@@ -688,6 +689,25 @@ def test_rollup_scheduler_follow_up_slot_is_single_and_queue_fair():
     assert completed == ["a-1", "a-2", "b-1", "b-2", "c"]
     assert scheduler._follow_up_key is None
     assert scheduler._follow_up_job is None
+
+
+def test_rollup_scheduler_runs_same_key_after_cancelled_job():
+    scheduler = engine_module._RollupMaintenanceScheduler(max_pending_jobs=1)
+    key = ("db", "cancelled")
+    first_started = threading.Event()
+    second_ran = threading.Event()
+
+    def cancelled_job():
+        first_started.set()
+        raise asyncio.CancelledError("forced maintenance cancellation")
+
+    assert scheduler.schedule(key, cancelled_job)
+    assert first_started.wait(timeout=1)
+    assert scheduler.drain({key}, timeout=1)
+
+    assert scheduler.schedule(key, second_ran.set)
+    assert scheduler.drain({key}, timeout=2)
+    assert second_ran.is_set()
 
 
 def test_rollup_scheduler_operator_exclusion_is_bounded_and_defers_maintenance():

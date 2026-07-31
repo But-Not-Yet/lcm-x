@@ -230,6 +230,27 @@ def test_rollups_rebuild_releases_operator_lease_when_store_open_fails(
     engine_module._ROLLUP_MAINTENANCE_SCHEDULER.release_exclusive(key)
 
 
+def test_rollups_rebuild_releases_operator_lease_when_store_close_fails(
+    engine,
+    monkeypatch,
+):
+    scope = engine.current_session_id
+    key = engine._rollup_maintenance_key(scope)
+
+    class CloseFailRollupStore(RollupStore):
+        def close(self):
+            super().close()
+            raise RuntimeError("forced store-close failure")
+
+    monkeypatch.setattr(command_module, "RollupStore", CloseFailRollupStore)
+
+    with pytest.raises(RuntimeError, match="forced store-close failure"):
+        handle_lcm_command("rollups rebuild day 2026-07-15", engine)
+
+    assert engine_module._ROLLUP_MAINTENANCE_SCHEDULER.try_acquire_exclusive(key)
+    engine_module._ROLLUP_MAINTENANCE_SCHEDULER.release_exclusive(key)
+
+
 def test_rollups_rebuild_all_durably_seeds_unattempted_targets(engine, monkeypatch):
     # Regression for maintainer #391: targets beyond the per-pass budget must be
     # durably seeded as 'stale' rows (not absent) so later maintenance builds
