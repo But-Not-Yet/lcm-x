@@ -373,6 +373,28 @@ def test_date_filter_interval_order_and_cardinality(evidence_db):
     assert execute_plan(interval_plan, operands[:1]).status == "fallback"
 
 
+def test_how_long_ago_uses_one_anchored_operand(evidence_db):
+    messages, assertions = evidence_db
+    content = "I visited Paris on 2023-03-18."
+    store_id = _message(messages, content, "2023-03-18")
+    operands = _ground(
+        messages,
+        assertions,
+        [_raw(store_id, content, content, date="2023-03-18")],
+        question_date="2023-03-20",
+    )
+
+    plan = compile_evidence_plan(
+        "How long ago did I visit Paris?",
+        "2023-03-20",
+    ).plan
+
+    assert plan.operation == "date_interval"
+    assert plan.exact_operands == 1
+    assert plan.interval_unit == "day"
+    assert execute_plan(plan, operands).trace.result == "2 days"
+
+
 def test_latest_fact_requires_complete_nonconflicting_assertion_state(evidence_db):
     messages, assertions = evidence_db
     first = "My current city is Paris."

@@ -375,8 +375,15 @@ def compile_evidence_plan(question: str, question_date: Any = None) -> PlanDecis
     order: Literal["ascending", "descending"] | None = None
     requires_complete = False
     interval_unit: Literal["day", "week", "month"] = "day"
-    if re.search(
-        r"\b(how long|time between|interval between|how many\s+(?:calendar\s+)?days?\s+between|since when)\b",
+    if re.search(r"\bhow long\s+ago\b", normalized):
+        if question_anchor is None:
+            return PlanDecision(
+                "fallback",
+                reason="question needs a valid question date for deterministic temporal planning",
+            )
+        operation, exact, minimum = "date_interval", 1, 1
+    elif re.search(
+        r"\b(how long(?!\s+ago)|time between|interval between|how many\s+(?:calendar\s+)?days?\s+between|since when)\b",
         normalized,
     ):
         operation, exact, minimum = "date_interval", 2, 2
