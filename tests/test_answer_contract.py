@@ -47,6 +47,22 @@ def test_named_sum_operands_create_fixed_slots():
     assert [slot.anchor for slot in decision.contract.slots] == ["jogging", "yoga"]
 
 
+def test_unquoted_comma_sum_creates_all_named_operand_slots():
+    decision = compile_answer_contract(
+        "How much total did I spend on taxi, train, and hotel?"
+    )
+
+    assert decision.status == "planned"
+    assert decision.contract.operation == "sum"
+    assert decision.contract.coverage_policy == "fixed_operands"
+    assert decision.contract.finite_cardinality == 3
+    assert [slot.anchor for slot in decision.contract.slots] == [
+        "taxi",
+        "train",
+        "hotel",
+    ]
+
+
 def test_instead_of_preserves_direction_and_mentions():
     decision = compile_answer_contract(
         "How much time did I save by taking the bus instead of a taxi?"
