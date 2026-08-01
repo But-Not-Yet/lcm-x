@@ -63,6 +63,24 @@ _STATE_CHANGING_RELATIONS = frozenset({
     "reverses",
     "supersedes",
 })
+_STATE_CHANGING_CUES = {
+    "cancels": re.compile(
+        r"\b(?:cancel(?:led|ed|s|ing)?|call(?:ed)?\s+off|no\s+longer|"
+        r"revoke(?:d|s|ing)?|withdraw(?:n|s|ing)?)\b",
+        re.IGNORECASE,
+    ),
+    "reverses": re.compile(
+        r"\b(?:chang(?:e|ed|ing)\s+(?:my|our)\s+mind|no\s+longer|"
+        r"retract(?:ed|s|ing)?|revers(?:e|ed|es|ing)|take\s+back|took\s+back)\b",
+        re.IGNORECASE,
+    ),
+    "supersedes": re.compile(
+        r"\b(?:actually|but\s+now|chang(?:e|ed|ing)|correct(?:ion|ed|ing)?|"
+        r"instead|no\s+longer|now|replac(?:e|ed|es|ing)|"
+        r"supersed(?:e|ed|es|ing)|updat(?:e|ed|es|ing))\b",
+        re.IGNORECASE,
+    ),
+}
 
 _PAYLOAD_KEYS = frozenset({
     "schema_version",
@@ -626,6 +644,14 @@ def parse_assertion_extraction(
             float(from_row["observed_at"]) < float(to_row["observed_at"])
         ):
             raise ValueError(f"{label} state change cannot precede its target evidence")
+        relation_quote = snapshot.content[start:end]
+        if (
+            relation_type in _STATE_CHANGING_RELATIONS
+            and _STATE_CHANGING_CUES[relation_type].search(relation_quote) is None
+        ):
+            raise ValueError(
+                f"{label} {relation_type} requires an explicit semantic cue in its exact source span"
+            )
         relations.append(AssertionRelationCandidate(
             source_span_start=start,
             source_span_end=end,

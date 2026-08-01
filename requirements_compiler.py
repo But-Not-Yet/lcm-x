@@ -712,14 +712,26 @@ def _ordered_event_candidate(
     key = _finite_event_key(quote, contract.requested_unit or "event")
     if key is None:
         return None
+    label = None
+    if contract.answer_kind == "place":
+        place = re.search(
+            r"\b(?:arrived\s+in|flew\s+to|stayed\s+in|travelled\s+to|"
+            r"traveled\s+to|visited|went\s+to)\s+"
+            r"([A-Z][A-Za-z'-]*(?:\s+[A-Z][A-Za-z'-]*){0,3})\b",
+            quote,
+        )
+        if place is not None:
+            label = place.group(1).strip()
+    quote_without_dates = _DATE_TEXT_RE.sub(" ", quote)
     names = [
         name
         for name in re.findall(
-            r"\b[A-Z][A-Za-z'-]*(?:\s+[A-Z][A-Za-z'-]*){0,3}\b", quote
+            r"\b[A-Z][A-Za-z'-]*(?:\s+[A-Z][A-Za-z'-]*){0,3}\b",
+            quote_without_dates,
         )
         if name not in {"I", "The", "A", "An", "My", "We", "On", "In"}
     ]
-    label = names[0] if names else quote[:300]
+    label = label or (names[-1] if names else quote[:300])
     slot_names = []
     for slot in contract.slots:
         if slot.anchor and not _tokens(slot.anchor).issubset(_tokens(quote)):
@@ -1930,6 +1942,43 @@ def _deliver(
     )
 
 
+def _record_baseline_fact(
+    result: dict[str, Any],
+    candidate: Mapping[str, Any],
+    contract: AnswerContract,
+    *,
+    render_context: bool,
+    time_basis_field: str | None = None,
+) -> None:
+    direct_fact = {
+        "value": candidate["value"],
+        "unit": candidate.get("unit"),
+        "exact_ref": candidate["exact_ref"],
+    }
+    if time_basis_field is not None:
+        direct_fact["time_basis"] = candidate.get(time_basis_field)
+    if render_context:
+        _deliver(
+            result,
+            state="answer_sufficient",
+            reason_code="baseline_already_answer_sufficient",
+            context=_render_fact(candidate, contract),
+            evidence=[candidate],
+            novel_refs=(),
+        )
+        result["direct_fact"] = direct_fact
+        return
+    result.update(
+        {
+            "state": "answer_sufficient",
+            "reason_code": "baseline_already_answer_sufficient",
+            "direct_fact": direct_fact,
+            "closed_requirements": ["answer"],
+            "open_requirements": [],
+        }
+    )
+
+
 def compile_preanswer_evidence(
     question: Any,
     *,
@@ -1939,6 +1988,7 @@ def compile_preanswer_evidence(
     question_date: Any = None,
     retrieve: Callable[[dict[str, Any]], Any] | None = None,
     enabled: bool = False,
+    render_baseline_context: bool = False,
     budgets: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compile one bounded exact evidence brief or return an unchanged baseline."""
@@ -1982,35 +2032,21 @@ def compile_preanswer_evidence(
     if contract.operation == "scalar":
         direct, reason = _select_scalar(baseline_candidates, contract)
         if direct is not None:
-            result.update(
-                {
-                    "state": "answer_sufficient",
-                    "reason_code": "baseline_already_answer_sufficient",
-                    "direct_fact": {
-                        "value": direct["value"],
-                        "unit": direct.get("unit"),
-                        "exact_ref": direct["exact_ref"],
-                    },
-                    "closed_requirements": ["answer"],
-                    "open_requirements": [],
-                }
+            _record_baseline_fact(
+                result,
+                direct,
+                contract,
+                render_context=render_baseline_context,
             )
             return _finish(result, started=started)
     elif contract.operation in {"sum", "difference", "date_interval", "order"}:
         direct, _ = _select_scalar(baseline_candidates, contract)
         if direct is not None:
-            result.update(
-                {
-                    "state": "answer_sufficient",
-                    "reason_code": "baseline_already_answer_sufficient",
-                    "direct_fact": {
-                        "value": direct["value"],
-                        "unit": direct.get("unit"),
-                        "exact_ref": direct["exact_ref"],
-                    },
-                    "closed_requirements": ["answer"],
-                    "open_requirements": [],
-                }
+            _record_baseline_fact(
+                result,
+                direct,
+                contract,
+                render_context=render_baseline_context,
             )
             return _finish(result, started=started)
         computation, operands, reason = _compute(
@@ -2030,54 +2066,33 @@ def compile_preanswer_evidence(
     elif contract.operation in {"latest", "previous"}:
         chosen, reason = _select_state(baseline_candidates, contract)
         if chosen is not None:
-            result.update(
-                {
-                    "state": "answer_sufficient",
-                    "reason_code": "baseline_already_answer_sufficient",
-                    "direct_fact": {
-                        "value": chosen["value"],
-                        "unit": None,
-                        "exact_ref": chosen["exact_ref"],
-                        "time_basis": chosen["selection_time_basis"],
-                    },
-                    "closed_requirements": ["answer"],
-                    "open_requirements": [],
-                }
+            _record_baseline_fact(
+                result,
+                chosen,
+                contract,
+                render_context=render_baseline_context,
+                time_basis_field="selection_time_basis",
             )
             return _finish(result, started=started)
     elif contract.operation == "date_filter":
         chosen, reason = _select_temporal_event(baseline_candidates, contract)
         if chosen is not None:
-            result.update(
-                {
-                    "state": "answer_sufficient",
-                    "reason_code": "baseline_already_answer_sufficient",
-                    "direct_fact": {
-                        "value": chosen["value"],
-                        "unit": None,
-                        "exact_ref": chosen["exact_ref"],
-                        "time_basis": chosen.get("temporal_match_basis"),
-                    },
-                    "closed_requirements": ["answer"],
-                    "open_requirements": [],
-                }
+            _record_baseline_fact(
+                result,
+                chosen,
+                contract,
+                render_context=render_baseline_context,
+                time_basis_field="temporal_match_basis",
             )
             return _finish(result, started=started)
     else:
         direct, reason = _select_text(baseline_candidates, contract)
         if direct is not None:
-            result.update(
-                {
-                    "state": "answer_sufficient",
-                    "reason_code": "baseline_already_answer_sufficient",
-                    "direct_fact": {
-                        "value": direct["value"],
-                        "unit": None,
-                        "exact_ref": direct["exact_ref"],
-                    },
-                    "closed_requirements": ["answer"],
-                    "open_requirements": [],
-                }
+            _record_baseline_fact(
+                result,
+                direct,
+                contract,
+                render_context=render_baseline_context,
             )
             return _finish(result, started=started)
 

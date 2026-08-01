@@ -481,6 +481,35 @@ def test_date_interval_and_fixed_order_use_unique_exact_operands(tmp_path):
     assert ordered["computation"]["result_value"][0].startswith("The first event")
 
 
+def test_ordered_place_labels_ignore_leading_spelled_out_dates(tmp_path):
+    engine = _engine(tmp_path)
+    paris = _append(
+        engine,
+        "On June 1, 2024, I visited Paris.",
+        session_id="paris",
+        timestamp=datetime(2024, 6, 1, tzinfo=timezone.utc).timestamp(),
+    )
+    rome = _append(
+        engine,
+        "On July 2, 2024, I visited Rome.",
+        session_id="rome",
+        timestamp=datetime(2024, 7, 2, tzinfo=timezone.utc).timestamp(),
+    )
+    try:
+        ordered = _compile(
+            engine,
+            "Which places did I visit in order?",
+            [rome, paris],
+            question_as_of="2024-08-01",
+            budgets={"max_retrieval_calls": 0},
+        )
+    finally:
+        engine._store.close()
+
+    assert ordered["state"] == "computation_sufficient"
+    assert ordered["computation"]["result_value"] == ("Paris", "Rome")
+
+
 def test_complete_finite_enumeration_counts_distinct_adapter_dated_events(tmp_path):
     engine = _engine(tmp_path)
     bali = _append(engine, "I took a vacation to Bali.", session_id="bali")

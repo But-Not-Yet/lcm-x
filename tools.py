@@ -332,7 +332,11 @@ def _shape_assertion_state_row(row: dict[str, Any]) -> dict[str, Any]:
         "valid_to": row["valid_to"],
         "confidence": row["confidence"],
         "active": row["active"],
-        "lifecycle_status": list(row["lifecycle_status"]),
+        "lifecycle_status": (
+            list(row["lifecycle_status"])
+            if row["lifecycle_status"] is not None
+            else None
+        ),
         "unresolved_conflict": row["unresolved_conflict"],
         "attribution": row["attribution"],
         "semantic_state": row["semantic_state"],
@@ -444,7 +448,11 @@ def lcm_query_state(args: Dict[str, Any], **kwargs) -> str:
         "limit": limit,
         "assertions": assertions,
         "relations": relations,
-        "active_assertion_ids": list(result.active_assertion_ids),
+        "active_assertion_ids": (
+            list(result.active_assertion_ids)
+            if result.active_assertion_ids is not None
+            else None
+        ),
         "conflict_assertion_ids": list(result.conflict_assertion_ids),
         "assertions_truncated": result.assertions_truncated,
         "relations_truncated": result.relations_truncated,
@@ -473,9 +481,12 @@ def lcm_query_state(args: Dict[str, Any], **kwargs) -> str:
             if relation["from_assertion_id"] in retained_ids
             or relation["to_assertion_id"] in retained_ids
         ]
-        response["active_assertion_ids"] = [
-            value for value in response["active_assertion_ids"] if value in retained_ids
-        ]
+        if response["active_assertion_ids"] is not None:
+            response["active_assertion_ids"] = [
+                value
+                for value in response["active_assertion_ids"]
+                if value in retained_ids
+            ]
         response["conflict_assertion_ids"] = [
             value for value in response["conflict_assertion_ids"] if value in retained_ids
         ]

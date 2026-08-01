@@ -679,7 +679,7 @@ def _ground_one(
             return None, "assertion state is unavailable"
         active = bool(state_row["active"])
         conflict = bool(state_row["unresolved_conflict"])
-        group_active_ids = state.active_assertion_ids
+        group_active_ids = state.active_assertion_ids or ()
         group_truncated = state.assertions_truncated or state.relations_truncated
     else:
         for field in ("store_id", "span_start", "span_end", "quote"):
