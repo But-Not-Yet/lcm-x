@@ -7,7 +7,7 @@ or non-improving work returns an unchanged-baseline decision.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 import hashlib
 import json
@@ -1643,7 +1643,12 @@ def _material_clauses(content: str, unit: str | None) -> list[tuple[int, int, st
     return clauses
 
 
-def _finite_event_key(quote: str, unit: str | None) -> str | None:
+def _finite_event_key(
+    quote: str,
+    unit: str | None,
+    *,
+    event_date: str | None = None,
+) -> str | None:
     if not unit:
         return None
     blocked = {
@@ -1666,7 +1671,10 @@ def _finite_event_key(quote: str, unit: str | None) -> str | None:
         if name not in blocked
     ]
     if names:
-        return " ".join([unit.replace("_", " "), *dict.fromkeys(names)])[:300]
+        parts = [unit.replace("_", " "), *dict.fromkeys(names)]
+        if event_date:
+            parts.append(event_date.casefold())
+        return " ".join(parts)[:300]
     explicit = _DATE_TEXT_RE.search(quote)
     if explicit:
         return f"{unit.replace('_', ' ')} {explicit.group(0).casefold()}"[:300]
@@ -1760,14 +1768,20 @@ def _finite_enumeration(
                 < contract.temporal_window.end
             ):
                 continue
-            key = _finite_event_key(clause, contract.requested_unit)
-            if key is None:
+            grounding_key = _finite_event_key(clause, contract.requested_unit)
+            key = _finite_event_key(
+                clause,
+                contract.requested_unit,
+                event_date=event_day.isoformat(),
+            )
+            if grounding_key is None or key is None:
                 certificate["ungrounded_key_clauses"] += 1
                 continue
             candidates.append(
                 {
                     **hydrated,
                     "key": key,
+                    "grounding_key": grounding_key,
                     "unit": contract.requested_unit,
                     "value": None,
                     "date": event_day.isoformat(),
@@ -1799,7 +1813,7 @@ def _finite_enumeration(
             "span_start": item["span_start"],
             "span_end": item["span_end"],
             "quote": item["quote"],
-            "key": item["key"],
+            "key": item["grounding_key"],
             "unit": item["unit"],
             "occurrence_time": item["occurrence_time"],
         }
@@ -1813,6 +1827,10 @@ def _finite_enumeration(
     )
     if grounding.status != "grounded":
         return None, operands, certificate, f"finite_grounding_failed:{grounding.reason}"
+    grounded_operands = tuple(
+        replace(operand, key=str(candidate["key"]))
+        for operand, candidate in zip(grounding.operands, operands)
+    )
     plan = EvidencePlan(
         operation="count_distinct",
         minimum_operands=len(operands),
@@ -1820,7 +1838,7 @@ def _finite_enumeration(
         exact_operands=len(operands),
         requires_complete_evidence=True,
     )
-    computed = execute_plan(plan, grounding.operands)
+    computed = execute_plan(plan, grounded_operands)
     if computed.status != "computed" or computed.trace is None:
         return None, operands, certificate, f"finite_computation_failed:{computed.reason}"
     certificate["certificate_sha256"] = _digest(certificate)

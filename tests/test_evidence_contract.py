@@ -515,6 +515,30 @@ def test_complete_finite_enumeration_counts_distinct_adapter_dated_events(tmp_pa
     assert result["coverage_certificate"]["adapter_time_used"] is True
 
 
+def test_finite_enumeration_keeps_same_entity_events_on_different_dates(tmp_path):
+    engine = _engine(tmp_path)
+    first = _append(engine, "I took a vacation to Bali.", session_id="bali-first")
+    second = _append(engine, "I took a vacation to Bali.", session_id="bali-second")
+    engine._session_occurrence_dates.update(
+        {"bali-first": "2025-02-01", "bali-second": "2025-06-01"}
+    )
+    try:
+        result = _compile(
+            engine,
+            "How many vacations did I take this year?",
+            [first, second],
+            question_as_of="2025-12-31",
+            budgets={"max_retrieval_calls": 0},
+        )
+    finally:
+        engine._store.close()
+
+    assert result["state"] == "computation_sufficient"
+    assert result["finite_coverage"] is True
+    assert result["computation"]["result_value"] == 2
+    assert result["coverage_certificate"]["distinct_keys"] == 2
+
+
 def test_finite_enumeration_rejects_material_unknown_time(tmp_path):
     engine = _engine(tmp_path)
     known = _append(engine, "I took a vacation to Bali.", session_id="known")
