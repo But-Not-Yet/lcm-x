@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta, timezone
 import calendar
 import math
 import re
-from typing import Any, Literal, Sequence
+from typing import Any, Literal, Mapping, Sequence
 
 from .assertion_state import query_assertion_state
 from .assertion_store import AssertionStore
@@ -627,6 +627,7 @@ def _ground_one(
     messages: MessageStore,
     assertions: AssertionStore | None,
     as_of: float | None,
+    session_dates: Mapping[str, Any] | None,
 ) -> tuple[GroundedEvidence | None, str | None]:
     if not isinstance(raw, dict):
         return None, "each operand must be an object"
@@ -748,6 +749,17 @@ def _ground_one(
         assertion_day = _day_from_epoch(assertion_row.get("event_at"))
     evidence_day = assertion_day
 
+    source_observed_at = stored.get("observed_at")
+    trusted_session_date = (session_dates or {}).get(
+        str(stored.get("session_id") or "")
+    )
+    source_session_day = _parse_day(trusted_session_date)
+    if source_session_day is None:
+        try:
+            source_session_day = _day_from_epoch(source_observed_at)
+        except (OSError, OverflowError, ValueError):
+            source_session_day = None
+
     occurrence_day = None
     raw_occurrence = raw.get("occurrence_time")
     if raw_occurrence is not None:
@@ -755,13 +767,11 @@ def _ground_one(
             return None, "occurrence_time must be an object"
         resolved = resolve_occurrence_time(
             quote,
-            observed_at=(
-                stored.get("observed_at")
-                if stored.get("observed_at") is not None
-                else stored.get("timestamp")
-            ),
-            session_date=raw_occurrence.get("session_date"),
+            observed_at=source_observed_at or 0.0,
+            session_date=(source_session_day.isoformat() if source_session_day else None),
         )
+        if resolved.get("reason") == "relative_expression_without_session_date":
+            return None, "relative occurrence requires a trusted source observation date"
         supplied_source = str(raw_occurrence.get("event_time_source") or "")
         if supplied_source != resolved["event_time_source"]:
             return None, "occurrence_time source is not supported by the exact quote"
@@ -800,14 +810,11 @@ def _ground_one(
             if not math.isfinite(stored_observed_at) or stored_observed_at > as_of:
                 return None, "source was observed after the question-date boundary"
             source_observation_grounded = True
-        elif raw_occurrence is not None and raw_occurrence.get("session_date"):
-            source_observed_day = _parse_day(str(raw_occurrence.get("session_date")))
-            if source_observed_day is None:
-                return None, "occurrence_time session_date is invalid"
-            source_observed_epoch = datetime.combine(
-                source_observed_day, datetime.max.time(), tzinfo=timezone.utc
+        elif source_session_day is not None:
+            source_observed_at = datetime.combine(
+                source_session_day, datetime.max.time(), tzinfo=timezone.utc
             ).timestamp()
-            if source_observed_epoch > as_of:
+            if source_observed_at > as_of:
                 return None, "source was observed after the question-date boundary"
             source_observation_grounded = True
         if not source_observation_grounded:
@@ -858,6 +865,7 @@ def ground_evidence(
     messages: MessageStore,
     assertions: AssertionStore | None,
     as_of: float | None = None,
+    session_dates: Mapping[str, Any] | None = None,
 ) -> GroundingDecision:
     if not isinstance(raw_operands, list):
         return GroundingDecision("fallback", reason="operands must be an array")
@@ -872,6 +880,7 @@ def ground_evidence(
             messages=messages,
             assertions=assertions,
             as_of=as_of,
+            session_dates=session_dates,
         )
         if error:
             return GroundingDecision("fallback", reason=f"operands[{index}]: {error}")

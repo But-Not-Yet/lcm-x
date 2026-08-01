@@ -159,11 +159,9 @@ def test_grounding_rejects_unproven_values_labels_keys_and_refs(evidence_db):
 def test_relative_occurrence_time_grounds_without_aliasing_late_observation(evidence_db):
     messages, assertions = evidence_db
     content = "I completed the plank challenge 5 days ago."
-    # Legacy/benchmark rows have no trustworthy host observation time. The
-    # adapter sidecar may anchor relative text without relabelling ingest time.
-    store_id = messages.append("session-a", {"role": "user", "content": content})
+    store_id = _message(messages, content, "2023-03-20")
     occurrence = {
-        "observed_at": _epoch("2026-07-19"),
+        "observed_at": _epoch("2023-03-20"),
         "event_at": _epoch("2023-03-15"),
         "event_date": "2023-03-15",
         "event_time_source": "relative_to_session",
@@ -201,7 +199,31 @@ def test_session_sidecar_cannot_override_real_host_observation_after_as_of(evide
         as_of=question_date_as_of_epoch("2023-03-20"),
     )
     assert decision.status == "fallback"
-    assert "observed after the question-date boundary" in decision.reason
+    assert "occurrence_time date is not supported" in decision.reason
+
+
+def test_relative_occurrence_uses_stored_observation_not_caller_session_date(evidence_db):
+    messages, assertions = evidence_db
+    content = "I completed the plank challenge 5 days ago."
+    store_id = _message(messages, content, "2026-07-19")
+    occurrence = {
+        "observed_at": _epoch("2023-03-20"),
+        "event_at": _epoch("2023-03-15"),
+        "event_date": "2023-03-15",
+        "event_time_source": "relative_to_session",
+        "session_date": "2023-03-20",
+        "precision": "day",
+        "policy_version": "occurrence-time-v1",
+    }
+    decision = ground_evidence(
+        [_raw(store_id, content, content, date="2023-03-15", occurrence_time=occurrence)],
+        messages=messages,
+        assertions=assertions,
+        as_of=question_date_as_of_epoch("2026-07-19"),
+    )
+
+    assert decision.status == "fallback"
+    assert "occurrence_time date is not supported" in decision.reason
 
 
 def test_assertion_observation_time_is_not_silently_used_as_event_time(evidence_db):

@@ -689,6 +689,7 @@ def lcm_compute(args: Dict[str, Any], **kwargs) -> str:
             messages=engine._store,
             assertions=getattr(engine, "_assertions", None),
             as_of=as_of,
+            session_dates=getattr(engine, "_session_occurrence_dates", None),
         )
     except (TypeError, ValueError, sqlite3.Error) as exc:
         grounding = None

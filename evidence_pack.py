@@ -764,6 +764,7 @@ def build_evidence_pack(
             messages=engine._store,
             assertions=getattr(engine, "_assertions", None),
             as_of=as_of,
+            session_dates=getattr(engine, "_session_occurrence_dates", None),
         )
         if resolved
         else None

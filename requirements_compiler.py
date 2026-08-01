@@ -1204,6 +1204,7 @@ def _compute(
         messages=engine._store,
         assertions=getattr(engine, "_assertions", None),
         as_of=question_date_as_of_epoch(contract.question_as_of),
+        session_dates=getattr(engine, "_session_occurrence_dates", None),
     )
     if grounding.status != "grounded":
         return None, operands, f"grounding_failed:{grounding.reason}"
@@ -1824,6 +1825,7 @@ def _finite_enumeration(
         messages=engine._store,
         assertions=getattr(engine, "_assertions", None),
         as_of=question_date_as_of_epoch(contract.question_as_of),
+        session_dates=getattr(engine, "_session_occurrence_dates", None),
     )
     if grounding.status != "grounded":
         return None, operands, certificate, f"finite_grounding_failed:{grounding.reason}"
