@@ -955,12 +955,37 @@ def _label(operand: GroundedEvidence) -> str | None:
     return None
 
 
+def _count_distinct_subject_tokens(question: str) -> set[str]:
+    auxiliary = r"(?:did|does|do|has|have|had|is|are|was|were)"
+    named = re.search(
+        rf"(?i:\b{auxiliary}\b)\s+"
+        r"([A-Z][\w'-]*(?:\s+[A-Z][\w'-]*){0,3})",
+        question,
+    )
+    if named:
+        tokens = set(_normalized_tokens(named.group(1)))
+        if tokens.isdisjoint({"i", "we", "you", "he", "she", "it", "they"}):
+            return tokens
+    return set()
+
+
 def validate_selector_alignment(
     question: str,
     plan: EvidencePlan,
     operands: Sequence[GroundedEvidence],
 ) -> str | None:
-    """Validate the host selector's only semantic ordering obligation."""
+    """Validate question-aware semantic obligations on host-selected operands."""
+    if plan.operation == "count_distinct":
+        subject_tokens = _count_distinct_subject_tokens(question)
+        if subject_tokens and any(
+            subject_tokens.intersection(_normalized_tokens(operand.key or ""))
+            for operand in operands
+        ):
+            return (
+                "count_distinct canonical keys must identify counted entities, "
+                "not the question subject"
+            )
+        return None
     if plan.operation != "difference" or plan.difference_direction == "absolute":
         return None
     if len(operands) != 2 or any(not operand.label for operand in operands):

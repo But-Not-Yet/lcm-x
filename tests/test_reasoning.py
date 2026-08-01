@@ -567,3 +567,40 @@ def test_public_compute_tool_requires_closed_cardinality(evidence_db):
     ))
     assert response["status"] == "fallback"
     assert response["reason"] == "operation requires explicit evidence_complete=true"
+
+
+def test_count_distinct_rejects_question_subject_as_canonical_key(evidence_db):
+    messages, assertions = evidence_db
+    paris = "Alice visited Paris."
+    rome = "Alice visited Rome."
+    paris_id = _message(messages, paris, "2024-02-01")
+    rome_id = _message(messages, rome, "2024-02-02")
+    args = {
+        "question": "How many cities did Alice visit?",
+        "evidence_complete": True,
+        "operands": [
+            _raw(paris_id, paris, paris, key="alice", unit="item"),
+            _raw(rome_id, rome, rome, key="alice", unit="item"),
+        ],
+    }
+    engine = SimpleNamespace(_store=messages, _assertions=assertions)
+
+    rejected = json.loads(lcm_compute(args, engine=engine))
+    accepted = json.loads(lcm_compute(
+        {
+            **args,
+            "operands": [
+                _raw(paris_id, paris, paris, key="paris", unit="item"),
+                _raw(rome_id, rome, rome, key="rome", unit="item"),
+            ],
+        },
+        engine=engine,
+    ))
+
+    assert rejected["status"] == "fallback"
+    assert rejected["reason"] == (
+        "count_distinct canonical keys must identify counted entities, "
+        "not the question subject"
+    )
+    assert accepted["status"] == "computed"
+    assert accepted["trace"]["result_value"] == 2
