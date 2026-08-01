@@ -454,6 +454,17 @@ def _assertion_candidate(
     elif resolution == "explicit":
         if subject.endswith(":self"):
             raise ValueError(f"{label} explicit identity cannot use a self key")
+        identity_tokens = tuple(re.findall(r"[\w]+", subject.split(":", 1)[1]))
+        source_tokens = tuple(
+            re.findall(r"[\w]+", snapshot.content[start:end].casefold())
+        )
+        if not any(
+            source_tokens[index:index + len(identity_tokens)] == identity_tokens
+            for index in range(len(source_tokens) - len(identity_tokens) + 1)
+        ):
+            raise ValueError(
+                f"{label} explicit identity is not in the exact source span"
+            )
     else:
         raise ValueError(f"{label} subject identity is ambiguous or unsupported")
     return AssertionCandidate(

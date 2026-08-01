@@ -363,6 +363,29 @@ def test_unrelated_identity_and_ambiguous_subject_fail_closed(state_db):
         )
 
 
+def test_explicit_subject_must_occur_in_exact_source_span(state_db):
+    messages, store = state_db
+    snapshot = _source(messages, store, "Alice likes tea.", 100.0)
+    wire = _assertion(
+        snapshot,
+        "Alice likes tea",
+        subject="person:bob",
+        resolution="explicit",
+        predicate="preference.drink",
+        value="tea",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="explicit identity is not in the exact source span",
+    ):
+        parse_assertion_extraction(
+            snapshot,
+            _payload(snapshot, [wire]),
+            store=store,
+        )
+
+
 def test_strict_payload_rejects_bad_spans_unknown_fields_and_implicit_updates(state_db):
     messages, store = state_db
     snapshot = _source(messages, store, "I prefer tea.", 100.0)
