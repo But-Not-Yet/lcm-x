@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation, localcontext
 import calendar
 import math
 import re
@@ -35,6 +36,8 @@ _MAX_OPERANDS = 50
 _MAX_QUESTION_CHARS = 4_000
 _MAX_QUOTE_CHARS = 24_000
 _MAX_LABEL_CHARS = 300
+_MAX_NUMERIC_DIGITS = 1_000
+_MAX_DECIMAL_ABS = Decimal("1e308")
 _NUMBER_RE = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 _COMPUTATION_TRIGGER_RE = re.compile(
     r"\b(how many|how much|count|total|sum|difference|more than|less than|ago|"
@@ -116,6 +119,7 @@ class EvidencePlan:
         "absolute", "first_minus_second", "second_minus_first"
     ] | None = None
     order_direction: Literal["ascending", "descending"] | None = None
+    order_index: int | None = None
     requires_complete_evidence: bool = False
     result_unit: str | None = None
 
@@ -134,6 +138,7 @@ class EvidencePlan:
             "interval_unit": self.interval_unit,
             "difference_direction": self.difference_direction,
             "order_direction": self.order_direction,
+            "order_index": self.order_index,
             "requires_complete_evidence": self.requires_complete_evidence,
             "result_unit": self.result_unit,
         }
@@ -262,10 +267,13 @@ def question_date_as_of_epoch(value: Any) -> float | None:
     parsed = _parse_day(value)
     if parsed is None:
         return None
-    next_day = datetime.combine(
-        parsed + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc
-    )
-    return next_day.timestamp() - 1e-6
+    try:
+        next_day = datetime.combine(
+            parsed + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc
+        )
+        return next_day.timestamp() - 1e-6
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _subtract_months_clamped(anchor: date, months: int) -> date:
@@ -354,6 +362,40 @@ def _bounded_sum_count(question: str) -> int | None:
     return _WORD_NUMBERS.get(match.group(1), int(match.group(1)) if match.group(1).isdigit() else 0) or None
 
 
+def _requested_result_unit(question: str) -> str | None:
+    """Return only an explicitly requested arithmetic output unit."""
+    if re.search(r"(?:\$|\b(?:usd|dollars?)\b)", question, re.IGNORECASE):
+        return "usd"
+    match = re.search(
+        r"\bhow\s+many\s+"
+        r"(minutes?|mins?|hours?|hrs?|days?|weeks?|months?|pages?|points?|"
+        r"items?|events?)\b",
+        question,
+        re.IGNORECASE,
+    )
+    if match:
+        return normalize_unit(match.group(1))
+    match = re.search(
+        r"\b(?:in|into|as|measured\s+in|expressed\s+in)\s+"
+        r"(usd|dollars?|minutes?|mins?|hours?|hrs?|days?|weeks?|months?|"
+        r"pages?|points?|items?|events?)\b",
+        question,
+        re.IGNORECASE,
+    )
+    return normalize_unit(match.group(1)) if match else None
+
+
+def _requested_order_ordinal(question: str) -> str | None:
+    """Return an ordinal only when the question requests one result position."""
+    match = re.search(
+        r"\b(?:which|what|who)\b[^?]{0,80}\b"
+        r"(?:was|were|is|came|happened|occurred)\s+(?:the\s+)?"
+        r"(previous|first|earliest|second|third)\b",
+        question,
+    )
+    return match.group(1) if match else None
+
+
 def compile_evidence_plan(question: str, question_date: Any = None) -> PlanDecision:
     text = str(question or "").strip()
     if not text:
@@ -373,6 +415,7 @@ def compile_evidence_plan(question: str, question_date: Any = None) -> PlanDecis
         "absolute", "first_minus_second", "second_minus_first"
     ] | None = None
     order: Literal["ascending", "descending"] | None = None
+    order_index: int | None = None
     requires_complete = False
     interval_unit: Literal["day", "week", "month"] = "day"
     if re.search(r"\bhow long\s+ago\b", normalized):
@@ -446,6 +489,15 @@ def compile_evidence_plan(question: str, question_date: Any = None) -> PlanDecis
             minimum = exact
             requires_complete = False
         order = "descending" if re.search(r"\b(reverse|latest first|newest first|descending)\b", normalized) else "ascending"
+        requested_ordinal = _requested_order_ordinal(normalized)
+        if requested_ordinal == "previous":
+            order, order_index, minimum = "descending", 1, max(minimum, 2)
+        elif requested_ordinal == "third":
+            order_index, minimum = 2, max(minimum, 3)
+        elif requested_ordinal == "second":
+            order_index, minimum = 1, max(minimum, 2)
+        elif requested_ordinal in {"first", "earliest"}:
+            order_index = 0
     elif temporal is not None:
         operation = "date_filter"
         exact = _bounded_sum_count(text)
@@ -475,7 +527,13 @@ def compile_evidence_plan(question: str, question_date: Any = None) -> PlanDecis
         interval_unit=interval_unit,
         difference_direction=direction,
         order_direction=order,
+        order_index=order_index,
         requires_complete_evidence=requires_complete,
+        result_unit=(
+            _requested_result_unit(text)
+            if operation in {"sum", "difference"}
+            else None
+        ),
     ))
 
 
@@ -520,14 +578,25 @@ def _explicit_units(text: str) -> set[str]:
     return {unit for pattern, unit in checks if re.search(pattern, text, re.IGNORECASE)}
 
 
-def _explicit_numbers(text: str) -> list[float]:
+def _parse_numeric_literal(value: str) -> int | Decimal | None:
+    normalized = value.replace(",", "")
+    digits = normalized.lstrip("-").replace(".", "")
+    if not digits or len(digits) > _MAX_NUMERIC_DIGITS:
+        return None
+    try:
+        return Decimal(normalized) if "." in normalized else int(normalized)
+    except (InvalidOperation, ValueError, OverflowError):
+        return None
+
+
+def _explicit_numbers(text: str) -> list[int | Decimal]:
     values = [
-        float(match.group(0).replace(",", ""))
+        parsed
         for match in _NUMBER_RE.finditer(text)
-        if math.isfinite(float(match.group(0).replace(",", "")))
+        if (parsed := _parse_numeric_literal(match.group(0))) is not None
     ]
     values.extend(
-        float(_WORD_NUMBERS[match.group(0).casefold()])
+        _WORD_NUMBERS[match.group(0).casefold()]
         for match in re.finditer(
             r"\b(?:" + "|".join(_WORD_NUMBERS) + r")\b",
             text,
@@ -537,7 +606,26 @@ def _explicit_numbers(text: str) -> list[float]:
     return values
 
 
-def _numeric_value_has_unit(value: float, unit: str, quote: str) -> bool:
+def _decimal_value(value: int | float) -> Decimal | None:
+    try:
+        converted = Decimal(value) if isinstance(value, int) else Decimal(str(value))
+    except (InvalidOperation, ValueError, OverflowError):
+        return None
+    if not converted.is_finite() or abs(converted) > _MAX_DECIMAL_ABS:
+        return None
+    return converted
+
+
+def _numeric_values_match(parsed: int | Decimal, value: int | float) -> bool:
+    converted = _decimal_value(value)
+    if converted is None:
+        return False
+    if isinstance(value, int):
+        return parsed == value
+    return abs(Decimal(parsed) - converted) <= Decimal("1e-9")
+
+
+def _numeric_value_has_unit(value: int | float, unit: str, quote: str) -> bool:
     unit_patterns = {
         "page": r"pages?",
         "hour": r"(?:hours?|hrs?)",
@@ -550,11 +638,12 @@ def _numeric_value_has_unit(value: float, unit: str, quote: str) -> bool:
         "event": r"events?",
     }
     mentions = [
-        (match, float(match.group(0).replace(",", "")))
+        (match, parsed)
         for match in _NUMBER_RE.finditer(quote)
+        if (parsed := _parse_numeric_literal(match.group(0))) is not None
     ]
     mentions.extend(
-        (match, float(_WORD_NUMBERS[match.group(0).casefold()]))
+        (match, _WORD_NUMBERS[match.group(0).casefold()])
         for match in re.finditer(
             r"\b(?:" + "|".join(_WORD_NUMBERS) + r")\b",
             quote,
@@ -562,7 +651,7 @@ def _numeric_value_has_unit(value: float, unit: str, quote: str) -> bool:
         )
     )
     for match, parsed in mentions:
-        if abs(parsed - value) > 1e-9:
+        if not _numeric_values_match(parsed, value):
             continue
         before = quote[max(0, match.start() - 24):match.start()]
         after = quote[match.end():match.end() + 24]
@@ -723,10 +812,10 @@ def _ground_one(
     value = raw.get("value")
     if isinstance(value, bool) or not isinstance(value, (int, float, str, type(None))):
         return None, "operand value must be a number, string, or null"
-    if isinstance(value, float) and not math.isfinite(value):
-        return None, "operand numeric value must be finite"
     if isinstance(value, (int, float)):
-        if not any(abs(number - float(value)) < 1e-9 for number in _explicit_numbers(quote)):
+        if _decimal_value(value) is None:
+            return None, "operand numeric value exceeds the bounded decimal range"
+        if not any(_numeric_values_match(number, value) for number in _explicit_numbers(quote)):
             return None, f"numeric value {value} is not explicit in its exact quote"
     elif isinstance(value, str) and value not in quote:
         return None, "string value is not explicit in its exact quote"
@@ -735,7 +824,7 @@ def _ground_one(
     if unit and len(unit) > 100:
         return None, "unit exceeds 100 characters"
     if unit and isinstance(value, (int, float)) and not _numeric_value_has_unit(
-        float(value), unit, quote
+        value, unit, quote
     ):
         return None, f"unit {unit} is not attached to value {value} in its exact quote"
     label, error = _bounded_optional_text(raw.get("label"), "label")
@@ -895,11 +984,16 @@ def ground_evidence(
     return GroundingDecision("grounded", operands=tuple(grounded))
 
 
-def _format_number(value: float) -> str:
-    return str(int(value)) if value.is_integer() else str(round(value, 6)).rstrip("0").rstrip(".")
+def _format_number(value: int | float | Decimal) -> str:
+    if isinstance(value, int):
+        return str(value)
+    decimal_value = value if isinstance(value, Decimal) else Decimal(str(value))
+    if decimal_value == decimal_value.to_integral_value():
+        return str(int(decimal_value))
+    return format(round(decimal_value, 6), "f").rstrip("0").rstrip(".")
 
 
-def _format_quantity(value: float, unit: str | None) -> str:
+def _format_quantity(value: int | float | Decimal, unit: str | None) -> str:
     number = _format_number(value)
     if not unit:
         return number
@@ -920,13 +1014,16 @@ def _trace(
     result_value: int | float | str | tuple[str, ...],
     unit: str | None,
     steps: Sequence[str],
+    entities: Sequence[str] | None = None,
 ) -> ComputationDecision:
     citations = tuple(dict.fromkeys(operand.citation for operand in operands))
-    entities = tuple(dict.fromkeys(
-        label
-        for operand in operands
-        if (label := (operand.label or operand.key))
-    ))
+    traced_entities = tuple(dict.fromkeys(entities)) if entities is not None else tuple(
+        dict.fromkeys(
+            label
+            for operand in operands
+            if (label := (operand.label or operand.key))
+        )
+    )
     evidence_dates = tuple(dict.fromkeys(
         operand.evidence_date.isoformat()
         for operand in operands
@@ -938,7 +1035,7 @@ def _trace(
         result_value=result_value,
         unit=unit,
         citations=citations,
-        entities=entities,
+        entities=traced_entities,
         evidence_dates=evidence_dates,
         steps=tuple(steps),
         answer=_answer(result, citations),
@@ -1008,7 +1105,7 @@ def _sum_value_is_bound(
             if not selector_tokens.issubset(_normalized_tokens(clause)):
                 continue
             if any(
-                abs(number - float(operand.value)) < 1e-9
+                _numeric_values_match(number, operand.value)
                 for number in _explicit_numbers(clause)
             ):
                 return True
@@ -1067,22 +1164,39 @@ def validate_selector_alignment(
     return None
 
 
+def _cardinality_error(plan: EvidencePlan, operands: Sequence[Any]) -> str | None:
+    if plan.exact_operands is not None and len(operands) != plan.exact_operands:
+        return f"{plan.operation} requires exactly {plan.exact_operands} operands"
+    if not plan.minimum_operands <= len(operands) <= plan.maximum_operands:
+        return (
+            f"{plan.operation} requires between {plan.minimum_operands} "
+            f"and {plan.maximum_operands} operands"
+        )
+    return None
+
+
+def _apply_arithmetic(
+    plan: EvidencePlan,
+    values: Sequence[int | Decimal],
+) -> int | Decimal | None:
+    if plan.operation == "sum":
+        return sum(values)
+    if len(values) != 2:
+        return None
+    if plan.difference_direction == "first_minus_second":
+        return values[0] - values[1]
+    if plan.difference_direction == "second_minus_first":
+        return values[1] - values[0]
+    return abs(values[0] - values[1])
+
+
 def execute_plan(
     plan: EvidencePlan,
     operands: Sequence[GroundedEvidence],
 ) -> ComputationDecision:
-    if plan.exact_operands is not None and len(operands) != plan.exact_operands:
-        return ComputationDecision(
-            "fallback", reason=f"{plan.operation} requires exactly {plan.exact_operands} operands"
-        )
-    if not plan.minimum_operands <= len(operands) <= plan.maximum_operands:
-        return ComputationDecision(
-            "fallback",
-            reason=(
-                f"{plan.operation} requires between {plan.minimum_operands} "
-                f"and {plan.maximum_operands} operands"
-            ),
-        )
+    cardinality_error = _cardinality_error(plan, operands)
+    if cardinality_error:
+        return ComputationDecision("fallback", reason=cardinality_error)
     selected = list(operands)
     temporal_steps: list[str] = []
     if plan.temporal_window and plan.operation != "date_interval":
@@ -1105,6 +1219,9 @@ def execute_plan(
         temporal_steps.append(
             f"Selected {len(selected)} of {before_count} dated evidence items"
         )
+        cardinality_error = _cardinality_error(plan, selected)
+        if cardinality_error:
+            return ComputationDecision("fallback", reason=cardinality_error)
         if not selected:
             return ComputationDecision(
                 "fallback", reason="no grounded evidence falls inside the resolved date window"
@@ -1120,6 +1237,9 @@ def execute_plan(
                 "fallback", reason="count_distinct requires one canonical key per operand"
             )
         keys = tuple(dict.fromkeys(operand.key for operand in selected if operand.key))
+        cardinality_error = _cardinality_error(plan, keys)
+        if cardinality_error:
+            return ComputationDecision("fallback", reason=cardinality_error)
         units = {operand.unit for operand in selected if operand.unit}
         if len(units) > 1:
             return ComputationDecision("fallback", reason="count_distinct has mixed units")
@@ -1128,7 +1248,7 @@ def execute_plan(
                 "fallback", reason="every counted operand must carry the compatible unit"
             )
         unit = next(iter(units), "item")
-        result = _format_quantity(float(len(keys)), unit)
+        result = _format_quantity(len(keys), unit)
         return _trace(
             plan,
             selected,
@@ -1148,10 +1268,10 @@ def execute_plan(
         units = {operand.unit for operand in selected if operand.unit}
         requested_unit = normalize_unit(plan.result_unit)
         time_factors = {
-            "minute": 1.0,
-            "hour": 60.0,
-            "day": 1_440.0,
-            "week": 10_080.0,
+            "minute": 1,
+            "hour": 60,
+            "day": 1_440,
+            "week": 10_080,
         }
         time_dimension = bool(units) and units.issubset(time_factors)
         if time_dimension and any(operand.unit is None for operand in selected):
@@ -1184,42 +1304,69 @@ def execute_plan(
                     "fallback",
                     reason="numeric units present in evidence must be supplied explicitly",
                 )
-        values = [float(operand.value) for operand in selected]  # type: ignore[arg-type]
-        if time_dimension and unit in time_factors:
-            values = [
-                value * time_factors[str(operand.unit)] / time_factors[unit]
-                for value, operand in zip(values, selected)
-            ]
-        if plan.operation == "sum":
-            result_value = sum(values)
+        raw_values = [operand.value for operand in selected]
+        use_decimal = time_dimension or any(isinstance(value, float) for value in raw_values)
+        if use_decimal:
+            converted = [_decimal_value(value) for value in raw_values]  # type: ignore[arg-type]
+            if any(value is None for value in converted):
+                return ComputationDecision(
+                    "fallback", reason="numeric operand exceeds the bounded decimal range"
+                )
+            with localcontext() as context:
+                context.prec = _MAX_NUMERIC_DIGITS
+                values: list[int | Decimal] = [
+                    value for value in converted if value is not None
+                ]
+                if time_dimension and unit in time_factors:
+                    values = [
+                        Decimal(value)
+                        * Decimal(time_factors[str(operand.unit)])
+                        / Decimal(time_factors[unit])
+                        for value, operand in zip(values, selected)
+                    ]
+                result_value = _apply_arithmetic(plan, values)
         else:
-            if len(values) != 2:
+            values = [int(value) for value in raw_values]  # type: ignore[arg-type]
+            result_value = _apply_arithmetic(plan, values)
+        if result_value is None:
+            return ComputationDecision(
+                "fallback", reason="difference requires exactly two operands"
+            )
+        if (
+            plan.operation == "difference"
+            and plan.difference_direction != "absolute"
+            and result_value < 0
+        ):
+            return ComputationDecision(
+                "fallback",
+                reason="directed difference premise is contradicted by the operands",
+            )
+        decimal_result = Decimal(result_value)
+        if not decimal_result.is_finite() or abs(decimal_result) > _MAX_DECIMAL_ABS:
+            return ComputationDecision(
+                "fallback", reason="numeric result exceeds the bounded decimal range"
+            )
+        public_value: int | float
+        if decimal_result == decimal_result.to_integral_value():
+            public_value = int(decimal_result)
+        else:
+            public_value = float(decimal_result)
+            if not math.isfinite(public_value):
                 return ComputationDecision(
-                    "fallback", reason="difference requires exactly two operands"
+                    "fallback", reason="numeric result exceeds the bounded decimal range"
                 )
-            if plan.difference_direction == "first_minus_second":
-                result_value = values[0] - values[1]
-            elif plan.difference_direction == "second_minus_first":
-                result_value = values[1] - values[0]
-            else:
-                result_value = abs(values[0] - values[1])
-            if plan.difference_direction != "absolute" and result_value < 0:
-                return ComputationDecision(
-                    "fallback",
-                    reason="directed difference premise is contradicted by the operands",
-                )
-        result = _format_quantity(result_value, unit)
+        result = _format_quantity(decimal_result, unit)
         return _trace(
             plan,
             selected,
             result=result,
-            result_value=(int(result_value) if result_value.is_integer() else result_value),
+            result_value=public_value,
             unit=unit,
             steps=[
                 *temporal_steps,
                 f"{plan.operation}:{plan.difference_direction or 'n/a'}"
                 f"({', '.join(_format_number(value) for value in values)}) "
-                f"= {_format_number(result_value)}",
+                f"= {_format_number(decimal_result)}",
             ],
         )
 
@@ -1296,16 +1443,29 @@ def execute_plan(
         labels = tuple(label for operand in selected if (label := _label(operand)))
         if len(labels) != len(selected):
             return ComputationDecision("fallback", reason="order requires grounded labels")
+        projected_labels = labels
+        if plan.order_index is not None:
+            if plan.order_index >= len(labels):
+                return ComputationDecision(
+                    "fallback", reason="order does not have the requested ordinal operand"
+                )
+            projected_labels = (labels[plan.order_index],)
         return _trace(
             plan,
             selected,
-            result=" -> ".join(labels),
-            result_value=labels,
+            result=" -> ".join(projected_labels),
+            result_value=projected_labels,
             unit=None,
             steps=[
                 f"Sorted {len(labels)} grounded items by date "
-                f"({plan.order_direction or 'ascending'})"
+                f"({plan.order_direction or 'ascending'})",
+                *(
+                    [f"Projected ordinal index {plan.order_index}"]
+                    if plan.order_index is not None
+                    else []
+                ),
             ],
+            entities=projected_labels,
         )
 
     if any(operand.assertion_id is None for operand in selected):
@@ -1385,6 +1545,8 @@ def verify_final_answer(candidate: Any, trace: ComputationTrace) -> Verification
     if text == trace.answer:
         return VerificationDecision("verified")
     without_citations = re.sub(r"\s*\[lcm:\d+:\d+-\d+\]", "", text).strip()
+    if re.search(r"\b(?:no|not|never)\b|n['’]t\b", without_citations, re.IGNORECASE):
+        return VerificationDecision("fallback", "candidate negates the verified result")
     if trace.result.casefold() not in without_citations.casefold():
         return VerificationDecision("fallback", "candidate does not preserve the verified result")
     expected_numbers = _explicit_numbers(trace.result)

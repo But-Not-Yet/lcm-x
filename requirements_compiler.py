@@ -1694,7 +1694,33 @@ def _finite_event_key(
     return None
 
 
-def _source_event_clause(quote: str, *, role: Any, unit: str | None) -> bool:
+def _question_event_verbs(question: str | None) -> str | None:
+    normalized = " ".join(str(question or "").casefold().split())
+    actions = (
+        (r"\battend(?:ed|ing)?\b", r"attended"),
+        (r"\bvisit(?:ed|ing)?\b", r"visited"),
+        (r"\b(?:go|went|going)\s+to\b", r"went to"),
+        (r"\b(?:take|took|taking)\b", r"took"),
+        (r"\bview(?:ed|ing)?\b", r"viewed"),
+        (r"\badd(?:ed|ing)?\b", r"added"),
+        (r"\b(?:buy|bought|buying)\b", r"bought"),
+        (r"\breturn(?:ed|ing)?\s+from\b", r"returned from"),
+        (r"\bparticipat(?:e|ed|ing)\s+in\b", r"participated in"),
+        (r"\bcomplet(?:e|ed|ing)\b", r"completed"),
+        (r"\bjoin(?:ed|ing)?\b", r"joined"),
+        (r"\btravel(?:ed|led|ing)?\s+to\b", r"traveled to"),
+    )
+    matched = [source for pattern, source in actions if re.search(pattern, normalized)]
+    return "(?:" + "|".join(matched) + ")" if matched else None
+
+
+def _source_event_clause(
+    quote: str,
+    *,
+    role: Any,
+    unit: str | None,
+    question: str | None = None,
+) -> bool:
     """Return true only for a first-person, source-stated event occurrence."""
     if str(role or "").casefold() != "user" or not unit:
         return False
@@ -1704,12 +1730,12 @@ def _source_event_clause(quote: str, *, role: Any, unit: str | None) -> bool:
     if re.search(r"\b(?:might|may|plan(?:ning)? to|want to|hope to|would|could|should|never|not)\b", normalized):
         return False
     forms = "|".join(re.escape(form) for form in _unit_forms(unit))
-    event_verbs = (
-        r"(?:took|went on|returned from|completed)"
-        if unit in {"vacation", "holiday", "trip"}
-        else r"(?:attended|visited|went to|took|viewed|added|bought|returned from|"
-        r"participated in|completed|joined|traveled to)"
-    )
+    event_verbs = r"(?:took|went on|returned from|completed)"
+    if unit not in {"vacation", "holiday", "trip"}:
+        event_verbs = _question_event_verbs(question) or (
+            r"(?:attended|visited|went to|took|returned from|participated in|"
+            r"completed|joined|traveled to)"
+        )
     return bool(
         re.search(
             rf"\b(?:i|we)\s+{event_verbs}\s+"
@@ -1722,6 +1748,7 @@ def _source_event_clause(quote: str, *, role: Any, unit: str | None) -> bool:
 
 
 def _finite_enumeration(
+    question: str,
     contract: AnswerContract,
     *,
     engine: Any,
@@ -1760,6 +1787,7 @@ def _finite_enumeration(
                 clause,
                 role=row.get("role"),
                 unit=contract.requested_unit,
+                question=question,
             ):
                 continue
             certificate["material_clauses"] += 1
@@ -2184,6 +2212,7 @@ def compile_preanswer_evidence(
         and contract.requested_unit is not None
     ):
         computation, selected, coverage_certificate, reason = _finite_enumeration(
+            str(question),
             contract,
             engine=engine,
             scan_limit=limits.max_scan_rows,

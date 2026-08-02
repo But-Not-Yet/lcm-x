@@ -574,6 +574,116 @@ def test_finite_enumeration_rejects_unrelated_action_near_requested_event(tmp_pa
     assert result["computation"] is None
 
 
+def test_finite_enumeration_binds_question_action_to_counted_event(tmp_path):
+    assert not _source_event_clause(
+        "I bought a concert ticket.",
+        role="user",
+        unit="concert",
+        question="How many concerts did I attend this year?",
+    )
+    assert _source_event_clause(
+        "I attended a concert.",
+        role="user",
+        unit="concert",
+        question="How many concerts did I attend this year?",
+    )
+    assert _source_event_clause(
+        "I bought a book.",
+        role="user",
+        unit="book",
+        question="How many books did I buy this year?",
+    )
+    assert not _source_event_clause(
+        "I bought a vacation package for Bali.",
+        role="user",
+        unit="vacation",
+        question="How many vacations did I take this year?",
+    )
+    assert _source_event_clause(
+        "I took a vacation in Bali.",
+        role="user",
+        unit="vacation",
+        question="How many vacations did I take this year?",
+    )
+
+    concert_engine = _engine(tmp_path / "concert")
+    ticket = _append(
+        concert_engine,
+        "I bought an Aurora concert ticket.",
+        session_id="ticket",
+    )
+    attended = _append(
+        concert_engine,
+        "I attended the Aurora concert.",
+        session_id="attended",
+    )
+    concert_engine._session_occurrence_dates.update(
+        {"ticket": "2025-01-01", "attended": "2025-01-02"}
+    )
+    try:
+        concert_result = _compile(
+            concert_engine,
+            "How many concerts did I attend this year?",
+            [ticket, attended],
+            question_as_of="2025-12-31",
+            budgets={"max_retrieval_calls": 0},
+        )
+    finally:
+        concert_engine._store.close()
+
+    assert concert_result["state"] == "computation_sufficient", json.dumps(
+        concert_result, indent=2
+    )
+    assert concert_result["computation"]["result_value"] == 1
+
+    engine = _engine(tmp_path)
+    purchased = _append(
+        engine,
+        "I bought a vacation package for Bali.",
+        session_id="purchase",
+    )
+    taken = _append(
+        engine,
+        "I took a vacation in Bali.",
+        session_id="taken",
+    )
+    engine._session_occurrence_dates.update(
+        {"purchase": "2025-02-01", "taken": "2025-03-01"}
+    )
+    try:
+        result = _compile(
+            engine,
+            "How many vacations did I take this year?",
+            [purchased, taken],
+            question_as_of="2025-12-31",
+            budgets={"max_retrieval_calls": 0},
+        )
+    finally:
+        engine._store.close()
+
+    assert result["state"] == "computation_sufficient"
+    assert result["finite_coverage"] is True
+    assert result["computation"]["result_value"] == 1
+
+
+def test_terminal_question_date_fails_closed_in_evidence_path(tmp_path):
+    engine = _engine(tmp_path)
+    source = _append(engine, "You need 15 points to redeem the reward.")
+    try:
+        result = _compile(
+            engine,
+            "How many points do I need to redeem the reward?",
+            [source],
+            question_as_of="9999-12-31",
+            budgets={"max_retrieval_calls": 0},
+        )
+    finally:
+        engine._store.close()
+
+    assert result["state"] == "unknown"
+    assert result["computation"] is None
+
+
 def test_finite_enumeration_keeps_same_entity_events_on_different_dates(tmp_path):
     engine = _engine(tmp_path)
     first = _append(engine, "I took a vacation to Bali.", session_id="bali-first")

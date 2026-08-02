@@ -178,6 +178,8 @@ def normalize_question_date(value: Any) -> tuple[QuestionDate | None, str | None
         )
     except ValueError:
         return None, "question_date_invalid"
+    if day == date.max:
+        return None, "question_date_invalid"
     suffix = raw[match.end() :]
     weekday_match = _WEEKDAY_SUFFIX_RE.match(suffix)
     if weekday_match is not None:
