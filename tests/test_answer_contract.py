@@ -90,6 +90,22 @@ def test_relative_event_window_requires_real_question_anchor():
     assert anchored.contract.finite_cardinality is None
 
 
+def test_rolling_day_and_week_windows_have_the_requested_length():
+    seven_days = compile_answer_contract(
+        "How many vacations did I take in the last 7 days?",
+        "2024-08-20",
+    )
+    two_weeks = compile_answer_contract(
+        "How many vacations did I take in the last 2 weeks?",
+        "2024-08-20",
+    )
+
+    assert seven_days.contract.temporal_window.start == date(2024, 8, 14)
+    assert seven_days.contract.temporal_window.end == date(2024, 8, 21)
+    assert two_weeks.contract.temporal_window.start == date(2024, 8, 7)
+    assert two_weeks.contract.temporal_window.end == date(2024, 8, 21)
+
+
 def test_latest_previous_and_ordinary_classification():
     latest = compile_answer_contract("Where do I currently live?")
     previous = compile_answer_contract("What was my previous occupation?")

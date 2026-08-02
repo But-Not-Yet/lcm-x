@@ -472,9 +472,9 @@ def _time_window(text: str, canonical_as_of: str | None) -> TemporalWindow | Non
             raw = rolling.group(1)
             amount = int(raw) if raw.isdigit() else _WORD_NUMBERS[raw]
             if rolling.group(2) == "day":
-                start = anchor - timedelta(days=amount)
+                start = anchor - timedelta(days=amount - 1)
             elif rolling.group(2) == "week":
-                start = anchor - timedelta(days=amount * 7)
+                start = anchor - timedelta(days=amount * 7 - 1)
             else:
                 month_index = anchor.year * 12 + anchor.month - 1 - amount
                 year, month_zero = divmod(month_index, 12)
