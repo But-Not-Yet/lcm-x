@@ -386,6 +386,30 @@ def test_explicit_subject_must_occur_in_exact_source_span(state_db):
         )
 
 
+def test_assertion_value_must_occur_in_exact_source_span(state_db):
+    messages, store = state_db
+    snapshot = _source(messages, store, "Alice likes tea.", 100.0)
+    wire = _assertion(
+        snapshot,
+        "Alice likes tea",
+        subject="person:alice",
+        resolution="explicit",
+        predicate="preference.drink",
+        value="coffee",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="assertion value is not in the exact source span",
+    ):
+        parse_assertion_extraction(
+            snapshot,
+            _payload(snapshot, [wire]),
+            store=store,
+        )
+    assert store.query_assertions(subject_key="person:alice") == []
+
+
 def test_strict_payload_rejects_bad_spans_unknown_fields_and_implicit_updates(state_db):
     messages, store = state_db
     snapshot = _source(messages, store, "I prefer tea.", 100.0)
