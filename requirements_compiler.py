@@ -1704,13 +1704,20 @@ def _source_event_clause(quote: str, *, role: Any, unit: str | None) -> bool:
     if re.search(r"\b(?:might|may|plan(?:ning)? to|want to|hope to|would|could|should|never|not)\b", normalized):
         return False
     forms = "|".join(re.escape(form) for form in _unit_forms(unit))
+    event_verbs = (
+        r"(?:took|went on|returned from|completed)"
+        if unit in {"vacation", "holiday", "trip"}
+        else r"(?:attended|visited|went to|took|viewed|added|bought|returned from|"
+        r"participated in|completed|joined|traveled to)"
+    )
     return bool(
         re.search(
-            r"\b(?:i|we)\s+(?:attended|visited|went to|took|viewed|added|bought|"
-            r"returned from|participated in|completed|joined|traveled to)\b",
+            rf"\b(?:i|we)\s+{event_verbs}\s+"
+            rf"(?:(?!(?:for|during|before|after|about|because)\b)[\w'-]+\s+){{0,3}}"
+            rf"(?:{forms})\b",
             normalized,
+            re.IGNORECASE,
         )
-        and re.search(rf"\b(?:{forms})\b", normalized)
     )
 
 

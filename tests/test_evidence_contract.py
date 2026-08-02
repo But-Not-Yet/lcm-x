@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.evidence_compiler import compile_preanswer_evidence
+from hermes_lcm.requirements_compiler import _source_event_clause
 from hermes_lcm.store import MessageStore
 from hermes_lcm.tools import lcm_compile_evidence
 from hermes_lcm.schemas import LCM_COMPILE_EVIDENCE
@@ -542,6 +543,35 @@ def test_complete_finite_enumeration_counts_distinct_adapter_dated_events(tmp_pa
     assert result["computation"]["result_value"] == 2
     assert result["coverage_certificate"]["distinct_keys"] == 2
     assert result["coverage_certificate"]["adapter_time_used"] is True
+
+
+def test_finite_enumeration_rejects_unrelated_action_near_requested_event(tmp_path):
+    engine = _engine(tmp_path)
+    clause = "On June 1, 2024, I bought clothes for my vacation in Bali."
+    assert not _source_event_clause(clause, role="user", unit="vacation")
+    assert _source_event_clause(
+        "On June 1, 2024, I took a vacation to Bali.",
+        role="user",
+        unit="vacation",
+    )
+    source = _append(
+        engine,
+        clause,
+    )
+    try:
+        result = _compile(
+            engine,
+            "How many vacations did I take during June?",
+            [source],
+            question_as_of="2024-06-30",
+            budgets={"max_retrieval_calls": 0},
+        )
+    finally:
+        engine._store.close()
+
+    assert result["state"] == "unknown"
+    assert result["finite_coverage"] is False
+    assert result["computation"] is None
 
 
 def test_finite_enumeration_keeps_same_entity_events_on_different_dates(tmp_path):
