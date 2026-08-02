@@ -969,12 +969,77 @@ def _count_distinct_subject_tokens(question: str) -> set[str]:
     return set()
 
 
+def _named_sum_selectors(question: str) -> tuple[set[str], ...]:
+    match = re.search(
+        r"(?i:\b(?:total|sum)\s+of\s+(?:the\s+)?)(.+?)(?:[?.!]|$)",
+        question,
+    )
+    if not match:
+        return ()
+    parts = re.split(
+        r"\s*(?:[,;&]|\band\b|\bplus\b)\s*",
+        match.group(1),
+        flags=re.IGNORECASE,
+    )
+    selectors = tuple(
+        set(_normalized_tokens(re.sub(r"(?i)^(?:the|a|an)\s+", "", part)))
+        for part in parts
+        if part.strip()
+    )
+    return selectors if len(selectors) >= 2 and all(selectors) else ()
+
+
+def _sum_value_is_bound(
+    operand: GroundedEvidence,
+    requested: set[str],
+) -> bool:
+    if not isinstance(operand.value, (int, float)):
+        return False
+    clauses = re.split(
+        r"\s*(?:[,;]|\band\b|\bplus\b)\s*",
+        operand.quote,
+        flags=re.IGNORECASE,
+    )
+    for selector in (operand.label, operand.key):
+        selector_tokens = set(_normalized_tokens(selector or ""))
+        if not selector_tokens or requested.isdisjoint(selector_tokens):
+            continue
+        for clause in clauses:
+            if not selector_tokens.issubset(_normalized_tokens(clause)):
+                continue
+            if any(
+                abs(number - float(operand.value)) < 1e-9
+                for number in _explicit_numbers(clause)
+            ):
+                return True
+    return False
+
+
 def validate_selector_alignment(
     question: str,
     plan: EvidencePlan,
     operands: Sequence[GroundedEvidence],
 ) -> str | None:
     """Validate question-aware semantic obligations on host-selected operands."""
+    if plan.operation == "sum":
+        selectors = _named_sum_selectors(question)
+        if not selectors:
+            return None
+        unmatched = set(range(len(operands)))
+        for selector in selectors:
+            matches = [
+                index
+                for index in unmatched
+                if _sum_value_is_bound(operands[index], selector)
+            ]
+            if len(matches) != 1:
+                return (
+                    "named sum values must be bound to distinct requested summands"
+                )
+            unmatched.remove(matches[0])
+        if unmatched:
+            return "named sum values must be bound to distinct requested summands"
+        return None
     if plan.operation == "count_distinct":
         subject_tokens = _count_distinct_subject_tokens(question)
         if subject_tokens and any(

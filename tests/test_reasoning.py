@@ -604,3 +604,52 @@ def test_count_distinct_rejects_question_subject_as_canonical_key(evidence_db):
     )
     assert accepted["status"] == "computed"
     assert accepted["trace"]["result_value"] == 2
+
+
+def test_named_sum_binds_each_value_to_its_requested_summand(evidence_db):
+    messages, assertions = evidence_db
+    taxi = "Taxi $20, dinner $50."
+    hotel = "Hotel $100, flight $500."
+    taxi_id = _message(messages, taxi, "2024-02-01")
+    hotel_id = _message(messages, hotel, "2024-02-02")
+    question = "What was the total of the taxi and hotel?"
+    engine = SimpleNamespace(_store=messages, _assertions=assertions)
+
+    wrong_values = json.loads(lcm_compute(
+        {
+            "question": question,
+            "evidence_complete": True,
+            "operands": [
+                _raw(taxi_id, taxi, taxi, value=50, unit="usd", label="Taxi"),
+                _raw(hotel_id, hotel, hotel, value=500, unit="usd", label="Hotel"),
+            ],
+        },
+        engine=engine,
+    ))
+    wrong_labels = json.loads(lcm_compute(
+        {
+            "question": question,
+            "evidence_complete": True,
+            "operands": [
+                _raw(taxi_id, taxi, taxi, value=20, unit="usd", label="dinner"),
+                _raw(hotel_id, hotel, hotel, value=100, unit="usd", label="flight"),
+            ],
+        },
+        engine=engine,
+    ))
+    correct = json.loads(lcm_compute(
+        {
+            "question": question,
+            "evidence_complete": True,
+            "operands": [
+                _raw(taxi_id, taxi, taxi, value=20, unit="usd", label="Taxi"),
+                _raw(hotel_id, hotel, hotel, value=100, unit="usd", label="Hotel"),
+            ],
+        },
+        engine=engine,
+    ))
+
+    assert wrong_values["status"] == "fallback"
+    assert wrong_labels["status"] == "fallback"
+    assert correct["status"] == "computed"
+    assert correct["trace"]["result_value"] == 120
