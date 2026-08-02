@@ -6,6 +6,8 @@ import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.evidence_compiler import compile_preanswer_evidence
 from hermes_lcm.requirements_compiler import _source_event_clause
@@ -158,6 +160,54 @@ def test_instead_of_difference_uses_question_direction(tmp_path):
     assert result["state"] == "computation_sufficient"
     assert result["computation"]["result_value"] == 20
     assert result["computation"]["unit"] == "minute"
+
+
+@pytest.mark.parametrize(
+    ("question", "sources"),
+    (
+        ("How long is my commute?", ("My commute is 35 minutes.",)),
+        (
+            "How many minutes total did I spend jogging and doing yoga?",
+            ("Jogging and yoga had a combined total of 90 minutes.",),
+        ),
+        (
+            "What is the difference in minutes between the bus and taxi?",
+            ("The bus and taxi difference is 20 minutes.",),
+        ),
+        ("What is my favorite color?", ("My favorite color is blue.",)),
+    ),
+)
+def test_question_as_of_excludes_future_baseline_for_every_contract_operation(
+    tmp_path,
+    question,
+    sources,
+):
+    engine = _engine(tmp_path)
+    observed_after_cutoff = datetime(2024, 2, 1, tzinfo=timezone.utc).timestamp()
+    refs = [
+        _append(
+            engine,
+            source,
+            session_id=f"future-{index}",
+            timestamp=observed_after_cutoff,
+        )
+        for index, source in enumerate(sources)
+    ]
+    try:
+        result = _compile(
+            engine,
+            question,
+            refs,
+            question_as_of="2024-01-31",
+            budgets={"max_retrieval_calls": 0},
+        )
+    finally:
+        engine._store.close()
+
+    assert result["state"] == "unknown"
+    assert result["direct_fact"] is None
+    assert result["computation"] is None
+    assert result["evidence"] == []
 
 
 def test_open_cardinality_never_closes_from_one_event(tmp_path):

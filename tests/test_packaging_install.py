@@ -856,11 +856,24 @@ def test_pre_llm_hook_requirements_mode_uses_compiler_without_selector(
     module.register(ctx)
     prompt = "How long is your commute?"
     answer = "My commute is 35 minutes."
+    observed_before_question = datetime(
+        2026, 7, 19, tzinfo=timezone.utc
+    ).timestamp()
     prompt_id = ctx.engine._store.append(
-        "prior-session", {"role": "user", "content": prompt}
+        "prior-session",
+        {
+            "role": "user",
+            "content": prompt,
+            "timestamp": observed_before_question,
+        },
     )
     answer_id = ctx.engine._store.append(
-        "prior-session", {"role": "assistant", "content": answer}
+        "prior-session",
+        {
+            "role": "assistant",
+            "content": answer,
+            "timestamp": observed_before_question,
+        },
     )
     baseline = [{"exact_ref": f"lcm:{prompt_id}:0-{len(prompt)}", "quote": prompt}]
     product_calls = []

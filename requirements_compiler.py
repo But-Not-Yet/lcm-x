@@ -959,12 +959,6 @@ def _candidate_event_day(candidate: Mapping[str, Any]) -> tuple[date | None, str
 def _available_as_of(candidate: Mapping[str, Any], contract: AnswerContract) -> bool:
     if not contract.question_as_of:
         return True
-    if (
-        contract.temporal_window is None
-        and contract.operation
-        not in {"latest", "previous", "date_filter", "date_interval", "order"}
-    ):
-        return True
     boundary = question_date_as_of_epoch(contract.question_as_of)
     if boundary is None:
         return False

@@ -420,6 +420,36 @@ def test_planner_populates_requested_result_unit_for_time_arithmetic(evidence_db
     assert difference["trace"]["result_value"] == 30
 
 
+def test_explicit_time_result_unit_wins_over_incidental_currency(evidence_db):
+    messages, assertions = evidence_db
+    first = "The $10 premium service took 2 hours."
+    second = "The $5 basic service took 1 hour."
+    first_id = _message(messages, first, "2024-02-01")
+    second_id = _message(messages, second, "2024-02-02")
+    question = (
+        "What is the difference in hours between the $10 premium service "
+        "and the $5 basic service?"
+    )
+    engine = SimpleNamespace(_store=messages, _assertions=assertions)
+
+    plan = compile_evidence_plan(question).plan
+    assert plan.result_unit == "hour"
+
+    result = json.loads(lcm_compute(
+        {
+            "question": question,
+            "evidence_complete": True,
+            "operands": [
+                _raw(first_id, first, first, value=2, unit="hour", label="premium service"),
+                _raw(second_id, second, second, value=1, unit="hour", label="basic service"),
+            ],
+        },
+        engine=engine,
+    ))
+    assert result["status"] == "computed", result
+    assert result["trace"]["result"] == "1 hour"
+
+
 def test_directed_difference_validates_question_order(evidence_db):
     messages, assertions = evidence_db
     first = "Alice spent $30."
@@ -560,6 +590,8 @@ def test_order_projects_requested_ordinal_and_preserves_full_order(evidence_db):
         ("Which event was second?", "Beta"),
         ("Which event was third?", "Gamma"),
         ("Which event was previous?", "Beta"),
+        ("Which city did I visit second?", "Beta"),
+        ("What restaurant did I visit first?", "Alpha"),
     ):
         result = json.loads(lcm_compute(
             {

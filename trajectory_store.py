@@ -661,6 +661,12 @@ class TrajectoryStore:
                 raise TrajectorySchemaUnavailableError(
                     f"trajectory schema unavailable for read-only query: {missing}"
                 )
+            findings = _verify_trajectory_schema(self.connection)
+            if findings:
+                raise TrajectorySchemaUnavailableError(
+                    "trajectory schema unavailable for read-only query: "
+                    f"{findings}"
+                )
             return
 
         run_versioned_migrations(self._conn)

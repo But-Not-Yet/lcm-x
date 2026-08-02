@@ -364,8 +364,6 @@ def _bounded_sum_count(question: str) -> int | None:
 
 def _requested_result_unit(question: str) -> str | None:
     """Return only an explicitly requested arithmetic output unit."""
-    if re.search(r"(?:\$|\b(?:usd|dollars?)\b)", question, re.IGNORECASE):
-        return "usd"
     match = re.search(
         r"\bhow\s+many\s+"
         r"(minutes?|mins?|hours?|hrs?|days?|weeks?|months?|pages?|points?|"
@@ -382,15 +380,23 @@ def _requested_result_unit(question: str) -> str | None:
         question,
         re.IGNORECASE,
     )
-    return normalize_unit(match.group(1)) if match else None
+    if match:
+        return normalize_unit(match.group(1))
+    if re.search(r"(?:\$|\b(?:usd|dollars?)\b)", question, re.IGNORECASE):
+        return "usd"
+    return None
 
 
 def _requested_order_ordinal(question: str) -> str | None:
     """Return an ordinal only when the question requests one result position."""
     match = re.search(
         r"\b(?:which|what|who)\b[^?]{0,80}\b"
-        r"(?:was|were|is|came|happened|occurred)\s+(?:the\s+)?"
-        r"(previous|first|earliest|second|third)\b",
+        r"(?:"
+        r"(?:was|were|is|came|happened|occurred)"
+        r"|(?:did|do|does|have|has|had|will|would|can|could|should)"
+        r"\s+\w+(?:\s+\w+){1,4}"
+        r")\s+(?:the\s+)?"
+        r"(previous|first|earliest|second|third)\b\s*\??$",
         question,
     )
     return match.group(1) if match else None
