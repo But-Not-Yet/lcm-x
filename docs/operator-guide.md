@@ -81,12 +81,18 @@ Restart Hermes after updating.
 
 ## Upgrade from v0.20.0 to v0.21.0-rc1
 
-1. Back up the profile's `lcm.db` and its `-wal`/`-shm` companions, or run
-   `/lcm backup` from the old runtime.
-2. Update the plugin checkout to the RC and restart Hermes.
-3. Send one normal message, then confirm `lcm_status` reports plugin version
+1. While the old runtime is running, run `/lcm backup`. If Hermes or any other
+   SQLite writer may still be running, this is the only supported online backup
+   path.
+2. Alternatively, stop Hermes and every other process that can write the
+   database. After all writers are fully stopped, copy the profile's `lcm.db`
+   plus any existing `lcm.db-wal` and `lcm.db-shm` companions together as one
+   quiescent snapshot. Do not copy these files separately while a writer is
+   live.
+3. Update the plugin checkout to the RC and restart Hermes.
+4. Send one normal message, then confirm `lcm_status` reports plugin version
    `0.21.0-rc1` and the expected database path.
-4. For a migration-shape audit, query that database with
+5. For a migration-shape audit, query that database with
    `SELECT value FROM metadata WHERE key = 'schema_version';`; the expected
    result is `5`.
 
@@ -259,16 +265,23 @@ engine. Exposure is not activation. On a stock install:
 | `LCM_ADAPTIVE_RETRIEVAL_ENABLED` | `false` | Enable `lcm_retrieve` and bind query views for evidence reuse. Episodes are bounded to existing retrieval tools and store evidence/traces, never final prose. |
 | `LCM_PREANSWER_EVIDENCE_ENABLED` | `false` | Enable the automatic pre-answer evidence hook. Disabled preserves the ordinary hook context and performs no retrieval or computation. |
 | `LCM_PREANSWER_EVIDENCE_MODE` | empty | When the master flag is enabled, empty selects legacy selective behavior; explicit values are `off`, `legacy_selective`, or `requirements_v1`. |
-| `LCM_SELECTIVE_COMPILER_ENABLED` | `false` | Separately opt into the semantic selector for code-derived closed operations. Pre-answer evidence alone remains provider-free. |
+| `LCM_SELECTIVE_COMPILER_ENABLED` | `false` | Separately opt into the semantic selector for code-derived closed operations. Disabling the selective compiler does not prevent the pre-answer hook from retrieving a baseline. |
 | `LCM_SELECTIVE_COMPILER_MODEL` | empty | Optional model override for the selective compiler. |
+
+When no caller-supplied baseline is available, routed pre-answer turns may call
+`lcm_recall` to build one. If embeddings are enabled, this retrieval inherits
+the configured embedding provider and may send the current question to that
+provider. Disabling the selective compiler prevents its selector and answering
+model calls; it does not disable this retrieval path.
 
 Privacy boundary: assertion and query-view records live in the selected
 profile's existing `lcm.db` and may include exact quotes, spans, and dependency
 refs. Provider-neutral evidence tools do not upload them by themselves.
-Embedding-backed retrieval, assertion extraction, and the optional selective
-compiler can send configured content to their selected providers. Review those
-provider and redaction settings before opting in; sensitive-pattern redaction is
-also default-off and is forward-only.
+Embedding-backed retrieval, including automatic pre-answer baseline retrieval,
+assertion extraction, and the optional selective compiler can send configured
+content to their selected providers. Review those provider and redaction
+settings before opting in; sensitive-pattern redaction is also default-off and
+is forward-only.
 
 Advanced compaction, assembly, and extraction knobs are defined in `config.py`.
 

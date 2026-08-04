@@ -42,6 +42,32 @@ def test_release_candidate_identity_surfaces_are_synchronized():
     assert f"v{RELEASE_VERSION}, main, or commit SHA" in bug_report
 
 
+def test_upgrade_guide_requires_sqlite_safe_backup_semantics():
+    operator_guide = " ".join(
+        (REPO_ROOT / "docs" / "operator-guide.md")
+        .read_text(encoding="utf-8")
+        .split()
+    )
+
+    assert "the only supported online backup path" in operator_guide
+    assert "stop Hermes and every other process that can write the database" in operator_guide
+    assert "`lcm.db-wal` and `lcm.db-shm`" in operator_guide
+    assert "one quiescent snapshot" in operator_guide
+
+
+def test_preanswer_guide_discloses_inherited_embedding_provider_behavior():
+    operator_guide = " ".join(
+        (REPO_ROOT / "docs" / "operator-guide.md")
+        .read_text(encoding="utf-8")
+        .split()
+    )
+
+    assert "may call `lcm_recall`" in operator_guide
+    assert "may send the current question to that provider" in operator_guide
+    assert "Disabling the selective compiler does not prevent" in operator_guide
+    assert "Pre-answer evidence alone remains provider-free." not in operator_guide
+
+
 def test_release_candidate_notes_cover_only_the_merged_release_scope():
     notes = RELEASE_NOTES.read_text(encoding="utf-8")
 
