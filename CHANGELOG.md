@@ -4,24 +4,44 @@ This repo also publishes GitHub Releases. This file is the repo-root release sur
 
 ## Unreleased
 
-### Benchmark-driven retrieval scaling, evidence provenance, and citable delivery (PR stephenschoettler/hermes-lcm#436)
+No additional changes yet.
 
-- Removed the large-corpus recall ceilings: full summary/chunk corpus scans in bounded batches (was a 25k-vector
-  recency window that blinded semantic recall at scale), and in-product sanitization of raw natural-language
-  FTS queries (was FTS5-reject → LIKE scan → timeout → empty results). Re-measured on a 389×-scaled store:
-  recall cliff eliminated, raw-query empty rate 100% → 0%. (#167, #168, #169)
-- Reference-strict citable delivery: no evidence hit lacking a validated source reference is delivered;
-  uncitable summary hits become non-evidence leads with citable backfill. Eliminates a measured 1.6%
-  fail-close loss at full scale (0/500 on the confirm run). (#164, #174)
-- Made the query-path embedding spend guard configurable with a generous default while preserving the exempt
-  backfill contract. (stephenschoettler/hermes-lcm#434, carried verbatim)
-- Preserved a direct source `store_id` on summary recall hits so strict evidence renderers can validate
-  source identity. (#164)
-- Four fork-side review rounds on the consolidated train (35 → 11 → 6 → 8 findings, every one fixed,
-  refuted in writing, or deferred to a filed issue):
-  absolute-deadline stops on all scan paths, exact-shape verification of preserved schema families before
-  stamp downgrades, deadline-interruptible summary lineage expansion, delta refs rebuilt after response-cap
-  eviction, spend-ledger completeness on chunked backfills, and the benchmark evidence trail (`bench/`, F20–F37).
+## v0.21.0-rc1 - 2026-08-03
+
+### Highlights
+
+- Add the trajectory/experience-memory subsystem and the opt-in assertion,
+  evidence, query-view, and adaptive-retrieval surfaces delivered by the
+  consolidated wave-1 merge (#436).
+- Keep the core SQLite schema at version 5. New feature stores use additive,
+  named migrations in the same profile database, while disabled/default-off
+  installs do not create optional assertion, query-view, or embedding tables.
+- Improve large-store and startup behavior with bounded vector/metadata work,
+  lock-contention retry during WAL conversion, and deferred temporal-rollup
+  maintenance (#361, #440, #446, #447).
+
+### Changed
+
+- #436 adds the consolidated trajectory/experience-memory, retrieval,
+  exact-evidence, citable-delivery, privacy, scale, and release-validation wave.
+  Its committed benchmark results are directional evidence for the documented
+  harness and corpus, not universal provider or workload guarantees.
+- #361 retries WAL conversion when connection setup meets lock contention.
+- #440 moves temporal-rollup maintenance off the session-start critical path;
+  bounded background work is eventual and `lcm_recent` retains its fallback.
+- #446 and #447 batch large fixture setup for embedding/vector metadata release
+  coverage without changing runtime behavior.
+
+### Upgrade notes
+
+- Back up `lcm.db`, update the plugin checkout, restart Hermes, send one normal
+  message, then verify `plugin_version: 0.21.0-rc1` and the expected database
+  path with `lcm_status`. The core schema remains version 5.
+- No manual core migration or embedding backfill is required from v0.20.0.
+- Query/evidence tool schemas are exposed after upgrade, but assertion
+  extraction, assertion storage, query-view storage, pre-answer evidence, and
+  adaptive retrieval remain opt-in. Review provider/privacy boundaries before
+  enabling model- or embedding-backed paths.
 
 ## v0.20.0 - 2026-07-23
 

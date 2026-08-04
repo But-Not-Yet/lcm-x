@@ -205,7 +205,7 @@ Typical output:
 
 ```text
 Plugins (1):
-  ✓ hermes-lcm v0.20.0 (15 tools)
+  ✓ hermes-lcm v0.21.0-rc1 (15 tools)
 
 Provider Plugins:
   Context Engine: lcm
@@ -218,7 +218,7 @@ best-effort git identity:
 
 If startup logs say LCM tools are available through `context-engine schemas` or
 mention the `Path B fallback`, that is expected on older Hermes hosts such as
-Hermes Agent v0.16. The ten `lcm_*` tools remain available through the
+Hermes Agent v0.16. All 15 `lcm_*` tools remain available through the
 context-engine path; standalone plugin-registry registration is not required
 there.
 
@@ -243,6 +243,17 @@ If you installed a symlink from a separate checkout:
 ```
 
 Restart Hermes after updating.
+
+For the `v0.21.0-rc1` line, take a normal backup of `lcm.db` before updating,
+then update the checkout and restart Hermes. No manual core migration or
+backfill is required: the core schema remains version 5. New assertion,
+query-view, and adaptive-retrieval state is additive, created only after the
+corresponding opt-in is enabled, and stored in the same profile database under
+named feature markers. The five new query/evidence tool schemas are visible in
+the tool list on stock installs, but automatic extraction, pre-answer evidence,
+assertion storage, query-view storage, and adaptive retrieval remain off. See
+[the operator upgrade and opt-in notes](docs/operator-guide.md#upgrade-from-v0200-to-v0210-rc1)
+before enabling them.
 
 ## Commands and tools
 
