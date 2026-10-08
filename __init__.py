@@ -780,6 +780,21 @@ def register(ctx):
             )
             platform = str(kwargs.get("platform") or "")
 
+            # Read-only assembly-history capture (card t_8d410e97). Gated and
+            # fail-open inside the module; default OFF, so there is zero
+            # overhead until LCM_PROMPT_SNAPSHOT opts a session in.
+            try:
+                from . import prompt_snapshot as _prompt_snapshot
+
+                _prompt_snapshot.record(
+                    session_id,
+                    history,
+                    conversation_id=conversation_id,
+                    platform=platform,
+                )
+            except Exception as exc:
+                logger.debug("LCM prompt snapshot error: %s", exc)
+
             def _ingest_and_note(active_engine):
                 # The turn ended whether or not its ingest succeeded (#597).
                 try:
