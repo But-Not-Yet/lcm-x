@@ -62,6 +62,27 @@ _THRESHOLD_FULL_SWEEP_PARTIAL_STOP_REASONS = frozenset({
     "no_same_depth_condensation_group",
 })
 
+# 修复甲 (echo guard): the exact prefix a seen-bad summarizer emits when it echoes its
+# own prompt's format note instead of answering (measured: lcm.db node 316, session 7c22d8).
+_ECHO_PREFIX_MARKERS = ("<summary body",)
+
+
+def _summary_looks_like_instruction_echo(summary_text: str) -> bool:
+    """True when a leaf summary is an instruction echo or empty (修复甲 guard).
+
+    A generation that starts with the prompt's own format note ignored its
+    output contract; writing such a node would put prompt scaffolding into the
+    DAG and into every assembly that renders it. Empty output is rejected the
+    same way. The check is deliberately narrow (no length heuristics beyond
+    emptiness) so nothing but a real echo can trip it.
+    """
+    if not isinstance(summary_text, str):
+        return False
+    text = summary_text.strip()
+    if not text:
+        return True
+    return text.startswith(_ECHO_PREFIX_MARKERS)
+
 
 class CompactionMixin:
     def _maybe_reclassify_late_auxiliary_before_compaction_write(self) -> None:
@@ -1885,6 +1906,17 @@ class CompactionMixin:
                 # #652: no truncated level 3 leaf while the fit can rescue; the backlog stays. A level 3 that
                 # is the whole source (it already fits the truncation budget) loses nothing and is written.
                 if _level == 3 and self._fit_can_rescue(force_overflow) and not self._last_leaf_level_3_verbatim:
+                    sweep_stop_reason = "summary_result_rejected"
+                    break
+                if _summary_looks_like_instruction_echo(summary_text):
+                    # 修复甲 guard: a summarizer that echoed its own instructions ignored
+                    # its output contract — the same "result did not qualify" stop as a
+                    # rejected level 3, with the backlog kept unwritten.
+                    logger.warning(
+                        "LCM compaction stopped: leaf summary echoed the prompt instructions "
+                        "(session=%s, %d source tokens, level %d); no node written",
+                        self._session_id, source_tokens, _level,
+                    )
                     sweep_stop_reason = "summary_result_rejected"
                     break
             anchor_claimed_ids = sorted({  # #436 R4: only claims whose text the summarizer actually read
