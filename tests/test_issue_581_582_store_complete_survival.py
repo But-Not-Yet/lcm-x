@@ -1074,8 +1074,9 @@ def test_r4_add_a_exception_path_never_trusts_a_stale_cursor(tmp_path, summaries
 
 @pytest.mark.parametrize("view_of", [_long_view, _list_system_view], ids=["str-system", "list-system"])
 def test_r4_add_b_consecutive_fits_keep_one_notice(tmp_path, summaries, host_estimator, view_of):
-    """R4 addendum (b): a second fit replaces the first fit's notice in the system slot (one notice,
-    carrying the newest counts), for string and list content."""
+    """R4 addendum (b): a second fit replaces the first fit's notice in the system slot (one notice),
+    for string and list content. The static-notice change: the slot carries the byte-stable template,
+    never the per-fit counts; the newest dynamic notice lives only in the fit record."""
     engine = _engine(tmp_path, context_length=WINDOW)
     view = view_of()
     try:
@@ -1088,7 +1089,9 @@ def test_r4_add_b_consecutive_fits_keep_one_notice(tmp_path, summaries, host_est
         second = engine.compress(view2, current_tokens=host_estimator(view2))
         notice2 = engine._last_survival_fit["notice"]
         system = json.dumps(second[0]["content"]) if isinstance(second[0]["content"], list) else second[0]["content"]
-        assert notice2 != notice1 and system.count(NOTICE) == 1 and notice2 in system, system[-400:]
+        assert notice2 != notice1 and system.count(NOTICE) == 1, system[-400:]
+        assert notice2 not in system and "(store ids" not in system  # dynamic detail left the prompt
+        assert lcm_survival_fit._NOTICE_STATIC in system  # the slot carries the fixed template
         assert "system prompt" in system
     finally:
         engine.shutdown()
