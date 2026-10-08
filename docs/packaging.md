@@ -1,0 +1,44 @@
+# Packaging and distribution posture
+
+## Current decision
+
+LCM-X intentionally remains a clone-or-symlink Hermes user plugin for now. From
+v0.24.0 the plugin name and install directory are `hermes-lcm-x` and the context
+engine is `lcm-x` (#471; breaking for configs that enable only `hermes-lcm` — see
+the operator guide's migration section). The supported install path is:
+
+```bash
+git clone https://github.com/electricsheephq/lcm-x \
+  ~/.hermes/plugins/hermes-lcm-x
+```
+
+For profile-specific installs, clone under `~/.hermes/profiles/<profile>/plugins/hermes-lcm-x`. For development checkouts, `scripts/install.sh` creates a profile-aware symlink into the active Hermes plugin directory and refuses to overwrite an existing checkout or unrelated symlink.
+
+## Why not pip-style packaging yet?
+
+The repository is a Hermes plugin, not a standalone Python application. Runtime discovery currently depends on:
+
+- `plugin.yaml` declaring the plugin name and registered tools
+- the repo root containing `__init__.py` for Hermes plugin registration
+- the operator placing or symlinking the checkout into Hermes' plugin search path
+- no required third-party runtime dependencies beyond Python 3.11+ and optional accelerators such as `tiktoken` and `regex`
+
+The repository deliberately has no `pyproject.toml` or package metadata. Package metadata waits until Hermes plugin packaging/discovery has a stable target for pip-installed plugins: adding generic Python packaging before the host install contract is clear would create a second install story without making first-run activation simpler.
+
+The lint settings live in `ruff.toml` for the same reason. Hermes' package manager (`pm/`, after v2026.9.24) treats any plugin checkout with a `pyproject.toml` as a uv workspace member. It adds a `[project]` name to a member's `pyproject.toml` and keeps its other fields. A lint-only file has no `[project]` table, so the result has a name and no `version`, `uv lock` rejects it, and the Hermes update adds `hermes-lcm-x` to `plugins.disabled` (#631). Do not add a `pyproject.toml` back; `tests/test_issue_631_not_a_pm_member.py` guards this.
+
+## Next packaging step
+
+Make packaging a separate implementation lane only when one of these is true:
+
+1. Hermes Agent documents a stable pip/distribution entrypoint for plugins.
+2. Users need version-pinned installs without direct git checkouts.
+3. Release automation needs packaged artifacts beyond GitHub tags/releases.
+
+The narrow next step would be packaging metadata plus tests that prove a packaged install still exposes `hermes-lcm-x`, context engine `lcm-x`, and all 15 LCM tools through `hermes plugins`. Until then, clone/symlink remains the documented path.
+
+## Current install and update references
+
+- Quickstart: [README](../README.md)
+- Detailed install/update/verify: [Operator guide](operator-guide.md)
+- Standalone install script contract: [`tests/test_packaging_install.py`](../tests/test_packaging_install.py)

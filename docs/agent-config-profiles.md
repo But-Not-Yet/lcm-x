@@ -1,0 +1,217 @@
+# Agent configuration profiles
+
+Copy-paste starting points for common agent shapes. Every profile below is
+**additive to a stock install** — with none of these variables set, LCM runs
+exactly as before. Mix and match: the feature families are independent.
+
+For the full variable table see
+[Operator guide → Configuration](operator-guide.md#configuration); for what
+each feature does and why, see [Feature overview](features-overview.md).
+
+## Where configuration lives
+
+1. **Environment variables (`LCM_*`) are the primary surface** and always win.
+   Set them in the environment that launches Hermes.
+2. **`~/.hermes/config.yaml`** participates in three narrow, deliberate ways:
+   - `plugins.enabled: [hermes-lcm-x]` + `context.engine: lcm-x` activate the
+     plugin (see [Operator guide → Activate](operator-guide.md#activate));
+   - four LCM keys are supported in YAML, each used only when its
+     environment variable is not set: `lcm.context_threshold`
+     (`LCM_CONTEXT_THRESHOLD`), `lcm.model_thresholds`
+     (`LCM_MODEL_THRESHOLDS`), `lcm.summary_reasoning_effort`
+     (`LCM_SUMMARY_REASONING_EFFORT`) and `lcm.expansion_reasoning_effort`
+     (`LCM_EXPANSION_REASONING_EFFORT`); other keys under `lcm:` are ignored
+     and reported by `/lcm doctor`;
+   - when neither `LCM_CONTEXT_THRESHOLD` nor `lcm.context_threshold` is set,
+     LCM inherits the Hermes global `compression.threshold`, unless
+     `compression.enabled` is false; then LCM uses its own default.
+3. **Summarization inherits Hermes auxiliary routing.** Rollup builds and
+   compaction summaries go through the auxiliary model unless you override
+   `LCM_SUMMARY_MODEL` — so a fully-local Hermes (local auxiliary model) makes
+   every LCM feature below local too, including temporal rollups.
+4. Secrets stay in the environment: the only one LCM ever reads is
+   `VOYAGE_API_KEY`, and only when `LCM_EMBEDDING_PROVIDER=voyage`.
+
+Check what actually took effect at runtime with `/lcm status` (reports config
+sources) and `/lcm doctor` (flags ignored YAML keys and misconfiguration).
+
+## Profile: default chat assistant
+
+Nothing to configure. Enable the plugin and stop:
+
+```yaml
+# ~/.hermes/config.yaml
+plugins:
+  enabled:
+    - hermes-lcm-x
+context:
+  engine: lcm-x
+```
+
+You get bounded active context, the summary DAG, lossless recovery, and the
+full `lcm_*` tool set at their tested defaults.
+
+## Profile: heavy tool-use coding agent
+
+For agents that run builds, tests, linters, and searches all day. The goal is
+to stop giant tool outputs from monopolizing the prompt while keeping every
+byte recoverable.
+
+```bash
+# Externalize oversized payloads out of lcm.db into recoverable files
+export LCM_LARGE_OUTPUT_EXTERNALIZATION_ENABLED=true
+
+# Replace token-heavy tool results in the provider-visible prompt with refs
+export LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUBBING_ENABLED=true
+# A new result is stubbed from 10000 tokens; at a compaction, older results
+# outside the fresh tail are stubbed from 2000 tokens (0 = the first-sight value)
+# export LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUB_THRESHOLD_TOKENS=10000
+# export LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUB_AGED_THRESHOLD_TOKENS=2000
+
+# Cap the protected fresh tail by tokens (0 = off). Prevents one giant recent
+# tool result from pinning the whole budget; newest message and complete
+# assistant/tool groups are always retained.
+export LCM_FRESH_TAIL_MAX_TOKENS=24000
+
+# Optional: at threshold, drain the whole raw backlog in one bounded sweep
+# (fewer, larger compactions — useful after long unattended runs)
+export LCM_THRESHOLD_FULL_SWEEP_ENABLED=true
+```
+
+Recovery stays first-class: `lcm_describe`/`lcm_expand` read externalized
+refs, and `lcm_grep(content_scope='both')` searches externalized payloads when
+the agent needs "which run printed that error?".
+
+## Profile: long-horizon personal / companion agent
+
+For agents that live for weeks and get asked "what did we do last Tuesday?"
+and "have we talked about this before?".
+
+```bash
+# Time-indexed memory: day/week/month rollups + the lcm_recent tool
+export LCM_TEMPORAL_ROLLUPS_ENABLED=true
+
+# Meaning-based recall: semantic + hybrid lcm_grep over summaries
+export LCM_EMBEDDINGS_ENABLED=true
+export LCM_EMBEDDING_PROVIDER=voyage          # or: fastembed / ollama (below)
+export LCM_EMBEDDING_MODEL=voyage-4-lite
+export VOYAGE_API_KEY=...                     # free key from dash.voyageai.com
+
+# The /lcm operator commands used below are an opt-in surface
+export LCM_ENABLE_SLASH_COMMAND=1
+```
+
+Then, once:
+
+```
+/lcm embed warmup            # resolve + dimension-lock the profile
+/lcm embed backfill          # dry-run: shows cost/coverage estimate
+/lcm embed backfill --apply  # embed existing summaries
+```
+
+`lcm_recent` works immediately even before rollups are built (transparent
+leaf-summary fallback), and `lcm_grep` keeps `mode='full_text'` as the
+byte-compatible default — semantic is per-call opt-in.
+
+## Profile: fully local / air-gapped
+
+No bytes leave the machine. Pair with a local Hermes auxiliary model so
+summarization is local too.
+
+```bash
+export LCM_TEMPORAL_ROLLUPS_ENABLED=true
+
+export LCM_EMBEDDINGS_ENABLED=true
+export LCM_EMBEDDING_PROVIDER=fastembed       # in-process ONNX, CPU-friendly
+# Default model downloads ~90–130 MB once at warmup (bge-small / MiniLM class)
+
+# Or, if you run Ollama on a verified loopback endpoint:
+# export LCM_EMBEDDING_PROVIDER=ollama
+# export LCM_EMBEDDING_MODEL=nomic-embed-text
+# export LCM_OLLAMA_BASE_URL=http://127.0.0.1:11434
+```
+
+Optional: installing `numpy` accelerates KNN on large vector sets; without it
+LCM uses a dependency-free bounded scan that stays correct, just smaller-scale
+(see [Embeddings setup](embeddings-setup.md)).
+
+The shipped Ollama provider assumes the configured service is trusted and does
+not apply the cloud privacy gate. A non-loopback or forwarded Ollama URL is not
+air-gapped; endpoint-aware locality remains #337.
+
+## Profile: cost-guarded cloud embeddings
+
+LCM embeds bounded summaries by default, not raw transcripts. Verify current
+Voyage pricing and account limits before use, then keep hard boundaries:
+
+```bash
+export LCM_EMBEDDINGS_ENABLED=true
+export LCM_EMBEDDING_PROVIDER=voyage
+export LCM_EMBEDDING_MODEL=voyage-4-lite      # cheapest tier, $0.02/M after free
+export VOYAGE_API_KEY=...                     # supply through your secret manager
+
+# Provider-bound cloud copies are protected automatically; durable storage stays raw.
+export LCM_SENSITIVE_PATTERNS=api_key,bearer_token,password_assignment,private_key
+
+# Interactive queries: hard per-call wall-clock budget (default 3s)
+export LCM_EMBEDDING_QUERY_TIMEOUT_S=3
+
+# Bulk backfill: separate per-request deadline (default 120s) — bulk work
+# never inherits the interactive query budget
+export LCM_EMBEDDING_BACKFILL_TIMEOUT_S=120
+```
+
+Always dry-run `/lcm embed backfill` first: it reports document counts and
+token estimates with the same eligibility rules apply-mode uses, so the
+estimate is a gross-list-price planning estimate, not a billing guarantee.
+Account-specific free tokens and other billing adjustments are not included.
+The cloud embedding privacy transform changes provider input only and never
+rewrites existing durable messages, summaries, FTS rows, or payloads. It is on
+automatically for known cloud providers. Set `LCM_EMBEDDING_PRIVACY_ENABLED=false`
+only to explicitly opt out and send raw copies under the `privacy:off` vector
+revision. Separately, `LCM_SENSITIVE_PATTERNS_ENABLED=true` redacts configured
+matches from ordinary future ingest before they reach SQLite messages, FTS,
+summaries, active replay, or ordinary externalized ingest payloads; those matched values
+are intentionally not recoverable from those LCM surfaces. One exception is
+repetitive-assistant quarantine: it preserves the original assistant output in
+an externalized payload before redacting the replay copy, so that quarantined
+payload may retain configured matches. Both paths are configured-pattern
+boundaries rather than a guarantee that every sensitive fact has been
+classified.
+
+An existing OpenAI-format embedding service uses the same cloud boundary:
+
+```bash
+export LCM_EMBEDDINGS_ENABLED=true
+export LCM_EMBEDDING_PROVIDER=openai-compatible
+export LCM_EMBEDDING_MODEL=BAAI/bge-m3
+export LCM_EMBEDDING_BASE_URL=https://embedding-service.example/v1
+export LCM_EMBEDDING_API_KEY=...              # supply through your secret manager
+# Conservatively treated as cloud: provider-bound copies are protected automatically.
+export LCM_SENSITIVE_PATTERNS=api_key,bearer_token,password_assignment,private_key
+```
+
+The shipped `openai-compatible` identity is conservatively treated as cloud,
+even if the configured endpoint happens to be local.
+
+## Verifying a profile
+
+```bash
+hermes plugins list   # plugin + engine loaded
+```
+
+The `/lcm` operator commands below require the opt-in command surface:
+
+```bash
+export LCM_ENABLE_SLASH_COMMAND=1
+```
+
+(Without it, the `lcm_status` / `lcm_doctor` *agent tools* still cover the
+read-only checks — ask the agent to call them.) Then in a session:
+
+```
+/lcm status           # effective config + sources, context pressure
+/lcm doctor           # DB health, ignored YAML keys, misconfig warnings
+/lcm rollups          # temporal rollup readiness (when enabled)
+/lcm embed backfill   # dry-run: embedding coverage + cost estimate (when enabled)
+```

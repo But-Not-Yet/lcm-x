@@ -1,0 +1,23 @@
+# Tooling configuration for LCM-X (plugin name: hermes-lcm-x).
+#
+# This file exists only to pin lint settings so `ruff` behaves identically
+# locally and in CI. The plugin is installed via scripts/install.sh, not pip.
+# The repo deliberately has no pyproject.toml: Hermes' package manager would
+# treat the checkout as a uv workspace member and an update would disable the
+# plugin (#631). See docs/packaging.md.
+
+# Match the oldest runtime CI exercises; keeps lint aligned with the 3.11 leg.
+target-version = "py311"
+
+[lint]
+# Ruff's default rule set: pyflakes (F) plus a focused pycodestyle subset
+# (E4/E7/E9). We deliberately do not enable line-length (E501) or import
+# sorting (I) -- the codebase predates both and enforcing either would be a
+# large, purely cosmetic reformat with no behavioural benefit.
+select = ["E4", "E7", "E9", "F"]
+ignore = [
+    # module-import-not-at-top-of-file: several modules import after a
+    # sys.path / optional-dependency bootstrap, so imports legitimately
+    # follow executable statements.
+    "E402",
+]

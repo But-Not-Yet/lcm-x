@@ -1,0 +1,119 @@
+import re
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
+IDENTITY_VERSION = "0.26.0"
+RC_TAG = "0.26.0-rc1"
+RELEASE_NOTES = REPO_ROOT / ".github" / "release-notes" / f"v{RC_TAG}.md"
+
+
+def test_release_workflow_requires_curated_tag_specific_notes():
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'NOTES_FILE=".github/release-notes/${GITHUB_REF_NAME}.md"' in workflow
+    assert 'body_path: .github/release-notes/${{ github.ref_name }}.md' in workflow
+    assert "generate_release_notes: false" in workflow
+    assert "git log --pretty" not in workflow
+
+
+def test_release_workflow_marks_rc_tags_as_prereleases_not_latest():
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "prerelease: ${{ contains(github.ref_name, '-') }}" in workflow
+    assert "make_latest: ${{ contains(github.ref_name, '-') && 'false' || 'true' }}" in workflow
+    assert "draft: false" in workflow
+
+
+def test_release_candidate_identity_surfaces_are_synchronized():
+    manifest = (REPO_ROOT / "plugin.yaml").read_text(encoding="utf-8")
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    operator_guide = (REPO_ROOT / "docs" / "operator-guide.md").read_text(
+        encoding="utf-8"
+    )
+    changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    bug_report = (
+        REPO_ROOT / ".github" / "ISSUE_TEMPLATE" / "bug_report.yml"
+    ).read_text(encoding="utf-8")
+
+    assert f"version: {IDENTITY_VERSION}" in manifest
+    assert f"hermes-lcm-x v{IDENTITY_VERSION} (15 tools)" in readme
+    assert f"hermes-lcm-x v{IDENTITY_VERSION} (15 tools)" in operator_guide
+    header = next((line for line in changelog.splitlines()
+                   if line.startswith(f"## v{IDENTITY_VERSION} (")), "")
+    assert header
+    assert not re.search(r"unreleased|rc\d", header, re.IGNORECASE)
+    assert f"Exact commit SHA for v{IDENTITY_VERSION} or main" in bug_report
+
+
+def test_plugin_version_is_not_a_release_downgrade():
+    import re
+
+    manifest = (REPO_ROOT / "plugin.yaml").read_text(encoding="utf-8")
+    match = re.search(r"^version:\s*(\S+)", manifest, re.MULTILINE)
+    assert match is not None, "plugin.yaml declares no version"
+    declared = match.group(1)
+    # Parse the release core (drop any -rcN suffix) and assert it never regresses
+    # below the last shipped stable — a restored older RC (e.g. 0.23.0-rc1) fails
+    # this even if IDENTITY_VERSION were changed with it (not tautological).
+    core = tuple(int(part) for part in declared.split("-")[0].split("."))
+    assert core >= (0, 23, 1), f"plugin.yaml version {declared!r} is a downgrade below the 0.23.1 stable floor"
+    # And it must match the identity every other surface is synchronized to.
+    assert declared == IDENTITY_VERSION
+
+
+def test_issue_forms_stay_within_github_element_limit():
+    issue_forms = (REPO_ROOT / ".github" / "ISSUE_TEMPLATE").glob("*.yml")
+    form_bodies = [path.read_text(encoding="utf-8") for path in issue_forms]
+
+    assert form_bodies
+    for body in form_bodies:
+        if "\nbody:\n" in body:
+            assert body.count("\n  - type: ") <= 10
+
+
+def test_upgrade_guide_requires_sqlite_safe_backup_semantics():
+    operator_guide = " ".join(
+        (REPO_ROOT / "docs" / "operator-guide.md")
+        .read_text(encoding="utf-8")
+        .split()
+    )
+
+    assert "the only supported online backup path" in operator_guide
+    assert "stop Hermes and every other process that can write the database" in operator_guide
+    assert "`lcm.db-wal` and `lcm.db-shm`" in operator_guide
+    assert "one quiescent snapshot" in operator_guide
+
+
+def test_preanswer_guide_discloses_inherited_embedding_provider_behavior():
+    operator_guide = " ".join(
+        (REPO_ROOT / "docs" / "operator-guide.md")
+        .read_text(encoding="utf-8")
+        .split()
+    )
+
+    assert "may call `lcm_recall`" in operator_guide
+    assert "may send the current question to that provider" in operator_guide
+    assert "Disabling the selective compiler does not prevent" in operator_guide
+    assert "Pre-answer evidence alone remains provider-free." not in operator_guide
+
+
+def test_release_candidate_notes_cover_only_the_merged_release_scope():
+    notes = RELEASE_NOTES.read_text(encoding="utf-8")
+    lines = notes.splitlines()
+    section_headers = [line for line in lines if line.startswith("## ")]
+
+    assert notes.startswith(f"# v{RC_TAG} — ")
+    assert any(header.startswith("## Changes since v0.25.1") for header in section_headers)
+    assert any(header.startswith("## Qualification") for header in section_headers)
+    assert any(header.startswith("## Known follow-ups") for header in section_headers)
+    assert "## Benchmark boundary" in section_headers
+    assert "## Upgrade" in section_headers
+    assert "**BREAKING.**" not in notes  # the v0.24.0 rename stays documented in README
+    # Curated and bounded; the longest rc body so far (v0.24.0-rc4) ran 165 lines.
+    assert 45 <= len(lines) <= 170
+    # Curated notes, never a pasted commit log: no one-line log entries or full `git log` blocks.
+    one_line_log = re.compile(r"^\s*(?:[-*]\s+)?`?[0-9a-f]{7,40}`?\s")
+    full_log = re.compile(r"^(?:commit [0-9a-f]{40}\b|Author: |Date: )")
+    assert not [line for line in lines if one_line_log.match(line) or full_log.match(line)]

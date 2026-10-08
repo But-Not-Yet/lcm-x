@@ -1,0 +1,106 @@
+name: Feature or design proposal
+description: Propose new LCM-X behavior, configuration, Hermes integration, architecture, or follow-up work.
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for feature requests, design proposals, and architectural follow-up. A PR becomes ready for review or merge only after a maintainer accepts the problem, compatibility boundary, and acceptance criteria.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and impact
+      description: What operator, maintainer, or user problem should this solve, who is affected, and how severe is it?
+      placeholder: LCM exposes seven tools in every session; tool-count-sensitive backends can fail even though the engine keeps running.
+    validations:
+      required: true
+
+  - type: textarea
+    id: direction
+    attributes:
+      label: Proposed direction, alternatives, and tradeoffs
+      description: Describe the preferred behavior, alternatives considered, and why this direction is preferred.
+      placeholder: Add lcm.tool_mode modes; a per-tool list is simpler but reduces schema count less than dispatcher mode.
+    validations:
+      required: true
+
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Backward compatibility, documentation, and configuration
+      description: Explain defaults, migrations, compatibility risks, and required loader, reference, example, and user-documentation changes.
+      placeholder: Default to current behavior; update the loader, configuration reference, example, and operator guide together.
+    validations:
+      required: true
+
+  - type: textarea
+    id: hermes-contract
+    attributes:
+      label: Hermes compatibility and host contract
+      description: Identify any plugin API, ContextEngine, lifecycle, profile/session identity, tool, config, or model-routing contract involved. State "none" when no host contract changes.
+      placeholder: |
+        Contract: ContextEngine preflight/compress agreement
+        Minimum Hermes capability: existing supported contract
+        Fallback: preserve current behavior when the capability is unavailable
+    validations:
+      required: true
+
+  - type: textarea
+    id: lossless-impact
+    attributes:
+      label: Lossless-data and history impact
+      description: Explain effects on durable context, identity, chronology, provenance, source coverage, tool grouping, real user turns, and the fresh tail.
+      placeholder: No persisted rows are deleted or made unreachable; existing message identity and source coverage remain unchanged.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: State observable conditions that prove the feature works and preserves existing supported behavior.
+      placeholder: |
+        - Default behavior remains unchanged.
+        - Opt-in mode reduces exposed tool schemas to the configured set.
+        - Existing profiles and sessions retain isolated state.
+        - Focused and full CI pass.
+    validations:
+      required: true
+
+  - type: textarea
+    id: non-goals
+    attributes:
+      label: Non-goals
+      description: Name adjacent behavior, migrations, releases, or runtime work that this proposal does not authorize.
+      placeholder: No schema migration, release, customer-runtime mutation, or upstream write.
+    validations:
+      required: true
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation, evidence, and notes
+      description: Include prototype notes, tests, logs, measurements, screenshots, links, and anything maintainers should know.
+      placeholder: |
+        - Prototype branch: ...
+        - Tool count before: 26
+        - Tool count after minimal mode: 21
+        - pytest ... -> passes
+    validations:
+      required: false
+
+  - type: dropdown
+    id: implementation-status
+    attributes:
+      label: Implementation status
+      description: How concrete is this proposal?
+      options:
+        - Idea only
+        - Design sketched
+        - Prototype exists
+        - PR incoming
+        - PR already opened
+    validations:
+      required: true

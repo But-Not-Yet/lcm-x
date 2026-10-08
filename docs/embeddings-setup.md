@@ -1,0 +1,285 @@
+# Embeddings setup — free and local options
+
+Semantic and hybrid retrieval are **opt-in** and need an embedding provider. You have three good
+options, two of which cost nothing. If you configure nothing, nothing changes — retrieval stays
+FTS-only exactly as before.
+
+## TL;DR
+
+| Option | Cost | Signup | Install | Best for |
+|---|---|---|---|---|
+| Voyage AI | free tier (200M tokens for the voyage-4 group), then ~$0.02–0.12 per million tokens | yes (no credit card) | none | best quality, zero local footprint |
+| fastembed | $0 | no | `pip install fastembed` (ONNX, no torch) | local default — no accounts, no daemon |
+| Ollama | $0 | no | Ollama app/daemon | you already run Ollama |
+| OpenAI-compatible | provider pricing | yes (per provider) | none | reuse an existing `/v1/embeddings` service (SiliconFlow, llama.cpp, vLLM) |
+
+All providers feed the same store. Switching provider/model is one config change plus a backfill;
+each full identity keeps its own vectors, so switching **back** to a
+previously-registered provider reactivates its vectors with no re-backfill (see *Switching or
+removing providers*).
+
+## Option 1 — Voyage AI (free tier)
+
+The Voyage-4 generation (`voyage-4`, `voyage-4-large`, `voyage-4-lite`) carries **200 million free
+tokens for that model group**, and signup does not require a credit card. For a personal LCM corpus
+(thousands of summaries), that free allotment covers initial backfill and years of queries; past it,
+embedding costs $0.02/M (`voyage-4-lite`), $0.06/M (`voyage-4`), or $0.12/M (`voyage-4-large`). A
+query embeds exactly one short vector, so a semantic or hybrid query costs a fraction of a cent.
+Voyage documents its allotments and rate tiers on its
+[pricing](https://docs.voyageai.com/docs/pricing) and
+[rate-limits](https://docs.voyageai.com/docs/rate-limits) pages — treat those as the source of
+truth; the numbers above were verified 2026-07.
+
+```bash
+export VOYAGE_API_KEY=...           # from dash.voyageai.com
+export LCM_EMBEDDINGS_ENABLED=true
+export LCM_EMBEDDING_PROVIDER=voyage
+export LCM_EMBEDDING_MODEL=voyage-4-lite   # or voyage-4 / voyage-4-large
+# Cloud provider-bound copies are protected automatically. Durable storage stays raw.
+/lcm embed warmup                   # probes API; registers model, dimensions, privacy revision
+/lcm embed backfill                 # dry run: shows counts + estimated tokens, writes nothing
+/lcm embed backfill --apply         # embeds your history in bounded batches
+```
+
+Known cloud providers protect every provider-bound copy — embedding documents
+and queries, recall/grep/proactive query payloads, and rerank inputs — using
+`LCM_SENSITIVE_PATTERNS`, while the durable corpus remains lossless by default.
+Set `LCM_SENSITIVE_PATTERNS_ENABLED=true` only if you also want irreversible
+redaction on future durable ingest. To deliberately send raw embedding input,
+set `LCM_EMBEDDING_PRIVACY_ENABLED=false`; this opt-out is recorded as the
+`privacy:off` vector revision, so changing the posture requires re-embedding.
+
+Notes: requests are batched under Voyage's caps — both the token budget and the 1000-item
+per-request cap; over-length documents are skipped and reported, never silently truncated;
+rate-limit responses are honored with bounded waits under one absolute per-operation deadline.
+That deadline starts before document conversion/token counting and covers every split, retry, and
+backoff, plus response decoding and validation. Automatic HTTP resend is deliberately narrower:
+Voyage `429` is an authoritative rejection and may be retried within the remaining deadline, but a
+timeout/network failure or `5xx` after transport starts may follow remote acceptance and is never
+automatically resent. A deadline that expires after durable dispatch marking but before transport
+is a typed `not started` outcome, so backfill can safely clear those exact rows. Individual
+token-count calls run in bounded workers; an overrun returns at the deadline without dispatching a
+later request (the timed-out worker may finish in the background while holding one of the fixed
+worker slots).
+
+## Option 2 — fastembed (local, no signup, recommended local default)
+
+[fastembed](https://github.com/qdrant/fastembed) runs ONNX models on CPU with no PyTorch and no
+external service — just a pip package.
+
+```bash
+pip install fastembed          # or: pip install -r requirements-semantic.txt
+export LCM_EMBEDDINGS_ENABLED=true
+export LCM_EMBEDDING_PROVIDER=fastembed
+export LCM_EMBEDDING_MODEL=BAAI/bge-small-en-v1.5   # 384-dim, compact and quick on CPU
+/lcm embed warmup     # downloads the model ONCE, explicitly (a few hundred MB incl. onnxruntime)
+/lcm embed backfill --apply
+```
+
+The model download happens **only** during `warmup` — never lazily during a query or an agent turn.
+If you skip warmup, semantic search simply stays off and the tools tell you why. Queries use the
+model's query-specific encoding (distinct from document encoding) so query/passage asymmetry is
+preserved. When `LCM_EMBEDDINGS_ENABLED=false`, `warmup` is inert: it does not resolve a provider,
+download a model, create embedding tables, or create the configured database.
+
+### A host update can remove fastembed
+
+`fastembed` lives in the virtualenv that runs Hermes, not in LCM-X (which is installed by symlink
+and pulls in no Python packages of its own). `hermes update` can build a **new** environment under
+`installs/<id>/environments/<hash>/venv`. It carries over the dependencies Hermes itself records
+(its extras and the dependencies plugins declare), but a package installed by hand with
+`pip install fastembed` is not recorded, so **a hand-installed embedding dependency can be dropped
+by a host update**.
+
+Nothing about your LCM data changes when this happens — the store stays lossless and existing
+vectors are untouched — but new content stops being embedded and semantic retrieval quietly falls
+back to full-text (`lcm_recall` returns `degraded: true`, `lcm_grep mode=semantic` degrades to FTS).
+
+To recover, reinstall into the active environment and confirm:
+
+```bash
+pip install -r requirements-semantic.txt
+/lcm doctor                 # embedding_provider_health must report pass
+/lcm embed backfill --apply # embed anything written while the provider was missing
+```
+
+No restart and no re-warmup are needed: the provider import is lazy and the downloaded model cache
+survives in `~/.cache/fastembed`. The plugin also logs a `WARNING` at startup when embeddings are
+enabled but the configured provider is unavailable, and `/lcm doctor` reports it through the
+`embedding_provider_health` check — so this no longer fails silently.
+
+## Option 3 — Ollama (trusted local daemon)
+
+If you already run [Ollama](https://ollama.com), use its embeddings endpoint:
+
+```bash
+ollama pull nomic-embed-text        # 768-dim; mxbai-embed-large and bge-m3 also work
+export LCM_EMBEDDINGS_ENABLED=true
+export LCM_EMBEDDING_PROVIDER=ollama
+export LCM_EMBEDDING_MODEL=nomic-embed-text
+# LCM_OLLAMA_BASE_URL defaults to http://localhost:11434
+/lcm embed warmup && /lcm embed backfill --apply
+```
+
+Ollama requests set `truncate: false`, so an input that exceeds the model's context fails loudly
+rather than being silently truncated to a misleading embedding. As with Voyage, an Ollama
+timeout/network failure after transport starts is acceptance-ambiguous and is not automatically
+resent.
+
+The shipped Ollama provider assumes the configured endpoint is trusted and does
+not apply the cloud privacy gates for sensitive patterns or raw-text consent. Keep
+`LCM_OLLAMA_BASE_URL` on a verified local/loopback service. A forwarded,
+container-network, private-network, or remote Ollama endpoint may send text off
+the machine; endpoint-aware locality remains #337.
+
+Bulk document embedding uses `LCM_EMBEDDING_BACKFILL_TIMEOUT_S` as its
+per-provider-operation deadline (120 seconds by default) for Voyage, Ollama,
+and fastembed. This is intentionally separate from the latency-sensitive
+`LCM_EMBEDDING_QUERY_TIMEOUT_S` (3 seconds by default), so a normal document
+batch or local model load is not aborted by the interactive query policy. The
+optional `LCM_EMBEDDING_BACKFILL_BUDGET_S` still caps the whole apply run
+between batches (`0`, the default, means no whole-run cap); the lease and
+post-call ownership CAS remain authoritative independently of both timeouts.
+
+## Option 4 — OpenAI-compatible API (reuse an existing embeddings service)
+
+If you already run any OpenAI-format `/v1/embeddings` endpoint — SiliconFlow,
+llama.cpp server, vLLM, or a local embedding model on a workstation — point
+LCM at it instead of running a second embedding stack:
+
+```bash
+export LCM_EMBEDDINGS_ENABLED=true
+export LCM_EMBEDDING_PROVIDER=openai-compatible
+export LCM_EMBEDDING_MODEL=BAAI/bge-m3     # any model id your endpoint serves
+export LCM_EMBEDDING_BASE_URL=https://api.siliconflow.cn/v1
+export LCM_EMBEDDING_API_KEY=sk-...        # falls back to SILICONFLOW_API_KEY
+/lcm embed warmup && /lcm embed backfill --apply
+```
+
+`LCM_EMBEDDING_BASE_URL` is the API root (a trailing slash is stripped) and
+`/embeddings` is appended. The request body is the standard OpenAI shape —
+`{"model": ..., "input": [...]}` with a `Bearer` authorization header — so any
+compatible server works, including local llama.cpp/vLLM instances that cost
+nothing per call.
+
+The same deadline, spend-guard, and identity rules apply as for the other
+remote providers: `LCM_EMBEDDING_QUERY_TIMEOUT_S` bounds interactive queries,
+`LCM_EMBEDDING_BACKFILL_TIMEOUT_S` bounds each backfill batch, and vectors are
+stored under the full `(provider, model, ...)` identity so switching back to
+this provider reactivates existing vectors without re-backfilling.
+
+## What you get
+
+`lcm_grep` gains two modes on top of the existing ones:
+
+- `semantic` — paraphrase-tolerant vector search; local providers make this $0
+- `hybrid` — keyword ∪ semantic, fused with reciprocal-rank fusion (RRF); the best
+  "have we discussed X?" mode. (Fusion is RRF only — there is no external reranker.)
+
+Semantic and hybrid requests use one absolute deadline beginning at `lcm_grep` entry. It includes
+provider resolution, query embedding, optional NumPy import, bounded KNN, result hydration, any FTS
+fallback, both hybrid arms, and fusion. A semantic failure can degrade to full-text with
+`degraded_to_fts`; the fallback uses separate read-only SQLite connections with progress
+interruption. If hybrid already computed FTS results before its semantic arm times out, it may
+return that existing payload without starting new I/O. If no usable result exists when time runs
+out, the request returns an explicit `timeout` error and starts no later fallback/arm. Provider
+authentication errors also remain operator-visible instead of degrading. Explicit `full_text`
+mode itself is unchanged and byte-for-byte identical to prior behavior.
+
+Role, time, conversation, and broader-session filters degrade to raw FTS before provider work,
+because summaries cannot prove those raw-message dimensions. Source is different: SQL first selects
+a bounded candidate window, then verifies descendant source lineage inside that window. The lineage
+walk is itself capped; a missing legacy `source` column or an over-budget lineage graph fails closed
+with `unverifiable_provenance`, so it never becomes an allow-all. A source-filtered semantic result
+therefore reports bounded coverage rather than claiming universal pre-bound source coverage.
+
+## Performance & footprint
+
+- NumPy remains optional. When available, it enables vectorized search and the
+  float32 chunk-loader fast path; the import guard and pure-Python fallback remain.
+  Install it in the Python environment that actually runs Hermes: for a user-managed
+  environment, `python -m pip install numpy`; for a managed build, use that host's
+  supported dependency-installation mechanism rather than modifying a generated venv.
+  Restart long-lived hosts after changing their dependency environment.
+- Float32 chunk matrices are loaded directly from their little-endian BLOBs,
+  avoiding a round trip through Python float objects. Joining the BLOBs still
+  copies bytes; this is not an end-to-end zero-copy pipeline. Int8 decoding,
+  stored vector identities, and search coverage are unchanged.
+- Reproduce the loader comparison without a profile or provider call with
+  `python benchmarks/benchmark_float32_chunk_loader.py --count 2000 --dim 384`.
+  The synthetic benchmark checks exact IDs, matrix values and dot-product scores;
+  timings are host-dependent and are not asserted by tests.
+- Metadata/id resolution uses a temp-table join rather than a giant `IN (...)` list, so it scales
+  past the SQLite host-parameter limit that previously failed near ~32k ids (validated to 40k).
+- Without numpy, search scans the most recent `LCM_EMBEDDING_BOUNDED_SCAN_ROWS` vectors (default
+  2,000) and reports `coverage: bounded`. The candidate enumeration is bounded at the SQL layer
+  (`ORDER BY` recency `+ LIMIT`), so a large corpus never materializes every id in host memory.
+- With numpy, the cache is still only for that bounded candidate set and is keyed by canonical
+  identity, transactional `data_version`, and candidate ids; it is not a corpus-sized matrix.
+
+## Switching or removing providers
+
+Change provider/model → run `/lcm embed warmup` (registers the new profile as the current identity)
+→ `/lcm embed backfill --apply` (embeds under the new identity; the previous model's vectors are
+kept separate and never mixed). Every vector is published under the exact identity that produced it
+— the identity is captured at provider-resolution time and carried through the write, so switching
+the active provider A→B mid-backfill can never rebind an A-vector onto B. If A becomes inactive
+after its request was accepted but before publication, the exact A request is atomically moved to
+`uncertain`, the still-owned backfill lease is released, and the run stops before another dispatch.
+Because each identity
+`(provider, model, revision, dim, dtype, byteorder, task)` owns its own vectors, switching **back**
+to a previously-registered provider reactivates it with its existing vectors — no re-backfill
+needed. The stored representation is currently restricted to `float32` / `little` / `summary`;
+unsupported identity variants are rejected rather than normalized onto another profile.
+
+Backfill records each actual remote dispatch durably. Every accepted sub-batch is published
+immediately under the captured identity and current lease CAS. If remote acceptance is ambiguous or
+local publication fails after acceptance, those rows become `uncertain` and normal discovery will
+not bill them again. Recovery is deliberately operator-authorized:
+
+```bash
+/lcm embed backfill --apply --retry-uncertain --limit 32
+```
+
+The authorization is bound to the exact oldest uncertain rows selected by that invocation, up to
+`--limit`; the risky recovery run does not mix in ordinary pending rows. Their durable uncertainty
+markers are not cleared before discovery or dispatch, and any row not successfully published
+(including a skipped row, definitive rejection, budget stop, or lease loss) remains `uncertain` for
+another explicit decision. The command reports the uncertain count and warning because retrying may
+rebill. Disable everything with `LCM_EMBEDDINGS_ENABLED=false` — data stays, behavior reverts to
+FTS-only instantly.
+
+## The chunk corpus — source-derived text, privacy transform, and consent gate
+
+`/lcm embed backfill` has two corpora, selected with `--corpus`:
+
+- `summary` (default) — embeds the generated **summaries** of your history.
+- `chunks` — embeds provider input derived from **raw, verbatim message text**, chunked by `--policy`
+  (`conversational` | `heads` | `full`), for verbatim/chunk-KNN recall.
+- `both` — runs the summary backfill, then the chunk backfill, in one command.
+
+The distinction matters for privacy. The summary corpus starts from model-generated summaries; the
+chunk corpus starts from raw message bytes, including tool-result output and error/traceback content.
+For known cloud providers the configured provider-input privacy transform applies by default
+(`LCM_EMBEDDING_PRIVACY_ENABLED` unset) and rejects residual detector matches before
+transport; `LCM_EMBEDDING_PRIVACY_ENABLED=false` sends chunk text raw under the `privacy:off`
+revision. Neither posture redacts your durable history — the chunk corpus is read from raw
+message bytes either way. This protects configured patterns but cannot
+classify every possible sensitive fact in source-derived chunk text.
+
+Because of this, `--corpus chunks --apply` and `--corpus both --apply` **refuse** on a cloud provider
+unless you pass an explicit acknowledgment:
+
+```bash
+/lcm embed backfill --corpus chunks --apply --confirm-raw-text
+```
+
+FastEmbed is in-process, so the gate is waived. Ollama is also exempt in the
+current implementation; that is safe only when its configured endpoint is a
+verified trusted local/loopback service (#337). Dry runs (no `--apply`) never
+send anything and never require the flag.
+
+> **Provider-input boundary.** Durable history is never retro-redacted. The cloud embedding transform
+> applies only to outbound provider input, uses pattern-only placeholders, and binds its policy to the
+> vector identity. Prefer a local provider for the chunk corpus when broader source content should not
+> leave the machine even after configured detector matches are removed.

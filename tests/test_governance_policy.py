@@ -1,0 +1,224 @@
+import re
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ISSUE_TEMPLATE_ROOT = REPO_ROOT / ".github" / "ISSUE_TEMPLATE"
+
+
+def issue_form_body_shape(path: Path) -> tuple[int, list[str]]:
+    text = path.read_text(encoding="utf-8")
+    marker = "\nbody:\n"
+    if marker not in text:
+        return 0, []
+
+    body = text.split(marker, maxsplit=1)[1]
+    element_count = len(re.findall(r"(?m)^  -\s+", body))
+    ids = [
+        value.strip().strip("'\"")
+        for value in re.findall(r"(?m)^    id:\s*(\S.*?)\s*$", body)
+    ]
+    return element_count, ids
+
+
+def test_contributor_guide_uses_the_lcm_x_governance_path():
+    guide = (REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+
+    assert guide.startswith("# Contributing to LCM-X")
+    assert "https://github.com/electricsheephq/lcm-x.git" in guide
+    assert "accepted issue" in guide.lower()
+    assert ".agents/skills/land-pr/SKILL.md" in guide
+    assert ".agents/skills/triage-backlog/SKILL.md" in guide
+    assert "curate user-facing release notes" in guide
+
+
+def test_issue_forms_have_unique_ids_and_stay_within_the_platform_limit():
+    issue_forms = list(ISSUE_TEMPLATE_ROOT.glob("*.yml"))
+
+    assert issue_forms
+    for path in issue_forms:
+        element_count, ids = issue_form_body_shape(path)
+        if element_count == 0:
+            continue
+        assert len(ids) == len(set(ids)), path
+        assert element_count <= 10, path
+
+
+def test_bug_form_captures_impact_regression_and_lossless_symptoms():
+    bug_form = (ISSUE_TEMPLATE_ROOT / "bug_report.yml").read_text(encoding="utf-8")
+
+    assert "id: impact_regression" in bug_form
+    assert "Last known good commit (or N/A):" in bug_form
+    assert "First known bad commit (or N/A):" in bug_form
+    assert "Current-main reproduction or named mandatory invariant:" in bug_form
+    assert "(or N/A)" in bug_form
+    assert "missing, duplicated, reordered, misattributed" in bug_form
+    assert "one independently reproducible problem" in bug_form
+
+
+def test_pull_request_template_separates_behavior_and_release_evidence():
+    template = (
+        REPO_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md"
+    ).read_text(encoding="utf-8")
+
+    assert "## Root cause and best-fix assessment" in template
+    assert "best fix / acceptable mitigation / wrong layer" in template
+    assert "## Real-behavior proof" in template
+    assert "Artifact or redacted trace:" in template
+    assert "Proof boundary—what this does not prove:" in template
+    assert "## Release-note impact" in template
+    assert "accepted issue, PR head, checks, reviews, threads, and authorization" in template
+    assert "immediately before any authorized GitHub write" in template
+
+
+def test_review_policy_is_a_recorded_obligation_without_scores():
+    paths = ["AGENTS.md", "CONTRIBUTING.md", ".github/PULL_REQUEST_TEMPLATE.md",
+             ".agents/skills/land-pr/SKILL.md", ".agents/skills/review-pr/SKILL.md"]
+    for path in paths:
+        text = " ".join((REPO_ROOT / path).read_text(encoding="utf-8").split())
+        assert "adversarial" in text
+        assert "AI review exact-head" not in text
+        assert "95" not in text
+        assert "PASS >=" not in text
+        if path != ".agents/skills/review-pr/SKILL.md":
+            assert "independent review" in text
+            assert "risk" in text
+            assert "REVIEW_SKIPPED: <lane> — <reason>" in text
+
+
+def test_triage_skill_is_bounded_and_read_only_by_default():
+    skill = (
+        REPO_ROOT / ".agents" / "skills" / "triage-backlog" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    write_boundary = skill.split("## Write Boundary", maxsplit=1)[1]
+
+    assert "TODO" not in skill
+    assert "exact current `main` SHA" in skill
+    assert "`P0`" in skill and "`P4`" in skill
+    assert "`needs-repro`" in skill
+    assert "Remain read-only by default" in skill
+    assert "Never process the whole backlog" in skill
+    assert "Deterministic live-state checks must guard every authorized" in skill
+    assert "Approval and source pushes are outside this" in skill
+    assert "Use `land-pr` only for a separately requested" in skill
+    assert "## Minimum Capability" in skill
+    assert "repository, current refs, issues, pull requests" in skill
+    assert "corresponding GitHub" in skill
+    assert "current non-author human code-owner" in skill
+
+    authorized_write_steps = [
+        "If a maintainer explicitly authorizes one of the remaining GitHub metadata mutations",
+        "name the exact item and requested change",
+        "re-fetch current item, repository, and authorization state",
+        "apply the routine-metadata or sensitive/terminal gate above",
+        "stop on any other drift or ambiguity",
+        "perform only the named write",
+        "read back the result",
+    ]
+    step_positions = [write_boundary.index(step) for step in authorized_write_steps]
+    assert step_positions == sorted(step_positions)
+
+
+def test_triage_invocation_never_grants_mutation_authority():
+    skill = (
+        REPO_ROOT / ".agents" / "skills" / "triage-backlog" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Invoking this skill never authorizes a mutation." in skill
+    assert "Approval and source pushes are outside this" in skill
+    assert "neither invocation nor handoff creates" in skill
+    assert "approval, source-push, or merge authority" in skill
+
+
+def test_triage_preserves_active_upstream_continuations():
+    skill = (
+        REPO_ROOT / ".agents" / "skills" / "triage-backlog" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "source lifecycle: `active-continuation`" in skill
+    assert "continuation target:" in skill
+    assert "Do not silently turn it into an archive-only record" in skill
+    assert "return `OWNER_GATE` and preserve the item unchanged" in skill
+
+
+def test_triage_separates_routine_metadata_from_sensitive_terminal_actions():
+    skill = (
+        REPO_ROOT / ".agents" / "skills" / "triage-backlog" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Routine reversible metadata means labels, assignees, and milestones." in skill
+    assert "does not require a second code-owner approval solely because" in skill
+    assert "Public security or data-integrity disclosure and every close or reopen" in skill
+    assert "private vulnerability handling outside this public triage workflow." in skill
+
+
+def test_repository_policy_states_the_automation_boundary():
+    policy = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    normalized_policy = " ".join(policy.split())
+
+    assert "## Automation Boundary" in policy
+    assert "Model output alone cannot close, label, assign, push, approve, or merge." in policy
+    assert "Automated repair is opt-in" in policy
+    assert "AI review is recorded evidence, not enforcement." in normalized_policy
+    assert "distinct adversarial review from a different model than the author" in normalized_policy
+    assert "#218, #462, #466, #469, and #470 are closed history" in normalized_policy
+    assert "Classification alone does not elevate routine reversible issue metadata" in policy
+
+
+def test_codeowners_and_landing_policy_use_exact_head_ci_and_review_obligation():
+    owners = (REPO_ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
+    landing = (
+        REPO_ROOT / ".agents" / "skills" / "land-pr" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    review = (
+        REPO_ROOT / ".agents" / "skills" / "review-pr" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "* @100yenadmin" in owners
+    assert "Tosko4" not in owners
+    assert "AI review exact-head" not in owners
+    assert "AI review exact-head" not in landing
+    assert "AI review exact-head" not in review
+    assert "Analyze (actions)" not in landing
+    assert "non-author code owner" not in landing.lower()
+    assert "review_lanes_hint" in landing
+    assert "`commit_id` equals `$head`" in landing
+    assert "check the head it names equals `$head`" in " ".join(landing.split())
+    assert "A readiness-only invocation stays read-only." in " ".join(landing.split())
+    assert "`REVIEWED_LANE_ONLY`" in review
+    assert "comments(first: 100) { totalCount nodes { url body author { login __typename } } }" in landing
+    assert "when a thread's `totalCount` exceeds 100, open its `url` and read every comment" in " ".join(
+        landing.split()
+    )
+    assert "query($owner: String!, $name: String!, $number: Int!) {" in landing
+    assert "needs a comment by a `User` author that records one of those dispositions" in " ".join(
+        landing.split()
+    )
+    assert "gh pr checks <PR> --repo electricsheephq/lcm-x --required" in landing
+    assert '"changed_files": "unknown", "named_risks": null, "required_review_lanes": ' in landing
+    assert "--argjson n \"$expected\" 'add | length == $n'" in landing
+    merge_section = landing.split("## 7. Merge Deterministically", maxsplit=1)[1]
+    step_positions = [
+        merge_section.index(step)
+        for step in ('test "$current_head" = "$head"', "Repeat the paginated thread query",
+                     "Post one merge receipt comment", "--match-head-commit")
+    ]
+    assert step_positions == sorted(step_positions)
+    assert "its `state` is not `DISMISSED` or `PENDING`, and its `user.login` is not the PR author" in (
+        " ".join(landing.split())
+    )
+    assert "lists only pointers" in landing
+    assert "Never restate verdicts" in landing
+    assert "--merge --match-head-commit" in landing
+    assert "The output is a review, not a receipt" in " ".join(review.split())
+
+
+def test_triage_prompt_and_contributor_automation_scope_are_bounded():
+    prompt = (
+        REPO_ROOT / ".agents" / "skills" / "triage-backlog" / "agents" / "openai.yaml"
+    ).read_text(encoding="utf-8")
+    guide = (REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+
+    assert "issue, pull request, or duplicate cluster" in prompt
+    assert "without writing to GitHub" in prompt
+    assert "limited to the exact accepted issue and current gate" in guide
