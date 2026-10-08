@@ -2298,9 +2298,10 @@ class CompactionMixin:
         if state.sweep_stop_reason == "summary_route_unavailable":
             seconds_left = self._summary_route_seconds_left()
             logger.warning(
-                "LCM compaction stopped: summary route unavailable (circuit open, %ds left); %d leaves written, "
-                "backlog kept",
+                "LCM compaction stopped: summary route unavailable (circuit open, %ds left, session=%s); "
+                "%d leaves written, backlog kept",
                 seconds_left,
+                self._session_id,
                 state.leaf_passes,
             )
             if not state.leaf_compacted_this_turn:
