@@ -40,7 +40,7 @@ from typing import Any, Dict, List, Optional
 
 SCHEMA = "lcm-prompt-snapshot/v1"
 
-_DEFAULT_ROOT = ("~/.hermes", "cache", "scratch", "prompt_snapshot")
+_DEFAULT_ROOT = (".hermes", "cache", "scratch", "prompt_snapshot")
 _DEFAULT_FLUSH_SECONDS = 5.0
 
 _lock = threading.Lock()

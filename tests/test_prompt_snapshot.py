@@ -149,6 +149,30 @@ def test_history_hash_changes_with_content(monkeypatch, tmp_path):
     assert a["messages"][1]["row_sha256"] != b["messages"][1]["row_sha256"]
 
 
+def test_default_root_expands_home_no_literal_tilde(monkeypatch):
+    """Card t_e0602254: default root must be the real home dir, not a literal ``~``."""
+    monkeypatch.delenv("LCM_PROMPT_SNAPSHOT_PATH", raising=False)
+    root = ps._root()
+    assert root == Path.home() / ".hermes" / "cache" / "scratch" / "prompt_snapshot"
+    assert "~" not in root.parts
+
+
+def test_default_path_end_to_end_lands_under_home(monkeypatch, tmp_path):
+    """record→drain with no PATH env writes under $HOME/.hermes/... (POSIX Path.home reads HOME)."""
+    monkeypatch.delenv("LCM_PROMPT_SNAPSHOT_PATH", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LCM_PROMPT_SNAPSHOT", "1")
+    monkeypatch.delenv("LCM_PROMPT_SNAPSHOT_SESSIONS", raising=False)
+    ps._reset_for_tests()
+
+    assert ps.record("s1", _history()) == 1
+    assert ps.drain_queue() == 1
+
+    expected = tmp_path / ".hermes" / "cache" / "scratch" / "prompt_snapshot" / "s1" / "turn_00001.json"
+    assert expected.is_file()
+    assert not (tmp_path / "~").exists()
+
+
 def test_restart_does_not_clobber_earlier_round(monkeypatch, tmp_path):
     _enable(monkeypatch, tmp_path)
     ps.record("s1", _history())
