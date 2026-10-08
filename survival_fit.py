@@ -19,7 +19,10 @@ deadline, a no-op, a lock after commit, an exception), the list is fitted on the
   so (#650).
 It writes no message, node or lifecycle row: only the metadata counter /lcm doctor reads. The global
 assembly cap is never set (that would force overflow and trim every good compaction). The notice goes in
-the system-prefix slot when the list has one, never as a conversation row; the one-shot user warning goes
+the system-prefix slot when the list has one, never as a conversation row, and the slot carries the
+byte-stable template (no per-fit count or store ids: the system row sits at prompt offset ~0 and a
+varying notice would rewrite the provider's prefix cache every fit); the dynamic detail stays in the
+fit record and the log. The one-shot user warning goes
 through the host's automatic-compaction status hook. LCM_SURVIVAL_FIT=false turns it off.
 """
 from __future__ import annotations
@@ -50,7 +53,9 @@ logger = logging.getLogger(__name__)
 
 SURVIVAL_FIT_COUNTER_KEY = "survival_fit:counter"
 _NOTICE = ("[LCM survival fit: {n} earlier messages (store ids {first}..{last}) are stored verbatim but not in "
-           "live context; lcm_grep / lcm_load_session reach them.]")
+           "live context; lcm_grep / lcm_load_session reach them.]")  # the per-fit record only, never the prompt
+_NOTICE_STATIC = ("[LCM survival fit: earlier messages are stored verbatim but not in live context; "
+                  "lcm_grep / lcm_load_session reach them.]")  # the system slot: byte-stable across fits
 _WARNING_SUMMARY_FAILED = ("LCM could not summarise part of this conversation in time. To keep the session alive, {n} older "
                            "messages left live context; they stay stored verbatim and searchable (lcm_grep, lcm_load_session). "
                            "/lcm doctor reports it.")
@@ -58,8 +63,8 @@ _WARNING = _WARNING_SUMMARY_FAILED
 _WARNING_FITTED = ("To keep this conversation within the model's context window, {n} older messages left live context "
                    "during LCM context fitting; they stay stored verbatim and searchable (lcm_grep, lcm_load_session). "
                    "/lcm doctor reports why.")
-_NOTICE_RE = re.compile(r"(?:\n\n)?\[LCM survival fit: \d+ earlier messages \(store ids [^()\]]*\) are stored verbatim "
-                        r"but not in live context; lcm_grep / lcm_load_session reach them\.\]")
+_NOTICE_RE = re.compile(r"(?:\n\n)?\[LCM survival fit: (?:\d+ earlier messages \(store ids [^()\]]*\)|earlier messages) "
+                        r"are stored verbatim but not in live context; lcm_grep / lcm_load_session reach them\.\]")
 _RECOVERY_THRESHOLD_SHARE = 0.95  # #608: a recovery attempt's request fits under this share of the threshold
 
 
@@ -331,7 +336,9 @@ class SurvivalFitMixin:
             notice = _NOTICE.format(n=count, first=mapped[0] if mapped else "-", last=mapped[-1] if mapped else "-")
             out = list(head)
             if out and out[0].get("role") == "system":  # the notice never edits a generated summary row
-                out[0] = {**out[0], "content": self._survival_with_notice(out[0].get("content"), notice)}
+                # the system slot sits at prompt offset ~0: it carries the byte-stable template, never the
+                # per-fit count/store-id detail, so consecutive fits never rewrite the provider's prefix cache
+                out[0] = {**out[0], "content": self._survival_with_notice(out[0].get("content"), _NOTICE_STATIC)}
             if summary is not None:
                 merged = {"role": "user", "content": f"{summary}\n\n{kept[0].get('content')}"} if kept else None
                 if (merged and kept[0].get("role") == "user" and isinstance(kept[0].get("content"), str)
