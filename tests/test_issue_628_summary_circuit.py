@@ -216,7 +216,7 @@ def test_t4_sweep_with_every_route_refused_writes_nothing_and_holds(tmp_path, mo
         assert engine.should_compress(engine.threshold_tokens + 1) is False
         assert _count(caplog, STOP_LINE) == 1
         line = next(r.getMessage() for r in caplog.records if STOP_LINE in r.getMessage())
-        assert re.search(r"\(circuit open, \d+s left\); 0 leaves written, backlog kept$", line)
+        assert re.search(r"\(circuit open, \d+s left, session=S\); 0 leaves written, backlog kept$", line)
     finally:
         engine.shutdown()
 
