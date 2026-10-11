@@ -22,7 +22,7 @@ from tests.test_host_uid_shadow import ROLLBACK_READERS, _engine, _m, _skip_or_f
 
 _OLD_READER = r"""
 import importlib.util, json, sys
-old, db, root, host_file = sys.argv[1:]
+old, db, root, host_file, reader = sys.argv[1:]
 sys.path.insert(0, root)  # the git-ignored agent/ host stub
 spec = importlib.util.spec_from_file_location("hermes_lcm", old + "/__init__.py", submodule_search_locations=[old])
 sys.modules["hermes_lcm"] = importlib.util.module_from_spec(spec)
@@ -30,7 +30,10 @@ from hermes_lcm import store as store_mod
 from hermes_lcm.command import _doctor_text
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.engine import LCMEngine
-assert store_mod.__file__.startswith(old) and importlib.util.find_spec("hermes_lcm.host_uid") is None
+assert store_mod.__file__.startswith(old)
+# v0.26 readers already ship host_uid; retain the pre-uid premise for older releases.
+if reader != "v0.26.2":
+    assert importlib.util.find_spec("hermes_lcm.host_uid") is None
 with open(host_file) as stream:
     host = json.load(stream)
 engine = LCMEngine(config=LCMConfig(database_path=db))
@@ -71,7 +74,9 @@ def test_persisted_shadow_uids_are_inert_to_rollback_reader(tmp_path, monkeypatc
     old = tmp_path / "old-reader"
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
         tar.extractall(old, filter="data")
-    assert not (old / "host_uid.py").exists()
+    # v0.26.2 already has the feature whose absence guards the older-reader premise.
+    if reader != "v0.26.2":
+        assert not (old / "host_uid.py").exists()
 
     monkeypatch.delenv("LCM_HOST_MESSAGE_UID", raising=False)
     monkeypatch.setattr(emit, "_host_uid_capability", True)
@@ -108,7 +113,7 @@ def test_persisted_shadow_uids_are_inert_to_rollback_reader(tmp_path, monkeypatc
         host_file = tmp_path / f"{name}.json"
         host_file.write_text(json.dumps(messages))
         result = subprocess.run(
-            [sys.executable, "-B", "-c", _OLD_READER, str(old), str(db), str(root), str(host_file)],
+            [sys.executable, "-B", "-c", _OLD_READER, str(old), str(db), str(root), str(host_file), reader],
             capture_output=True, text=True, cwd=str(tmp_path), timeout=60)
         assert result.returncode == 0, result.stderr[-3000:]
         results.append(json.loads(result.stdout))

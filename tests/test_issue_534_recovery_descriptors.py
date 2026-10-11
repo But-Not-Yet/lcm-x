@@ -280,10 +280,12 @@ def test_loss_probe_rc1_rollback_reader(tmp_path, monkeypatch, reader):
         engine.ingest(host)
         for name in ("_occurrence_replay_identities", "_durable_commit_proof_payload", "_cursor_from_durable_commit_proof"):
             monkeypatch.setattr(engine, name, types.MethodType(getattr(module.ReconcileMixin, name), engine))
-        assert engine._cursor_from_durable_commit_proof(host) is None
-        assert engine._cursor_from_durable_commit_proof(_merged(out) + host[-1:]) is None
-        assert engine._cursor_from_durable_commit_proof(_merged(out)) is None
-        assert engine._occurrence_replay_identities(out, engine._durable_commit_proof_payload())[1][-1] is not None
+        # v0.26.2 understands descriptor v4 and generated identities; these are pre-v0.26 premises.
+        if reader != "v0.26.2":
+            assert engine._cursor_from_durable_commit_proof(host) is None
+            assert engine._cursor_from_durable_commit_proof(_merged(out) + host[-1:]) is None
+            assert engine._cursor_from_durable_commit_proof(_merged(out)) is None
+            assert engine._occurrence_replay_identities(out, engine._durable_commit_proof_payload())[1][-1] is not None
         before = _contents(engine)
         engine._ingest_cursor = 0
         engine._ingest_cursor_needs_reconcile = True
