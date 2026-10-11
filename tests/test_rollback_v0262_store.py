@@ -15,7 +15,8 @@ from tests.test_stemmed_recall_index import consistent, finish, partial
 _OLD_READER = r'''
 import importlib.util, json, sys
 from pathlib import Path
-old, db, home = sys.argv[1:]
+old, db, home, root = sys.argv[1:]
+sys.path.insert(0, root)  # the git-ignored agent/ host stub, as the other rollback readers do
 spec = importlib.util.spec_from_file_location("hermes_lcm", old + "/__init__.py", submodule_search_locations=[old])
 sys.modules["hermes_lcm"] = importlib.util.module_from_spec(spec)
 from hermes_lcm import inactive_record, store as store_mod, tools
@@ -92,7 +93,7 @@ def test_v0262_writes_main_store_and_rolls_forward(tmp_path, monkeypatch, caplog
         marker_bytes = marker.read_bytes()
     finally:
         engine.shutdown()
-    with subprocess.Popen([sys.executable, "-B", "-c", _OLD_READER, str(old), str(db), str(tmp_path)],
+    with subprocess.Popen([sys.executable, "-B", "-c", _OLD_READER, str(old), str(db), str(tmp_path), str(root)],
                           stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           text=True, cwd=tmp_path) as process:
         try:
