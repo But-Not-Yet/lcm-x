@@ -347,6 +347,35 @@ def test_b6_split_group_and_orphans(tmp_path):
     assert orphan["failed_bars"]["B6"]["host_orphan_drops"] == 1
 
 
+def sha(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+# floor-0.21.3 (345cd2b0): after a post-tool compaction the request copy carries the host's dangling-tail notice in
+# place of this turn's live results; the host persists the dispatched result (tool_calls.bind wire_notices).
+@pytest.mark.parametrize("flagged,dispatch_sha,stored,verdict,licensed", [
+    (True, True, ("r0", "r1"), "PASS", 2),  # LCM stored what the host dispatched and persisted
+    (True, True, ("n0", "n1"), "FAIL", 2),  # the notice is never an acceptable stored body
+    (True, False, ("r0", "r1"), "FAIL", 0),  # no dispatch sha (an older transcript): nothing is licensed
+    (False, True, ("r0", "r1"), "FAIL", 0),  # the probe did not see the host's own notice: nothing is licensed
+])
+def test_b2_scores_the_dispatched_result_behind_a_host_wire_notice(tmp_path, flagged, dispatch_sha, stored, verdict, licensed):
+    events, rows, kw = tool_cell()
+    for e in events:
+        k = e.get("id", "")[-1:]
+        if e["event"] == "tool_seen":
+            e.update(sha=sha("n" + k), **({"host_wire_notice": True} if flagged else {}))
+        elif e["event"] == "tool_dispatch" and dispatch_sha:
+            e["result_sha256"] = sha("r" + k)
+    rows = [(r[0], stored[int(r[3][-1])], *r[2:]) if r[0] == "tool" else r for r in rows]
+    out = make(tmp_path, rows=rows, events=events, **kw)
+    assert out["verdict"] == verdict, out["failed_bars"]
+    lic = out["numbers"]["B2"]["host_wire_notice_licensed"]
+    assert lic["rows"] == licensed and [r["id"] for r in lic["records"]] == ["call_T01_0_0", "call_T01_0_1"][:licensed]
+    if licensed:
+        assert lic["records"][0] == {"id": "call_T01_0_0", "notice_sha256": sha("n0"), "result_sha256": sha("r0")}
+
+
 def native_events(n=3):
     events = clean_events(n)
     for e in events:

@@ -280,6 +280,7 @@ def score(cell: dict, cell_dir: Path, db_dir: Path | None = None) -> dict:
     externalized.mismatches(ext, b2_full, ext_ids, per, group, bound["expected"], bound["loose"], host)
     numbers["B2"]["externalized"] = ext
     numbers["B2"].update(tools)
+    numbers["B2"]["host_wire_notice_licensed"] = {"rows": len(bound["wire_notices"]), "records": bound["wire_notices"][:10]}
     if tools["tool_missing_rows"] or tools["tool_surplus_rows"] or ext["deficit_rows"]:
         failed["B2"] = dict(numbers["B2"])
     if any(m["verdict"] != "PASS" for m in b2_parts.values()):
