@@ -1071,3 +1071,50 @@ def test_status_chunk_backlog_reads_a_bounded_frontier(tmp_path, home, providers
         assert "embedding_backlog_chunks: 120" in handle_lcm_command("status", engine)
     finally:
         engine.shutdown()
+
+
+def test_automatic_history_discovery_reads_a_bounded_window(tmp_path, home, providers, monkeypatch):
+    engine = _make_engine(tmp_path, home)
+    db_path = engine._config.database_path
+    calls = []
+    real_chunk_message = command_mod.chunk_message
+    monkeypatch.setattr(
+        command_mod,
+        "chunk_message",
+        lambda *args, **kwargs: calls.append(args[0]) or real_chunk_message(*args, **kwargs),
+    )
+    try:
+        for index in range(40):  # rows that never chunk, below the oldest chunk
+            engine._store.append(SESSION, {"role": "tool", "tool_call_id": f"t{index}", "content": f"out {index} {FILLER}"})
+        for index in range(30):
+            engine._store.append(SESSION, {"role": "user", "content": f"turn {index} {FILLER}"})
+        assert "status: complete" in handle_lcm_command("embed backfill --corpus chunks --apply --limit 10000", engine)
+        monkeypatch.setattr(command_mod, "_CHUNK_HISTORY_SCAN_MESSAGES", 10)
+
+        calls.clear()
+        maintenance_mod.run_incremental_embedding_pass(db_path, engine._config)
+
+        assert len(calls) <= 2 * 10  # discovery and the remaining check each read at most the window
+    finally:
+        engine.shutdown()
+
+
+def test_chunk_cursor_ignores_a_malformed_inflight_id(tmp_path, home, providers):
+    engine = _make_engine(tmp_path, home)
+    try:
+        for index in range(60):
+            engine._store.append(SESSION, {"role": "user", "content": f"old {index} {FILLER}"})
+        maintenance_mod.run_incremental_embedding_pass(engine._config.database_path, engine._config)
+        conn = sqlite3.connect(engine._config.database_path)
+        try:
+            identity = conn.execute("SELECT identity_hash FROM lcm_chunk_meta LIMIT 1").fetchone()[0]
+            bounds = command_mod._chunk_cursor(conn, identity)
+            conn.execute(
+                "INSERT INTO lcm_embedding_backfill_inflight (embedded_id, identity_hash) VALUES ('123', ?)",
+                (identity,),
+            )
+            assert bounds is not None and command_mod._chunk_cursor(conn, identity) == bounds
+        finally:
+            conn.close()
+    finally:
+        engine.shutdown()

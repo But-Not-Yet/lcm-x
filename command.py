@@ -4977,7 +4977,8 @@ def _chunk_cursor(
         "SELECT MIN(store_id), MAX(store_id) FROM lcm_chunk_meta WHERE identity_hash = ?",
         "SELECT MIN(id), MAX(id) FROM (SELECT CAST(substr(embedded_id, 1, "
         "instr(embedded_id, ':') - 1) AS INTEGER) AS id FROM "
-        "lcm_embedding_backfill_inflight WHERE identity_hash = ?)",
+        "lcm_embedding_backfill_inflight WHERE identity_hash = ? "
+        "AND instr(embedded_id, ':') > 1)",
     ):
         try:
             first, last = conn.execute(sql, (identity_hash,)).fetchone()
@@ -4989,20 +4990,30 @@ def _chunk_cursor(
     return None if low is None else (low, high)
 
 
-def _chunk_frontier_rows(conn: sqlite3.Connection, identity_hash: str | None):
-    """Messages the automatic chunk pass has not reached. New messages come first, oldest first; then history
-    below the oldest embedded message, newest first. A store with no chunk under the identity reads newest first,
-    so turning embeddings on for an existing store covers recent messages before old history."""
+_CHUNK_HISTORY_SCAN_MESSAGES = 2_000  # history rows one discovery reads; rows that never chunk are re-read
+
+
+def _chunk_frontier_rows(
+    conn: sqlite3.Connection, identity_hash: str | None, history_limit: int | None = None
+):
+    """Messages the automatic chunk pass has not reached. New messages come first, oldest first; then up to
+    ``_CHUNK_HISTORY_SCAN_MESSAGES`` of the history below the oldest embedded message, newest first. A store with no
+    chunk under the identity reads that many of its newest messages, so turning embeddings on for an existing store
+    covers recent messages before old history; `/lcm embed backfill` reaches the rest in one go."""
+    history_limit = _CHUNK_HISTORY_SCAN_MESSAGES if history_limit is None else history_limit
     bounds = _chunk_cursor(conn, identity_hash)
     if bounds is None:
-        yield from conn.execute("SELECT store_id, role, content FROM messages ORDER BY store_id DESC")
+        yield from conn.execute(
+            "SELECT store_id, role, content FROM messages ORDER BY store_id DESC LIMIT ?", (history_limit,)
+        )
         return
     low, high = bounds
     yield from conn.execute(
         "SELECT store_id, role, content FROM messages WHERE store_id > ? ORDER BY store_id", (high,)
     )
     yield from conn.execute(
-        "SELECT store_id, role, content FROM messages WHERE store_id < ? ORDER BY store_id DESC", (low,)
+        "SELECT store_id, role, content FROM messages WHERE store_id < ? ORDER BY store_id DESC LIMIT ?",
+        (low, history_limit),
     )
 
 
@@ -5012,7 +5023,8 @@ _STATUS_CHUNK_SCAN_MESSAGES = 2_000  # /lcm status chunks at most this many mess
 def _chunk_backlog_estimate(conn: sqlite3.Connection, identity_hash: str | None, policy: str) -> str:
     """The automatic pass's pending chunks, read along its frontier and bounded for the status page."""
     total = 0
-    for scanned, row in enumerate(_chunk_frontier_rows(conn, identity_hash)):
+    rows = _chunk_frontier_rows(conn, identity_hash, history_limit=_STATUS_CHUNK_SCAN_MESSAGES + 1)
+    for scanned, row in enumerate(rows):
         if scanned >= _STATUS_CHUNK_SCAN_MESSAGES:
             return f"{total}+"
         total += sum(
