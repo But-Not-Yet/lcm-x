@@ -1266,7 +1266,7 @@ class CompactionMixin:
         self._rebind_after_unadopted_compaction_commit()
         # #1012 F4: observe foreground passes only, after classification and rebinding. Without the host's
         # figure there is nothing to observe; this pass's assembly then measures, as before (#1107).
-        self._survival_pass_observed = current_tokens is not None
+        self._survival_pass_observed = (current_tokens or 0) > 0
         if self._survival_pass_observed:
             self._survival_host_overhead(messages, current_tokens)
 

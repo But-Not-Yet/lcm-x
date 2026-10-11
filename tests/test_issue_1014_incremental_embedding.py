@@ -1109,12 +1109,34 @@ def test_chunk_cursor_ignores_a_malformed_inflight_id(tmp_path, home, providers)
         try:
             identity = conn.execute("SELECT identity_hash FROM lcm_chunk_meta LIMIT 1").fetchone()[0]
             bounds = command_mod._chunk_cursor(conn, identity)
-            conn.execute(
-                "INSERT INTO lcm_embedding_backfill_inflight (embedded_id, identity_hash) VALUES ('123', ?)",
-                (identity,),
-            )
+            for malformed in ("123", "bad:0", "-1:0"):
+                conn.execute(
+                    "INSERT INTO lcm_embedding_backfill_inflight (embedded_id, identity_hash) VALUES (?, ?)",
+                    (malformed, identity),
+                )
             assert bounds is not None and command_mod._chunk_cursor(conn, identity) == bounds
         finally:
             conn.close()
+    finally:
+        engine.shutdown()
+
+
+def test_a_long_run_of_tool_rows_does_not_stall_the_history_walk(tmp_path, home, providers, monkeypatch):
+    engine = _make_engine(tmp_path, home)
+    db_path = engine._config.database_path
+    monkeypatch.setattr(command_mod, "_CHUNK_HISTORY_SCAN_MESSAGES", 10)
+    try:
+        for index in range(15):
+            engine._store.append(SESSION, {"role": "user", "content": f"oldest {index} {FILLER}"})
+        for index in range(25):  # more than the window, none of which can chunk
+            engine._store.append(SESSION, {"role": "tool", "tool_call_id": f"t{index}", "content": f"out {index} {FILLER}"})
+        for index in range(15):
+            engine._store.append(SESSION, {"role": "user", "content": f"recent {index} {FILLER}"})
+        users = {row[0] for row in _rows(engine, "SELECT store_id FROM messages WHERE role = 'user'")}
+
+        for _ in range(8):
+            maintenance_mod.run_incremental_embedding_pass(db_path, engine._config)
+
+        assert {row[0] for row in _rows(engine, "SELECT store_id FROM lcm_chunk_meta")} == users
     finally:
         engine.shutdown()

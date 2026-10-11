@@ -540,13 +540,14 @@ def test_the_exit_takes_a_crossing_turn_with_a_large_new_tool_output(make_engine
     assert engine._survival_overhead_observation[1] <= HOST + 100
 
 
-def test_a_host_without_token_counts_still_records_its_overhead(make_engine, summaries, caplog):
+@pytest.mark.parametrize("unknown", [{}, {"current_tokens": 0}])  # no figure, or 0 meaning unknown
+def test_a_host_without_token_counts_still_records_its_overhead(make_engine, summaries, caplog, unknown):
     engine = exit_engine(make_engine, threshold_full_sweep_enabled=False)
-    first = engine.compress(text_view(), force=True)  # this host never passes current_tokens
+    first = engine.compress(text_view(), force=True, **unknown)
     assert engine.last_compression_status == "compacted"
     view = first + [{"role": "user", "content": "next ask"}, {"role": "assistant", "content": "next answer"}]
     engine.last_prompt_tokens = count_messages_tokens(view) + 3 * HOST  # the provider counted the host's overhead
 
-    engine.compress(view, force=True)
+    engine.compress(view, force=True, **unknown)
 
     assert engine._survival_overhead_observation[1] >= 3 * HOST - 300  # the assembly measured it, as before

@@ -73,6 +73,7 @@ from .store import build_message_fts_spec, build_message_stem_fts_spec, delete_h
 from .survival_fit import SURVIVAL_FIT_COUNTER_KEY
 from .host_uid import host_uid_doctor_lines
 from .chunking import (
+    _CONVERSATIONAL_ROLES,
     VALID_CONTENT_POLICIES,
     chunk_message,
     group_by_store_id,
@@ -4935,7 +4936,7 @@ def _chunk_pending_rows(
     """
     if incremental:
         already = inflight = set()
-        rows = _chunk_frontier_rows(conn, identity_hash)
+        rows = _chunk_frontier_rows(conn, identity_hash, policy=policy)
     else:
         already = _chunk_embedded_ids(conn, identity_hash)
         inflight = _chunk_inflight_ids(conn, identity_hash)
@@ -4980,7 +4981,7 @@ def _chunk_cursor(
         "SELECT MIN(id), MAX(id) FROM (SELECT CAST(substr(embedded_id, 1, "
         "instr(embedded_id, ':') - 1) AS INTEGER) AS id FROM "
         "lcm_embedding_backfill_inflight WHERE identity_hash = ?1 "
-        "AND instr(embedded_id, ':') > 1)",
+        "AND instr(embedded_id, ':') > 1) WHERE id > 0",
     ):
         try:
             first, last = conn.execute(sql, (identity_hash,)).fetchone()
@@ -4996,25 +4997,32 @@ _CHUNK_HISTORY_SCAN_MESSAGES = 2_000  # history rows one discovery reads; rows t
 
 
 def _chunk_frontier_rows(
-    conn: sqlite3.Connection, identity_hash: str | None, history_limit: int | None = None
+    conn: sqlite3.Connection, identity_hash: str | None, history_limit: int | None = None, policy: str = ""
 ):
     """Messages the automatic chunk pass has not reached. New messages come first, oldest first; then up to
     ``_CHUNK_HISTORY_SCAN_MESSAGES`` of the history below the oldest embedded message, newest first. A store with no
     chunk under the identity reads that many of its newest messages, so turning embeddings on for an existing store
-    covers recent messages before old history; `/lcm embed backfill` reaches the rest in one go."""
+    covers recent messages before old history; `/lcm embed backfill` reaches the rest in one go. Under the
+    conversational policy only non-empty user and assistant rows can chunk, so the bound counts only those: a long
+    run of tool rows cannot hold the walk in place."""
     history_limit = _CHUNK_HISTORY_SCAN_MESSAGES if history_limit is None else history_limit
+    eligible = ""
+    if normalize_content_policy(policy) == "conversational":
+        roles = ", ".join(f"'{role}'" for role in sorted(_CONVERSATIONAL_ROLES))
+        eligible = f" AND lower(trim(role)) IN ({roles}) AND COALESCE(content, '') != ''"
     bounds = _chunk_cursor(conn, identity_hash)
     if bounds is None:
         yield from conn.execute(
-            "SELECT store_id, role, content FROM messages ORDER BY store_id DESC LIMIT ?", (history_limit,)
+            f"SELECT store_id, role, content FROM messages WHERE 1{eligible} ORDER BY store_id DESC LIMIT ?",
+            (history_limit,),
         )
         return
     low, high = bounds
     yield from conn.execute(
-        "SELECT store_id, role, content FROM messages WHERE store_id > ? ORDER BY store_id", (high,)
+        f"SELECT store_id, role, content FROM messages WHERE store_id > ?{eligible} ORDER BY store_id", (high,)
     )
     yield from conn.execute(
-        "SELECT store_id, role, content FROM messages WHERE store_id < ? ORDER BY store_id DESC LIMIT ?",
+        f"SELECT store_id, role, content FROM messages WHERE store_id < ?{eligible} ORDER BY store_id DESC LIMIT ?",
         (low, history_limit),
     )
 
@@ -5025,7 +5033,9 @@ _STATUS_CHUNK_SCAN_MESSAGES = 2_000  # /lcm status chunks at most this many mess
 def _chunk_backlog_estimate(conn: sqlite3.Connection, identity_hash: str | None, policy: str) -> str:
     """The automatic pass's pending chunks, read along its frontier and bounded for the status page."""
     total = 0
-    rows = _chunk_frontier_rows(conn, identity_hash, history_limit=_STATUS_CHUNK_SCAN_MESSAGES + 1)
+    rows = _chunk_frontier_rows(
+        conn, identity_hash, history_limit=_STATUS_CHUNK_SCAN_MESSAGES + 1, policy=policy
+    )
     for scanned, row in enumerate(rows):
         if scanned >= _STATUS_CHUNK_SCAN_MESSAGES:
             return f"{total}+"
