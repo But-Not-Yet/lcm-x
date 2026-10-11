@@ -256,7 +256,7 @@ def test_markdown_rule_survives_two_same_turn_assemblies(engine):
 
 _OLD_READER = r'''
 import importlib.util, json, sys
-old, db, root, host_file = sys.argv[1:]
+old, db, root, host_file, reader = sys.argv[1:]
 sys.path.insert(0, root)  # git-ignored ContextEngine import stub, not a host
 spec = importlib.util.spec_from_file_location("hermes_lcm", old + "/__init__.py", submodule_search_locations=[old])
 sys.modules["hermes_lcm"] = importlib.util.module_from_spec(spec)
@@ -276,17 +276,18 @@ try:
     after = engine._store.get_session_messages("S")
     assert [(r["role"], r["content"]) for r in after] == [(r["role"], r["content"]) for r in before]
     assert engine._store._conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-    print("ROLLBACK_READER_OK v0.25.1 objective recognized; replay adds no rows")
+    print(f"ROLLBACK_READER_OK {reader} objective recognized; replay adds no rows")
 finally:
     engine.shutdown()
 '''
 
 
-def test_v0251_rollback_reader_accepts_reassembled_objective(engine, tmp_path):
+@pytest.mark.parametrize("reader", sorted(ROLLBACK_READERS))
+def test_rollback_reader_accepts_reassembled_objective(engine, tmp_path, reader):
     root = Path(__file__).resolve().parents[1]
-    commit = ROLLBACK_READERS["v0.25.1"]
+    commit = ROLLBACK_READERS[reader]
     if subprocess.run(["git", "-C", str(root), "cat-file", "-e", f"{commit}^{{commit}}"], capture_output=True).returncode:
-        _skip_or_fail_in_ci("the v0.25.1 rollback reader commit is not available")
+        _skip_or_fail_in_ci(f"the {reader} rollback reader commit is not available")
     emitted = engine.compress(_first_assembly(engine))
     engine.shutdown()
     archive = subprocess.run(["git", "-C", str(root), "archive", commit], check=True, capture_output=True).stdout
@@ -296,8 +297,8 @@ def test_v0251_rollback_reader_accepts_reassembled_objective(engine, tmp_path):
     host_file = tmp_path / "emitted.json"
     host_file.write_text(json.dumps(emitted))
     result = subprocess.run(
-        [sys.executable, "-B", "-c", _OLD_READER, str(old), str(tmp_path / "lcm.db"), str(root), str(host_file)],
+        [sys.executable, "-B", "-c", _OLD_READER, str(old), str(tmp_path / "lcm.db"), str(root), str(host_file), reader],
         capture_output=True, text=True, timeout=60,
     )
     assert result.returncode == 0, result.stderr[-3000:]
-    assert "ROLLBACK_READER_OK v0.25.1" in result.stdout
+    assert f"ROLLBACK_READER_OK {reader}" in result.stdout
