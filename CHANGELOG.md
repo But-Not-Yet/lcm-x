@@ -8,6 +8,7 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ### v0.27.0
 
+- Fix: a summary call that outlives its configured timeout and is cut at the foreground budget's deadline is a budget cut, not a route failure, so it no longer opens the summary circuit. (#1099)
 - Change (defaults): large-output externalization, active-replay stubbing and temporal rollups now default to `true`, matching the managed profiles that already run them. Opt out with `LCM_LARGE_OUTPUT_EXTERNALIZATION_ENABLED=false`, `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUBBING_ENABLED=false` and `LCM_TEMPORAL_ROLLUPS_ENABLED=false`. Thresholds and feature behavior are unchanged: the first-sight stub threshold stays 10,000 tokens, the value managed profiles run. The inline floor now scales with the context window (#1055), so a long user message in a large window reaches the model whole. (#1013 parts B and C)
 - Change: FastEmbed uses 2 model threads and honors `FASTEMBED_CACHE_PATH` for a shared model cache; read-only caches must be pre-seeded before use.
 - Fix: with the local FastEmbed provider, the background embedding pass registers the embedding profile itself, so enabling the keys is enough; it never downloads a model, and cloud providers still require `/lcm embed warmup` (#1063).
