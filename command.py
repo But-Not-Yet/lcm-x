@@ -4974,10 +4974,12 @@ def _chunk_cursor(
     """Oldest and newest message ids with a chunk embedded or in flight under the identity."""
     low = high = None
     for sql in (
-        "SELECT MIN(store_id), MAX(store_id) FROM lcm_chunk_meta WHERE identity_hash = ?",
+        # Separate MIN and MAX so each can walk the store_id index instead of scanning the whole table.
+        "SELECT (SELECT MIN(store_id) FROM lcm_chunk_meta WHERE identity_hash = ?1), "
+        "(SELECT MAX(store_id) FROM lcm_chunk_meta WHERE identity_hash = ?1)",
         "SELECT MIN(id), MAX(id) FROM (SELECT CAST(substr(embedded_id, 1, "
         "instr(embedded_id, ':') - 1) AS INTEGER) AS id FROM "
-        "lcm_embedding_backfill_inflight WHERE identity_hash = ? "
+        "lcm_embedding_backfill_inflight WHERE identity_hash = ?1 "
         "AND instr(embedded_id, ':') > 1)",
     ):
         try:
