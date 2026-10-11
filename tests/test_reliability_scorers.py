@@ -353,6 +353,9 @@ def sha(text):
 
 # floor-0.21.3 (345cd2b0): after a post-tool compaction the request copy carries the host's dangling-tail notice in
 # place of this turn's live results; the host persists the dispatched result (tool_calls.bind wire_notices).
+FLOOR_SHA, REF_SHA = "345cd2b057a452236de401d3534b8502a7465e8d", "f97608f178d1ffeca59860195ab7da295f7c8e5f"
+
+
 @pytest.mark.parametrize("flagged,dispatch_sha,stored,verdict,licensed,dispatch_ok,lost", [
     (True, True, ("r0", "r1"), "PASS", 2, True, False),  # LCM stored what the host dispatched and persisted
     (True, True, ("n0", "n1"), "FAIL", 2, True, False),  # the notice is never an acceptable stored body
@@ -362,7 +365,7 @@ def sha(text):
     (True, True, ("r0", "r1"), "FAIL", 2, True, True),  # a licensed call whose stored row is lost still fails
 ])
 def test_b2_scores_the_dispatched_result_behind_a_host_wire_notice(tmp_path, flagged, dispatch_sha, stored, verdict, licensed,
-                                                                  dispatch_ok, lost):
+                                                                  dispatch_ok, lost, host_sha=FLOOR_SHA):
     events, rows, kw = tool_cell()
     for e in events:
         k = e.get("id", "")[-1:]
@@ -373,12 +376,19 @@ def test_b2_scores_the_dispatched_result_behind_a_host_wire_notice(tmp_path, fla
     rows = [(r[0], stored[int(r[3][-1])], *r[2:]) if r[0] == "tool" else r for r in rows]
     if lost:
         rows = [r for r in rows if not (r[0] == "tool" and r[3].endswith("_1"))]
-    out = make(tmp_path, rows=rows, events=events, **kw)
+    out = make(tmp_path, rows=rows, events=events, **kw, **({"host_sha": host_sha} if host_sha else {}))
     assert out["verdict"] == verdict, out["failed_bars"]
     lic = out["numbers"]["B2"]["host_wire_notice_licensed"]
     assert lic["rows"] == licensed and [r["id"] for r in lic["records"]] == ["call_T01_0_0", "call_T01_0_1"][:licensed]
     if licensed:
         assert lic["records"][0] == {"id": "call_T01_0_0", "notice_sha256": sha("n0"), "result_sha256": sha("r0")}
+
+
+@pytest.mark.parametrize("host_sha", [REF_SHA, None])
+def test_b2_wire_notice_licence_is_scoped_to_the_hosts_without_the_reanchor(tmp_path, host_sha):
+    """The PASS case on 0.21.5 (which re-anchors) or on a cell with no host sha: a notice there is a regression."""
+    test_b2_scores_the_dispatched_result_behind_a_host_wire_notice(tmp_path, True, True, ("r0", "r1"), "FAIL", 0, True,
+                                                                  False, host_sha=host_sha)
 
 
 def native_events(n=3):

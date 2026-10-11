@@ -45,14 +45,21 @@ def completed(a: dict) -> bool:
     return bool(a["ended"]) and not end.get("failed") and end.get("kind") != "cancel"
 
 
-def bind(atts: list[dict], lineage_of=lambda a: "chat") -> dict:
+# Hosts without agent/turn_preflight.py's re-anchor after a post-tool compaction (0.21.5 adds it): upstream v2026.9.14
+# (0.21.3) and v2026.9.21 (0.21.4). Only there does bind() license a dangling-tail notice.
+HOSTS_WITHOUT_POST_TOOL_REANCHOR = frozenset({"345cd2b057a452236de401d3534b8502a7465e8d",
+                                              "d337b736aa1e8ebecfab043842d13e4a2d2f48a3"})
+
+
+def bind(atts: list[dict], lineage_of=lambda a: "chat", *, license_wire_notices: bool = False) -> dict:
     """Per completed attempt: gaps (dispatch never happened -> UNSUPPORTED), failures (wrong/failed/incomplete/unseen
     result, unplanned dispatch -> FAIL) and the expected keys. Calls of unfinished attempts may be stored at most once.
 
     ``wire_notices``: floor-0.21.3 (345cd2b0) does not re-anchor the turn after a post-tool compaction, so its request
     copy replaces this turn's live results with its own dangling-tail notice (agent/replay_cleanup.py) while the host
     persists the dispatched result. Only for a successful dispatch the probe saw so flagged (``host_wire_notice``) is
-    the expected key the dispatch's result; each such call is recorded."""
+    the expected key the dispatch's result, and only with ``license_wire_notices`` (a host in
+    HOSTS_WITHOUT_POST_TOOL_REANCHOR); each such call is recorded."""
     gaps, failures, expected, loose, wire_notices = [], [], Counter(), set(), []
     for a in atts:
         issues, g = a.get("tool_issues", []), lineage_of(a)
@@ -78,7 +85,8 @@ def bind(atts: list[dict], lineage_of=lambda a: "chat") -> dict:
             elif d.get("chars", 0) < (c.get("expect") or {}).get("min_chars", 0):
                 failures.append(f"{a['tag']}: {c['name']} result {d.get('chars')} chars < {c['expect']['min_chars']}")
             expected[(g, "call", c["id"], c["name"], canon(c["args"]))] += 1
-            if c["id"] in seen and seen[c["id"]].get("host_wire_notice") and d.get("ok") and d.get("result_sha256"):
+            if license_wire_notices and c["id"] in seen and seen[c["id"]].get("host_wire_notice") and d.get("ok") \
+                    and d.get("result_sha256"):
                 expected[(g, "tool", c["id"], d["result_sha256"])] += 1
                 wire_notices.append({"id": c["id"], "notice_sha256": seen[c["id"]]["sha"], "result_sha256": d["result_sha256"]})
             elif c["id"] in seen:
