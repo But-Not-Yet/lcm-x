@@ -625,10 +625,10 @@ def main():
             depth.n -= 1
         if depth.n == 0:
             ok, detail, chars = check_result(name, args, result)
+            sha = hashlib.sha256((result if isinstance(result, str) else json.dumps(result, default=str)).encode()).hexdigest()
             event(turn=cur["turn"], event="tool_dispatch", tag=f"{cur.get('prefix', 'T')}{cur['turn']:02d}", id=call_id,
-                  name=name, args=args, via=via, ok=ok, detail=detail, chars=chars,
-                  **({"recovery_result_sha256": hashlib.sha256((result if isinstance(result, str) else json.dumps(result)).encode()).hexdigest()}
-                     if fr and cur["turn"] == fr["turn"] else {}))
+                  name=name, args=args, via=via, ok=ok, detail=detail, chars=chars, result_sha256=sha,
+                  **({"recovery_result_sha256": sha} if fr and cur["turn"] == fr["turn"] else {}))
         return result
 
     def traced_tool(self, name, args, **kwargs):
@@ -675,6 +675,11 @@ def main():
             return orig_native(self, *args, **kwargs)
         native_cls.compress = counted_native
     import agent.agent_runtime_helpers as helpers
+    try:  # the host's dangling-tail notices (tool_seen host_wire_notice); absent at a host sha: nothing is licensed
+        from agent import replay_cleanup
+        wire_notices = tuple(getattr(replay_cleanup, "_DANGLING_NOTICES", ()))
+    except ImportError:
+        wire_notices = ()
     passes = getattr(helpers, "_SEQUENCE_REPAIR_PASSES", None)
     drop = getattr(helpers, "_drop_stray_tool_results", None)
     if passes and drop in passes:
@@ -752,7 +757,8 @@ def main():
                 if cid in cur["issued"] and cid not in cur["seen"]:
                     cur["seen"].add(cid)
                     body = m.get("content") if isinstance(m.get("content"), str) else json.dumps(m.get("content"))
-                    event(turn=t, event="tool_seen", id=cid, sha=hashlib.sha256(body.encode()).hexdigest(), chars=len(body))
+                    event(turn=t, event="tool_seen", id=cid, sha=hashlib.sha256(body.encode()).hexdigest(), chars=len(body),
+                          **({"host_wire_notice": True} if body in wire_notices else {}))  # tool_calls.bind
             sent = sum(len(str(m.get("content") or "")) for m in kw.get("messages") or []) // 4 + 800
             usage = int((sent if asst.get("real_usage") else est) * float(asst.get("usage_scale", 1.0)))
             if cancel and step == 0:  # the ACP cancel lands while the provider call is in flight
