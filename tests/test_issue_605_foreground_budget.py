@@ -422,8 +422,12 @@ def test_c_a_call_cut_by_the_budget_counts_no_failure_ends_the_chain_and_takes_o
     assert breaker._failures == {} and len(guard._calls) == 1
 
 
-def _provider_cut_at_stream_deadline(monkeypatch, clock):
+def _provider_cut_at_stream_deadline(monkeypatch, clock, seam=True):
     provider = _provider(monkeypatch, clock, default=None)
+    if seam:  # the host exports the stream-deadline seam, so the usable deadline is installed (#1099)
+        _host_module(monkeypatch, clock, [])
+    else:
+        monkeypatch.setitem(sys.modules, "agent.auxiliary_client", types.ModuleType("agent.auxiliary_client"))
 
     def live_stream(prompt, max_tokens, model="", timeout=None, reasoning_effort=""):
         provider.calls.append((model, timeout, clock.offset))
@@ -465,6 +469,22 @@ def test_c_a_two_calls_cut_at_the_usable_deadline_leave_the_route_allowed(monkey
     assert [model for model, _timeout, _started in provider.calls] == ["m1", "m1"]
     assert breaker.allows("m1")
     assert breaker._failures == {} and breaker._open_until == {}
+
+
+def test_c_a_call_past_its_timeout_on_a_host_without_the_deadline_seam_stays_a_route_failure(monkeypatch, clock):
+    """#1099 review: without the seam nothing installed the budget's deadline, so a provider that ignores its timeout
+    and fails late is the route's own failure and counts toward the circuit."""
+    provider = _provider_cut_at_stream_deadline(monkeypatch, clock, seam=False)
+    breaker = escalation.SummaryCircuitBreaker()
+    budget = escalation.ForegroundBudget(soft=0, hard=120.0, configured_timeout=60.0,
+                                         estimates=escalation.ForegroundEstimates())
+    clock.offset += 0.4
+    with pytest.raises(escalation.SweepBudgetExhausted):  # the fallback is refused: no usable time is left
+        escalation.summarize_with_escalation(
+            "source text " * 400, source_tokens=4000, token_budget=50, model="m1", fallback_models=["m2"],
+            timeout=60.0, circuit_breaker=breaker, budget=budget)
+    assert [model for model, _timeout, _started in provider.calls] == ["m1"]
+    assert breaker._failures == {"m1": 1}
 
 
 @pytest.mark.parametrize(("pre_work", "budget_cut"), [(54.0, False), (56.0, True)])

@@ -922,12 +922,14 @@ def summary_route_available(
                for candidate in _summary_model_chain(model, fallback_models))
 
 
-def _is_budget_cut(error, budget: ForegroundBudget, budget_bound: bool, wall: float, call_timeout) -> bool:
+def _is_budget_cut(error, budget: ForegroundBudget, budget_bound: bool, wall: float, call_timeout,
+                   deadline_installed: bool = False) -> bool:
     """#605 F4: a timeout is a budget cut when the budget's limit bound the call (its timeout was the usable
     time left, below the configured one, and it ran out or the usable deadline passed), or the host deadline
     fired. A configured-timeout hit stays an ordinary route failure, even one that ends near the deadline.
-    A call that outlives its configured timeout and ends at the usable deadline was bounded by the budget,
-    for example on a host whose timeout is a no-progress window."""
+    A call that outlives its configured timeout and ends at the usable deadline was bounded by the budget, for
+    example on a host whose timeout is a no-progress window; only where that deadline was installed in the host
+    (#1099), so a provider that ignores its timeout on a host without the seam stays a route failure."""
     message = str(error or "").lower()
     if error is None or not (isinstance(error, TimeoutError) or "timed out" in message or "timeout" in message):
         return False
@@ -935,9 +937,19 @@ def _is_budget_cut(error, budget: ForegroundBudget, budget_bound: bool, wall: fl
         "host compression deadline" in message
         or (budget_bound and (time.monotonic() >= budget.usable_deadline - 1.0
                               or (call_timeout is not None and wall >= call_timeout - 1.0)))
-        or (call_timeout is not None and wall > call_timeout + 1.0
+        or (deadline_installed and call_timeout is not None and wall > call_timeout + 1.0
             and time.monotonic() >= budget.usable_deadline - 1.0)
     )
+
+
+def _host_stream_deadline_seam() -> bool:
+    """#1099: True when the host exports the aux stream-deadline seam, so the budget's deadline is installed."""
+    try:
+        from agent import auxiliary_client as host
+    except Exception:
+        return False
+    return callable(getattr(host, "aux_stream_deadline", None)) and callable(
+        getattr(host, "_current_aux_stream_deadline", None))
 
 
 def _host_stream_deadline_scope():
@@ -1018,6 +1030,7 @@ def _invoke_summary_llm_chain(
         _summary_call.route, _summary_call.error = {}, None  # #682: filled by _call_llm_for_summary
         _summary_call.contract = ""
         _summary_call.stream_deadline = budget.usable_deadline if budget is not None else None
+        deadline_installed = budget is not None and _host_stream_deadline_seam()
         started = time.monotonic()
         try:
             result = _invoke_summary_llm(
@@ -1038,7 +1051,8 @@ def _invoke_summary_llm_chain(
         if budget is not None:
             ended = time.monotonic()
             budget.record_call(route_key, started, ended)
-            if result is None and _is_budget_cut(error, budget, budget_bound, ended - started, call_timeout):
+            if result is None and _is_budget_cut(error, budget, budget_bound, ended - started, call_timeout,
+                                                 deadline_installed):
                 # #605 F4: the budget, not the route, ended the call: no circuit failure, no fallback.
                 raise budget.stop("summariser call cut by the foreground budget")
         if circuit_breaker is not None and route:
