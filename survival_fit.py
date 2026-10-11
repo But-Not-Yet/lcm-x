@@ -121,6 +121,20 @@ class SurvivalFitMixin:
         window = int(getattr(self, "context_length", 0) or 0)
         return min(window // 2, overhead) if window > 0 else overhead
 
+    def _survival_assembly_overhead(self, messages, observed_tokens) -> int:
+        """The binding's recorded overhead, else an unrecorded measure of ``messages``. Assembly sees the ingest
+        view, where a first-sight stub is far smaller than the row the host counted, so it records nothing."""
+        key = str(getattr(self, "_conversation_id", "") or getattr(self, "_session_id", "") or "")
+        previous = getattr(self, "_survival_overhead_observation", None)
+        if key and previous and previous[0] == key:
+            overhead = previous[1]
+        else:
+            counted = _host_estimate(messages)
+            counted = count_messages_tokens(messages) if counted is None else counted
+            overhead = max(0, int(observed_tokens or 0) - counted)
+        window = int(getattr(self, "context_length", 0) or 0)
+        return min(window // 2, overhead) if window > 0 else overhead
+
     def _survival_fit_args(self, messages, observed_tokens, reason: str, recovery: bool, *,
                            automatic: bool = False) -> Dict[str, Any]:
         """#608: the fit's reason and caps. A recovery attempt (the host's ``bypass_cooldown``) fits under the
