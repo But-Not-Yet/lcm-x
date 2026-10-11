@@ -137,8 +137,8 @@ Stable release identity and the continuing `main` development line are
 separate proof planes; do not describe an arbitrary `main` checkout as the
 installed stable product.
 
-The `main` line identifies itself as `hermes-lcm-x v0.26.0` until the
-first v0.27.0 release candidate bumps it (patch releases such as v0.26.1 and v0.26.2 are cut from `release/v0.26.x` and carry their own identity). An identity is never a restamp of any past commit's own recorded identity
+The `main` line carries the forward identity `hermes-lcm-x v0.27.0` — summary quality — which the
+`v0.27.0-rc1` tag carries first, on top of the `v0.26.2` release tag (`hermes-lcm-x v0.26.2 (15 tools)`; patch releases are cut from `release/v0.26.x` and carry their own identity). An identity is never a restamp of any past commit's own recorded identity
 (#385 fixed the earlier drift).
 The manifest declares 15 tools; runtime discovery advertises 13 by default,
 or 15 with both assertion and adaptive-retrieval flags on.
@@ -263,7 +263,7 @@ On the `main` line, output with both opt-in flags enabled is:
 
 ```text
 Plugins (1):
-  ✓ hermes-lcm-x v0.26.0 (15 tools)
+  ✓ hermes-lcm-x v0.27.0 (15 tools)
 
 Provider Plugins:
   Context Engine: lcm-x
