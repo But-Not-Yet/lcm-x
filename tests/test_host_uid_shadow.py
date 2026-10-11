@@ -702,7 +702,10 @@ from hermes_lcm import store as store_mod
 from hermes_lcm.command import _doctor_text
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.engine import LCMEngine
-assert store_mod.__file__.startswith(old) and importlib.util.find_spec("hermes_lcm.host_uid") is None
+assert store_mod.__file__.startswith(old)
+# v0.26 readers already ship host_uid; retain the pre-uid premise for older releases.
+if sys.argv[4] != "v0.26.2":
+    assert importlib.util.find_spec("hermes_lcm.host_uid") is None
 engine = LCMEngine(config=LCMConfig(database_path=db))
 engine.on_session_start("S", platform="cli", context_length=200_000, conversation_id="conv")
 assert "sqlite_integrity: ok" in _doctor_text(engine)
@@ -715,10 +718,11 @@ print("OLD_READER_OK", len(before), len(after))
 """
 
 
-# Old readers a rollback can land on. CI fetches both commits before pytest (#841).
+# Old readers a rollback can land on. CI fetches these commits before pytest (#841).
 ROLLBACK_READERS = {
     "v0.25.0-rc1": "c36b46e3a7b1bff23cfa45fa117565ab8624441d",
     "v0.25.1": "f47b55e031b507b424ff5f480d8f2a80d358f1f0",
+    "v0.26.2": "6800cf45ad05280e6cf6fa9e1ad96c62b7132646",
 }
 
 
@@ -756,7 +760,7 @@ def test_f7_a_v0250_build_opens_ingests_and_reads_a_store_with_the_table(tmp_pat
         assert len(_bindings(engine)) == 3
     finally:
         engine.shutdown()
-    result = subprocess.run([sys.executable, "-c", _OLD_READER, str(old), str(tmp_path / "lcm.db"), str(root)],
+    result = subprocess.run([sys.executable, "-c", _OLD_READER, str(old), str(tmp_path / "lcm.db"), str(root), reader],
                             capture_output=True, text=True, cwd=str(tmp_path))
     assert result.returncode == 0, result.stderr[-3000:]
     assert "OLD_READER_OK 3 4" in result.stdout
