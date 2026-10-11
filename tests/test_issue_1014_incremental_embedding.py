@@ -889,11 +889,13 @@ def test_automatic_chunk_discovery_is_bounded_by_new_messages_not_the_store(
             engine._config.embedding_max_batch_items
         )
 
-        # A fresh store: one pass reads about one batch of messages, oldest first.
+        # A fresh store: one pass reads about one batch of messages, newest first.
         calls.clear()
         maintenance_mod.run_incremental_embedding_pass(db_path, engine._config)
         assert _chunk_vector_count(engine) == batch
         assert len(calls) <= batch + 2
+        newest = [row[0] for row in _rows(engine, "SELECT store_id FROM messages ORDER BY store_id DESC")]
+        assert {row[0] for row in _rows(engine, "SELECT store_id FROM lcm_chunk_meta")} == set(newest[:batch])
 
         # Steady state: the whole history is embedded; three new messages cost
         # about three chunker calls, not one per stored message.
@@ -1014,3 +1016,58 @@ def test_1063_h_partial_registration_is_completed_by_the_next_pass(
         assert "chunks=refused" not in outcome
     finally:
         engine._close_storage()
+
+
+def test_automatic_chunks_take_new_messages_before_history_and_history_newest_first(
+    tmp_path, home, providers
+):
+    engine = _make_engine(tmp_path, home)
+    db_path = engine._config.database_path
+    try:
+        for index in range(200):
+            engine._store.append(SESSION, {"role": "user", "content": f"old {index} {FILLER}"})
+        batch = command_mod._embedding_backfill_batch_size(engine._config.embedding_max_batch_items)
+        assert 200 > 2 * batch
+        maintenance_mod.run_incremental_embedding_pass(db_path, engine._config)
+        ids = [row[0] for row in _rows(engine, "SELECT store_id FROM messages ORDER BY store_id")]
+        embedded = {row[0] for row in _rows(engine, "SELECT store_id FROM lcm_chunk_meta")}
+        assert embedded == set(ids[-batch:])
+
+        for index in range(3):
+            engine._store.append(SESSION, {"role": "user", "content": f"new {index} {FILLER}"})
+        fresh = [row[0] for row in _rows(engine, "SELECT store_id FROM messages ORDER BY store_id DESC LIMIT 3")]
+        maintenance_mod.run_incremental_embedding_pass(db_path, engine._config)
+        after = {row[0] for row in _rows(engine, "SELECT store_id FROM lcm_chunk_meta")}
+
+        added = after - embedded
+        assert set(fresh) <= added  # the new messages first
+        history = sorted(added - set(fresh))
+        assert len(history) == batch - 3
+        assert history == ids[-2 * batch + 3:-batch]  # then the history just below, newest first
+    finally:
+        engine.shutdown()
+
+
+def test_status_chunk_backlog_reads_a_bounded_frontier(tmp_path, home, providers, monkeypatch):
+    engine = _make_engine(tmp_path, home)
+    calls = []
+    real_chunk_message = command_mod.chunk_message
+    monkeypatch.setattr(
+        command_mod,
+        "chunk_message",
+        lambda *args, **kwargs: calls.append(args[0]) or real_chunk_message(*args, **kwargs),
+    )
+    monkeypatch.setattr(command_mod, "_STATUS_CHUNK_SCAN_MESSAGES", 50)
+    try:
+        for index in range(120):
+            engine._store.append(SESSION, {"role": "user", "content": f"old {index} {FILLER}"})
+        calls.clear()
+        status = handle_lcm_command("status", engine)
+
+        assert "embedding_backlog_chunks: 50+" in status
+        assert len(calls) == 50  # the newest 50 messages, not the store
+
+        monkeypatch.setattr(command_mod, "_STATUS_CHUNK_SCAN_MESSAGES", 1_000)
+        assert "embedding_backlog_chunks: 120" in handle_lcm_command("status", engine)
+    finally:
+        engine.shutdown()

@@ -675,7 +675,7 @@ def _embedding_maintenance_status_lines(engine) -> list[str]:
     db_path = engine._store.db_path
     backlog = {"summaries": "(no profile)", "chunks": "(no profile)"}
 
-    def _count(conn, identity: str, pending: int) -> str:
+    def _count(conn, identity: str, pending: int | str) -> str:
         # In-flight rows are not pending; a provider failure after dispatch
         # leaves them uncertain until an operator `--retry-uncertain` run.
         try:
@@ -703,9 +703,7 @@ def _embedding_maintenance_status_lines(engine) -> list[str]:
                     engine._config, "embedding_content_policy", "conversational"
                 ))
                 identity = str(chunk_profile["identity_hash"])
-                backlog["chunks"] = _count(
-                    conn, identity, _chunk_pending_rows(conn, identity, policy, 0)[0]
-                )
+                backlog["chunks"] = _count(conn, identity, _chunk_backlog_estimate(conn, identity, policy))
         finally:
             conn.close()
     except sqlite3.Error as exc:
@@ -4929,19 +4927,15 @@ def _chunk_pending_rows(
     held in-flight. Returns the total pending count, up to ``limit`` documents
     as ``(chunk_id, text, tokens)``, and a metadata map for the selected chunks.
 
-    ``incremental`` (the #1014 automatic pass) resumes after the newest message
-    with an embedded or in-flight chunk, oldest first, and stops at a message
-    boundary once ``limit`` chunks are found, so its cost tracks new messages
-    rather than the store; the returned total then counts only what it saw.
+    ``incremental`` (the #1014 automatic pass) reads the frontier of
+    ``_chunk_frontier_rows``: new messages first, then history newest first.
+    It stops at a message boundary once ``limit`` chunks are found, so its cost
+    tracks new messages rather than the store; the returned total then counts
+    only what it saw.
     """
     if incremental:
-        cursor = _chunk_cursor(conn, identity_hash)
         already = inflight = set()
-        rows = conn.execute(
-            "SELECT store_id, role, content FROM messages WHERE store_id > ? "
-            "ORDER BY store_id",
-            (cursor,),
-        )
+        rows = _chunk_frontier_rows(conn, identity_hash)
     else:
         already = _chunk_embedded_ids(conn, identity_hash)
         inflight = _chunk_inflight_ids(conn, identity_hash)
@@ -4974,20 +4968,58 @@ def _chunk_pending_rows(
     return total, documents, meta
 
 
-def _chunk_cursor(conn: sqlite3.Connection, identity_hash: str | None) -> int:
-    """Newest message id with a chunk embedded or in flight under the identity."""
-    cursor = 0
+def _chunk_cursor(
+    conn: sqlite3.Connection, identity_hash: str | None
+) -> tuple[int, int] | None:
+    """Oldest and newest message ids with a chunk embedded or in flight under the identity."""
+    low = high = None
     for sql in (
-        "SELECT MAX(store_id) FROM lcm_chunk_meta WHERE identity_hash = ?",
-        "SELECT MAX(CAST(substr(embedded_id, 1, instr(embedded_id, ':') - 1) "
-        "AS INTEGER)) FROM lcm_embedding_backfill_inflight WHERE identity_hash = ?",
+        "SELECT MIN(store_id), MAX(store_id) FROM lcm_chunk_meta WHERE identity_hash = ?",
+        "SELECT MIN(id), MAX(id) FROM (SELECT CAST(substr(embedded_id, 1, "
+        "instr(embedded_id, ':') - 1) AS INTEGER) AS id FROM "
+        "lcm_embedding_backfill_inflight WHERE identity_hash = ?)",
     ):
         try:
-            value = conn.execute(sql, (identity_hash,)).fetchone()[0]
+            first, last = conn.execute(sql, (identity_hash,)).fetchone()
         except sqlite3.OperationalError:
             continue  # table not created yet
-        cursor = max(cursor, int(value or 0))
-    return cursor
+        if first is not None:
+            low = int(first) if low is None else min(low, int(first))
+            high = int(last) if high is None else max(high, int(last))
+    return None if low is None else (low, high)
+
+
+def _chunk_frontier_rows(conn: sqlite3.Connection, identity_hash: str | None):
+    """Messages the automatic chunk pass has not reached. New messages come first, oldest first; then history
+    below the oldest embedded message, newest first. A store with no chunk under the identity reads newest first,
+    so turning embeddings on for an existing store covers recent messages before old history."""
+    bounds = _chunk_cursor(conn, identity_hash)
+    if bounds is None:
+        yield from conn.execute("SELECT store_id, role, content FROM messages ORDER BY store_id DESC")
+        return
+    low, high = bounds
+    yield from conn.execute(
+        "SELECT store_id, role, content FROM messages WHERE store_id > ? ORDER BY store_id", (high,)
+    )
+    yield from conn.execute(
+        "SELECT store_id, role, content FROM messages WHERE store_id < ? ORDER BY store_id DESC", (low,)
+    )
+
+
+_STATUS_CHUNK_SCAN_MESSAGES = 2_000  # /lcm status chunks at most this many messages; a larger backlog ends in "+"
+
+
+def _chunk_backlog_estimate(conn: sqlite3.Connection, identity_hash: str | None, policy: str) -> str:
+    """The automatic pass's pending chunks, read along its frontier and bounded for the status page."""
+    total = 0
+    for scanned, row in enumerate(_chunk_frontier_rows(conn, identity_hash)):
+        if scanned >= _STATUS_CHUNK_SCAN_MESSAGES:
+            return f"{total}+"
+        total += sum(
+            1 for chunk in chunk_message(row[0], row[1], row[2], policy=policy)
+            if chunk.char_end > chunk.char_start
+        )
+    return str(total)
 
 
 def _rebuild_chunk_document(
