@@ -47,8 +47,13 @@ def completed(a: dict) -> bool:
 
 def bind(atts: list[dict], lineage_of=lambda a: "chat") -> dict:
     """Per completed attempt: gaps (dispatch never happened -> UNSUPPORTED), failures (wrong/failed/incomplete/unseen
-    result, unplanned dispatch -> FAIL) and the expected keys. Calls of unfinished attempts may be stored at most once."""
-    gaps, failures, expected, loose = [], [], Counter(), set()
+    result, unplanned dispatch -> FAIL) and the expected keys. Calls of unfinished attempts may be stored at most once.
+
+    ``wire_notices``: floor-0.21.3 (345cd2b0) does not re-anchor the turn after a post-tool compaction, so its request
+    copy replaces this turn's live results with its own dangling-tail notice (agent/replay_cleanup.py) while the host
+    persists the dispatched result. Only for a successful dispatch the probe saw so flagged (``host_wire_notice``) is
+    the expected key the dispatch's result; each such call is recorded."""
+    gaps, failures, expected, loose, wire_notices = [], [], Counter(), set(), []
     for a in atts:
         issues, g = a.get("tool_issues", []), lineage_of(a)
         if not completed(a):
@@ -73,12 +78,15 @@ def bind(atts: list[dict], lineage_of=lambda a: "chat") -> dict:
             elif d.get("chars", 0) < (c.get("expect") or {}).get("min_chars", 0):
                 failures.append(f"{a['tag']}: {c['name']} result {d.get('chars')} chars < {c['expect']['min_chars']}")
             expected[(g, "call", c["id"], c["name"], canon(c["args"]))] += 1
-            if c["id"] in seen:
+            if c["id"] in seen and seen[c["id"]].get("host_wire_notice") and d.get("ok") and d.get("result_sha256"):
+                expected[(g, "tool", c["id"], d["result_sha256"])] += 1
+                wire_notices.append({"id": c["id"], "notice_sha256": seen[c["id"]]["sha"], "result_sha256": d["result_sha256"]})
+            elif c["id"] in seen:
                 expected[(g, "tool", c["id"], seen[c["id"]]["sha"])] += 1
             else:
                 failures.append(f"{a['tag']}: the result of {c['id']} never reached the next provider request")
         failures += [f"{a['tag']}: unplanned host dispatch of {d['name']}" for d in free]
-    return {"gaps": gaps, "failures": failures, "expected": expected, "loose": loose}
+    return {"gaps": gaps, "failures": failures, "expected": expected, "loose": loose, "wire_notices": wire_notices}
 
 
 def stored_keys(rows, lineage=lambda sid: "chat") -> Counter:
