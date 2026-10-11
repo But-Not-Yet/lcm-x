@@ -221,8 +221,10 @@ is refused until the pass ends, as with two manual runs. There is no new setting
 - If the provider is unavailable (for example fastembed is not installed), the pass is skipped and
   counted; the first skip in a process logs a `WARNING`, later ones log at `DEBUG`.
 
-`/lcm status` shows `embedding_backlog_summaries`, `embedding_backlog_chunks` (counted over at most the
-2,000 messages the next passes read first, shown as `N+` beyond that; with any rows left
+`/lcm status` shows `embedding_backlog_summaries`, `embedding_backlog_chunks` (what the automatic passes
+still have ahead of them, counted over at most 2,000 messages and shown as `N+` beyond that; a chunk the
+passes skipped inside the embedded range is not counted, and a dry run of
+`/lcm embed backfill --corpus chunks` gives the exact total; with any rows left
 `uncertain` by a failure after dispatch, which only `--retry-uncertain` resends), the time and outcome
 of the last incremental pass (`embedding_incremental_last_pass`) and the process's skipped-pass
 count (`embedding_incremental_failures`). `/lcm embed backfill --apply` is still the way to embed
