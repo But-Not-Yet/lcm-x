@@ -685,6 +685,7 @@ class LCMEngine(
         # #582 survival fit: the failure reason of this compress(), the last fit, and the one-shot warning.
         self._survival_fit_reason: Optional[str] = None
         self._survival_overhead_observation = None  # #1012 F4: (bound conversation key, largest overhead)
+        self._survival_pass_observed = False  # #1107: this compress() recorded the host's figure for its own list
         self._last_survival_fit: Optional[Dict[str, Any]] = None
         self._survival_fit_pending_warning: Optional[tuple[str, str]] = None  # (conversation key, text)
         self._survival_fit_warned: set = set()
