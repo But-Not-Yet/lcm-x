@@ -265,7 +265,8 @@ def score(cell: dict, cell_dir: Path, db_dir: Path | None = None) -> dict:
     numbers["B2"]["per_session"] = {g: m["verdict"] for g, m in b2_parts.items()}
     numbers["B2"]["host_parity_licensed"] = host_parity.summary(
         [dict(r, session=g) for g, m in b2_parts.items() for r in m["host_parity_licensed"]], host_why)
-    bound = tool_calls.bind(atts, lambda a: attempt_group(a, group))
+    bound = tool_calls.bind(atts, lambda a: attempt_group(a, group),  # no host_sha in the cell: no licence
+                            license_wire_notices=cell.get("host_sha") in tool_calls.HOSTS_WITHOUT_POST_TOOL_REANCHOR)
     # This emergency cell deliberately drops the active result before the next provider call. B2 still requires
     # its durably stored bytes to match the real HOST dispatch; the unseen-result failure remains a B6 diagnostic.
     recovery_turns = {f["turn"] for f in cell.get("faults", []) if f["kind"] == "forced_recovery"} & {
@@ -280,6 +281,7 @@ def score(cell: dict, cell_dir: Path, db_dir: Path | None = None) -> dict:
     externalized.mismatches(ext, b2_full, ext_ids, per, group, bound["expected"], bound["loose"], host)
     numbers["B2"]["externalized"] = ext
     numbers["B2"].update(tools)
+    numbers["B2"]["host_wire_notice_licensed"] = {"rows": len(bound["wire_notices"]), "records": bound["wire_notices"][:10]}
     if tools["tool_missing_rows"] or tools["tool_surplus_rows"] or ext["deficit_rows"]:
         failed["B2"] = dict(numbers["B2"])
     if any(m["verdict"] != "PASS" for m in b2_parts.values()):
