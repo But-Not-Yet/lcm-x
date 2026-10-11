@@ -8102,7 +8102,7 @@ class LCMEngine(
                 if retained_user_msg is not None:
                     overhead_source.append(retained_user_msg)
                 overhead_source.extend(anchor_source)
-                overhead = self._survival_host_overhead(
+                overhead = self._survival_assembly_overhead(
                     overhead_source, max(int(self.last_prompt_tokens or 0), self._last_gate_tokens)
                 )
                 # Measure without externalizing preserved-objective payloads.
