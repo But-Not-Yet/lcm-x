@@ -1264,8 +1264,11 @@ class CompactionMixin:
                 force=force,
             )
         self._rebind_after_unadopted_compaction_commit()
-        # #1012 F4: observe foreground passes only, after classification and rebinding.
-        self._survival_host_overhead(messages, current_tokens)
+        # #1012 F4: observe foreground passes only, after classification and rebinding. Without the host's
+        # figure there is nothing to observe; this pass's assembly then measures, as before (#1107).
+        self._survival_pass_observed = (current_tokens or 0) > 0
+        if self._survival_pass_observed:
+            self._survival_host_overhead(messages, current_tokens)
 
         # ``current_tokens`` is optional in the ContextEngine contract. After a
         # yield-aware preflight, use the current active messages as the
