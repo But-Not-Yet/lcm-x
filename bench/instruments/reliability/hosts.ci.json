@@ -17,7 +17,18 @@
       "extras": "acp,edge-tts,bedrock,vertex,anthropic",
       "pins": ["agent-client-protocol==0.9.0", "pip==24.0"]
     },
-    "r34.4-0.21.5": {
+    "floor-0.21.3": {
+   "repo": "NousResearch/hermes-agent",
+   "sha": "345cd2b057a452236de401d3534b8502a7465e8d",
+   "hermes_version": "0.21.3",
+   "python_version": "3.11",
+   "extras": "acp,edge-tts,bedrock,vertex,anthropic",
+   "pins": [
+    "agent-client-protocol==0.9.0",
+    "pip==24.0"
+   ]
+  },
+  "r34.4-0.21.5": {
       "repo": "electricsheephq/evaOS-hermes-desktop-app-adapter",
       "sha": "9844ebe82d64080c4329c3747d16c74aa06c18c3",
       "hermes_version": "0.21.5",
