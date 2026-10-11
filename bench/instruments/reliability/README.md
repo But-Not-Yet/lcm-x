@@ -254,7 +254,8 @@ It replaced customer-0.21.2 in the nightly matrix: that host is below the declar
 there and every cell errors by design. Its `hosts.ci.json` entry stays for local runs and history.
 floor-0.21.3 does not re-anchor the turn after a post-tool compaction, so on those turns its request copy replaces the
 live tool results with its own dangling-tail notices while the host stores the dispatched results (0.21.5 re-anchors).
-B2 then expects the dispatched result for such a call and reports it under `host_wire_notice_licensed`. upstream-uid (2667c960) is upstream after its message-uid change: the one CI host with message uids and the P8
+B2 then expects the dispatched result for such a call and reports it under `host_wire_notice_licensed`; the licence
+is scoped by host sha to 0.21.3 and 0.21.4 (`tool_calls.HOSTS_WITHOUT_POST_TOOL_REANCHOR`). upstream-uid (2667c960) is upstream after its message-uid change: the one CI host with message uids and the P8
 flush seams. upstream-main (6f7a7991) stays before it, where the host archive copies uncovered rows behind the running
 turn (the shape that exposed #845). `ci.py prep`
 fetches the sha and installs it editable with `[acp,edge-tts,bedrock,vertex,anthropic]` (the harness verifies git HEAD
