@@ -160,6 +160,7 @@ def run_cell(cell: dict, host_name: str, host: dict, plugin: dict, out: Path, ti
     if d.exists():
         shutil.rmtree(d)
     d.mkdir(parents=True)
+    cell = {**cell, "host_sha": host["sha"]}  # cell.json and the scorer (bars.py: the wire-notice licence)
     (d / "cell.json").write_text(json.dumps({**cell, "plugin": plugin, "host": host_name, "host_src": host["src"],
                                              "host_python": host["python"]}, indent=1))
     rec = {"cell": cell["id"], "host": host_name, "host_sha": host["sha"], "plugin_ref": plugin["ref"],
