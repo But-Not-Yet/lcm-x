@@ -927,18 +927,22 @@ def _is_budget_cut(error, budget: ForegroundBudget, budget_bound: bool, wall: fl
     """#605 F4: a timeout is a budget cut when the budget's limit bound the call (its timeout was the usable
     time left, below the configured one, and it ran out or the usable deadline passed), or the host deadline
     fired. A configured-timeout hit stays an ordinary route failure, even one that ends near the deadline.
+    A call that ends at the usable deadline under a budget-bound timeout or an installed host deadline is a
+    budget cut whatever its error says, because a host fallback can mask the timeout (#1120).
     A call that outlives its configured timeout and ends at the usable deadline was bounded by the budget, for
     example on a host whose timeout is a no-progress window; only where that deadline was installed in the host
     (#1099), so a provider that ignores its timeout on a host without the seam stays a route failure."""
     message = str(error or "").lower()
-    if error is None or not (isinstance(error, TimeoutError) or "timed out" in message or "timeout" in message):
+    if error is None:
         return False
+    timeout_like = isinstance(error, TimeoutError) or "timed out" in message or "timeout" in message
+    at_deadline = time.monotonic() >= budget.usable_deadline - 1.0
     return bool(
-        "host compression deadline" in message
-        or (budget_bound and (time.monotonic() >= budget.usable_deadline - 1.0
-                              or (call_timeout is not None and wall >= call_timeout - 1.0)))
+        (timeout_like and "host compression deadline" in message)
+        or (budget_bound and at_deadline)
+        or (timeout_like and budget_bound and call_timeout is not None and wall >= call_timeout - 1.0)
         or (deadline_installed and call_timeout is not None and wall > call_timeout + 1.0
-            and time.monotonic() >= budget.usable_deadline - 1.0)
+            and at_deadline)
     )
 
 
