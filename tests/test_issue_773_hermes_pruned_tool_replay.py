@@ -20,6 +20,7 @@ Every engine here has both externalization flags off, so the store and the host 
 """
 
 import copy
+import json
 import logging
 
 import pytest
@@ -630,3 +631,20 @@ def test_a_structured_tool_result_is_never_the_source_of_a_placeholder(make_engi
     assert len(str(rows[structured_id]["content"])) > 200
     assert identity(_result("R", CLEARED)) != identity(rows[structured_id], stored_row=True)
     assert identity(_result("J", CLEARED)) == identity(rows[json_text_id], stored_row=True)
+
+
+def test_a_string_output_in_the_canonical_structured_form_fails_closed(make_engine):  # noqa: F811
+    """Stored text cannot tell a structured tool result from a string output that is byte-identical to
+    its canonical form, so such a string is read as structured: its cleared placeholder gets no source and
+    stays new content, as before #773 (duplication, never aliasing). The usual JSON string, with keys in
+    the producer's order, stays a source."""
+    engine = plain_engine(make_engine, fresh_tail_count=32)
+    sid, conversation = engine._session_id, engine._conversation_id
+    identity = engine._message_replay_identity
+    canonical = json.dumps([{"text": "c" * 300, "type": "text"}], ensure_ascii=False, sort_keys=True)
+    producer = json.dumps([{"type": "text", "text": "p" * 300}])
+    ids = {call_id: engine._store.append(sid, _result(call_id, text), conversation_id=conversation)
+           for call_id, text in (("C", canonical), ("P", producer))}
+    rows = {row["store_id"]: row for row in stored(engine)}
+    assert identity(_result("C", CLEARED)) != identity(rows[ids["C"]], stored_row=True)
+    assert identity(_result("P", CLEARED)) == identity(rows[ids["P"]], stored_row=True)
