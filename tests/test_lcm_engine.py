@@ -687,7 +687,7 @@ def test_lcm_tool_status_includes_optional_cache_usage_metrics(engine):
     assert payload["last_compression_noop_reason"] == ""
     assert payload["runtime_identity"]["plugin_name"] == "hermes-lcm-x"
     assert payload["runtime_identity"]["database_path_source"] == "config.database_path"
-    assert payload["config"]["summary_timeout_ms"] == 60_000
+    assert payload["config"]["summary_timeout_ms"] == 120_000
 
 
 def test_compress_exception_sets_terminal_error_status_and_reraises_same_exception(
@@ -21932,7 +21932,7 @@ class TestConfigCleanup:
     def test_has_summary_timeout_ms(self):
         config = LCMConfig()
         assert hasattr(config, "summary_timeout_ms")
-        assert config.summary_timeout_ms == 60_000
+        assert config.summary_timeout_ms == 120_000
 
     def test_has_expansion_timeout_ms(self):
         config = LCMConfig()

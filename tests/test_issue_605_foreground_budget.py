@@ -85,7 +85,9 @@ def _engine(tmp_path, **config) -> LCMEngine:
                 "large_output_active_replay_stubbing_enabled": False, "temporal_rollups_enabled": False,
                 "fresh_tail_count": 2, "leaf_chunk_tokens": 400, "context_threshold": 0.001,
                 "threshold_full_sweep_enabled": True, "max_assembly_tokens": 100_000, "l3_truncate_tokens": 2,
-                "condensation_fanin": 2, "database_path": str(tmp_path / "lcm.db"), **config}
+                "condensation_fanin": 2, "database_path": str(tmp_path / "lcm.db"),
+                # #1119: these cells' arithmetic uses a 60 s configured call timeout; the product default is 120 s.
+                "summary_timeout_ms": 60_000, **config}
     engine = LCMEngine(config=LCMConfig(**settings))
     engine.on_session_start("S", platform="telegram", context_length=200_000, conversation_id="conv")
     return engine
@@ -152,6 +154,24 @@ def test_soft_target_stops_after_the_stored_leaf_whose_successor_would_end_past_
         assert telemetry["stop_reason"] == "soft_target_reached" and telemetry["status"] == "partial"
         assert telemetry["budget_exhausted"] is False
         assert not any("deterministic truncation" in node.summary for node in _leaves(engine))
+    finally:
+        engine.shutdown()
+
+
+def test_default_call_timeout_is_cut_to_the_hard_bound_and_leaves_no_fallback_room(
+        tmp_path, monkeypatch, clock, caplog):
+    # #1119: at the 120 s default one primary call may use the whole foreground budget (hard bound minus the
+    # finalize reserve), so a timed-out primary leaves no room for a fallback inside the same compaction.
+    engine = _engine(tmp_path, summary_model="primary", summary_fallback_models=["fallback"],
+                     summary_timeout_ms=LCMConfig().summary_timeout_ms)
+    provider = _provider(monkeypatch, clock, primary=None, fallback=20.0)
+    try:
+        _compress(engine, _view(), caplog)
+        assert LCMConfig().summary_timeout_ms == 120_000
+        assert [(model, round(timeout), round(started)) for model, timeout, started in provider.calls] == [
+            ("primary", 115, 0)]
+        assert _leaves(engine) == []
+        assert engine.get_status()["threshold_full_sweep"]["stop_reason"] == "time_budget_exhausted"
     finally:
         engine.shutdown()
 
