@@ -352,3 +352,26 @@ def test_the_same_tool_name_wins_over_a_nameless_twin(make_engine):  # noqa: F81
     assert (identity({"role": "tool", "tool_call_id": "c", "tool_name": "terminal", "content": CLEARED})
             == identity(named, stored_row=True))
     assert identity(copy_row, stored_row=True) == identity(nameless, stored_row=True)
+
+
+@pytest.mark.parametrize("held", ["none", "unrelated"])
+def test_the_cursor_search_hashes_prefixes_only_for_a_held_native_recovery_digest(make_engine, monkeypatch, held):  # noqa: F811
+    """A prefix can match a native-recovery proof only when the session holds one, so with none the
+    search skips the per-prefix digest. Behaviour-neutral: a held digest no prefix matches makes the
+    search hash every prefix, and the ingest stores the same single row and hands back the same list."""
+    engine, view = _restarted(make_engine)
+    if held == "unrelated":
+        engine._remember_native_recovery_replay_snapshot_digest("0" * 64)
+    assert bool(engine._load_native_recovery_replay_snapshot_digests()) == (held == "unrelated")
+    hashed = []
+    digest = type(engine)._native_recovery_replay_snapshot_digest
+    monkeypatch.setattr(type(engine), "_native_recovery_replay_snapshot_digest",
+                        lambda self, messages: hashed.append(len(messages)) or digest(self, messages))
+    host = hermes_salvage(view) + [{"role": "user", "content": "again"}]
+    before = len(stored(engine))
+
+    replay = engine._ingest_messages(host)
+
+    assert bool(hashed) == (held == "unrelated")
+    assert [row["content"] for row in stored(engine)[before:]] == ["again"]
+    assert [m.get("content") for m in replay] == [m.get("content") for m in host]

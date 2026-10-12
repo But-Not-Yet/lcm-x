@@ -1672,8 +1672,12 @@ class ReconcileMixin:
         empty_prefix_cursor: int | None = None
         for cursor in range(len(messages), -1, -1):
             candidate_messages = messages[:cursor]
+            # Hashing every prefix is quadratic in the list: only a session holding a native-recovery
+            # proof can match one (the empty-rollover path below gates the same way).
             native_recovery_snapshot_digest = (
                 self._native_recovery_replay_snapshot_digest(candidate_messages)
+                if native_recovery_snapshot_digests
+                else ""
             )
             if (
                 native_recovery_snapshot_digest
