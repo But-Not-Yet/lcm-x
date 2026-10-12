@@ -809,7 +809,7 @@ class TestConfig:
         assert c.summary_circuit_breaker_cooldown_seconds == 300
         assert c.expansion_model == ""
         assert c.expansion_context_tokens == 32_000
-        assert c.summary_timeout_ms == 60_000
+        assert c.summary_timeout_ms == 120_000
         assert c.expansion_timeout_ms == 120_000
 
     def test_from_env(self, monkeypatch):
@@ -999,7 +999,7 @@ class TestConfig:
 
         c = LCMConfig.from_env()
 
-        assert c.summary_timeout_ms == 60_000
+        assert c.summary_timeout_ms == 120_000
 
     def test_from_env_lcm_threshold_env_overrides_hermes_config(self, monkeypatch, tmp_path):
         hermes_home = tmp_path / "hermes"
