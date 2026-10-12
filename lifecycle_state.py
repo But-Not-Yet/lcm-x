@@ -14,6 +14,7 @@ import functools
 import sqlite3
 import threading
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -35,6 +36,30 @@ class LifecycleBindingChangedError(RuntimeError):
 
 class LifecyclePublicationConflictError(RuntimeError):
     """Raised when compaction publication cannot prove its source frontier."""
+
+
+def _compaction_coverage_conflict_message(
+    expected_frontier: int,
+    authoritative_ids: list[int],
+    covered_ids: list[int],
+    excluded_ids: list[int],
+) -> str:
+    proven_ids = covered_ids + excluded_ids
+    missing = sorted(set(authoritative_ids) - set(proven_ids))
+    extra = sorted(set(proven_ids) - set(authoritative_ids))
+    double = sorted(
+        (set(covered_ids) & set(excluded_ids))
+        | {store_id for store_id, count in Counter(covered_ids).items() if count > 1}
+        | {store_id for store_id, count in Counter(excluded_ids).items() if count > 1}
+    )
+    return (
+        "Compaction publication source coverage is not contiguous "
+        f"(expected_frontier={expected_frontier}, owned={len(authoritative_ids)} "
+        f"covered={len(covered_ids)} excluded={len(excluded_ids)}; "
+        f"missing={len(missing)} {missing[:8]}; extra={len(extra)} {extra[:8]}; "
+        f"double={len(double)} {double[:8]}; authoritative={authoritative_ids}, "
+        f"covered={covered_ids}, excluded={excluded_ids})"
+    )
 
 
 def _synchronized(method):
@@ -1099,10 +1124,9 @@ class LifecycleStateStore:
         proven_ids = sorted(covered_ids + excluded_ids)
         if authoritative_ids != proven_ids:
             raise LifecyclePublicationConflictError(
-                "Compaction publication source coverage is not contiguous "
-                f"(expected_frontier={expected_frontier}, "
-                f"authoritative={authoritative_ids}, covered={covered_ids}, "
-                f"excluded={excluded_ids})"
+                _compaction_coverage_conflict_message(
+                    expected_frontier, authoritative_ids, covered_ids, excluded_ids
+                )
             )
         if conn.execute(
             """
