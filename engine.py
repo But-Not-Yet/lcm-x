@@ -405,6 +405,8 @@ _SESSION_END_BUSY_TIMEOUT_MS = 50
 # output/source rises from about 0.35 at 1.4k tokens to about 0.8 at 0.85k), so condensing it cannot be relied on to
 # shrink the frontier. The configured L3 bound applies when larger: such a source is stored whole.
 _CONDENSATION_LIGHT_GROUP_TOKENS = 512
+# #1123: the smallest source the adaptive leaf rescue shrinks to (the pre-v0.27.0 default leaf chunk)
+_LEAF_RESCUE_FLOOR_TOKENS = 8_000
 _CODEX_GPT55_COMPACTION_THRESHOLD = 0.85
 _TOTAL_COMPACTIONS_SCOPE = "current_conversation"
 
@@ -2159,7 +2161,9 @@ class LCMEngine(
         if len(current_chunk) <= 1:
             return []
 
-        floor_tokens = max(1, self._config.leaf_chunk_tokens)
+        # #1123: the rescue may shrink to the pre-v0.27.0 8,000-token chunk, so a 24,000-token default leaf still
+        # reaches a small-context summariser within its three attempts; at or below 8,000 nothing changes.
+        floor_tokens = max(1, min(self._config.leaf_chunk_tokens, _LEAF_RESCUE_FLOOR_TOKENS))
         shrink_targets = [
             max(floor_tokens, int(current_source_tokens * 0.75)),
             max(floor_tokens, int(current_source_tokens * 0.50)),
