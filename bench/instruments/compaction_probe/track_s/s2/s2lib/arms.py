@@ -51,6 +51,11 @@ for _n, _c in (("LCMX-fleet-120s-c8k", "8000"), ("LCMX-fleet-120s-c16k", "16000"
     BASE_ARMS[_n] = ({"LCM_SUMMARY_TIMEOUT_MS": "120000", "LCM_LEAF_CHUNK_TOKENS": _c, "LCM_LEAF_TARGET_MAX_TOKENS": "2000",
                      "LCM_SUMMARY_REASONING_EFFORT": "low"},
                      f"fleet + 120 s + leaf chunk {_c} + leaf target max 2000 , effort low (P0 chunk cell)")
+# rc3 per-message-wait gate (#1128): the fleet policy with the leaf chunk and the summary timeout left to the product
+# defaults (v0.27.0-rc3: chunk 24000, leaf target max 2000, timeout 120 s). A None value removes the key from the env.
+BASE_ARMS["LCMX-fleet-rc3"] = ({"LCM_LEAF_CHUNK_TOKENS": None, "LCM_SUMMARY_TIMEOUT_MS": None,
+                                "LCM_SUMMARY_REASONING_EFFORT": "low"},
+                               "fleet policy, product leaf chunk / target cap / timeout defaults, effort low (#1128)")
 # D8 prompt lane (2026-10-05): the shipped fleet arm with the opt-in v2 summariser prompts (#646).
 BASE_ARMS["LCMX-fleet-v2"] = ({"LCM_SUMMARY_PROMPT_VERSION": "2"}, "fleet + summariser prompt v2 (#646)")
 CONTROLS = {"C0": "no compaction: the full admitted transcript as context; UNAVAILABLE when it does not fit the reader",
@@ -79,5 +84,6 @@ def resolve(arm: str) -> dict:
         raise SystemExit(f"unknown arm {arm}; known: {', '.join(all_arms())}")
     delta, note = BASE_ARMS[base]
     return {"name": arm, "base": base, "open": is_open, "kind": "open" if is_open else "plain",
-            "env": None if delta is None else {**FLEET, **delta}, "note": note, "unsupported": UNSUPPORTED.get(base),
+            "env": None if delta is None else {k: v for k, v in {**FLEET, **delta}.items() if v is not None},
+            "note": note, "unsupported": UNSUPPORTED.get(base),
             **pins.get(base, {})}
