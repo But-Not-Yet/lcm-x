@@ -213,6 +213,14 @@ def cold_rebind_problems(host, caplog):
     return problems
 
 
+def leave_proof_stale(host, caplog):
+    """The stub-first pass of a version that wrote no proof for it: the store keeps the earlier proof, now stale."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(LCMEngine, "_persist_compress_commit_proof", lambda self, proof: None)
+        stub_first_pass(host, caplog)
+    return host.engine._durable_commit_proof_payload()
+
+
 @pytest.fixture
 def stub_first_session(host_for, caplog):
     caplog.set_level(logging.INFO, logger="hermes_lcm")
@@ -267,13 +275,10 @@ def test_control_cold_rebind_without_stub_first_pass_maps_and_progresses(stub_fi
 
 
 @pytest.mark.parametrize("new_turn", [False, True], ids=["replay", "replay+new-turn"])
-def test_stale_proof_from_an_earlier_version_is_retired_on_cold_rebind(stub_first_session, caplog, monkeypatch, new_turn):
+def test_stale_proof_from_an_earlier_version_is_retired_on_cold_rebind(stub_first_session, caplog, new_turn):
     """The upgrade restart is itself the cold bind: a proof an earlier version left stale must not wedge it."""
     host = stub_first_session("summary", stub_first=False)
-    with monkeypatch.context() as patch:  # the stub-first pass of a version that wrote no proof for it
-        patch.setattr(LCMEngine, "_persist_compress_commit_proof", lambda self, proof: None)
-        stub_first_pass(host, caplog)
-    stale = host.engine._durable_commit_proof_payload()
+    stale = leave_proof_stale(host, caplog)
     assert stale is not None and host.engine._cursor_from_durable_commit_proof(host.live) is None
     if new_turn:  # a gateway restart binds with the next user turn already appended
         host.clock += 0.5
@@ -289,24 +294,54 @@ def test_stale_proof_from_an_earlier_version_is_retired_on_cold_rebind(stub_firs
     assert host.engine._durable_commit_proof_payload()["created_at"] != stale["created_at"], "a fresh proof replaced it"
 
 
-def test_a_retry_that_only_skips_a_stale_snapshot_leaves_the_proof_in_force(stub_first_session, caplog, monkeypatch):
-    """Only a retry that replays rows confirms the retirement. One the no-proof reading takes for a stale
-    no-overlap snapshot skips the batch, as a store with no proof does, and puts the durable proof back in force."""
+
+# -- (e) the retirement changes a decision only on a replay of stored rows -----------------------------------------
+
+
+def test_a_retry_that_only_skips_a_stale_snapshot_keeps_todays_decision(stub_first_session, caplog, monkeypatch):
+    """Only a retry that replays stored rows confirms the retirement. One the no-proof reading takes for a stale
+    no-overlap snapshot leaves today's decision (the batch persisted whole) and the durable proof in force."""
     host = stub_first_session("summary", stub_first=False)
-    with monkeypatch.context() as patch:
-        patch.setattr(LCMEngine, "_persist_compress_commit_proof", lambda self, proof: None)
-        stub_first_pass(host, caplog)
-    stale = host.engine._durable_commit_proof_payload()
+    stale = leave_proof_stale(host, caplog)
     # the seam: only the retry (proof retired) finds no replayed tail and reads the list as a stale snapshot
     retired = lambda self: getattr(self, "_retired_durable_proof", None) is not None  # noqa: E731
     find = LCMEngine._find_reconciled_cursor_for_store_tail
     monkeypatch.setattr(LCMEngine, "_find_reconciled_cursor_for_store_tail",
                         lambda self, *args, **kwargs: None if retired(self) else find(self, *args, **kwargs))
     monkeypatch.setattr(LCMEngine, "_is_suspicious_stale_no_overlap_snapshot", lambda self, *_args: retired(self))
+    host.cold_rebind()
+    recon = host.engine._last_ingest_reconciliation
+    assert (recon["action"], recon["reason"]) == ("persisted batch", "persisted ambiguous delta"), recon
+    assert getattr(host.engine, "_retired_durable_proof", None) is None
+    assert host.engine._active_emission_proof()["created_at"] == stale["created_at"]
+
+
+def test_a_new_user_turn_equal_to_a_summary_is_stored_past_a_stale_proof(stub_first_session, caplog):
+    """A genuinely new user row whose text equals one of this session's rendered summaries reads as an LCM head,
+    and with the proof retired as scaffold. With no stored row replayed, the retry must not drop it."""
+    host = stub_first_session("summary", stub_first=False)
+    leave_proof_stale(host, caplog)
+    summary = host.live[0]["content"]
+    host.clock += 0.5
+    host.live = [{"role": "user", "content": summary, "timestamp": host.clock}]
     rows = host.stored_rows()
     host.cold_rebind()
     recon = host.engine._last_ingest_reconciliation
-    assert (recon["action"], recon["reason"]) == ("skipped batch", "skipped stale no-overlap snapshot"), recon
-    assert host.stored_rows() == rows
+    assert recon["reason"] == "persisted ambiguous delta", recon
+    assert host.stored_rows() == rows + 1, "the new user row is stored"
     assert getattr(host.engine, "_retired_durable_proof", None) is None
-    assert host.engine._active_emission_proof()["created_at"] == stale["created_at"]
+
+
+def test_a_malformed_durable_proof_does_not_stop_the_ingest(stub_first_session):
+    """A durable proof that does not parse is no proof: a new batch with no tail match is persisted."""
+    host = stub_first_session("summary", stub_first=False)
+    with host.engine._store._conn as conn:
+        assert conn.execute("UPDATE metadata SET value = ? WHERE key LIKE ?",
+                            ("{not json", "compaction_commit_proof%")).rowcount == 1
+    host.clock += 0.5
+    host.live = [{"role": "user", "content": "a new topic: " + host.words(25), "timestamp": host.clock},
+                 {"role": "assistant", "content": "reply: " + host.words(30), "timestamp": host.clock + 0.5}]
+    rows = host.stored_rows()
+    host.cold_rebind()
+    assert host.engine._last_ingest_reconciliation["reason"] == "persisted ambiguous delta"
+    assert host.stored_rows() == rows + 2
