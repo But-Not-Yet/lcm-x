@@ -2157,17 +2157,22 @@ class LCMEngine(
         self,
         current_chunk: List[Dict[str, Any]],
         current_source_tokens: int,
+        final: bool = False,
     ) -> List[Dict[str, Any]]:
         if len(current_chunk) <= 1:
             return []
 
-        # #1123: the rescue may shrink to the pre-v0.27.0 8,000-token chunk, so a 24,000-token default leaf still
-        # reaches a small-context summariser within its three attempts; at or below 8,000 nothing changes.
+        # #1123: the rescue may shrink to the pre-v0.27.0 8,000-token chunk, and the last attempt goes straight to it,
+        # so a 24,000-token default leaf reaches a small-context summariser within its three attempts
+        # (24k -> 18k -> 8k); at or below 8,000 nothing changes.
         floor_tokens = max(1, min(self._config.leaf_chunk_tokens, _LEAF_RESCUE_FLOOR_TOKENS))
-        shrink_targets = [
-            max(floor_tokens, int(current_source_tokens * 0.75)),
-            max(floor_tokens, int(current_source_tokens * 0.50)),
-        ]
+        if final and floor_tokens < self._config.leaf_chunk_tokens:
+            shrink_targets = [floor_tokens]
+        else:
+            shrink_targets = [
+                max(floor_tokens, int(current_source_tokens * 0.75)),
+                max(floor_tokens, int(current_source_tokens * 0.50)),
+            ]
 
         for target in shrink_targets:
             if target >= current_source_tokens:
@@ -2216,7 +2221,10 @@ class LCMEngine(
             )
 
             # #751: a size refusal is excused only when a smaller chunk can still be tried
-            rescue_chunk = self._next_leaf_rescue_chunk(attempt_chunk, source_tokens) if attempt_number < max_attempts else []
+            rescue_chunk = (
+                self._next_leaf_rescue_chunk(attempt_chunk, source_tokens, final=attempt_number + 1 >= max_attempts)
+                if attempt_number < max_attempts else []
+            )
             can_rescue = bool(rescue_chunk) and len(rescue_chunk) < len(attempt_chunk)
             try:
                 timeout_seconds = self._config.summary_timeout_ms / 1000
@@ -2269,7 +2277,9 @@ class LCMEngine(
                     raise  # a smaller chunk cannot get the time back
                 if attempt_number >= max_attempts or not self._is_retry_worthy_leaf_summary_error(exc):
                     raise
-                smaller_chunk = self._next_leaf_rescue_chunk(attempt_chunk, source_tokens)
+                smaller_chunk = self._next_leaf_rescue_chunk(
+                    attempt_chunk, source_tokens, final=attempt_number + 1 >= max_attempts
+                )
                 if not smaller_chunk or len(smaller_chunk) >= len(attempt_chunk):
                     raise
                 logger.warning(
