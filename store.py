@@ -975,6 +975,25 @@ class MessageStore:
         ).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
+    def find_first_session_tool_row(self, session_id: str, tool_call_id: str, *, exclude_content: str,
+                                    conversation_id: str, tool_name: str,
+                                    exact_name: bool) -> Optional[Dict[str, Any]]:
+        """#773: this session's earliest tool row for ``tool_call_id`` whose content is not ``exclude_content``,
+        in ``conversation_id`` or in none, whose tool name is exactly ``tool_name`` (``exact_name``) or else
+        compatible with it (an empty name on either side matches any name). Every filter is in SQL, so
+        other rows that reuse the id never hide it."""
+        name_filter = ("COALESCE(tool_name, '') = ?" if exact_name
+                       else "(? = '' OR COALESCE(tool_name, '') IN ('', ?))")
+        name_args = (tool_name,) if exact_name else (tool_name, tool_name)
+        row = self._conn.execute(
+            f"""SELECT {_MESSAGE_SELECT_COLUMNS} FROM messages
+               WHERE session_id = ? AND role = 'tool' AND tool_call_id = ? AND content IS NOT ?
+                 AND TRIM(COALESCE(conversation_id, '')) IN ('', ?) AND {name_filter}
+               ORDER BY store_id LIMIT 1""",
+            (session_id, tool_call_id, exclude_content, conversation_id, *name_args),
+        ).fetchone()
+        return self._row_to_dict(row) if row is not None else None
+
     # -- #436 identity anchor: host-time lookup and message relations ---------
 
     def _ensure_identity_anchor_schema(self) -> None:
