@@ -8,13 +8,15 @@ of every assistant row but the last. LCM keeps the full output in its store and 
 as the stored tool row with that tool_call_id: no new row, and the host keeps its placeholder.
 
 The source is the one output under that tool_call_id in this session that the salvage could have
-cleared (over 200 characters), with the same tool name, else one where a side has no name (WebUI rows
+cleared (a string output over 200 characters, not a structured tool result), with the same tool name, else one where a side has no name (WebUI rows
 carry none). A reused id with two different such outputs, or an id whose first row is the placeholder
 text itself, has no source: the row stays new content, as before. A placeholder copy an older release
 stored is read as its source too, so a store that already holds copies maps the host list as it did.
 A row that took its source's identity is never a tool anchor of a replay proof, and proves a replayed
-tool segment only for an occurrence the list does not already hold. Every engine here has both externalization flags off, so the store and the host hold real
-outputs (no LCM stubs, unlike #772).
+tool segment only for an occurrence the list does not already hold.
+
+Every engine here has both externalization flags off, so the store and the host hold real outputs
+(no LCM stubs, unlike #772).
 """
 
 import copy
@@ -607,3 +609,24 @@ def test_a_placeholder_for_a_stored_pair_after_a_new_row_is_still_a_replay(make_
 
     assert [row["content"] for row in stored(engine)[before:]] == ["new", "u2"]
     assert engine._last_ingest_reconciliation.get("replayed_tool_segment_rows") == 2
+
+
+@pytest.mark.parametrize("shape", ["content_parts", "multimodal"])
+def test_a_structured_tool_result_is_never_the_source_of_a_placeholder(make_engine, shape):  # noqa: F811
+    """The salvage clears only string outputs, so a structured tool result (typed content parts, or a
+    ``_multimodal`` dict, stored in its canonical JSON form) never stands behind a placeholder, however long
+    its text: a host row with the placeholder text under that id is a different, genuine output and is stored
+    as new content, as before #773. A string output that merely holds JSON stays a source."""
+    engine = plain_engine(make_engine, fresh_tail_count=32)
+    sid, conversation = engine._session_id, engine._conversation_id
+    identity = engine._message_replay_identity
+    parts = [{"type": "text", "text": "structured " * 40}]
+    content = parts if shape == "content_parts" else {"_multimodal": True, "content": parts, "text_summary": "s"}
+    structured_id = engine._store.append(
+        sid, {"role": "tool", "tool_call_id": "R", "content": content}, conversation_id=conversation)
+    json_text_id = engine._store.append(sid, _result("J", '{"output": "' + "j" * 300 + '", "exit_code": 0}'),
+                                        conversation_id=conversation)
+    rows = {row["store_id"]: row for row in stored(engine)}
+    assert len(str(rows[structured_id]["content"])) > 200
+    assert identity(_result("R", CLEARED)) != identity(rows[structured_id], stored_row=True)
+    assert identity(_result("J", CLEARED)) == identity(rows[json_text_id], stored_row=True)
