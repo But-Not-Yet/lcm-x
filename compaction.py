@@ -1562,6 +1562,8 @@ class CompactionMixin:
                     budget.admit(self._primary_summary_route())
                 except SweepBudgetExhausted as exc:
                     sweep_stop_reason = exc.reason
+                    if leaf_passes == 0:
+                        noop_reason = f"foreground budget stop before a leaf ({exc.reason})"
                     break
             route_stop = self._summary_route_stop_applies(force_overflow)
             # #640: the first pass adopts a committed summary (#457) before the route stop; adoption needs no route.
