@@ -2817,10 +2817,13 @@ class ReconcileMixin:
             # #671: reconcile again as a store with no proof does; keep the retirement only if that replays rows.
             cursor = self._reconcile_ingest_cursor_from_store(
                 messages, allow_session_end_replay_proof=allow_session_end_replay_proof)
-            if cursor > 0:
-                self._last_ingest_reconciliation["reason"] += " past a stale commit proof"
+            recon = self._last_ingest_reconciliation
+            if cursor > 0 and recon.get("action") == "advanced cursor" and str(recon.get("reason") or "").startswith("replayed "):
+                recon["reason"] += " past a stale commit proof"
                 return cursor
             self._retired_durable_proof = None
+            if cursor > 0:
+                return cursor  # a skipped stale snapshot or scaffold-only prefix: the no-proof decision, the proof back in force
 
         self._record_ingest_reconciliation(
             action="persisted batch",
