@@ -345,3 +345,28 @@ def test_a_malformed_durable_proof_does_not_stop_the_ingest(stub_first_session):
     host.cold_rebind()
     assert host.engine._last_ingest_reconciliation["reason"] == "persisted ambiguous delta"
     assert host.stored_rows() == rows + 2
+
+
+@pytest.mark.parametrize("shape", ["one-older-part", "prepended"])
+def test_a_summary_equal_user_row_that_is_no_stub_first_head_is_stored(stub_first_session, caplog, shape):
+    """Only what a stub-first re-assembly emits, one pure summary row covering through the frontier, can be the
+    head a stale proof failed to bind. A user row holding an older summary part, or one ahead of the real head,
+    keeps today's decision: the batch is persisted whole and the row is stored."""
+    host = stub_first_session("summary", stub_first=False)
+    leave_proof_stale(host, caplog)
+    head = host.live[0]["content"]
+    if shape == "one-older-part":
+        part = head.split("\n\n---\n\n")[0]
+        parts = host.engine._verified_lcm_summary_prefix(part)[1]
+        assert parts and host.engine._dag.coverage_end(parts) < host.frontier()
+        new, rest = {"role": "user", "content": part}, host.live[1:]
+    else:
+        new, rest = {"role": "user", "content": head}, host.live
+    host.clock += 0.5
+    host.live = [{**new, "timestamp": host.clock}] + rest
+    rows = host.stored_rows()
+    host.cold_rebind()
+    recon = host.engine._last_ingest_reconciliation
+    assert recon["reason"] == "persisted ambiguous delta", recon
+    assert host.stored_rows() > rows, "the user row is stored"
+    assert getattr(host.engine, "_retired_durable_proof", None) is None

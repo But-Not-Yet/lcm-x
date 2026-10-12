@@ -737,9 +737,10 @@ class ReconcileMixin:
     def _retire_stale_durable_proof(self, messages) -> bool:
         """#671: True, and the durable proof retired for this process (identities read as with no proof), when
         it is one an adopted stub-first exit left stale: a v4 proof with no process-local descriptors, the list
-        opens with an LCM-emitted head (the #524 rule, not a carrier), no generated span the proof names
-        prefixes any row, and its reading differs from the rc4 reading only at that head. Else False, also for a
-        proof that cannot be read."""
+        opens with an LCM-emitted head (the #524 rule, not a carrier) that is what a stub-first re-assembly emits
+        (one pure verified summary row covering through the frontier, an LCM-note system row aside), no generated
+        span the proof names prefixes any row, and its reading differs from the rc4 reading only at that head.
+        Else False, also for a proof that cannot be read."""
         if getattr(self, "_last_emission_descriptors", None):
             return False  # a process-local proof is this process's own output
         try:
@@ -756,6 +757,12 @@ class ReconcileMixin:
                 for item in payload.get("emissions") or ()
             ):
                 return False
+            rows = [m for m in messages[:head] if m.get("role") != "system"]
+            content = (normalize_content_value(rows[0].get("content")) or "") if len(rows) == 1 else ""
+            end, parts = self._verified_lcm_summary_prefix(content)
+            if end is None or content[end:].strip() or self._dag.coverage_end(parts) != int(
+                    self._last_compacted_store_id or 0):
+                return False  # an older or partial summary, or a row ahead of it: no stub-first head
             if self._occurrence_replay_identities(messages, payload)[1][head:] != (
                     self._occurrence_replay_identities(messages, None)[1][head:]):
                 return False
