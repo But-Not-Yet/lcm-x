@@ -7,9 +7,12 @@ replaces every string tool output over 200 characters, except the newest two, wi
 of every assistant row but the last. LCM keeps the full output in its store and treats such a host row
 as the stored tool row with that tool_call_id: no new row, and the host keeps its placeholder.
 
-The source is the earliest same-session row with that tool_call_id and the same tool name, else one
-where a side has no name (WebUI rows carry none). A placeholder copy an older release stored is read
-as its source too, so a store that already holds copies maps the host list as it did. Every engine
+The source is the one output under that tool_call_id in this session that the salvage could have
+cleared (over 200 characters), with the same tool name, else one where a side has no name (WebUI rows
+carry none). A reused id with two different such outputs, or an id whose first row is the placeholder
+text itself, has no source: the row stays new content, as before. A placeholder copy an older release
+stored is read as its source too, so a store that already holds copies maps the host list as it did.
+A row that took its source's identity is never a tool anchor of a replay proof. Every engine
 here has both externalization flags off, so the store and the host hold real outputs (no LCM stubs,
 unlike #772).
 """
@@ -342,9 +345,10 @@ def test_the_same_tool_name_wins_over_a_nameless_twin(make_engine):  # noqa: F81
     the row with its own name, so a nameless placeholder maps onto the nameless copy it was cleared from."""
     engine = plain_engine(make_engine, fresh_tail_count=32)
     sid, conversation = engine._session_id, engine._conversation_id
+    full = "full output " * 30  # over the salvage's 200 characters: only such a row can be cleared
     ids = [engine._store.append(sid, {"role": "tool", "tool_call_id": "c", "tool_name": name, "content": text},
                                 conversation_id=conversation)
-           for name, text in (("terminal", "full output"), ("", "full output"), ("", CLEARED))]
+           for name, text in (("terminal", full), ("", full), ("", CLEARED))]
     named, nameless, copy_row = (next(r for r in stored(engine) if r["store_id"] == i) for i in ids)
     identity = engine._message_replay_identity
 
@@ -375,3 +379,157 @@ def test_the_cursor_search_hashes_prefixes_only_for_a_held_native_recovery_diges
     assert bool(hashed) == (held == "unrelated")
     assert [row["content"] for row in stored(engine)[before:]] == ["again"]
     assert [m.get("content") for m in replay] == [m.get("content") for m in host]
+
+
+# -- review round 1: reused ids, lookups before the source, legacy conversation ids --------------------
+
+
+def _call(call_id, args="{}", content=""):
+    return {"role": "assistant", "content": content,
+            "tool_calls": [{"id": call_id, "type": "function", "function": {"name": "read_file", "arguments": args}}]}
+
+
+def _result(call_id, text):
+    return {"role": "tool", "tool_call_id": call_id, "tool_name": "read_file", "content": text}
+
+
+def _grouped(rows):
+    """Tool grouping: every assistant call is answered right after it, and every tool row answers one."""
+    open_ids = set()
+    for row in rows:
+        if row["role"] == "tool":
+            if row.get("tool_call_id") not in open_ids:
+                return False
+            open_ids.discard(row["tool_call_id"])
+            continue
+        if open_ids:
+            return False
+        open_ids = {call["id"] for call in row.get("tool_calls") or ()} if row["role"] == "assistant" else set()
+    return not open_ids
+
+
+@pytest.mark.parametrize("caller", ["", "running tool"], ids=["contentless", "with_text"])
+def test_a_genuine_second_call_whose_result_is_the_placeholder_text_is_stored(make_engine, caller):  # noqa: F811
+    """A provider reuses an id for a second call of the same shape, and that call's result is literally
+    the placeholder text. A restart hands over only the new rows: the result takes the stored output's
+    identity, but that match is by construction, not by content, so it is no replay proof and the new
+    call and its result are stored (#259), as they were before #773."""
+    first = plain_engine(make_engine, fresh_tail_count=32)
+    first._ingest_messages([SYSTEM, {"role": "user", "content": "u1"}, _call("X", content=caller),
+                            _result("X", payload_of(300, "orig")), {"role": "user", "content": "u2"},
+                            {"role": "assistant", "content": "a2"}])
+    engine = _rebind(make_engine, first, fresh_tail_count=32)
+    before = len(stored(engine))
+
+    engine._ingest_messages([_call("X", content=caller), _result("X", CLEARED), {"role": "assistant", "content": "done"}])
+
+    rows = stored(engine)
+    assert [(row["role"], row["content"]) for row in rows[before:]] == [
+        ("assistant", caller), ("tool", CLEARED), ("assistant", "done")]
+    assert _grouped(rows)
+
+
+def test_a_reused_id_never_aliases_one_occurrence_onto_another(make_engine):  # noqa: F811
+    """Two calls of one tool reuse an id with different outputs, the salvage clears both, and a third call
+    reusing it returned the placeholder text itself. Which occurrence a placeholder stands for is then
+    unknown, so none takes another occurrence's identity or store row: each keeps its own identity, as
+    before #773, and the store keeps every occurrence, grouped with its call."""
+    engine = plain_engine(make_engine, fresh_tail_count=64)
+    one, two = payload_of(300, "one"), payload_of(300, "two")
+    view = [SYSTEM, {"role": "user", "content": "u1"}, _call("X", '{"n": 1}'), _result("X", one),
+            {"role": "user", "content": "u2"}, _call("X", '{"n": 2}'), _result("X", two),
+            {"role": "user", "content": "u3"}, _call("X", '{"n": 3}'), _result("X", CLEARED),
+            {"role": "user", "content": "u4"}, _call("Y"), _result("Y", payload_of(300, "y")),
+            _call("Z"), _result("Z", payload_of(300, "z")), {"role": "assistant", "content": "a4"}]
+    engine._ingest_messages(view)
+    originals = stored(engine)
+    occurrence = {text: row["store_id"] for row in originals if row["role"] == "tool" for text in [row["content"]]}
+    host = hermes_salvage(view)
+    first, second, genuine = (m for m in host if m.get("tool_call_id") == "X")
+    assert first["content"] == second["content"] == genuine["content"] == CLEARED  # the salvage cleared both
+    by_id = {row["store_id"]: row for row in originals}
+    identity = engine._message_replay_identity
+
+    for row, own in ((first, occurrence[one]), (second, occurrence[two]), (genuine, occurrence[CLEARED])):
+        others = {occurrence[one], occurrence[two]} - {own}  # the outputs it does not stand for
+        assert all(identity(row) != identity(by_id[other], stored_row=True) for other in others)
+        assert engine._get_store_id_map_for_messages(host).get(id(row)) in (None, own)
+
+    engine = _rebind(make_engine, engine, fresh_tail_count=64)
+    engine._ingest_messages(host + [{"role": "user", "content": "u5"}])
+
+    rows = stored(engine)
+    assert rows[:len(originals)] == originals  # stored rows are never changed
+    assert {one, two} <= {row["content"] for row in rows}
+    assert any(row["content"] == CLEARED and prev.get("tool_calls") and prev["tool_calls"][0]["function"]["arguments"]
+               == '{"n": 3}' for prev, row in zip(rows, rows[1:]))  # the genuine third result, with its call
+    assert _grouped(rows)
+
+
+def test_a_placeholder_that_is_the_first_output_under_its_id_is_genuine(make_engine):  # noqa: F811
+    """The first row under an id is the placeholder text: a genuine output. A later full output reusing the
+    id is another occurrence, so neither a host placeholder nor a later stored copy is aliased onto it."""
+    engine = plain_engine(make_engine, fresh_tail_count=32)
+    sid, conversation = engine._session_id, engine._conversation_id
+    ids = [engine._store.append(sid, _result("X", text), conversation_id=conversation)
+           for text in (CLEARED, payload_of(300, "later"), CLEARED)]
+    genuine, later, copy_row = (next(r for r in stored(engine) if r["store_id"] == i) for i in ids)
+    identity = engine._message_replay_identity
+
+    assert identity(_result("X", CLEARED)) == identity(genuine, stored_row=True) != identity(later, stored_row=True)
+    assert identity(copy_row, stored_row=True) == identity(genuine, stored_row=True)
+
+
+@pytest.mark.parametrize("writer", ["this_engine", "another_connection"])
+def test_a_placeholder_looked_up_before_its_source_resolves_once_it_is_stored(make_engine, writer):  # noqa: F811
+    """A placeholder with no stored row under its id is new content, but that answer is never kept past a
+    write: once the source is stored, by this engine's ingest or by another connection to the same store,
+    the placeholder is that row, and a restart decides the same."""
+    from hermes_lcm.store import MessageStore
+
+    engine = plain_engine(make_engine, fresh_tail_count=32)
+    engine._ingest_messages([SYSTEM, {"role": "user", "content": "u1"}])
+    placeholder = _result("X", CLEARED)
+    assert engine._message_replay_identity(placeholder)[1] == CLEARED  # no source yet
+    rows = [_call("X"), _result("X", payload_of(300, "late"))]
+    if writer == "this_engine":
+        engine._ingest_messages([SYSTEM, {"role": "user", "content": "u1"}, *rows])
+    else:
+        other = MessageStore(engine._config.database_path)
+        try:
+            for row in rows:
+                other.append(engine._session_id, row, conversation_id=engine._conversation_id)
+        finally:
+            other.close()
+    source = next(row for row in stored(engine) if row["role"] == "tool")
+
+    warm = engine._message_replay_identity(placeholder)
+
+    assert warm == engine._message_replay_identity(source, stored_row=True) != engine._message_replay_identity(
+        dict(placeholder, content="other"))
+    assert _rebind(make_engine, engine, fresh_tail_count=32)._message_replay_identity(placeholder) == warm
+
+
+@pytest.mark.parametrize("padding", ["\t{}", "{}\n", " \t{}\r\n"], ids=["tab", "newline", "mixed"])
+def test_a_source_under_a_padded_legacy_conversation_id_is_found(make_engine, padding):  # noqa: F811
+    """An upgraded store can hold a legacy conversation_id padded with ASCII whitespace; the source lookup
+    reads the conversation through the shared owned-conversation values (#581), like every
+    conversation-range read, so a source under such an id is found and nothing is stored twice."""
+    first = plain_engine(make_engine, fresh_tail_count=32)
+    view = real_view(pairs=4)
+    first._ingest_messages(view)
+    conversation = first._conversation_id
+    assert conversation
+    first._store.connection.execute(
+        "UPDATE messages SET conversation_id = ? WHERE session_id = ? AND role = 'tool'",
+        (padding.format(conversation), first._session_id))
+    first._store.connection.commit()
+    engine = _rebind(make_engine, first, fresh_tail_count=32)
+    before = len(stored(engine))
+    host = hermes_salvage(view)
+    assert cleared_ids(host)
+
+    replay = engine._ingest_messages(host + [{"role": "user", "content": "again"}])
+
+    assert [row["content"] for row in stored(engine)[before:]] == ["again"]
+    assert all(tool_content(replay, cid) == CLEARED for cid in cleared_ids(host))

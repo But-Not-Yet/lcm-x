@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Dict, Iterable, List, Optional
 
 from .db_bootstrap import (
+    owned_conversation_clause,
     select_conversation_range,
     ExternalContentFtsSpec,
     add_column_if_missing,
@@ -975,24 +976,28 @@ class MessageStore:
         ).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
-    def find_first_session_tool_row(self, session_id: str, tool_call_id: str, *, exclude_content: str,
-                                    conversation_id: str, tool_name: str,
-                                    exact_name: bool) -> Optional[Dict[str, Any]]:
-        """#773: this session's earliest tool row for ``tool_call_id`` whose content is not ``exclude_content``,
-        in ``conversation_id`` or in none, whose tool name is exactly ``tool_name`` (``exact_name``) or else
-        compatible with it (an empty name on either side matches any name). Every filter is in SQL, so
-        other rows that reuse the id never hide it."""
-        name_filter = ("COALESCE(tool_name, '') = ?" if exact_name
-                       else "(? = '' OR COALESCE(tool_name, '') IN ('', ?))")
-        name_args = (tool_name,) if exact_name else (tool_name, tool_name)
-        row = self._conn.execute(
+    def find_session_tool_rows(self, session_id: str, tool_call_id: str, *, conversation_id: str,
+                               tool_name: str) -> List[Dict[str, Any]]:
+        """#773: this session's tool rows for ``tool_call_id`` in store order, in a conversation
+        ``conversation_id`` owns (db_bootstrap.owned_conversation_clause: it, blank, and legacy
+        unnormalized values of either), whose tool name is compatible with ``tool_name`` (the same
+        name, or an empty name on either side). Every filter is in SQL, so other rows that reuse the id
+        never hide one."""
+        owned_clause, owned_args = owned_conversation_clause(self._conn, conversation_id)
+        rows = self._conn.execute(
             f"""SELECT {_MESSAGE_SELECT_COLUMNS} FROM messages
-               WHERE session_id = ? AND role = 'tool' AND tool_call_id = ? AND content IS NOT ?
-                 AND TRIM(COALESCE(conversation_id, '')) IN ('', ?) AND {name_filter}
-               ORDER BY store_id LIMIT 1""",
-            (session_id, tool_call_id, exclude_content, conversation_id, *name_args),
-        ).fetchone()
-        return self._row_to_dict(row) if row is not None else None
+               WHERE session_id = ? AND role = 'tool' AND tool_call_id = ? AND {owned_clause}
+                 AND (? = '' OR COALESCE(tool_name, '') IN ('', ?))
+               ORDER BY store_id""",
+            (session_id, tool_call_id, *owned_args, tool_name, tool_name),
+        ).fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    def write_generation(self) -> tuple:
+        """A token that changes whenever a committed write may have changed rows this connection reads:
+        this connection's own writes (``total_changes``) and another connection's commits
+        (``PRAGMA data_version``)."""
+        return self._conn.total_changes, self._conn.execute("PRAGMA data_version").fetchone()[0]
 
     # -- #436 identity anchor: host-time lookup and message relations ---------
 
