@@ -8,6 +8,7 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## v0.27.0 (summary quality)
 
+- Change: the default timeout for one summary call is now 120 s (was 60 s), the same as the host's own compression default. On slow summary routes, 40–55 s calls were timing out at 60 s; two timeouts used up the foreground budget, held automatic compaction for 600 s and made survival fits drop rows. `LCM_SUMMARY_TIMEOUT_MS` and `auxiliary.compression.timeout` still override it. (#1119)
 - Fix: a tool output that is stubbed at first sight in the turn that crosses the threshold is no longer counted as host overhead when the summary prefix is bounded, so the conversation keeps its survival-fit and prefix budgets and the stub-first exit still applies. (#1107)
 - Fix: the automatic chunk-embedding pass takes new messages first, then older history newest first, so turning on local embeddings for an existing store covers recent messages before old history; `/lcm status` counts the chunk backlog over at most 2,000 messages and shows `N+` beyond that. (#1108)
 - Fix: a summary call that outlives its configured timeout and is cut at the foreground budget's deadline is a budget cut, not a route failure, so it no longer opens the summary circuit. (#1099)
