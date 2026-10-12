@@ -143,7 +143,7 @@ class CodexEffortLane:
         prompt.write_text(lanes.flat_prompt(system, user_parts))
         eff, limit = effort or "medium", float(timeout or lanes.CALL_TIMEOUT_S)
         cmd = ["codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only", "-m", self.model,
-               "-c", f"model_reasoning_effort={eff}", "--output-last-message", str(out), "-"]
+               "-c", f"model_reasoning_effort={eff}", "-c", 'service_tier="default"', "--output-last-message", str(out), "-"]
         t0 = time.monotonic()
         try:
             with prompt.open() as stdin:
