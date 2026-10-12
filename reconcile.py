@@ -72,6 +72,27 @@ _HERMES_PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context spac
 # The salvage clears only string outputs longer than this (context_compressor.py _PRUNE_MIN_CHARS), so a
 # placeholder stands only for a stored row longer than this.
 _HERMES_PRUNE_MIN_CHARS = 200
+
+
+def _is_stored_structured_content(text: str) -> bool:
+    """#773: whether stored text is a structured tool result (a list of typed content parts, or a
+    ``_multimodal`` dict) in the form normalize_content_value stores it. The salvage clears only string
+    outputs, so such a row never stands behind a placeholder; a string that merely holds JSON is not one."""
+    if not text or text[0] not in "[{":
+        return False
+    try:
+        value = json.loads(text)
+        canonical = json.dumps(value, ensure_ascii=False, sort_keys=True) == text
+    except (TypeError, ValueError, RecursionError):
+        return False
+    if isinstance(value, list):
+        structured = bool(value) and all(isinstance(part, dict) and isinstance(part.get("type"), str)
+                                         for part in value)
+    else:
+        structured = isinstance(value, dict) and bool(value.get("_multimodal"))
+    return canonical and structured
+
+
 _MODEL_SWITCH_NOTIFICATION_PREFIX = "[Note: model was just switched from "
 # When the user sends a message mid-turn (/steer), the host wraps it in this
 # block (hermes-agent agent/prompt_builder.py format_steer_marker).  Hermes
@@ -921,8 +942,9 @@ class ReconcileMixin:
         - none at all, or the first one is itself the placeholder: no source. A placeholder that is the
           first output under its id is a genuine output, and a later full row reusing the id is
           another occurrence.
-        - the candidates are the rows the salvage could have cleared: not the placeholder, longer than
-          the salvage's 200 characters. Those with the row's own tool name decide, else all of them.
+        - the candidates are the rows the salvage could have cleared: not the placeholder, a string
+          output (not a stored structured tool result) longer than the salvage's 200 characters.
+          Those with the row's own tool name decide, else all of them.
           One replay identity among them: that row. None, or two different ones (a reused id): no
           source, so no placeholder is ever aliased to an occurrence it may not stand for; the row keeps
           its own identity and the batch persists as before (#259: visible duplication beats loss).
@@ -971,7 +993,8 @@ class ReconcileMixin:
             for row in rows:  # (store_id, is the placeholder, identity if the salvage could clear it, same name)
                 text = str(row.get("content") or "")
                 cleared = text == _HERMES_PRUNED_TOOL_PLACEHOLDER
-                clearable = not cleared and len(text) > _HERMES_PRUNE_MIN_CHARS
+                clearable = (not cleared and len(text) > _HERMES_PRUNE_MIN_CHARS
+                             and not _is_stored_structured_content(text))
                 entries.append((int(row["store_id"]), cleared,
                                 self._message_replay_identity(row, stored_row=True) if clearable else None,
                                 str(row.get("tool_name") or "") == tool_name))
