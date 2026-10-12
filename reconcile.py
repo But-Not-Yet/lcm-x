@@ -65,6 +65,10 @@ _PRESERVED_TODO_CONTEXT_PREFIX = "[Your active task list was preserved across co
 _TODO_ITEM_LINE_RE = re.compile(r"(?:  )*- \[[ x>~?]\] ")
 _TODO_ITEM_END_RE = re.compile(r" \((?:pending|in_progress|completed|cancelled)\)$")
 _PRUNED_SKILL_RELOAD_NOTICE_HEADER = "[Skills pruned during compression — reload before acting on these tasks]"
+# #773: the host's anti-growth salvage (hermes-agent agent/context_compressor.py _PRUNED_TOOL_PLACEHOLDER,
+# salvage_grown_transcript) rewrites an old tool output in its list to exactly this text and keeps the
+# tool_call_id. The rewritten row is the stored occurrence, not a new one; the store keeps the full output.
+_HERMES_PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 _MODEL_SWITCH_NOTIFICATION_PREFIX = "[Note: model was just switched from "
 # When the user sends a message mid-turn (/steer), the host wraps it in this
 # block (hermes-agent agent/prompt_builder.py format_steer_marker).  Hermes
@@ -902,6 +906,58 @@ class ReconcileMixin:
         overrides[store_id] = payload
         self._bound_host_rewrite_overrides({store_id})
 
+    def _pruned_tool_output_identity(self, msg: Dict[str, Any], role: str, content: str, *,
+                                     stored_row: bool = False) -> Optional[tuple]:
+        """#773: the replay identity of the stored tool row a host-pruned tool row stands for, else None.
+
+        The source is this session's earliest tool row with the same tool_call_id, in the row's
+        conversation or in none, whose stored content is not the placeholder and whose tool name is the
+        row's; failing that, the earliest such row where one side has no name (WebUI rows carry none).
+        Two different names never match. Only a tool row whose whole content is the placeholder
+        qualifies; with no source it is new content and keeps its own identity. A placeholder copy an
+        older release stored (``stored_row``: this session, after its source) takes the same identity,
+        so the host row, the copy and the source are one occurrence and a store already holding copies
+        maps the host list as it did before. Stored rows are never changed."""
+        call_id, store = str(msg.get("tool_call_id") or ""), getattr(self, "_store", None)
+        session = getattr(self, "_session_id", None)
+        if (role != "tool" or content != _HERMES_PRUNED_TOOL_PLACEHOLDER or not call_id or store is None
+                or not session):
+            return None
+        before = None
+        if stored_row:  # only a copy stored after its source in this session, never another session's row
+            try:
+                before = int(msg.get("store_id"))
+            except (TypeError, ValueError):
+                return None
+            if str(msg.get("session_id") or "") != session:
+                return None
+            conversation = str(msg.get("conversation_id") or "").strip()
+        else:
+            conversation = str(getattr(self, "_conversation_id", None) or "").strip()
+        tool_name = str(msg.get("tool_name") or msg.get("name") or "")
+        # Each row's identity is read hundreds of times per pass, so the answer is remembered per bound
+        # store: the earliest source never changes (store ids only grow), and a placeholder with no
+        # source was stored as itself, so a later same-id row never becomes its source.
+        if getattr(self, "_pruned_tool_source_store", None) is not store:
+            self._pruned_tool_source_store, self._pruned_tool_source_identities = store, {}
+        known = self._pruned_tool_source_identities
+        key = (session, conversation, call_id, tool_name)
+        if key not in known:
+            sources = []
+            for exact_name in (True, False):
+                try:
+                    row = store.find_first_session_tool_row(
+                        session, call_id, exclude_content=_HERMES_PRUNED_TOOL_PLACEHOLDER,
+                        conversation_id=conversation, tool_name=tool_name, exact_name=exact_name)
+                except Exception:  # an unreadable store proves nothing: the row keeps its own identity
+                    return None
+                if row is not None:
+                    sources.append((int(row["store_id"]), self._message_replay_identity(row, stored_row=True)))
+            known[key] = tuple(sources)
+            if len(known) > _HOST_REWRITE_OVERRIDE_CACHE_CAP:  # FIFO-bounded
+                del known[next(iter(known))]
+        return next((identity for store_id, identity in known[key] if before is None or store_id < before), None)
+
     def _message_replay_identity(
         self, msg: Dict[str, Any], *, stored_row: bool = False, with_host_rewrite: bool = False,
         strip_carrier: bool = True,
@@ -911,6 +967,10 @@ class ReconcileMixin:
         source = None if stored_row else self._survival_projection_source(msg, role, content)
         if source is not None:  # #582: a survival-fit projection is its source row, never a new occurrence
             return self._message_replay_identity(source, stored_row=True, strip_carrier=strip_carrier)
+        pruned = (self._pruned_tool_output_identity(msg, role, content, stored_row=stored_row)
+                  if content == _HERMES_PRUNED_TOOL_PLACEHOLDER else None)
+        if pruned is not None:  # #773: likewise a host-pruned tool row (or its stored copy) is the row it cleared
+            return pruned
         strip_payload = False
         # Opt-in: only occurrence/position-bound consumers read the override (#498).
         if stored_row and with_host_rewrite and role == "user":
