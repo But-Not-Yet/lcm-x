@@ -648,3 +648,34 @@ def test_a_string_output_in_the_canonical_structured_form_fails_closed(make_engi
     rows = {row["store_id"]: row for row in stored(engine)}
     assert identity(_result("C", CLEARED)) != identity(rows[ids["C"]], stored_row=True)
     assert identity(_result("P", CLEARED)) == identity(rows[ids["P"]], stored_row=True)
+
+
+@pytest.mark.parametrize("protected", ["newest", "second_newest"])
+def test_a_genuine_placeholder_after_a_protected_output_keeps_its_own_occurrence(make_engine, protected):  # noqa: F811
+    """The salvage never clears the newest two tool outputs of its list, so an output in one of those
+    positions never stands behind a placeholder. A later call that reuses its id and returns the placeholder
+    text is a genuine result: it is stored with its call, maps onto its own row and never onto the
+    protected output, and after a restart the same list replays without storing anything again."""
+    engine = plain_engine(make_engine, fresh_tail_count=64)
+    original = payload_of(300, "kept")
+    tail = [] if protected == "newest" else [_call("Y"), _result("Y", payload_of(300, "y"))]
+    view = ([SYSTEM, {"role": "user", "content": "u1"}, _call("X", '{"n": 1}'), _result("X", original)] + tail
+            + [{"role": "user", "content": "u2"}, _call("X", '{"n": 2}'), _result("X", CLEARED),
+               {"role": "assistant", "content": "done"}])
+    engine._ingest_messages(view)
+    rows = stored(engine)
+    by_content = {row["content"]: row["store_id"] for row in rows if row["role"] == "tool"}
+    assert {original, CLEARED} <= set(by_content) and _grouped(rows)  # both occurrences stored, grouped
+    genuine = next(m for m in view if m.get("content") == CLEARED)
+    kept = next(m for m in view if m.get("content") == original)
+    mapping = engine._get_store_id_map_for_messages(view)
+    assert mapping.get(id(kept)) == by_content[original]
+    assert mapping.get(id(genuine)) in (None, by_content[CLEARED])  # never the protected output's row
+
+    engine = _rebind(make_engine, engine, fresh_tail_count=64)
+    engine._ingest_messages(view + [{"role": "user", "content": "u3"}])
+
+    after = stored(engine)
+    assert after[:len(rows)] == rows and [row["content"] for row in after[len(rows):]] == ["u3"]
+    mapping = engine._get_store_id_map_for_messages(view)
+    assert mapping.get(id(genuine)) in (None, by_content[CLEARED])
