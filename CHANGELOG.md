@@ -7,6 +7,7 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 ## Unreleased
 
 - Fix: a tool row Hermes's anti-growth salvage rewrote to `[Old tool output cleared to save context space]` is the stored tool row with the same `tool_call_id` (same tool name, or a nameless WebUI row on either side), not a new message, so the next ingest no longer stores the placeholder and copies of every later row; the store keeps the full output and the host keeps its placeholder. A placeholder copy an older release stored is read as that same row, so a host list maps onto such a store as before. Copies already stored are not removed: a store they already stalled still needs a separate repair. (#773)
+- Perf: the ingest cursor search computes the native-recovery digest of each list prefix only when the session holds such a digest, so a reconcile over a long list no longer encodes every prefix for a proof it cannot match. (#773)
 
 ## v0.27.0 (summary quality)
 
