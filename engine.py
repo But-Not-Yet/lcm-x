@@ -2175,9 +2175,9 @@ class LCMEngine(
         return current_chunk[: tool_group_safe_end(current_chunk, len(current_chunk) - 1)]
 
     def _leaf_target_tokens(self, source_tokens: int) -> int:
-        """Leaf summary target (#614); the defaults reproduce min(12000, max(2000, 20%)).
+        """Leaf summary target (#614); defaults give a fixed 2,000-token target: min(2000, max(2000, 20%)).
 
-        A config object built without the #614 fields keeps the historical targets.
+        A config object built without the #614 fields uses the class defaults.
         """
         cfg = self._config
         ratio = getattr(cfg, "leaf_target_ratio", LCMConfig.leaf_target_ratio)

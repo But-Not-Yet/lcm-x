@@ -769,7 +769,7 @@ class TestConfig:
         c = LCMConfig()
         assert c.fresh_tail_count == 24
         assert c.fresh_tail_max_tokens == 24_000
-        assert c.leaf_chunk_tokens == 8_000
+        assert c.leaf_chunk_tokens == 24_000
         assert c.context_threshold == 0.75
         assert c.incremental_max_depth == 3
         assert c.condensation_fanin == 4
@@ -906,7 +906,7 @@ class TestConfig:
 
         assert c.fresh_tail_count == 24
         assert c.fresh_tail_max_tokens == 24_000
-        assert c.leaf_chunk_tokens == 8_000
+        assert c.leaf_chunk_tokens == 24_000
         assert c.context_threshold == 0.75
         assert c.max_assembly_tokens == 0
         assert c.reserve_tokens_floor == 0
