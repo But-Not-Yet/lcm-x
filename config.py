@@ -842,7 +842,9 @@ class LCMConfig:
     expansion_context_tokens: int = 32_000
 
     # -- Timeouts ---
-    summary_timeout_ms: int = 60_000
+    # One summariser call; matches the host's own auxiliary.compression default (120 s). The foreground budget still
+    # cuts a call short when less time is left.
+    summary_timeout_ms: int = 120_000
     expansion_timeout_ms: int = 120_000
 
     # -- Storage ---
