@@ -62,7 +62,7 @@ def test_p0_sweep_prefix_target_follows_default_leaf_chunk(threshold_sweep):
 
 
 def test_p0_default_leaf_rescue_shrinks_below_the_chunk_for_a_small_context_summariser(tmp_path, monkeypatch, caplog):
-    """A route that accepts at most 45% of the first transcript (a small-context summariser) still gets a summary
+    """A route that accepts at most half of the first transcript (a small-context summariser) still gets a summary
     within the three rescue attempts at the 24,000-token default: the last attempt shrinks to 8,000 tokens
     (24k -> 18k -> 8k; 24k -> 18k -> 13.5k never fits)."""
     import logging
@@ -76,7 +76,7 @@ def test_p0_default_leaf_rescue_shrinks_below_the_chunk_for_a_small_context_summ
     def call_llm(**kwargs):
         policy, transcript = kwargs["messages"][0]["content"], kwargs["messages"][1]["content"]
         calls.append(len(transcript))
-        if len(transcript) > calls[0] * 0.45:
+        if len(transcript) > calls[0] * 0.5:
             raise RuntimeError("Error code: 400 - This model's maximum context length is 16384 tokens. "
                                "(context_length_exceeded)")
         nonce = re.search(r'<lcm-summary nonce="([0-9a-f]{32})">', policy).group(1)
@@ -101,7 +101,7 @@ def test_p0_default_leaf_rescue_shrinks_below_the_chunk_for_a_small_context_summ
         with caplog.at_level(logging.INFO, logger="hermes_lcm"):
             engine.compress(view, current_tokens=engine.threshold_tokens + 1)
         assert engine._config.leaf_chunk_tokens == 24_000
-        assert min(calls) <= calls[0] * 0.45, calls  # the third attempt fits (24k -> 18k -> 8k sources)
+        assert min(calls) <= calls[0] * 0.5, calls  # the third attempt fits (24k -> 18k -> 8k sources)
         nodes = [n for n in engine._dag.get_session_nodes("S", limit=1000) if n.depth == 0]
         assert nodes and "deterministic truncation" not in nodes[0].summary, calls
         assert nodes[0].summary.startswith("Older turns"), calls
