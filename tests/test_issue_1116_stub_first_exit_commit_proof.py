@@ -287,3 +287,26 @@ def test_stale_proof_from_an_earlier_version_is_retired_on_cold_rebind(stub_firs
     frontier, wedged = host.drive(caplog)
     assert not wedged and host.frontier() > frontier
     assert host.engine._durable_commit_proof_payload()["created_at"] != stale["created_at"], "a fresh proof replaced it"
+
+
+def test_a_retry_that_only_skips_a_stale_snapshot_leaves_the_proof_in_force(stub_first_session, caplog, monkeypatch):
+    """Only a retry that replays rows confirms the retirement. One the no-proof reading takes for a stale
+    no-overlap snapshot skips the batch, as a store with no proof does, and puts the durable proof back in force."""
+    host = stub_first_session("summary", stub_first=False)
+    with monkeypatch.context() as patch:
+        patch.setattr(LCMEngine, "_persist_compress_commit_proof", lambda self, proof: None)
+        stub_first_pass(host, caplog)
+    stale = host.engine._durable_commit_proof_payload()
+    # the seam: only the retry (proof retired) finds no replayed tail and reads the list as a stale snapshot
+    retired = lambda self: getattr(self, "_retired_durable_proof", None) is not None  # noqa: E731
+    find = LCMEngine._find_reconciled_cursor_for_store_tail
+    monkeypatch.setattr(LCMEngine, "_find_reconciled_cursor_for_store_tail",
+                        lambda self, *args, **kwargs: None if retired(self) else find(self, *args, **kwargs))
+    monkeypatch.setattr(LCMEngine, "_is_suspicious_stale_no_overlap_snapshot", lambda self, *_args: retired(self))
+    rows = host.stored_rows()
+    host.cold_rebind()
+    recon = host.engine._last_ingest_reconciliation
+    assert (recon["action"], recon["reason"]) == ("skipped batch", "skipped stale no-overlap snapshot"), recon
+    assert host.stored_rows() == rows
+    assert getattr(host.engine, "_retired_durable_proof", None) is None
+    assert host.engine._active_emission_proof()["created_at"] == stale["created_at"]
