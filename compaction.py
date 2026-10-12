@@ -771,6 +771,9 @@ class CompactionMixin:
             proof["native"] = False
             proof["published"] = self._last_compression_status == "compacted"
             proof["recovery"] = self._last_compression_status == "overflow_recovery"
+            # #671: a stub-first exit hands the host a rewritten list (summary prefix re-emitted from the DAG, stubs)
+            # that it adopts; the durable proof must describe that list, or a cold rebind reads a stale one.
+            proof["stub_first"] = bool(getattr(self, "_stub_first_exit_now", None))
             # #1013: an output that dropped ignored rows with no leaf is still a rewrite the host
             # adopts; a cold rebind needs this proof to tell its replay from a new turn. Same text is
             # not identity (a gateway may send only a new turn), so the proof binds each row's host key
@@ -788,7 +791,7 @@ class CompactionMixin:
                 "emissions": copy.deepcopy(emissions),
             }
             self._compress_commit_proof = proof
-            if proof["published"] or proof["native"] or proof["recovery"] or proof["filtered"]:
+            if proof["published"] or proof["native"] or proof["recovery"] or proof["filtered"] or proof["stub_first"]:
                 self._persist_compress_commit_proof(proof)
         except Exception:
             self._compress_commit_proof = None
@@ -1043,8 +1046,12 @@ class CompactionMixin:
             else self._compress_occurrences.get(id(working_messages[start]), (None, ()))[1] is None
         ):
             start += 1
+        kept = working_messages[start:]
+        remainder = self._generated_context_carrier_remainder(kept[0]) if kept else None
+        if remainder is not None:  # a carrier's summary prefix is assembly's to emit once: keep only its user row
+            kept = [{**kept[0], "content": remainder}, *kept[1:]]  # (the #650 survival-fit split)
         rows = self._drop_preexisting_generated_ignored_dependent_eof_replies(
-            working_messages[:leading] + working_messages[start:],
+            working_messages[:leading] + kept,
             self._load_generated_ignored_dependent_reply_records(),
         )
         cap = self._effective_assembly_token_cap()

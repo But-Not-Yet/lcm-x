@@ -6,6 +6,8 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
+- Fix: a stub-first exit (#671) that the host adopts now writes the durable commit proof for the list it returns, so a cold rebind (gateway restart, resume) no longer stores the summary head as a new raw row and then stops every compaction on "leaf would end before an unresolved retained occurrence". The exit no longer gives a carrier head (summary plus the first user row) a second copy of the summary prefix. On the upgrade restart, a store that already holds a proof left stale this way reconciles as a store with no proof does, for the LCM-emitted head only. A store that an earlier cold bind already wedged is not repaired. (#1116, #671)
+
 ## v0.27.0 (summary quality)
 
 - Fix: a tool output that is stubbed at first sight in the turn that crosses the threshold is no longer counted as host overhead when the summary prefix is bounded, so the conversation keeps its survival-fit and prefix budgets and the stub-first exit still applies. (#1107)
