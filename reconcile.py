@@ -738,24 +738,28 @@ class ReconcileMixin:
         """#671: True, and the durable proof retired for this process (identities read as with no proof), when
         it is one an adopted stub-first exit left stale: a v4 proof with no process-local descriptors, the list
         opens with an LCM-emitted head (the #524 rule, not a carrier), no generated span the proof names
-        prefixes any row, and its reading differs from the rc4 reading only at that head. Else False."""
+        prefixes any row, and its reading differs from the rc4 reading only at that head. Else False, also for a
+        proof that cannot be read."""
         if getattr(self, "_last_emission_descriptors", None):
             return False  # a process-local proof is this process's own output
-        payload = self._durable_commit_proof_payload()
-        if not payload or payload.get("version") != 4 or payload.get("created_at") is None:
-            return False
-        if payload["created_at"] == getattr(self, "_retired_durable_proof", None):
-            return False
-        head, carrier = self._replay_head(messages, 0, int(self._last_compacted_store_id or 0))
-        if not head or carrier or any(
-            isinstance(item.get("generated_span_bytes"), int) and next(_emission_candidate_rows(
-                messages, item.get("role"), item["generated_span_bytes"], item.get("generated_span_sha256")), None)
-            is not None
-            for item in payload.get("emissions") or ()
-        ):
-            return False
-        if self._occurrence_replay_identities(messages, payload)[1][head:] != (
-                self._occurrence_replay_identities(messages, None)[1][head:]):
+        try:
+            payload = self._durable_commit_proof_payload()
+            if not payload or payload.get("version") != 4 or payload.get("created_at") is None:
+                return False
+            if payload["created_at"] == getattr(self, "_retired_durable_proof", None):
+                return False
+            head, carrier = self._replay_head(messages, 0, int(self._last_compacted_store_id or 0))
+            if not head or carrier or any(
+                isinstance(item.get("generated_span_bytes"), int) and next(_emission_candidate_rows(
+                    messages, item.get("role"), item["generated_span_bytes"], item.get("generated_span_sha256")), None)
+                is not None
+                for item in payload.get("emissions") or ()
+            ):
+                return False
+            if self._occurrence_replay_identities(messages, payload)[1][head:] != (
+                    self._occurrence_replay_identities(messages, None)[1][head:]):
+                return False
+        except Exception:  # malformed durable history: nothing to retire, the batch is persisted as before
             return False
         self._retired_durable_proof = payload["created_at"]
         return True
@@ -2814,7 +2818,8 @@ class ReconcileMixin:
             )
             return proof_cursor
         if self._retire_stale_durable_proof(messages):
-            # #671: reconcile again as a store with no proof does; keep the retirement only if that replays rows.
+            # #671: reconcile again as a store with no proof does. Only a replay of stored rows confirms the
+            # retirement; any other outcome (a skipped batch, a scaffold-only prefix) is today's decision below.
             cursor = self._reconcile_ingest_cursor_from_store(
                 messages, allow_session_end_replay_proof=allow_session_end_replay_proof)
             recon = self._last_ingest_reconciliation
@@ -2822,8 +2827,6 @@ class ReconcileMixin:
                 recon["reason"] += " past a stale commit proof"
                 return cursor
             self._retired_durable_proof = None
-            if cursor > 0:
-                return cursor  # a skipped stale snapshot or scaffold-only prefix: the no-proof decision, the proof back in force
 
         self._record_ingest_reconciliation(
             action="persisted batch",
