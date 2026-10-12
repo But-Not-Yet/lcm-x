@@ -130,6 +130,8 @@ class Run:
                     self.engine.threshold_tokens = self.p60["lowered_threshold_tokens"]
                 if self.engine.should_compress_preflight(view):
                     view = self.event(view, self.ntok([self.sysmsg] + view), i, row, forced=False)
+            if self.args.turn_end_notify and (nxt is None or nxt["role"] == "user"):
+                self.engine.note_turn_complete()  # P0 cell: end turn-paced holds at each user-turn end, as a live host does
             if force_row and row["id"] == force_row:
                 self.engine.ingest(view)
                 view = self.event(view, self.ntok([self.sysmsg] + view), i, row, forced=True)
@@ -370,6 +372,8 @@ def main():
     ap.add_argument("--reader", choices=("astra-low", "glm", "fake"), default="glm")
     ap.add_argument("--slice", type=int, default=None, help="stop after this turn (smoke: 10)")
     ap.add_argument("--checkpoint", default="auto", help="auto (r4 F1 decision checkpoint) | <tokens>")
+    ap.add_argument("--turn-end-notify", action="store_true",
+                    help="call engine.note_turn_complete() at each user-turn end (live-host hold semantics; P0 cell)")
     ap.add_argument("--checkpoints", default=None, help="manifest ids or lifecycle for v4; comma-separated rows for v3")
     ap.add_argument("--context-length", type=int, default=DEFAULT_CTX)
     ap.add_argument("--batches", type=int, default=0, help="answer only the first N batches (0 = all)")

@@ -46,6 +46,10 @@ BASE_ARMS = {
 }
 # D5-B (2026-10-12): fleet arm with a 5,000-token leaf chunk (v0.26-sized summary calls with whole messages, #611).
 BASE_ARMS["LCMX-fleet-chunk5k"] = ({"LCM_LEAF_CHUNK_TOKENS": "5000"}, "fleet + leaf chunk 5000 tokens (D5-B)")
+# P0 chunk cell (2026-10-12): 120 s timeout + leaf summary target capped at 2000 tokens; only the leaf chunk differs.
+for _n, _c in (("LCMX-fleet-120s-c8k", "8000"), ("LCMX-fleet-120s-c16k", "16000"), ("LCMX-fleet-120s-c24k", "24000")):
+    BASE_ARMS[_n] = ({"LCM_SUMMARY_TIMEOUT_MS": "120000", "LCM_LEAF_CHUNK_TOKENS": _c, "LCM_LEAF_TARGET_MAX_TOKENS": "2000"},
+                     f"fleet + 120 s + leaf chunk {_c} + leaf target max 2000 (P0 chunk cell)")
 # D8 prompt lane (2026-10-05): the shipped fleet arm with the opt-in v2 summariser prompts (#646).
 BASE_ARMS["LCMX-fleet-v2"] = ({"LCM_SUMMARY_PROMPT_VERSION": "2"}, "fleet + summariser prompt v2 (#646)")
 CONTROLS = {"C0": "no compaction: the full admitted transcript as context; UNAVAILABLE when it does not fit the reader",
