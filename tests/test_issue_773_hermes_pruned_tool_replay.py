@@ -12,9 +12,9 @@ cleared (over 200 characters), with the same tool name, else one where a side ha
 carry none). A reused id with two different such outputs, or an id whose first row is the placeholder
 text itself, has no source: the row stays new content, as before. A placeholder copy an older release
 stored is read as its source too, so a store that already holds copies maps the host list as it did.
-A row that took its source's identity is never a tool anchor of a replay proof. Every engine
-here has both externalization flags off, so the store and the host hold real outputs (no LCM stubs,
-unlike #772).
+A row that took its source's identity is never a tool anchor of a replay proof, and proves a replayed
+tool segment only for an occurrence the list does not already hold. Every engine here has both externalization flags off, so the store and the host hold real
+outputs (no LCM stubs, unlike #772).
 """
 
 import copy
@@ -533,3 +533,77 @@ def test_a_source_under_a_padded_legacy_conversation_id_is_found(make_engine, pa
 
     assert [row["content"] for row in stored(engine)[before:]] == ["again"]
     assert all(tool_content(replay, cid) == CLEARED for cid in cleared_ids(host))
+
+
+# -- review round 2: the whole-list replay, the salvage's 200-character floor --------------------------
+
+
+@pytest.mark.parametrize("caller", ["", "running tool"], ids=["contentless", "with_text"])
+def test_a_genuine_second_call_in_a_whole_list_after_a_restart_is_stored(make_engine, caller):  # noqa: F811
+    """The same reused-id call as above, but the restart hands over the whole list. The stored prefix is a
+    proven replay, and after it the new [call X, placeholder text] pair borrows the stored pair's identity.
+    The list already holds that stored occurrence (its full row, in the proven prefix), so the borrowed
+    identity proves no replayed tool segment, and the new call and its result are stored with the rest of
+    the delta (#259), as before #773."""
+    stored_view = [SYSTEM, {"role": "user", "content": "u1"}, _call("X", content=caller),
+                   _result("X", payload_of(300, "orig")), {"role": "user", "content": "u2"},
+                   {"role": "assistant", "content": "a2"}]
+    first = plain_engine(make_engine, fresh_tail_count=64)
+    first._ingest_messages(stored_view)
+    engine = _rebind(make_engine, first, fresh_tail_count=64)
+    before = len(stored(engine))
+
+    engine._ingest_messages(stored_view + [{"role": "user", "content": "u3"}, _call("X", content=caller),
+                                           _result("X", CLEARED), {"role": "assistant", "content": "done"}])
+
+    rows = stored(engine)
+    assert [(row["role"], row["content"]) for row in rows[before:]] == [
+        ("user", "u3"), ("assistant", caller), ("tool", CLEARED), ("assistant", "done")]
+    assert _grouped(rows)
+
+
+def test_a_placeholder_never_stands_for_an_output_the_salvage_could_not_clear(make_engine):  # noqa: F811
+    """The salvage clears only outputs over 200 characters, so an output of 200 or fewer is never the source
+    of a placeholder: a host row with the placeholder text under that id is a different, genuine output and
+    is stored as new content, as before #773. One character more and it is that row."""
+    engine = plain_engine(make_engine, fresh_tail_count=32)
+    sid, conversation = engine._session_id, engine._conversation_id
+    identity = engine._message_replay_identity
+    for call_id, size in (("at-floor", 200), ("over-floor", 201)):
+        source_id = engine._store.append(sid, _result(call_id, "x" * size), conversation_id=conversation)
+        source = next(row for row in stored(engine) if row["store_id"] == source_id)
+        took = identity(_result(call_id, CLEARED)) == identity(source, stored_row=True)
+        assert took == (size > 200), (call_id, size)
+
+    view = [SYSTEM, {"role": "user", "content": "u1"}, _call("S"), _result("S", "short output " * 10),
+            {"role": "user", "content": "u2"}, {"role": "assistant", "content": "a2"}]
+    first = plain_engine(make_engine, fresh_tail_count=32)
+    first._ingest_messages(view)
+    engine = _rebind(make_engine, first, fresh_tail_count=32)
+    before = len(stored(engine))
+    host = [dict(m, content=CLEARED) if m.get("tool_call_id") == "S" else m for m in view]
+
+    engine._ingest_messages(host + [{"role": "user", "content": "u3"}])
+
+    added = stored(engine)[before:]
+    assert ("tool", CLEARED) in [(row["role"], row["content"]) for row in added]
+    assert added[-1]["content"] == "u3"
+
+
+def test_a_placeholder_for_a_stored_pair_after_a_new_row_is_still_a_replay(make_engine):  # noqa: F811
+    """The other side of the whole-list rule: after a restart the host list proves a stored pair, adds a new
+    row, then replays a later stored pair whose output the salvage cleared. The list holds that pair's
+    stored occurrence only once, as the placeholder, so the placeholder is that row and the pair is a
+    replayed durable tool segment: only the new rows are stored."""
+    first = plain_engine(make_engine, fresh_tail_count=64)
+    a, b = payload_of(300, "aaa"), payload_of(300, "bbb")
+    first._ingest_messages([SYSTEM, {"role": "user", "content": "u1"}, _call("A"), _result("A", a),
+                            _call("B"), _result("B", b), {"role": "assistant", "content": "a1"}])
+    engine = _rebind(make_engine, first, fresh_tail_count=64)
+    before = len(stored(engine))
+
+    engine._ingest_messages([_call("A"), _result("A", a), {"role": "assistant", "content": "new"},
+                             _call("B"), _result("B", CLEARED), {"role": "user", "content": "u2"}])
+
+    assert [row["content"] for row in stored(engine)[before:]] == ["new", "u2"]
+    assert engine._last_ingest_reconciliation.get("replayed_tool_segment_rows") == 2

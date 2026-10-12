@@ -2943,6 +2943,11 @@ class ReconcileMixin:
             )
             if not _has_lossy_redacted_identity(identity)
         )
+        # #773: a host-pruned row that took its stored row's identity matches that row by construction, not
+        # by content. It is proof only for an occurrence the list does not already hold: one the reconciled
+        # prefix carries (its full row, or another placeholder for it) is accounted for, so a genuine new
+        # call that reuses the id and returns the placeholder text is persisted, not suppressed.
+        prefix_counts: Optional[Counter] = None  # the prefix's identities, read only when one is borrowed
         replayed: set[int] = set()
         index = max(0, cursor)
         while index < len(messages):
@@ -2963,6 +2968,7 @@ class ReconcileMixin:
             # What this segment would consume from the durable multiset: its
             # assistant plus one occurrence per matched result.
             segment_needs: Counter[tuple[str, str, str, str, str]] = Counter()
+            borrowed: set[tuple[str, str, str, str, str]] = set()
             segment_needs[assistant_identity] += 1
             probe = index + 1
             while probe < len(messages) and str(messages[probe].get("role") or "") == "tool":
@@ -2978,12 +2984,18 @@ class ReconcileMixin:
                 ):
                     result_indexes[tool_call_id] = probe
                     segment_needs[result_identity] += 1
+                    if (content == _HERMES_PRUNED_TOOL_PLACEHOLDER
+                            and result_identity[1] != _HERMES_PRUNED_TOOL_PLACEHOLDER):
+                        borrowed.add(result_identity)
                 probe += 1
+            if borrowed and prefix_counts is None:
+                prefix_counts = Counter(self._message_replay_identity(m) for m in messages[:cursor])
             if (
                 call_ids
                 and call_ids.issubset(result_indexes)
                 and all(
-                    stored_identity_counts[identity] >= needed
+                    stored_identity_counts[identity] - (prefix_counts[identity] if identity in borrowed else 0)
+                    >= needed
                     for identity, needed in segment_needs.items()
                 )
             ):
