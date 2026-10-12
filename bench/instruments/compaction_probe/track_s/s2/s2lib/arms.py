@@ -44,6 +44,8 @@ BASE_ARMS = {
     "LCMX-fleet-stub2k": ({"LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUB_THRESHOLD_TOKENS": "2000"},
                           "UPPER BOUND on the planned aged tier (needs v0.24.9): EVERY stub is at 2k here, not only aged"),
 }
+# D5-B (2026-10-12): fleet arm with a 5,000-token leaf chunk (v0.26-sized summary calls with whole messages, #611).
+BASE_ARMS["LCMX-fleet-chunk5k"] = ({"LCM_LEAF_CHUNK_TOKENS": "5000"}, "fleet + leaf chunk 5000 tokens (D5-B)")
 # D8 prompt lane (2026-10-05): the shipped fleet arm with the opt-in v2 summariser prompts (#646).
 BASE_ARMS["LCMX-fleet-v2"] = ({"LCM_SUMMARY_PROMPT_VERSION": "2"}, "fleet + summariser prompt v2 (#646)")
 CONTROLS = {"C0": "no compaction: the full admitted transcript as context; UNAVAILABLE when it does not fit the reader",
