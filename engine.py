@@ -585,7 +585,7 @@ def _serialize_leaf_input(
                 config=config,
                 hermes_home=hermes_home,
                 tool_name=str(msg.get("tool_name") or tool_result_names.get(index, "")),
-                **({} if externalize_write else {"write": False}),
+                **({} if externalize_write else {"write": False, "create_storage": False}),
             )
             if externalized and not externalize_write and not Path(externalized["path"]).exists():
                 raise LeafPrepUnavailable("externalized tool result payload is not on disk")

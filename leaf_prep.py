@@ -390,6 +390,7 @@ class _LeafPrep:
                         "promoted",
                         "wasted",
                         "failed",
+                        "prep_guard_full",
                     )
                 },
                 "rejected": {
@@ -469,6 +470,24 @@ class _LeafPrep:
             float(config.summary_spend_backoff_seconds),
         )
         identity = (job.hermes_home, job.db_path)
+        if (
+            identity not in self._spend_guards
+            and len(self._spend_guards) >= _PER_PROCESS
+        ):
+            free = next(  # only a guard with no call in its window and no backoff left goes
+                (
+                    key
+                    for key, (_shape, guard) in self._spend_guards.items()
+                    if guard.max_calls <= 0 or guard.remaining() >= guard.max_calls
+                ),
+                None,
+            )
+            if free is None:
+                self._count("prep_guard_full")
+                return (
+                    None  # every kept guard still carries a spend or backoff obligation
+                )
+            del self._spend_guards[free]
         kept = self._spend_guards.get(identity)
         if kept is None or kept[0] != shape:  # a new profile, or its own limits changed
             from .escalation import SummarySpendGuard
@@ -483,8 +502,6 @@ class _LeafPrep:
             )
             self._spend_guards[identity] = kept
         self._spend_guards.move_to_end(identity)
-        while len(self._spend_guards) > _PER_PROCESS:
-            self._spend_guards.popitem(last=False)
         return kept[1]
 
     def _prepare(self, job: _Job) -> None:
@@ -577,6 +594,8 @@ class _LeafPrep:
             position += len(covered)
             freed += leaf.source_tokens - leaf.summary_tokens
         guard = self._guard(job)
+        if guard is None:
+            return
         while freed < need and len(chain) < _PER_CONVERSATION and position < len(rows):
             remaining = messages[position:]
             if count_messages_tokens(remaining) < chunk_tokens:
@@ -782,6 +801,7 @@ def enqueue_after_turn(engine, history) -> bool:
         threshold_tokens=threshold,
         context_length=window,
         fresh_tail_max_tokens=int(engine._effective_fresh_tail_max_tokens()),
+        # the foreground's own steering hint from recent turns (it steers; it is not summarised content)
         focus_topic=engine._derive_auto_focus_topic(recent),
         breaker=engine._summary_circuit_breaker,
         foreground_guard=engine._summary_spend_guard,
