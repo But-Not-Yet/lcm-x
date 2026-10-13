@@ -260,6 +260,47 @@ def _prepared(engine, _isolated, view) -> list:
     return chain
 
 
+def _second_crossing_view(engine, provider):
+    view = _crossing_view(engine)[1:]
+    engine.ingest(view)
+    engine._config.background_leaf_prep_enabled = False
+    view = engine.compress(view, current_tokens=tokens.count_messages_tokens(view))
+    engine._config.background_leaf_prep_enabled = True
+    assert provider.on("MainThread") > 0
+    assert engine._generated_context_carrier_remainder(view[0]) is not None
+    for turn in range(100):
+        _turn_end(engine, view)
+        if tokens.count_messages_tokens(view) > engine.threshold_tokens:
+            return view
+        view = view + [
+            {"role": "user", "content": f"[N{turn}] new user{PAD}"},
+            {"role": "assistant", "content": f"new reply N{turn}{PAD}"},
+        ]
+    pytest.fail("second crossing was never reached")
+
+
+def test_summary_carrier_with_unmapped_glued_row_rejects_prepared_chain(
+    engine, provider, _isolated
+):
+    view = _second_crossing_view(engine, provider)
+    assert leaf_prep.ready_chain(engine._store.db_path, "conv", _frontier(engine))
+    remainder = engine._generated_context_carrier_remainder(view[0])
+    carrier = {"role": "user", "content": view[0]["content"][:-len(remainder)] + "unread host row"}
+    assert engine._generated_context_carrier_remainder(carrier) == "unread host row"
+    assert engine._get_store_ids_for_messages([carrier]) == []
+    engine._current_compress_store_ids_by_message_id = engine._get_store_id_map_for_messages(view)
+    view = [carrier, *view[1:]]
+
+    match = engine._match_prepared_leaf(
+        view, view, [], set(), engine.threshold_tokens + 1,
+        tokens.count_messages_tokens(view),
+    )
+
+    assert match is None
+    assert _isolated.counters["rejected_host_unit_split"] > 0
+    assert _isolated.counters["promoted"] == 0
+
+
 def test_rotate_restart_full_transcript_never_promotes_unread_start(
     tmp_path, provider, _isolated
 ):
