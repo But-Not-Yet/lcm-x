@@ -94,26 +94,9 @@ jobs:
         run: python -c "import sqlite3; print('sqlite', sqlite3.sqlite_version)"
 
       - name: Run pytest under low file descriptor limit
-        env:
-          # Temporary diagnostic proposal for this fork PR only; not a repair.
-          LCM_PR1113_CAPTURE: ${{ github.event_name == 'pull_request' && github.event.pull_request.number == 1113 && github.event.pull_request.head.repo.full_name == 'merodahero/lcm-x' && '1' || '0' }}
         run: |
           ulimit -n 1024
           python -m pytest tests/ -q
-
-      - name: Retain PR1113 synthetic failure fixture
-        if: ${{ failure() && github.event_name == 'pull_request' && github.event.pull_request.number == 1113 && github.event.pull_request.head.repo.full_name == 'merodahero/lcm-x' && hashFiles('.ci-pr1113-failure/metadata.json') != '' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: pr1113-synthetic-failure-${{ matrix.python-version }}
-          path: |
-            .ci-pr1113-failure/lcm.db
-            .ci-pr1113-failure/lcm.db-wal
-            .ci-pr1113-failure/lcm.db-shm
-            .ci-pr1113-failure/metadata.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 3
 
       - name: Run static validation
         run: |

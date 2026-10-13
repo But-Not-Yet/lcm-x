@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 import re
 import sqlite3
 import time
@@ -142,8 +141,7 @@ def _stub_summarizer():
 
 
 def _run_host_commit_sequence(
-    tmp_path, monkeypatch, *, in_place, merge, tail, restart_after=-1, restart_before_first_ingest=-1,
-    failure_capture=None,
+    tmp_path, monkeypatch, *, in_place, merge, tail, restart_after=-1, restart_before_first_ingest=-1
 ):
     monkeypatch.setattr(lcm_engine_module, "summarize_with_escalation", _stub_summarizer())
     db_path = tmp_path / "lcm.db"
@@ -206,14 +204,6 @@ def _run_host_commit_sequence(
             view = " ".join(str(message.get("content")) for message in host)
             view_tags = set(re.findall(r"\[T(\d\d)\] user", view)) | set(re.findall(r"U(\d\d)", view))
             context_missing.append(sorted({f"{i:02d}" for i in range(1, turn + 1)} - view_tags))
-    except Exception:
-        if failure_capture is not None:
-            try:
-                failure_capture()
-            except Exception:
-                # Diagnostic callback errors cannot replace the original failure.
-                pass
-        raise
     finally:
         engine.shutdown()
 
@@ -268,34 +258,17 @@ def test_hermes_rotation_commit_sequence_stores_every_turn(tmp_path, monkeypatch
     _assert_clean_commit_sequence(result)
 
 
-@pytest.fixture
-def _resume_failure_capture(request, tmp_path, tmp_path_factory):
-    """PR1113-only opt-in; successful calls do not touch the artifact directory."""
-    if os.environ.get("LCM_PR1113_CAPTURE") != "1":
-        return None
-    from tests.compression_failure_capture import capture_failure
-
-    def capture():
-        return capture_failure(
-            tmp_path, base=tmp_path_factory.getbasetemp(), root=request.config.rootpath,
-            nodeid=request.node.nodeid,
-        )
-
-    return capture
-
-
 @pytest.mark.parametrize("restart_after", [1, 2])
 @pytest.mark.parametrize("merge, tail", _IN_PLACE_SEAMS)
 @pytest.mark.parametrize("in_place", [True, False], ids=["inplace", "rotation"])
 def test_resume_after_compaction_does_not_restore_tail(
-    tmp_path, monkeypatch, in_place, merge, tail, restart_after, _resume_failure_capture
+    tmp_path, monkeypatch, in_place, merge, tail, restart_after
 ):
     """A fresh process resuming the session after compaction 1 or 2 re-indexes
     the host list through the durable commit proof instead of re-storing the
     fresh tail (C6), in place and across a rotation (C7)."""
     result = _run_host_commit_sequence(
-        tmp_path, monkeypatch, in_place=in_place, merge=merge, tail=tail, restart_after=restart_after,
-        failure_capture=_resume_failure_capture,
+        tmp_path, monkeypatch, in_place=in_place, merge=merge, tail=tail, restart_after=restart_after
     )
     _assert_clean_commit_sequence(result)
 
