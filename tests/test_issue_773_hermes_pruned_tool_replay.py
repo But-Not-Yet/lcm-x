@@ -595,21 +595,44 @@ def test_a_placeholder_never_stands_for_an_output_the_salvage_could_not_clear(ma
 
 def test_a_placeholder_for_a_stored_pair_after_a_new_row_is_still_a_replay(make_engine):  # noqa: F811
     """The other side of the whole-list rule: after a restart the host list proves a stored pair, adds a new
-    row, then replays a later stored pair whose output the salvage cleared. The list holds that pair's
-    stored occurrence only once, as the placeholder, so the placeholder is that row and the pair is a
-    replayed durable tool segment: only the new rows are stored."""
+    row, then replays later stored pairs, the first with the output the salvage cleared (two newer outputs
+    follow it, so the salvage could clear it). The list holds that pair's stored occurrence only once, as the
+    placeholder, so the placeholder is that row and the pair is a replayed durable tool segment: only the new
+    rows are stored. This input is also the accepted residual: a genuine call there that reuses the id and
+    returns the placeholder text reads the same way."""
     first = plain_engine(make_engine, fresh_tail_count=64)
-    a, b = payload_of(300, "aaa"), payload_of(300, "bbb")
+    a, b, c, d = (payload_of(300, word) for word in ("aaa", "bbb", "ccc", "ddd"))
     first._ingest_messages([SYSTEM, {"role": "user", "content": "u1"}, _call("A"), _result("A", a),
-                            _call("B"), _result("B", b), {"role": "assistant", "content": "a1"}])
+                            _call("B"), _result("B", b), _call("C"), _result("C", c), _call("D"), _result("D", d),
+                            {"role": "assistant", "content": "a1"}])
     engine = _rebind(make_engine, first, fresh_tail_count=64)
     before = len(stored(engine))
 
     engine._ingest_messages([_call("A"), _result("A", a), {"role": "assistant", "content": "new"},
-                             _call("B"), _result("B", CLEARED), {"role": "user", "content": "u2"}])
+                             _call("B"), _result("B", CLEARED), _call("C"), _result("C", c), _call("D"), _result("D", d),
+                             {"role": "user", "content": "u2"}])
 
     assert [row["content"] for row in stored(engine)[before:]] == ["new", "u2"]
-    assert engine._last_ingest_reconciliation.get("replayed_tool_segment_rows") == 2
+    assert engine._last_ingest_reconciliation.get("replayed_tool_segment_rows") == 6
+
+
+def test_a_placeholder_among_the_newest_two_outputs_is_a_genuine_call_after_a_restart(make_engine):  # noqa: F811
+    """The salvage never clears the newest two tool outputs of its list, and the host only appends after it. After
+    a restart the host list proves a stored pair, adds a new row, then a call that reuses a stored id with the same
+    arguments and returns the placeholder text, as its newest tool output. Its stored same-id occurrence is outside
+    the reconciled prefix, but the placeholder is no salvage product: the call and its result are stored."""
+    first = plain_engine(make_engine, fresh_tail_count=64)
+    x, a = payload_of(300, "xxx"), payload_of(300, "aaa")
+    first._ingest_messages([SYSTEM, {"role": "user", "content": "u1"}, _call("X"), _result("X", x),
+                            _call("A"), _result("A", a), {"role": "assistant", "content": "a1"}])
+    engine = _rebind(make_engine, first, fresh_tail_count=64)
+    before = len(stored(engine))
+
+    engine._ingest_messages([_call("A"), _result("A", a), {"role": "assistant", "content": "new"},
+                             _call("X"), _result("X", CLEARED)])
+
+    assert [(row["role"], row["content"]) for row in stored(engine)[before:]][-1] == ("tool", CLEARED)
+    assert [row["role"] for row in stored(engine)[before:]] == ["assistant", "assistant", "tool"]
 
 
 @pytest.mark.parametrize("shape", ["content_parts", "multimodal"])
