@@ -405,6 +405,8 @@ _SESSION_END_BUSY_TIMEOUT_MS = 50
 # output/source rises from about 0.35 at 1.4k tokens to about 0.8 at 0.85k), so condensing it cannot be relied on to
 # shrink the frontier. The configured L3 bound applies when larger: such a source is stored whole.
 _CONDENSATION_LIGHT_GROUP_TOKENS = 512
+# #1123: the smallest source the adaptive leaf rescue shrinks to (the pre-v0.27.0 default leaf chunk)
+_LEAF_RESCUE_FLOOR_TOKENS = 8_000
 _CODEX_GPT55_COMPACTION_THRESHOLD = 0.85
 _TOTAL_COMPACTIONS_SCOPE = "current_conversation"
 
@@ -2155,15 +2157,22 @@ class LCMEngine(
         self,
         current_chunk: List[Dict[str, Any]],
         current_source_tokens: int,
+        final: bool = False,
     ) -> List[Dict[str, Any]]:
         if len(current_chunk) <= 1:
             return []
 
-        floor_tokens = max(1, self._config.leaf_chunk_tokens)
-        shrink_targets = [
-            max(floor_tokens, int(current_source_tokens * 0.75)),
-            max(floor_tokens, int(current_source_tokens * 0.50)),
-        ]
+        # #1123: the rescue may shrink to the pre-v0.27.0 8,000-token chunk, and the last attempt goes straight to it,
+        # so a 24,000-token default leaf reaches a small-context summariser within its three attempts
+        # (24k -> 18k -> 8k); at or below 8,000 nothing changes.
+        floor_tokens = max(1, min(self._config.leaf_chunk_tokens, _LEAF_RESCUE_FLOOR_TOKENS))
+        if final and floor_tokens < self._config.leaf_chunk_tokens:
+            shrink_targets = [floor_tokens]
+        else:
+            shrink_targets = [
+                max(floor_tokens, int(current_source_tokens * 0.75)),
+                max(floor_tokens, int(current_source_tokens * 0.50)),
+            ]
 
         for target in shrink_targets:
             if target >= current_source_tokens:
@@ -2175,9 +2184,9 @@ class LCMEngine(
         return current_chunk[: tool_group_safe_end(current_chunk, len(current_chunk) - 1)]
 
     def _leaf_target_tokens(self, source_tokens: int) -> int:
-        """Leaf summary target (#614); the defaults reproduce min(12000, max(2000, 20%)).
+        """Leaf summary target (#614); defaults give a fixed 2,000-token target: min(2000, max(2000, 20%)).
 
-        A config object built without the #614 fields keeps the historical targets.
+        A config object built without the #614 fields uses the class defaults.
         """
         cfg = self._config
         ratio = getattr(cfg, "leaf_target_ratio", LCMConfig.leaf_target_ratio)
@@ -2212,7 +2221,10 @@ class LCMEngine(
             )
 
             # #751: a size refusal is excused only when a smaller chunk can still be tried
-            rescue_chunk = self._next_leaf_rescue_chunk(attempt_chunk, source_tokens) if attempt_number < max_attempts else []
+            rescue_chunk = (
+                self._next_leaf_rescue_chunk(attempt_chunk, source_tokens, final=attempt_number + 1 >= max_attempts)
+                if attempt_number < max_attempts else []
+            )
             can_rescue = bool(rescue_chunk) and len(rescue_chunk) < len(attempt_chunk)
             try:
                 timeout_seconds = self._config.summary_timeout_ms / 1000
@@ -2265,7 +2277,9 @@ class LCMEngine(
                     raise  # a smaller chunk cannot get the time back
                 if attempt_number >= max_attempts or not self._is_retry_worthy_leaf_summary_error(exc):
                     raise
-                smaller_chunk = self._next_leaf_rescue_chunk(attempt_chunk, source_tokens)
+                smaller_chunk = self._next_leaf_rescue_chunk(
+                    attempt_chunk, source_tokens, final=attempt_number + 1 >= max_attempts
+                )
                 if not smaller_chunk or len(smaller_chunk) >= len(attempt_chunk):
                     raise
                 logger.warning(
