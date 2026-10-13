@@ -604,7 +604,7 @@ def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[
     ``<summary>`` wrapper around the whole body, one layer of quotes or emphasis on the closing hint, and
     ``unclosed_envelope`` (#1163). A missing closer is safe because it carries no nonce and the closing-hint check
     still anchors the body; it is not accepted when a closer appears anywhere after the opener (text written past
-    a closed envelope) or when the body opens with a reasoning marker (an unclosed reasoning block). The
+    a closed envelope) or when any body line opens with a reasoning marker (an unclosed reasoning block). The
     nonce opening tag, its uniqueness, the body minimum and a recognised closing hint are still required.
     """
     if not nonce:
@@ -642,8 +642,9 @@ def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[
     if wrapper and "<summary>" not in wrapper.group("inner") and "</summary>" not in wrapper.group("inner"):
         body = wrapper.group("inner").strip()
         tolerated.append("summary_wrapper")
-    if unclosed_envelope and _REASONING_START_RE.match(body):
-        # The opener hides an unclosed reasoning block from _sanitize_reasoning_summary; never persist it.
+    if unclosed_envelope and any(_REASONING_START_RE.match(line) for line in body.splitlines()):
+        # The opener hides an unclosed reasoning block from _sanitize_reasoning_summary, at the start of the body or
+        # after a summary line; never persist it.
         return "", "envelope", ()
     minimum_body_tokens = max(4, min(16, max(1, int(max_tokens) // 16)))
     if count_tokens(body) < minimum_body_tokens:
