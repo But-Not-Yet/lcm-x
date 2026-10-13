@@ -148,12 +148,12 @@ class StoreCompleteMixin:
         for raw in owned:
             sid, key = int(raw[0]), tuple(raw[3:])
             row = stored.get(sid)
-            if row and not _has_lossy_redacted_identity(self._message_replay_identity(row, strip_carrier=False)):
+            if row and by_key.get(key) and not _has_lossy_redacted_identity(self._message_replay_identity(row, strip_carrier=False)):
                 e1 = (row.get("role") == "assistant" and any(_tool_call_id(call) for call in (row.get("tool_calls") or []))
                       or row.get("role") == "tool" and bool(str(row.get("tool_call_id") or "").strip()))
                 # #1146 r3: never E2 for user rows; the host may ingest the current turn before it mints its uid.
                 # Disclosed residual: an assistant row left unbound by a failed shadow write and also hidden can be excluded; its bytes stay summarized through the twin.
-                matches = [t for t in by_key.get(key, ()) if e1 or (row.get("role") != "user" and canonical.get(t) and not bound.get(sid) and sid not in composite)]
+                matches = [t for t in by_key.get(key, ()) if (e1 and not bound.get(sid)) or (row.get("role") != "user" and canonical.get(t) and not bound.get(sid) and sid not in composite)]
                 if matches:
                     twins[sid] = matches
             by_key.setdefault(key, []).append(sid)
@@ -258,7 +258,7 @@ class StoreCompleteMixin:
         if copy_lookup is None and hidden:
             copy_lookup = self._store_complete_copy_twins(rows, carry)
         twins, twin_covered = copy_lookup if copy_lookup is not None else ({}, set())
-        copy_proofs, admitted = {}, set()
+        copy_proofs, admitted, group_twins = {}, set(), {}
         text = dict(zip((int(row["store_id"]) for row in hidden), self._store_complete_messages(hidden)))
 
         def ids_of(message, ids) -> list:
@@ -306,7 +306,7 @@ class StoreCompleteMixin:
             return True
 
         complete = True
-        for row in rows:
+        for row_index, row in enumerate(rows):
             store_id, role = int(row["store_id"]), row.get("role")
             if not emit_chunk(store_id):
                 complete = False
@@ -322,9 +322,30 @@ class StoreCompleteMixin:
                 dependent = dependent and role not in ("user", "system")
                 continue
             twin = next((t for t in twins.get(store_id, ()) if t in twin_covered or t in admitted), None)
+            if store_id in text and role == "assistant" and row.get("tool_calls"):
+                # #1154: decide copy exclusion once for the caller and its whole tool group.
+                call_ids = {_tool_call_id(call) for call in row["tool_calls"]}
+                members, group_dependent = [store_id], False
+                for result in rows[row_index + 1:]:
+                    if result.get("role") != "tool":
+                        break
+                    sid = int(result["store_id"])
+                    if sid in ignored:
+                        group_dependent = True
+                    if (str(result.get("tool_call_id") or "").strip() in call_ids
+                            and sid not in taken | passive | covered | ignored and not group_dependent):
+                        members.append(sid)
+                choices = {sid: next((t for t in twins.get(sid, ())
+                                      if t in twin_covered or t in admitted), None) for sid in members}
+                can_exclude = all(sid in text and choices[sid] is not None for sid in members)
+                group_twins.update({sid: choices[sid] if can_exclude else None for sid in members})
+            if store_id in group_twins:
+                twin = group_twins[store_id]
             if store_id in text and twin is not None:
                 copy_proofs[store_id] = twin
                 excluded.append(store_id)
+                if role == "assistant" and row.get("tool_calls"):
+                    group = []
                 dependent = dependent and role not in ("user", "system")
                 continue
             if store_id not in text or not take(text[store_id], [store_id]):  # a retained row, or the budget

@@ -200,6 +200,64 @@ def test_02_node_covered_twin_is_excluded_next_leaf(engine):
     assert _frontier(engine) == end
 
 
+def test_partial_tool_group_repeat_keeps_the_caller_with_its_new_result(engine):
+    originals = _append(engine, _segment())
+    _publish(engine, list(zip(_segment(), ([sid] for sid in originals))))
+    call, result = _segment()
+    later = _append(engine, [call, {**result, "content": "different result"}])
+    end = _append(engine, [_text("end", "user")])[0]
+    out = _walk(engine)
+    assert _ids(out) == [*later, end]
+    assert not engine._store_complete_copy_exclusion_proofs
+    _publish(engine, out)
+    assert _frontier(engine) == end
+
+
+def test_partial_tool_group_repeat_inside_one_leaf_is_not_attached_to_the_twin(engine):
+    originals = _append(engine, _segment())
+    call, result = _segment()
+    later = _append(engine, [call, {**result, "content": "different result"}])
+    end = _append(engine, [_text("end", "user")])[0]
+    out = _walk(engine)
+    assert _ids(out) == [*originals, *later, end]
+    assert not engine._store_complete_copy_exclusion_proofs
+    _publish(engine, out)
+    assert _frontier(engine) == end
+
+
+def test_full_tool_group_copy_is_still_excluded_whole(engine):
+    originals = _append(engine, _segment())
+    _publish(engine, list(zip(_segment(), ([sid] for sid in originals))))
+    copies = _append(engine, _segment())
+    end = _append(engine, [_text("end", "user")])[0]
+    out = _walk(engine)
+    assert _ids(out) == [end]
+    assert engine._store_complete_copy_exclusion_proofs == dict(zip(copies, originals))
+    assert set(copies) <= set(engine._store_complete_excluded)
+    _publish(engine, out)
+    assert _frontier(engine) == end
+
+
+@pytest.mark.parametrize("own_binding", [True, False], ids=["bound", "unbound"])
+def test_e1_spares_a_tool_exchange_with_its_own_uid_binding(engine, own_binding):
+    originals = _append(engine, _segment())
+    for sid in originals:
+        _bind(engine, sid, f"original-{sid}")
+    _publish(engine, list(zip(_segment(), ([sid] for sid in originals))))
+    later = _append(engine, _segment())
+    if own_binding:
+        for sid in later:
+            _bind(engine, sid, f"occurrence-{sid}")
+    end = _append(engine, [_text("end", "user")])[0]
+    out = _walk(engine)
+    assert _ids(out) == ([*later, end] if own_binding else [end])
+    assert engine._store_complete_copy_exclusion_proofs == (
+        {} if own_binding else dict(zip(later, originals))
+    )
+    _publish(engine, out)
+    assert _frontier(engine) == end
+
+
 @pytest.mark.parametrize(
     "text", ["continue", "deliberate long repeated instruction " * 400]
 )
