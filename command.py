@@ -2510,6 +2510,7 @@ def _preset_show_text(tokens: list[str], engine) -> str:
         f"policy_path: {preset.policy_path}",
         f"benchmark_version: {provenance.get('benchmark_version', '(unknown)')}",
         f"fixture_suite: {fixture_suite}",
+        f"evidence: {provenance.get('evidence', '(unknown)')}",  # names the comparison arm of baseline_*
         *(f"{key}: {value}" for key, value in metric_summary.items()),  # #1126: the preset's own recorded metrics
         *([] if metric_summary else ["metric_summary: (none recorded for this preset)"]),
         f"applies_to: {applies_to}",
