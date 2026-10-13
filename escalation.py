@@ -522,41 +522,18 @@ def _plain_expand_hint(line: str) -> str:
     return "Expand for details about: " + candidate.split(":", 1)[1].strip()
 
 
-def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[str, str, tuple[str, ...]]:
-    """Return ``(body, failed_check, tolerated)`` for a reply under the nonce contract.
+def _validate_summary_body(body: str, max_tokens: int, tolerated: list[str]) -> tuple[str, str, tuple[str, ...]]:
+    """Run the content gates shared by every accepted reply shape.
 
-    ``failed_check`` is "" when accepted, else ``envelope``, ``nonce_count``, ``short_body`` or ``closing_hint``.
-    ``tolerated`` names the known formatting mistakes that were accepted (#612): the ``</summary>`` closer, one
-    ``<summary>`` wrapper around the whole body, and one layer of quotes or emphasis on the closing hint. The
-    nonce opening tag, its uniqueness, the body minimum and a recognised closing hint are still required.
+    The body minimum and a recognised closing hint are what actually separate a real summary from a
+    hijacked one-word payload; the envelope is only a test paper, never a storage format (the
+    deterministic L3 fallback persists envelope-less summaries through ``_truncate_text_to_tokens``).
     """
-    if not nonce:
-        return content, "", ()
-    opening_tag = f'<lcm-summary nonce="{nonce}">'
-    closing_tag = "</lcm-summary>"
-    tolerated: list[str] = []
-    stripped = content.strip()
-    if not stripped.endswith(closing_tag) and stripped.endswith("</summary>"):
-        closing_tag = "</summary>"
-        tolerated.append("summary_closer")
-    # No count check on the closing tag. The body is extracted by slicing from
-    # both ends, so an interior `</lcm-summary>` cannot affect what is extracted
-    # -- it only ever caused a valid summary to be discarded. And unlike the
-    # opening tag, the closing tag carries no nonce, so ANY prior summary quoted
-    # in the transcript contains it verbatim: a session that has discussed the
-    # envelope contract could never be summarized again. The opening-tag count
-    # is kept because it is nonce-bearing, so a second occurrence is genuinely
-    # anomalous rather than ordinary transcript content.
-    if not stripped.startswith(opening_tag) or not stripped.endswith(closing_tag):
-        return "", "envelope", ()
-    if stripped.count(opening_tag) != 1:
-        return "", "nonce_count", ()
-    body = stripped[len(opening_tag) : -len(closing_tag)].strip()
+    minimum_body_tokens = max(4, min(16, max(1, int(max_tokens) // 16)))
     wrapper = _SUMMARY_WRAPPER_RE.match(body)
     if wrapper and "<summary>" not in wrapper.group("inner") and "</summary>" not in wrapper.group("inner"):
         body = wrapper.group("inner").strip()
         tolerated.append("summary_wrapper")
-    minimum_body_tokens = max(4, min(16, max(1, int(max_tokens) // 16)))
     if count_tokens(body) < minimum_body_tokens:
         return "", "short_body", ()
     raw_last_line = body.splitlines()[-1]
@@ -570,6 +547,66 @@ def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[
             return "", "short_body", ()
         tolerated.append("hint_decoration")
     return body, "", tuple(tolerated)
+
+
+def _check_envelopeless_summary(stripped: str, max_tokens: int) -> tuple[str, str, tuple[str, ...]]:
+    """Judge a reply that never opened the envelope by its content alone.
+
+    A model that follows a competing output-format instruction (the mandatory skeleton in
+    LCM_CUSTOM_INSTRUCTIONS) drops the envelope while still producing a full summary, so the
+    hijack decision moves to the content gates. Echoed prompt furniture is removed first: the
+    ``<summary body ...>`` placeholder line and a trailing orphan ``</lcm-summary>``/``</summary>``.
+    """
+    kept = [line for line in stripped.splitlines() if not line.lstrip().startswith("<summary body")]
+    while kept and kept[-1].strip() in ("</lcm-summary>", "</summary>"):
+        kept.pop()
+    return _validate_summary_body("\n".join(kept).strip(), max_tokens, ["missing_envelope"])
+
+
+def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[str, str, tuple[str, ...]]:
+    """Return ``(body, failed_check, tolerated)`` for a reply under the nonce contract.
+
+    ``failed_check`` is "" when accepted, else ``envelope``, ``nonce_count``, ``short_body`` or ``closing_hint``.
+    ``tolerated`` names the known formatting mistakes that were accepted: the three #612 shapes (the
+    ``</summary>`` closer, one ``<summary>`` wrapper around the whole body, one layer of quotes or emphasis
+    on the closing hint) plus the two content-first demotions — ``missing_closer`` (correct nonce opening
+    tag, no closing tag) and ``missing_envelope`` (no opening tag at all). Acceptance always requires the
+    body itself to pass the content gates (minimum length + Expand closing line). When an opening tag is
+    present its nonce must be exact and its count exactly one: that is the only evidence the model read
+    the policy, so the anti-injection core stays.
+    """
+    if not nonce:
+        return content, "", ()
+    opening_tag = f'<lcm-summary nonce="{nonce}">'
+    closing_tag = "</lcm-summary>"
+    stripped = content.strip()
+    if not stripped.startswith(opening_tag):
+        # Any nonce-bearing opening tag outside the leading position is either a wrong nonce or text
+        # outside the envelope -- both stay a hard rejection. Ordinary transcript prose with no
+        # opening tag at all is judged on content.
+        if "<lcm-summary nonce=" in stripped:
+            return "", "envelope", ()
+        return _check_envelopeless_summary(stripped, max_tokens)
+    if stripped.count(opening_tag) != 1:
+        return "", "nonce_count", ()
+    tolerated: list[str] = []
+    if not stripped.endswith(closing_tag) and stripped.endswith("</summary>"):
+        closing_tag = "</summary>"
+        tolerated.append("summary_closer")
+    # No count check on the closing tag. The body is extracted by slicing from
+    # both ends, so an interior `</lcm-summary>` cannot affect what is extracted
+    # -- it only ever caused a valid summary to be discarded. And unlike the
+    # opening tag, the closing tag carries no nonce, so ANY prior summary quoted
+    # in the transcript contains it verbatim: a session that has discussed the
+    # envelope contract could never be summarized again. The opening-tag count
+    # is kept because it is nonce-bearing, so a second occurrence is genuinely
+    # anomalous rather than ordinary transcript content.
+    if stripped.endswith(closing_tag):
+        body = stripped[len(opening_tag) : -len(closing_tag)].strip()
+    else:
+        tolerated.append("missing_closer")
+        body = stripped[len(opening_tag) :].strip()
+    return _validate_summary_body(body, max_tokens, tolerated)
 
 
 def _unwrap_summary_contract(content: str, nonce: str, max_tokens: int) -> str:

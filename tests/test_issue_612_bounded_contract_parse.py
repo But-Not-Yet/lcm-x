@@ -66,13 +66,11 @@ def test_t1_a_valid_reply_is_unchanged_and_tolerates_nothing():
 # -- T2: everything else is still rejected, naming the failed check -------------------------------------------
 
 @pytest.mark.parametrize(("reply", "expected"), [
-    (PLAIN_BODY, "envelope"),
     (f'<lcm-summary nonce="{"f" * 32}">\n{PLAIN_BODY}\n{CLOSE}', "envelope"),
     (f"preamble\n{OPEN}\n{PLAIN_BODY}\n{CLOSE}", "envelope"),
     (f"{OPEN}\n{OPEN}\n{PLAIN_BODY}\n{CLOSE}", "nonce_count"),
-    (f"{OPEN}\n{PLAIN_BODY}\n</lcm>", "envelope"),
-    (f"{OPEN}\n{PLAIN_BODY}", "envelope"),
-    (f"{OPEN}\n{PLAIN_BODY}\n</summary>trailing", "envelope"),
+    (f"{OPEN}\n{PLAIN_BODY}\n</lcm>", "closing_hint"),
+    (f"{OPEN}\n{PLAIN_BODY}\n</summary>trailing", "closing_hint"),
     (f"{OPEN}\nExpand for details about: x\n{CLOSE}", "short_body"),
     (f"{OPEN}\n{LINES}\n{CLOSE}", "closing_hint"),
     (f"{OPEN}\n{HINT}\n{LINES}\n{CLOSE}", "closing_hint"),
@@ -84,12 +82,16 @@ def test_t1_a_valid_reply_is_unchanged_and_tolerates_nothing():
     (f"{OPEN}\n<summary>\n<summary>\n{PLAIN_BODY}\n</summary>\n</summary>\n{CLOSE}", "closing_hint"),
     (f"{OPEN}\n{LINES}\n**Expand for details about:**migration gate\n{CLOSE}", "closing_hint"),
     (f"{OPEN}\n{LINES}\n**{HINT}*\n{CLOSE}", "closing_hint"),
-    (f"{OPEN}\n{LINES}\n\"\"{HINT}\"\"\"\n{CLOSE}", "closing_hint"),
+    (f'{OPEN}\n{LINES}\n""{HINT}"""\n{CLOSE}', "closing_hint"),
     (f"{OPEN}\n{LINES}\n{'_' * 50_000}\n{CLOSE}", "closing_hint"),
-], ids=["no-envelope", "wrong-nonce", "outside-text", "two-opening-tags", "closer-lcm", "no-closer",
-        "closer-not-last", "short-body", "missing-hint", "hint-not-last", "unbalanced-quote", "placeholder-echo",
+], ids=["wrong-nonce", "outside-text", "two-opening-tags", "closer-lcm", "closer-not-last",
+        "short-body", "missing-hint", "hint-not-last", "unbalanced-quote", "placeholder-echo",
         "placeholder-only", "wrapper-short-body", "wrapper-missing-hint", "nested-wrapper", "label-without-space",
         "unequal-emphasis", "unequal-quotes", "long-rule-line"])
+# The content-first demotion moved the bare ``PLAIN_BODY`` reply and the ``no-closer`` reply out of this
+# table: both are now accepted with a ``missing_envelope``/``missing_closer`` tolerated mark, asserted in
+# tests/test_issue_envelope_content_first.py. A stray non-envelope closer after an otherwise valid body
+# now names the gate it actually failed (closing_hint) instead of the envelope shape.
 def test_t2_other_violations_are_rejected_with_their_check(reply, expected):
     assert _check(reply) == ("", expected, ())
     assert escalation._unwrap_summary_contract(reply, NONCE, MAX_TOKENS) == ""
@@ -148,7 +150,7 @@ def test_t3_violating_reply_logs_the_warning_with_the_check(monkeypatch, caplog)
     assert _summarize(caplog) == ""
     messages = [r.getMessage() for r in caplog.records]
     assert messages == ["LCM summary discarded output that violated the integrity contract "
-                        "(model=tier-x, check=envelope); escalating"]
+                        "(model=tier-x, check=closing_hint); escalating"]
     assert all(SECRET not in m and "Decision" not in m for m in messages)
 
 
