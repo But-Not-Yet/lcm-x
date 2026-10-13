@@ -734,6 +734,7 @@ class LCMEngine(
         # #671: the latest stub-first exit (tokens before/after, target, backlog rows) and this compress()'s.
         self._last_stub_first_exit: Optional[dict[str, int]] = None
         self._stub_first_exit_now: Optional[dict[str, int]] = None
+        self._compress_calls = 0  # #1116: which compress() a stub-first proof came from
         self._last_compression_status = "idle"
         self._last_compression_noop_reason = ""
         # Ingest-failure tracking. The core promise is that nothing is ever
@@ -3486,6 +3487,7 @@ class LCMEngine(
         if (
             proof
             and proof.get("stub_first")
+            and proof.get("stub_first_compress_call") == self._compress_calls  # the call whose list was committed
             and proof.get("session_id") == session_id
             and proof.get("conversation_id") == self._conversation_id
             and not (proof.get("published") or proof.get("native") or proof.get("recovery") or proof.get("filtered"))
