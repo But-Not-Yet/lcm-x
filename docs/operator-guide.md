@@ -774,8 +774,7 @@ unchanged: its 272K window assumption is correct for both gpt-5.6 routes.
 [FINDING-F59](../bench/FINDING-F59-COMPACTION-PILOT-P0.md) recommends
 single-session LCM for long runs and records the measured regime guidance.
 
-`target_after_compaction=0.55` is still benchmark provenance, not a runtime
-setting, because the engine does not expose that live knob yet.
+The presets no longer carry `target_after_compaction`; the v0.27.1 low-water mark is part of background preparation (#787) and is off by default.
 
 For dashboards and agents, `lcm_status` also exposes the same information under
 `preset_suggestion` as read-only JSON: suggested preset name/family, selection
