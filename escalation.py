@@ -629,8 +629,9 @@ def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[
     unclosed_envelope = not stripped.endswith(closing_tag)
     if unclosed_envelope:
         # #1163: tolerate a missing closer only if every remaining check passes. A closer anywhere after the
-        # opener means the envelope was closed and text followed it, which is not a missing closer.
-        if "</lcm-summary>" in stripped or "</summary>" in stripped:
+        # opener means the envelope was closed and text followed it, which is not a missing closer; an unmatched
+        # <summary> opener is not a tolerated shape and would hide a reasoning marker from the check below.
+        if "</lcm-summary>" in stripped or "</summary>" in stripped or "<summary>" in stripped:
             return "", "envelope", ()
         tolerated.append("unclosed_envelope")
     if stripped.count(opening_tag) != 1:
