@@ -726,29 +726,33 @@ class MessageStore:
     def scan_evidence_rows(self, *, limit: int = 4096) -> Dict[str, Any]:
         """Return one bounded, read-only whole-corpus evidence snapshot.
 
-        The window metadata and rows come from one SQLite statement, so a
+        The window metadata and rows come from one read transaction, so a
         caller cannot accidentally certify finite coverage from a count and a
         row page taken at different corpus generations.  This API deliberately
         has no query or session filter: a narrower scan is not whole-corpus
         coverage.  Callers must treat ``truncated`` as an honest fallback.
         """
         bounded_limit = min(4096, max(1, int(limit)))
-        rows = self._conn.execute(
-            f"""
-            WITH snapshot AS (
-                SELECT {_MESSAGE_SELECT_COLUMNS},
-                       COUNT(*) OVER () AS snapshot_total_rows,
-                       MAX(store_id) OVER () AS snapshot_max_store_id,
-                       SUM(CASE WHEN observed_at IS NULL THEN 1 ELSE 0 END)
-                           OVER () AS snapshot_observed_at_missing_rows
-                FROM messages
-            )
-            SELECT * FROM snapshot
-            ORDER BY store_id
-            LIMIT ?
-            """,
-            (bounded_limit,),
-        ).fetchall()
+        with self._write_lock:
+            conn = self._conn
+            owns_transaction = not conn.in_transaction
+            if owns_transaction:
+                conn.execute("BEGIN")
+            try:
+                totals = conn.execute(
+                    "SELECT COUNT(*), MAX(store_id), "
+                    "SUM(CASE WHEN observed_at IS NULL THEN 1 ELSE 0 END) FROM messages"
+                ).fetchone()
+                rows = conn.execute(
+                    f"SELECT {_MESSAGE_SELECT_COLUMNS} FROM messages ORDER BY store_id LIMIT ?",
+                    (bounded_limit,),
+                ).fetchall()
+                if owns_transaction:
+                    conn.commit()
+            except BaseException:
+                if owns_transaction:
+                    conn.rollback()
+                raise
         if not rows:
             return {
                 "rows": [],
@@ -758,11 +762,10 @@ class MessageStore:
                 "truncated": False,
                 "observed_at_missing_rows": 0,
             }
-        message_column_count = _MESSAGE_SELECT_COLUMN_COUNT
-        total_rows = int(rows[0][message_column_count] or 0)
-        snapshot_max_store_id = int(rows[0][message_column_count + 1] or 0)
-        observed_at_missing_rows = int(rows[0][message_column_count + 2] or 0)
-        messages = [self._row_to_dict(row[:message_column_count]) for row in rows]
+        total_rows = int(totals[0] or 0)
+        snapshot_max_store_id = int(totals[1] or 0)
+        observed_at_missing_rows = int(totals[2] or 0)
+        messages = [self._row_to_dict(row) for row in rows]
         return {
             "rows": messages,
             "snapshot_max_store_id": snapshot_max_store_id,
