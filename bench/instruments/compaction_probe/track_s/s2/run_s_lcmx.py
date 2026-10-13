@@ -40,7 +40,47 @@ def apply_env(env: dict, home: Path, db: Path):
         del os.environ[k]
     os.environ.update(env)
     os.environ.update({"LCM_DATABASE_PATH": str(db), "HERMES_HOME": str(home), "LCM_HERMES_BASE_DIR": str(home.parent)})
+    os.environ.update(A.SECRET_ENV)
+    if NO_VOYAGE[0]:  # fake lane / dry run: without the key no embedding request can be made
+        os.environ.pop("VOYAGE_API_KEY", None)
     home.mkdir(parents=True, exist_ok=True)
+
+NO_VOYAGE = [False]
+EMBED_ON = lambda env: (env or {}).get("LCM_EMBEDDINGS_ENABLED", "").lower() in ("1", "true", "yes", "on")  # noqa: E731
+
+def seed_store(src: Path, dst: Path, sid: str) -> dict:
+    """D5-A: the run's store = a backup-API copy of a snapshot whose sha256 matches its MANIFEST.json. The snapshot is
+    opened mode=ro only; its lcm-large-outputs/ is not copied (the run's payload receipts stay the run's own)."""
+    src = src.resolve()
+    if str(src).startswith(str(Path.home() / ".hermes")) or "/profiles/" in str(src):
+        raise SystemExit(f"refusing --seed-db {src}: under ~/.hermes or a profiles/ path")
+    want, h = jload(src.parent / "MANIFEST.json").get("snapshot_sha256"), hashlib.sha256()
+    with src.open("rb") as f:
+        for b in iter(lambda: f.read(1 << 22), b""):
+            h.update(b)
+    if h.hexdigest() != want:
+        raise SystemExit(f"--seed-db sha256 {h.hexdigest()} != MANIFEST.json {want}")
+    s, d = db_ro(src), sqlite3.connect(dst)
+    try:
+        s.backup(d)
+    finally:
+        s.close(), d.close()
+    c, counts = db_ro(dst), {}
+    try:
+        for k, q in (("messages", "COUNT(*) FROM messages"), ("sessions", "COUNT(DISTINCT session_id) FROM messages"),
+                     ("summary_nodes", "COUNT(*) FROM summary_nodes"), ("embedding_vectors", "COUNT(*) FROM lcm_embedding_vectors"),
+                     ("run_session_messages", "COUNT(*) FROM messages WHERE session_id = :s"),
+                     ("run_session_nodes", "COUNT(*) FROM summary_nodes WHERE session_id = :s")):
+            try:
+                counts[k] = c.execute(f"SELECT {q}", {"s": sid}).fetchone()[0]
+            except sqlite3.OperationalError:
+                counts[k] = None
+    finally:
+        c.close()
+    if counts["run_session_messages"] or counts["run_session_nodes"]:
+        raise SystemExit(f"session {sid} already exists in the seed store")
+    return {"path": str(src), "sha256": want, "sha256_verified": True, "copy": str(dst),
+            "method": "sqlite3 backup API, source mode=ro", "counts": counts}
 
 def config_dict(cfg) -> dict:
     return json.loads(json.dumps({f.name: getattr(cfg, f.name) for f in dataclasses.fields(cfg)
@@ -378,9 +418,16 @@ def main():
     ap.add_argument("--context-length", type=int, default=DEFAULT_CTX)
     ap.add_argument("--batches", type=int, default=0, help="answer only the first N batches (0 = all)")
     ap.add_argument("--dry-run", action="store_true", help="print effective config per arm; no model calls")
+    ap.add_argument("--full-stream", action="store_true", help="D5-A: replay every transcript row (--slice still applies); "
+                    "timing population only: no checkpoint snapshots, no probes, no store copies")
+    ap.add_argument("--seed-db", default=None, help="D5-A: copy this snapshot lcm.db (backup API, mode=ro source) into the "
+                    "run's store before the engine starts; needs --full-stream")
     ap.add_argument("--prefix60k", action="store_true", help="S6 A3: replay to the frozen prefix60k row, the arm's "
                     "own compaction fires once there (LCM_ABSOLUTE_THRESHOLD_TOKENS = view tokens at that gate); no probes")
     args = ap.parse_args()
+    if args.seed_db and not args.full_stream or args.full_stream and (args.checkpoints or args.prefix60k):
+        raise SystemExit("--seed-db needs --full-stream; --full-stream excludes --checkpoints and --prefix60k")
+    NO_VOYAGE[0] = args.lane == "fake" or args.dry_run
     arm = A.resolve(args.arm) if args.arm != "ALL" else None
     m = seam.load_engine(arm)
     sdir = MATERIAL / ("smoke-seed-1" if args.seed == "smoke-1" else f"seed-{args.seed}")
@@ -391,9 +438,15 @@ def main():
     if args.prefix60k:  # the frozen row (prefix60k.py); never recomputed here
         stop = jload(sdir / "prefix60k.json")["freeze_row_index"]
         rows = jlines(sdir / "transcript.jsonl")[:stop + 1]
+    if args.full_stream:  # every transcript row up to the slice; no checkpoint rows, so no snapshot copies
+        rows = jlines(sdir / "transcript.jsonl")
+        stop = len(rows) - 1 if args.slice is None else max(i for i, r in enumerate(rows) if r["turn"] <= args.slice)
+        rows = rows[:stop + 1]
     if args.dry_run:
         return dry_run(m, args, rows, stop)
     arm, seed = A.resolve(args.arm), ("smoke-1" if args.seed == "smoke-1" else f"seed-{args.seed}")
+    if not NO_VOYAGE[0] and EMBED_ON(arm["env"]) and not (A.SECRET_ENV or os.environ.get("VOYAGE_API_KEY")):
+        raise SystemExit("ENVIRONMENT_BLOCKED: the arm turns embeddings on but no VOYAGE_API_KEY is set")
     run_dir = RUNS / arm["name"] / seed / str(args.run)
     if run_dir.exists() and any(run_dir.iterdir()):
         raise SystemExit(f"refusing to reuse {run_dir} (fresh store per run)")
@@ -401,7 +454,8 @@ def main():
     summary = {"arm": arm, "seed": seed, "run": args.run, "lane": args.lane, "reader": args.reader,
                "worktree": str(seam.WORKTREE), "worktree_head": seam.PINNED, "context_length": args.context_length,
                "stop_row_index": stop, "slice": args.slice, "checkpoint": args.checkpoint, "late_corrected_value_checkpoint": CP.late_checkpoint(sdir),
-               "fleet_keys_excluded": A.FLEET_EXCLUDED, "harness_overrides": A.HARNESS_OVERRIDES, "started": time.time(),
+               **({"fleet_keys_excluded": {}, "harness_overrides": {}} if arm["name"] == A.ENV_FILE_ARM else
+                  {"fleet_keys_excluded": A.FLEET_EXCLUDED, "harness_overrides": A.HARNESS_OVERRIDES}), "started": time.time(),
                "material_sha256": hashlib.sha256((sdir / "material.manifest.json").read_bytes()).hexdigest(),
                "population": "prefix60k" if args.prefix60k else "full-stream"}
     if arm["unsupported"]:
@@ -413,9 +467,15 @@ def main():
     logging.getLogger("hermes_lcm").addHandler(SKIPS)
     logging.getLogger("hermes_lcm").setLevel(logging.INFO)
     run, is_store = Run(m, arm, seed, args, sdir, rows, man, run_dir), arm["kind"] != "control"
+    summary["session_id"] = run.sid
+    if args.seed_db:  # before the engine exists; the material then runs as a new session in that store
+        summary["seed_db"] = seed_store(Path(args.seed_db), run.db, run.sid)
+        (run_dir / "seed.json").write_text(json.dumps(summary["seed_db"], indent=1))
     apply_env(arm["env"], run.home, run.db)
+    summary["effective_lcm_env"] = {k: v for k, v in sorted(os.environ.items()) if k.startswith("LCM_")}
+    summary["voyage_key_present"] = bool(os.environ.get("VOYAGE_API_KEY"))
     (run_dir / "config.json").write_text(json.dumps({**config_dict(m.config.LCMConfig.from_env()),
-                                                     "harness_overrides": A.HARNESS_OVERRIDES}, indent=1, sort_keys=True))
+                                                     "harness_overrides": summary["harness_overrides"]}, indent=1, sort_keys=True))
     summary["tokenizer"] = "tiktoken" if m.tokens._get_encoder() is not None else "char-estimate"
     isolation = {}
     if is_store:
@@ -428,7 +488,7 @@ def main():
         summary["replay_wall_s"] = round(time.monotonic() - t0, 2)
         summary["admission"] = run.receipts()
         run.engine.shutdown()
-        isolation["db_sha256_before_probes"] = sha(run.db)
+        isolation["db_sha256_before_probes"] = None if args.full_stream else sha(run.db)
     else:
         view = [to_msg(r) for r in rows if r["role"] != "system"]
         view = view[-int(arm["env"]["LCM_FRESH_TAIL_COUNT"]):] if arm["name"] == "C1" else view
@@ -437,10 +497,10 @@ def main():
                    final_context={"rows": len(view), "tokens": run.ntok([run.sysmsg] + view)},
                    final_continuity=continuity(man, run.system, view))
     (run_dir / "assembled_context.json").write_text(json.dumps({"system": run.system, "view": view}))
-    if args.prefix60k:  # a timing population only: no probes
+    if args.prefix60k or args.full_stream:  # a timing population only: no probes
         summary.update(status="DONE", finished=time.time(), prefix60k=getattr(run, "p60", None))
         (run_dir / "summary.json").write_text(json.dumps(summary, indent=1, default=str))
-        return print(f"wrote {run_dir}/summary.json (prefix60k: {len(run.events)} event(s), no probes)")
+        return print(f"wrote {run_dir}/summary.json ({len(run.events)} event(s), no probes)")
     reader = None if args.reader == "fake" else R.GLMReader() if args.reader == "glm" else R.AstraLowReader(run_dir / "reader-scratch")
     if args.reader == "fake":
         from s2lib.fakes import Reader
@@ -462,7 +522,7 @@ def main():
             **({"checkpoint_id": cp["checkpoint"]["id"]} if "checkpoint" in cp and isinstance(cp["checkpoint"]["id"], str) else {}),
             "events": evs, "receipts": cp["receipts"], "admission": cp["admission"], "reader_calls": run.reader_calls,
             "final_context": {"rows": len(cp["view"]), "tokens": run.ntok([run.sysmsg] + cp["view"])}, "summary_blocks": res[0]["summary_blocks"] if res else None,
-            "store_summaries": db_ro(cp["db"]).execute("SELECT COUNT(*) FROM summary_nodes").fetchone()[0],
+            "store_summaries": db_ro(cp["db"]).execute("SELECT COUNT(*) FROM summary_nodes WHERE session_id = ?", (run.sid,)).fetchone()[0],
             "final_continuity": continuity(man, run.system, cp["view"]), "reader_readback": reader.readback, "status": cp_status,
             "isolation": {"snapshot_sha256_before_probes": sha0, "snapshot_sha256_after_probes": sha1}, "finished": time.time()}, indent=1, default=str))
         print(f"wrote {cp['dir']} ({len(res)} rows)", flush=True)
@@ -491,7 +551,7 @@ def dry_run(m, args, rows, stop):
     print(f"dry run: seed {args.seed}, rows 0..{stop} ({len(rows)} rows, "
           f"{m.tokens.count_messages_tokens([sysmsg] + view)} tokens incl. system), "
           f"context_length {args.context_length}; no model calls")
-    for name in A.all_arms():
+    for name in A.all_arms() if args.arm == "ALL" else [args.arm]:
         arm = A.resolve(name)
         if arm["unsupported"]:
             print(f"{name:26s} UNSUPPORTED: {arm['unsupported']}")
@@ -502,6 +562,13 @@ def dry_run(m, args, rows, stop):
         try:
             apply_env(arm["env"], tmp / "hermes-home", tmp / "lcm.db")
             cfg = config_dict(m.config.LCMConfig.from_env())
+            if name == A.ENV_FILE_ARM:  # D5-A: the effective env must be the file's LCM_* set plus the harness keys only
+                lcm = {k: v for k, v in sorted(os.environ.items()) if k.startswith("LCM_")}
+                same = {k: v for k, v in lcm.items() if k not in A.HARNESS_KEYS} == arm["env"] and set(A.HARNESS_KEYS) <= set(lcm)
+                print(f"{name}: effective LCM_* env ({len(lcm)} keys) == env file LCM_* set ({len(arm['env'])}) + harness keys "
+                      f"{' '.join(A.HARNESS_KEYS)}: {same}; ignored file keys: {arm['env_file']['ignored_keys']}; "
+                      f"env file sha256 {arm['env_file']['sha256']}; VOYAGE_API_KEY set: {bool(os.environ.get('VOYAGE_API_KEY'))}")
+                print("".join(f"  {k}={v}{'  (harness)' if k in A.HARNESS_KEYS else ''}\n" for k, v in lcm.items()), end="")
             e = new_engine(m, tmp / "hermes-home", "dry", args.context_length)
             thr = e.threshold_tokens
             e.shutdown()
@@ -516,7 +583,8 @@ def dry_run(m, args, rows, stop):
         (out_dir / f"{name}.config.json").write_text(json.dumps(
             {"arm": arm["note"], "effective": eff, "full_config": cfg}, indent=1, sort_keys=True))
         print(f"{name:26s} " + " ".join(f"{k}={v}" for k, v in eff.items()))
-    print(f"fleet keys excluded: {json.dumps(A.FLEET_EXCLUDED)}")
+    if args.arm != A.ENV_FILE_ARM:  # the env-file arm carries no fleet value and no harness override
+        print(f"fleet keys excluded: {json.dumps(A.FLEET_EXCLUDED)}")
 
 if __name__ == "__main__":
     raise SystemExit(main())
