@@ -2,7 +2,8 @@
 
 Accepted: the ``</summary>`` closer instead of ``</lcm-summary>``, one ``<summary>`` wrapper around the whole
 body, and one layer of quotes or emphasis on the closing hint. The exact nonce opening tag, its uniqueness, the
-body minimum and a recognised closing hint are still required."""
+body minimum and a recognised closing hint are still required.
+#1163 also accepts ``unclosed_envelope`` only when every remaining check passes."""
 
 from __future__ import annotations
 
@@ -71,7 +72,6 @@ def test_t1_a_valid_reply_is_unchanged_and_tolerates_nothing():
     (f"preamble\n{OPEN}\n{PLAIN_BODY}\n{CLOSE}", "envelope"),
     (f"{OPEN}\n{OPEN}\n{PLAIN_BODY}\n{CLOSE}", "nonce_count"),
     (f"{OPEN}\n{PLAIN_BODY}\n</lcm>", "envelope"),
-    (f"{OPEN}\n{PLAIN_BODY}", "envelope"),
     (f"{OPEN}\n{PLAIN_BODY}\n</summary>trailing", "envelope"),
     (f"{OPEN}\nExpand for details about: x\n{CLOSE}", "short_body"),
     (f"{OPEN}\n{LINES}\n{CLOSE}", "closing_hint"),
@@ -86,7 +86,7 @@ def test_t1_a_valid_reply_is_unchanged_and_tolerates_nothing():
     (f"{OPEN}\n{LINES}\n**{HINT}*\n{CLOSE}", "closing_hint"),
     (f"{OPEN}\n{LINES}\n\"\"{HINT}\"\"\"\n{CLOSE}", "closing_hint"),
     (f"{OPEN}\n{LINES}\n{'_' * 50_000}\n{CLOSE}", "closing_hint"),
-], ids=["no-envelope", "wrong-nonce", "outside-text", "two-opening-tags", "closer-lcm", "no-closer",
+], ids=["no-envelope", "wrong-nonce", "outside-text", "two-opening-tags", "closer-lcm",
         "closer-not-last", "short-body", "missing-hint", "hint-not-last", "unbalanced-quote", "placeholder-echo",
         "placeholder-only", "wrapper-short-body", "wrapper-missing-hint", "nested-wrapper", "label-without-space",
         "unequal-emphasis", "unequal-quotes", "long-rule-line"])
@@ -160,3 +160,38 @@ def test_t3_short_and_hintless_replies_name_their_checks(monkeypatch, caplog):
     assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == [
         "LCM summary discarded output that violated the integrity contract (model=tier-x, check=closing_hint); "
         "escalating"]
+
+
+# -- #1163: a missing closer is tolerated only when all remaining checks pass --------------------------------
+
+@pytest.mark.parametrize(("reply", "body", "tolerated"), [
+    (f"{OPEN}\n{PLAIN_BODY}", PLAIN_BODY, ("unclosed_envelope",)),
+    (f'{OPEN}\n{LINES}\n"{HINT}"', PLAIN_BODY, ("unclosed_envelope", "hint_decoration")),
+    # The existing </summary> closer path takes precedence, leaving the unmatched <summary> in the body.
+    (f"{OPEN}\n<summary>\n{PLAIN_BODY}\n</summary>", f"<summary>\n{PLAIN_BODY}", ("summary_closer",)),
+    (f"{OPEN}\n{PLAIN_BODY}\n[SILENT]", PLAIN_BODY, ("unclosed_envelope", "hint_trailing_control")),
+], ids=["no-closer", "decorated-hint", "summary-closer-precedence", "trailing-control"])
+def test_1163_unclosed_valid_reply_is_accepted(reply, body, tolerated):
+    assert _check(reply) == (body, "", tolerated)
+    assert escalation._unwrap_summary_contract(reply, NONCE, MAX_TOKENS) == body
+
+
+@pytest.mark.parametrize("reply", [
+    f"{OPEN}\n{LINES}",
+    f"{OPEN}\n{LINES[:len(LINES) // 2]}",
+    f"{OPEN}\n{PLAIN_BODY}\nThanks for reading.",
+    f"{OPEN}\n{OPEN}\n{PLAIN_BODY}",
+    f'<lcm-summary nonce="{"f" * 32}">\n{PLAIN_BODY}',
+    f"{OPEN}\nExpand for details about: x",
+], ids=["missing-hint", "truncated-mid-body", "chatter-after-hint", "two-opening-tags", "wrong-nonce", "short-body"])
+def test_1163_unclosed_invalid_reply_keeps_envelope_failure(reply):
+    assert _check(reply) == ("", "envelope", ())
+    assert escalation._unwrap_summary_contract(reply, NONCE, MAX_TOKENS) == ""
+
+
+def test_1163_unclosed_reply_logs_one_info_line(monkeypatch, caplog):
+    _install_call_llm(monkeypatch, lambda opening: f"{opening}\n{PLAIN_BODY}")
+    assert _summarize(caplog) == PLAIN_BODY
+    assert [r.getMessage() for r in caplog.records] == [
+        "LCM summary contract: tolerated unclosed_envelope (model=tier-x)"]
+    assert caplog.records[0].levelno == logging.INFO
