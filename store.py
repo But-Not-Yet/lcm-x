@@ -1204,6 +1204,13 @@ class MessageStore:
             self._conn.commit()
             return cur.rowcount > 0
 
+    def has_session_messages(self, session_id: str) -> bool:
+        """Whether a session contains any messages, without counting them."""
+        return bool(self._conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = ?)",
+            (session_id,),
+        ).fetchone()[0])
+
     def get_session_count(self, session_id: str) -> int:
         """Count messages in a session."""
         row = self._conn.execute(
