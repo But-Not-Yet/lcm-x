@@ -16,9 +16,10 @@ Two heads reach it:
 * a carrier head (summary + the glued real user row of a tail that starts on a user row) -- the stub-first
   exit keeps the host carrier AND assembles the summary prefix again, doubling it.
 
-The control runs the same flow with no stub-first pass between the compaction and the rebind. The last test
-starts from a store that already holds such a stale proof (the stub-first pass of a version that wrote none):
-the upgrade restart is itself the cold bind, so it must reconcile past that proof.
+The control runs the same flow with no stub-first pass between the compaction and the rebind. (d) and (e) start
+from a store that already holds such a stale proof (the stub-first pass of a version that wrote none): the upgrade
+restart is itself the cold bind, so it must reconcile past that proof. (f) is the reverse case: the host refuses or
+rolls back the stub-first list, so its proof must never become durable. (g) adopts through a rotation instead.
 """
 from __future__ import annotations
 
@@ -54,6 +55,7 @@ class Host:
         self.tmp_path, self.tail_count = tmp_path, tail_count
         self.rng, self.clock, self.n_turns = random.Random(1), 1_760_000_000.0, 0
         self.live: list = []
+        self.sid = SID
         self.engine = self._bind()
 
     def _config(self):
@@ -66,7 +68,7 @@ class Host:
 
     def _bind(self, **start):
         engine = LCMEngine(config=self._config(), hermes_home=str(self.tmp_path / "home"))
-        engine.on_session_start(SID, platform="cli", conversation_id=CID, context_length=CONTEXT, **start)
+        engine.on_session_start(self.sid, platform="cli", conversation_id=CID, context_length=CONTEXT, **start)
         return engine
 
     def words(self, n):
@@ -99,8 +101,15 @@ class Host:
     def adopt(self, result):
         """The host swaps its history for the returned list and tells the engine about the boundary."""
         self.live = result
-        self.engine.on_session_start(SID, boundary_reason="compression", old_session_id=SID, platform="cli",
+        self.engine.on_session_start(self.sid, boundary_reason="compression", old_session_id=self.sid, platform="cli",
                                      conversation_id=CID, context_length=CONTEXT)
+
+    def rotate(self, result, before, child):
+        """A Hermes rotation: the parent ends on the list compress() was given, the host continues in a child."""
+        self.engine.on_session_end(self.sid, before)
+        self.engine.on_session_start(child, boundary_reason="compression", old_session_id=self.sid, platform="cli",
+                                     conversation_id=CID, context_length=CONTEXT)
+        self.sid, self.live = child, result
 
     def cold_rebind(self):
         self.engine.shutdown()
@@ -109,7 +118,7 @@ class Host:
 
     def stored_rows(self):
         return self.engine._store._conn.execute(
-            "SELECT COUNT(*) FROM messages WHERE session_id = ?", (SID,)).fetchone()[0]
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?", (self.sid,)).fetchone()[0]
 
     def frontier(self):
         return int(self.engine._lifecycle.get_by_conversation(CID).current_frontier_store_id)
@@ -182,14 +191,19 @@ def grow_over_threshold(host):
         host.turn(tool_words=1_900)
 
 
-def stub_first_pass(host, caplog):
-    """The over-threshold pass that returns via stub_first_exit; the host adopts the rewritten list."""
+def stub_first_result(host, caplog):
+    """The over-threshold pass that returns via stub_first_exit: (the rewritten list, the list it was given)."""
     before = deepcopy(host.live)
     caplog.clear()
     result, status = host.compress()
     assert status == "sanitized" and STUB_FIRST in caplog.text, "the over-threshold pass returns via stub_first_exit"
     assert result != before and any("Externalized tool output" in str(m.get("content")) for m in result)
-    host.adopt(result)
+    return result, before
+
+
+def stub_first_pass(host, caplog):
+    """The stub-first pass; the host adopts the rewritten list."""
+    host.adopt(stub_first_result(host, caplog)[0])
 
 
 def header_count(message):
@@ -216,7 +230,7 @@ def cold_rebind_problems(host, caplog):
 def leave_proof_stale(host, caplog):
     """The stub-first pass of a version that wrote no proof for it: the store keeps the earlier proof, now stale."""
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(LCMEngine, "_persist_compress_commit_proof", lambda self, proof: None)
+        patch.setattr(LCMEngine, "_persist_compress_commit_proof", lambda self, proof, **_kwargs: None)
         stub_first_pass(host, caplog)
     return host.engine._durable_commit_proof_payload()
 
@@ -370,3 +384,45 @@ def test_a_summary_equal_user_row_that_is_no_stub_first_head_is_stored(stub_firs
     assert recon["reason"] == "persisted ambiguous delta", recon
     assert host.stored_rows() > rows, "the user row is stored"
     assert getattr(host.engine, "_retired_durable_proof", None) is None
+
+
+# -- (f) the host refuses or rolls back the stub-first list --------------------------------------------------------
+
+
+@pytest.mark.parametrize("restart", [True, False], ids=["cold", "warm"])
+@pytest.mark.parametrize("head", ["summary", "carrier"])
+def test_a_stub_first_list_the_host_does_not_adopt_writes_no_proof(stub_first_session, caplog, head, restart):
+    """A would_grow refusal, a superseded attempt, a commit-fence abort or ``committed=False``: the host keeps its
+    list and sends no compression boundary. The durable proof stays the committed one, and the store maps as on base."""
+    host = stub_first_session(head, stub_first=False)
+    committed = host.engine._durable_commit_proof_payload()
+    stub_first_result(host, caplog)  # returned, never adopted: host.live is unchanged
+    assert host.engine._durable_commit_proof_payload()["created_at"] == committed["created_at"]
+    rows = host.stored_rows()
+    host.clock += 0.5
+    host.live.append({"role": "user", "content": "next turn: " + host.words(25), "timestamp": host.clock})
+    if restart:
+        host.cold_rebind()
+    else:
+        host.engine.ingest(deepcopy(host.live))
+    assert host.stored_rows() == rows + 1, "only the new turn is stored"
+    assert host.unmapped() == []
+    frontier, wedged = host.drive(caplog)
+    assert not wedged
+    if restart:  # warm, the next pass exits stub-first again and the one after holds, both as on base
+        assert host.frontier() > frontier
+
+
+# -- (g) the host adopts the stub-first list through a rotation --------------------------------------------------
+
+
+def test_a_rotation_that_adopts_a_stub_first_list_re_keys_its_proof_to_the_child(stub_first_session, caplog):
+    host = stub_first_session("summary", stub_first=False)
+    result, before = stub_first_result(host, caplog)
+    host.rotate(result, before, "stub-first-proof-child")
+    proof = host.engine._durable_commit_proof_payload()
+    assert proof is not None and proof["session_id"] == "stub-first-proof-child"
+    host.cold_rebind()
+    assert host.stored_rows() == 0, "the child's cold bind replays the adopted list"
+    frontier, wedged = host.drive(caplog)
+    assert not wedged and host.frontier() > frontier

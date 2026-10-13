@@ -771,8 +771,8 @@ class CompactionMixin:
             proof["native"] = False
             proof["published"] = self._last_compression_status == "compacted"
             proof["recovery"] = self._last_compression_status == "overflow_recovery"
-            # #671: a stub-first exit hands the host a rewritten list (summary prefix re-emitted from the DAG, stubs)
-            # that it adopts; the durable proof must describe that list, or a cold rebind reads a stale one.
+            # #671: a stub-first exit hands the host a rewritten list (summary prefix re-emitted from the DAG, stubs);
+            # once the host commits it, the durable proof must describe that list, or a cold rebind reads a stale one.
             proof["stub_first"] = bool(getattr(self, "_stub_first_exit_now", None))
             # #1013: an output that dropped ignored rows with no leaf is still a rewrite the host
             # adopts; a cold rebind needs this proof to tell its replay from a new turn. Same text is
@@ -791,8 +791,12 @@ class CompactionMixin:
                 "emissions": copy.deepcopy(emissions),
             }
             self._compress_commit_proof = proof
-            if proof["published"] or proof["native"] or proof["recovery"] or proof["filtered"] or proof["stub_first"]:
+            if proof["published"] or proof["native"] or proof["recovery"] or proof["filtered"]:
                 self._persist_compress_commit_proof(proof)
+            elif proof["stub_first"]:
+                # #1116: the host can still refuse or roll back the list, so the proof becomes durable only on its
+                # commit signal (the compression boundary), with the store tail of this compress().
+                proof["stub_first_last_store_id"] = self._commit_proof_last_store_id()
         except Exception:
             self._compress_commit_proof = None
 
@@ -857,16 +861,20 @@ class CompactionMixin:
         except Exception:  # the carrier stays unbound: a replay of it is stored again, never lost
             logger.debug("LCM survival-fit carrier binding failed", exc_info=True)
 
-    def _persist_compress_commit_proof(self, proof) -> None:
+    def _commit_proof_last_store_id(self) -> int:
+        tail = self._store.get_session_tail(self._session_id, limit=1)
+        return int(tail[-1]["store_id"]) if tail else 0
+
+    def _persist_compress_commit_proof(self, proof, last_store_id: Optional[int] = None) -> None:
         """Durable twin of the process-local proof: lets a restarted/resumed
         process re-index the host's post-compaction list without guessing.
 
-        Written for a published LCM compaction, adopted native recovery, or an
-        output that dropped ignored rows (#1013);
-        ``last_store_id`` marks where later rows begin.
+        Written for a published LCM compaction, adopted native recovery, an
+        output that dropped ignored rows (#1013), or a stub-first list the host
+        committed (#1116: from the compression boundary, never from compress());
+        ``last_store_id`` marks where later rows begin (default: the store tail now).
         """
         try:
-            tail = self._store.get_session_tail(self._session_id, limit=1)
             effective = [_commit_proof_identity_digest(identity) for identity in proof["output_effective"]]
             full = [_commit_proof_identity_digest(identity) for identity in proof["output"]]
             payload = {
@@ -884,7 +892,7 @@ class CompactionMixin:
                 # this reader's projection digests, swapped in for a bound record (#517).
                 "effective_sha256": proof.get("effective_sha256_v3", effective),
                 "effective_sha256_v4": effective,
-                "last_store_id": int(tail[-1]["store_id"]) if tail else 0,
+                "last_store_id": self._commit_proof_last_store_id() if last_store_id is None else int(last_store_id),
                 "native": bool(proof.get("native")),
                 "droppable": list(proof.get("droppable") or []),
                 "skip_landing": list(proof.get("skip_landing") or []),
