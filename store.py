@@ -1303,9 +1303,9 @@ class MessageStore:
         return self._conn.execute(
             """
             WITH session_ids AS (
-                SELECT session_id FROM messages
+                SELECT session_id FROM messages WHERE session_id = ?
                 UNION
-                SELECT session_id FROM summary_nodes
+                SELECT session_id FROM summary_nodes WHERE session_id = ?
             ),
             message_stats AS (
                 SELECT session_id,
@@ -1313,7 +1313,7 @@ class MessageStore:
                        COALESCE(SUM(token_estimate), 0) AS token_total,
                        MIN(timestamp) AS first_message_at,
                        MAX(timestamp) AS last_message_at
-                FROM messages
+                FROM messages WHERE session_id = ?
                 GROUP BY session_id
             ),
             node_stats AS (
@@ -1322,7 +1322,7 @@ class MessageStore:
                        COALESCE(SUM(token_count), 0) AS node_token_total,
                        MIN(COALESCE(earliest_at, created_at)) AS first_node_at,
                        MAX(COALESCE(latest_at, created_at)) AS last_node_at
-                FROM summary_nodes
+                FROM summary_nodes WHERE session_id = ?
                 GROUP BY session_id
             )
             SELECT s.session_id,
@@ -1340,7 +1340,7 @@ class MessageStore:
             WHERE s.session_id = ?
             ORDER BY s.session_id
             """,
-            (session_id,),
+            (session_id,) * 5,
         ).fetchall()
 
     def get_source_normalization_plan(self) -> Dict[str, Any]:
