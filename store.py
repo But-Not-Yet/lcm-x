@@ -1209,11 +1209,14 @@ class MessageStore:
 
     def backfill_observed_at_many(self, pairs) -> int:
         """R5: batch proven ``(store_id, stamp)`` backfills, never overwriting a value."""
+        rows = [(float(stamp), int(store_id)) for store_id, stamp in pairs]
+        if not rows:  # no commit: an empty pass must not commit a caller's open transaction (the per-row loop did not)
+            return 0
         with self._write_lock, self._conn:
             return self._conn.executemany(
                 "UPDATE messages SET observed_at = ?, observed_at_source = 'host_message_timestamp' "
                 "WHERE store_id = ? AND observed_at IS NULL",
-                [(float(stamp), int(store_id)) for store_id, stamp in pairs],
+                rows,
             ).rowcount
 
     def has_session_messages(self, session_id: str) -> bool:
