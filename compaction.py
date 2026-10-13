@@ -42,7 +42,7 @@ from .reconcile import (
     _proof_user_identity,
 )
 from .sanitize import _contains_sensitive_redaction
-from .sqlite_util import _is_sqlite_locked_error
+from .sqlite_util import PhaseSqlTrace, _is_sqlite_locked_error
 from .survival_fit import _RECOVERY_THRESHOLD_SHARE
 from .tokens import count_message_tokens, count_messages_tokens, count_tokens
 
@@ -565,6 +565,9 @@ class CompactionMixin:
         budget = self._foreground_budget = self._new_foreground_budget()  # #605 K1: the clock starts here
         returned = None
         try:
+            budget.pre_leaf = PhaseSqlTrace()  # #1127: timed until the first leaf call, or the stop before one
+            budget.pre_leaf.install([(self._store, "_conn"), (self._store, "_write_lock"), (self._dag, "_conn"),
+                                     (self._dag, "_db_lock"), (self._lifecycle, "_conn"), (self._lifecycle, "_lock")])
             self._pending_emission_candidates = []
             self._survival_fit_emission = None
             self._compress_occurrences = None
@@ -658,10 +661,38 @@ class CompactionMixin:
                     return fitted
             raise
         finally:
+            self._end_pre_leaf_phase(budget, "stopped")
             self._last_compress_leaves = (self._hold_conversation_key(), budget.leaves)
             self._compress_forced_overflow = False
             self._foreground_budget = None
             self._finish_foreground_budget(budget, returned)
+
+    def _pre_leaf_span(self, name: str, started: float) -> None:
+        trace = getattr(self._foreground_budget, "pre_leaf", None)
+        if trace is not None:
+            trace.spans[name] = trace.spans.get(name, 0.0) + time.monotonic() - started
+
+    def _end_pre_leaf_phase(self, budget: ForegroundBudget, reached: str) -> None:
+        """#1127: one WARNING when the pre-leaf phase ran past the hard bound: its timed steps, the spans the steps
+        do not time, the seconds neither accounts for, and this thread's lock waits and slow SQL statements."""
+        trace, budget.pre_leaf = budget.pre_leaf, None
+        if trace is None:
+            return
+        trace.uninstall()
+        total = time.monotonic() - budget.t0
+        if total <= budget.hard:
+            return
+        spans = trace.spans
+        spans.setdefault("pre_loop", total)  # the phase ended before the leaf loop
+        accounted = spans["pre_loop"] + sum(trace.steps.values()) + spans.get("extraction", 0.0)
+        logger.warning(
+            "LCM pre-leaf phase ran past the hard bound: total=%.1fs (budget %gs) reached=%s; steps: %s; spans: %s "
+            "lock_wait=%.1fs; unaccounted=%.1fs; slow_sql=%d/%.1fs slowest=%.1fs \"%s\"",
+            total, budget.hard, reached, ", ".join(f"{step}={sec:.1f}s" for step, sec in trace.steps.items()) or "none",
+            " ".join(f"{name}={spans.get(name, 0.0):.1f}s" for name in ("pre_loop", "ingest", "condensation", "extraction")),
+            trace.lock_wait, max(0.0, total - accounted), trace.slow_count, trace.slow_seconds, trace.slowest,
+            trace.slowest_sql,
+        )
 
     def _new_foreground_budget(self) -> ForegroundBudget:
         soft, hard = self._foreground_budget_seconds()
@@ -1303,7 +1334,9 @@ class CompactionMixin:
         # Step 1: Ingest new messages into the immutable store. Work from a
         # replay-safe view so quarantined assistant loops do not enter summaries
         # or provider context after the durable row has been written.
+        span_started = time.monotonic()
         working_messages = self._ingest_messages(messages)
+        self._pre_leaf_span("ingest", span_started)  # #1127: ingest and reconcile, untimed by the sweep steps
         # #488: project the complete admitted list ONCE; subset consumers read a row's occurrence
         # here. Only a row at exactly one position is registered (F6): a copy or an aliased row
         # is unproven (full identity).
@@ -1523,6 +1556,7 @@ class CompactionMixin:
             and self._summary_route_available()
         ):
             budget.leaf_reserve = budget.estimate(self._primary_summary_route())
+            span_started = time.monotonic()
             try:
                 pre_leaf_condensation_passes, pre_leaf_condensation_reason = (
                     self._run_threshold_sweep_condensation(
@@ -1546,6 +1580,7 @@ class CompactionMixin:
                 )
             finally:
                 budget.leaf_reserve = 0.0
+                self._pre_leaf_span("condensation", span_started)
             max_leaf_passes -= pre_leaf_condensation_passes
         if threshold_full_sweep_active:
             self._last_threshold_full_sweep.update(
@@ -1556,6 +1591,9 @@ class CompactionMixin:
             )
 
         no_call_only, refused_input = False, None
+        self._pre_leaf_span("pre_loop", budget.t0)
+        if budget.pre_leaf is not None:
+            budget.pre_leaf.steps = sweep_step_seconds
         while leaf_passes < max_leaf_passes:
             if threshold_full_sweep_active and time.monotonic() >= sweep_deadline:
                 sweep_stop_reason = "time_budget_exhausted"
@@ -1958,11 +1996,13 @@ class CompactionMixin:
                 # turns cannot leak through derived assistant/tool replies.
                 if self._config.extraction_enabled:
                     # #605: every foreground path, sweep on or off: extraction never outlasts the hard bound.
+                    span_started = time.monotonic()
                     self._run_pre_compaction_extraction(
                         summary_input_chunk,
                         timeout_seconds=max(0.001, min(self._config.summary_timeout_ms / 1000,
                                                        sweep_deadline - time.monotonic())),
                     )
+                    self._pre_leaf_span("extraction", span_started)
                 if bool(
                     getattr(
                         self._config,
@@ -1972,6 +2012,7 @@ class CompactionMixin:
                 ):
                     self._schedule_pre_compaction_assertions(summary_input_chunk)
 
+                self._end_pre_leaf_phase(budget, "first_leaf")
                 step_started = time.monotonic() if threshold_full_sweep_active else 0.0
                 self._last_leaf_level_3_verbatim = False
                 self._last_leaf_content_filter_error = False
@@ -2216,6 +2257,7 @@ class CompactionMixin:
                     if not (deferred_maintenance_active and critical_budget_pressure):
                         break
 
+        self._end_pre_leaf_phase(budget, "leaf" if leaf_compacted_this_turn else "stopped")
         if no_call_only:  # #628: this pass stored no leaf while every route is refused
             sweep_stop_reason, sweep_raw_drained = "summary_route_unavailable", False
             # review of #723: and returns the list it started with (no scaffold or ignored-backlog edit of its own)

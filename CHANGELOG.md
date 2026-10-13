@@ -6,6 +6,8 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
+- Diagnostic: a compaction whose pre-leaf phase (from `compress()` entry to the first leaf call, or the stop before one) runs past the hard bound logs one WARNING, `LCM pre-leaf phase ran past the hard bound`, with the total, the timed sweep steps, the untimed spans (before the leaf loop, ingest and reconcile, pre-leaf condensation, extraction), the engine's lock waits, the unaccounted seconds, and the count and seconds of its own SQL statements that took 1 s or more with the first 40 characters of the slowest one's SQL template (no parameters, no content). The statement timing is installed only for that phase. (#1127)
+
 ## v0.27.0 (summary quality)
 
 - Fix: the default summary-prefix sweep target is one leaf budget, capped at a quarter of the compaction threshold, so small windows no longer fill their threshold with summaries. Explicit targets are unchanged. In the deterministic 32K-window replay, compactions fall from 360 in rc3 to 78 (rc2: 116). (rc4)
