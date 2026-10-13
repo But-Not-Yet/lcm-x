@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_lcm.config import LCMConfig
+from hermes_lcm.dag import SummaryNode
 from hermes_lcm.engine import LCMEngine
 from hermes_lcm.tokens import count_messages_tokens
 
@@ -18,11 +19,11 @@ def test_p0_leaf_chunk_and_summary_defaults():
 
 
 @pytest.fixture
-def threshold_sweep(tmp_path, monkeypatch):
+def threshold_sweep(tmp_path, monkeypatch, request):
     home = tmp_path / "hermes"
     config = LCMConfig(database_path=str(home / "lcm.db"))
     engine = LCMEngine(config=config, hermes_home=str(home))
-    engine.on_session_start("phase-0", platform="cli", context_length=16_000)
+    engine.on_session_start("phase-0", platform="cli", context_length=getattr(request, "param", 16_000))
     messages = [
         {"role": "user" if i % 2 == 0 else "assistant",
          "content": f"FACT-{i} " + "alpha beta gamma delta " * 44}
@@ -53,12 +54,39 @@ def test_p0_threshold_sweep_compacts_less_than_one_default_chunk(threshold_sweep
     assert engine.get_status()["threshold_full_sweep"]["leaf_passes"] >= 1
 
 
-def test_p0_sweep_prefix_target_follows_default_leaf_chunk(threshold_sweep):
+@pytest.mark.parametrize("threshold_sweep", [16_000, 272_000], indirect=True)
+def test_p0_sweep_prefix_target_capped_by_threshold(threshold_sweep):
     engine, messages = threshold_sweep
     assert engine._config.summary_prefix_target_tokens == 0
-    engine.compress(messages, current_tokens=count_messages_tokens(messages))
+    engine.compress(messages, current_tokens=max(engine.threshold_tokens, count_messages_tokens(messages)))
     telemetry = engine.get_status()["threshold_full_sweep"]
-    assert telemetry["summary_prefix_target_tokens"] == engine._config.leaf_chunk_tokens == 24_000
+    assert engine._config.leaf_chunk_tokens == 24_000
+    assert telemetry["summary_prefix_target_tokens"] == min(24_000, int(0.25 * engine.threshold_tokens))
+
+
+@pytest.mark.parametrize("threshold_sweep", [32_000], indirect=True)
+def test_p0_small_window_sweep_condenses_to_a_quarter_of_threshold(threshold_sweep, monkeypatch):
+    import hermes_lcm.engine as engine_module
+
+    engine, messages = threshold_sweep
+    assert engine.threshold_tokens == 24_000
+    for index in range(4):
+        engine._dag.add_node(SummaryNode(
+            session_id="phase-0", depth=0, summary=f"Earlier fact group {index}",
+            token_count=2_000, source_token_count=24_000, source_ids=[],
+            source_type="messages", created_at=index,
+        ))
+    assert 6_000 < engine._summary_frontier_tokens() < 24_000
+    monkeypatch.setattr(engine_module, "summarize_with_escalation",
+                        lambda **kwargs: ("Earlier fact groups 0 through 3.", 1))
+    messages = [{**message, "content": message["content"] * 2} for message in messages]
+    current_tokens = count_messages_tokens(messages)
+    assert engine.threshold_tokens <= current_tokens < 32_000
+    engine.compress(messages, current_tokens=current_tokens)
+    telemetry = engine.get_status()["threshold_full_sweep"]
+    assert telemetry["condensation_passes"] >= 1
+    assert telemetry["summary_prefix_tokens_after"] <= 6_000
+    assert telemetry["stop_reason"] == "summary_prefix_target_reached"
 
 
 def test_p0_default_leaf_rescue_shrinks_below_the_chunk_for_a_small_context_summariser(tmp_path, monkeypatch, caplog):

@@ -706,7 +706,7 @@ class LCMConfig:
     critical_budget_pressure_ratio: float = 0.0
     # Run one bounded synchronous sweep after threshold pressure is reached.
     threshold_full_sweep_enabled: bool = True
-    # Target frontier-summary size after a sweep (0 = derive one leaf budget).
+    # Target frontier-summary size after a sweep (0 = one leaf budget, capped at a quarter of the compaction threshold).
     summary_prefix_target_tokens: int = 0
     # #605: from compress() entry, after the first stored leaf or condensed node no summariser call starts unless it is expected
     # to end by this many seconds (0 = no soft target; at most the hard bound).
