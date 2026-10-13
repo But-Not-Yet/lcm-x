@@ -2510,9 +2510,8 @@ def _preset_show_text(tokens: list[str], engine) -> str:
         f"policy_path: {preset.policy_path}",
         f"benchmark_version: {provenance.get('benchmark_version', '(unknown)')}",
         f"fixture_suite: {fixture_suite}",
-        f"score: {metric_summary.get('score', '(unknown)')}",
-        f"baseline_score: {metric_summary.get('baseline_score', '(unknown)')}",
-        f"retrieval_canary_recall: {metric_summary.get('retrieval_canary_recall', '(unknown)')}",
+        *(f"{key}: {value}" for key, value in metric_summary.items()),  # #1126: the preset's own recorded metrics
+        *([] if metric_summary else ["metric_summary: (none recorded for this preset)"]),
         f"applies_to: {applies_to}",
         "runtime_env:",
     ]

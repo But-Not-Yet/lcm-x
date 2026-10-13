@@ -68,6 +68,10 @@ def test_lcm_preset_show_exposes_codex_provenance_without_mutating_config(tmp_pa
         "dropped_rows": 0,
         "baseline_dropped_rows": 47,
     }
+    assert "compactions_per_100_messages: 20.0" in result
+    assert "baseline_compactions_per_100_messages: 87.0" in result
+    assert "facts_kept_cp304: 0.853" in result
+    assert "(unknown)" not in result.split("applies_to:")[0]
     assert "policy_path: benchmarks/policies/codex_gpt_long_context.yaml" in result
     assert "operator_config_precedence: explicit preset-managed LCM_* overrides win" in result
     assert "runtime_mutation: no" in result
@@ -89,6 +93,8 @@ def test_lcm_preset_show_exposes_spark_provenance_without_mutating_config(tmp_pa
     assert "no separate 128k cell has run yet" in result
     assert "headroom metrics are omitted" in result
     assert get_preset("codex_spark_context").provenance["metric_summary"] == {}
+    assert "metric_summary: (none recorded for this preset)" in result
+    assert "score: (unknown)" not in result
     assert "policy_path: benchmarks/policies/codex_spark_context.yaml" in result
     assert "large context windows near 128k tokens" in result
     assert "LCM_CONTEXT_THRESHOLD=0.75" in result
