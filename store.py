@@ -1054,7 +1054,8 @@ class MessageStore:
         for start in range(0, len(ids) if self._host_uid_table_exists() else 0, 500):
             chunk = ids[start:start + 500]
             for store_id, uid in self._conn.execute(
-                f"SELECT store_id, uid FROM host_uid_bindings WHERE store_id IN ({','.join('?' * len(chunk))}) "
+                f"SELECT store_id, uid FROM host_uid_bindings INDEXED BY idx_host_uid_store "
+                f"WHERE store_id IN ({','.join('?' * len(chunk))}) "
                 "AND lineage_key = ? AND kind IN ('canonical', 'version')", [*chunk, lineage_key]):
                 out.setdefault(int(store_id), set()).add(str(uid))
         return out
