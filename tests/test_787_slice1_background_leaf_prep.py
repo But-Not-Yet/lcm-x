@@ -9,7 +9,9 @@ from __future__ import annotations
 import contextvars
 import importlib
 import os
+import sys
 import threading
+import time
 
 import pytest
 
@@ -71,7 +73,7 @@ class _Provider:
             self.hook()
         if isinstance(self.result, BaseException):
             raise self.result
-        return self.result
+        return self.result(prompt) if callable(self.result) else self.result
 
     def on(self, thread_name: str) -> int:
         with self.lock:
@@ -961,3 +963,149 @@ def test_a_newer_turn_supersedes_the_queued_job_of_its_conversation(
         release.set()
         assert _isolated.wait_idle(10)
         other.shutdown()
+
+
+# Review round 1 (PR #1142) ------------------------------------------------------------------------------------------
+
+
+def test_r1_f1_a_durable_dependent_reply_is_never_published_in_a_prepared_summary(
+    engine, provider, _isolated
+):
+    view = _crossing_view(engine)
+    marker = "reply to T1 alpha"  # T1's reply only (T10 reads "reply to T10 alpha")
+    reply = 1 + next(
+        i for i, m in enumerate(view) if str(m.get("content")).startswith(marker)
+    )  # store ids follow the view (system prompt = 1)
+    engine.ingest(view)
+    assert engine._store.get(reply)["content"].startswith(marker)
+    # No ignore pattern is configured; the reply stays marked as an ignored-dependent reply.
+    engine._write_generated_ignored_dependent_reply_records(
+        [
+            {
+                "store": engine._ignored_dependent_reply_store_fingerprint(
+                    {"role": "assistant", "store_id": reply}
+                )
+            }
+        ]
+    )
+    provider.result = lambda prompt: SUMMARY + (
+        " [dependent reply text]" if marker in prompt else ""
+    )
+    _turn_end(engine, view)
+    assert _isolated.counters["prepared"] >= 1
+
+    engine.compress(view, current_tokens=tokens.count_messages_tokens(view))
+
+    summaries = [
+        node.summary for node in engine._dag.get_session_nodes("S", limit=100_000)
+    ]
+    assert summaries and not any("[dependent reply text]" in s for s in summaries)
+
+
+def test_r1_f2_each_profile_keeps_its_worker_spend_guard_across_interleaved_jobs(
+    tmp_path, provider, _isolated
+):
+    first = _engine(tmp_path, background_leaf_prep_max_calls=2)
+    second = _engine(
+        tmp_path / "b",
+        database_path=str(tmp_path / "b.db"),
+        background_leaf_prep_max_calls=3,
+    )
+    try:
+        view = _crossing_view(first)
+        _turn_end(first, view)
+        assert provider.on("lcm-leaf-prep") == 2  # the first profile's window is spent
+        _turn_end(second, _crossing_view(second))  # another profile, another guard
+        before = provider.on("lcm-leaf-prep")
+        assert before > 2
+        first.ingest(view + _view(60)[len(view) :])
+        first.last_prompt_tokens = WINDOW  # far above L: the chain would grow
+        first._prepare_leaves_after_turn(view)
+        assert _isolated.wait_idle(10)
+        assert provider.on("lcm-leaf-prep") == before  # still no slot for the first profile
+    finally:
+        first.shutdown()
+        second.shutdown()
+
+
+def test_r1_f3_the_worker_route_check_leaves_the_live_breaker_untouched(
+    engine, provider, _isolated
+):
+    live = engine._summary_circuit_breaker
+    key = live._key(engine._config.summary_model)
+    live._open_until[key] = (
+        time.monotonic() - 1
+    )  # expired: only the foreground prunes it
+    _turn_end(engine, _crossing_view(engine))
+    assert _isolated.counters["prepared"] >= 1
+    assert key in live._open_until
+
+
+def test_r1_f4_the_preparation_serializer_creates_no_payload_directory(tmp_path):
+    from hermes_lcm.engine import LeafPrepUnavailable, _serialize_leaf_input
+
+    storage = tmp_path / "payloads"
+    config = LCMConfig(
+        large_output_externalization_enabled=True,
+        large_output_externalization_threshold_chars=100,
+        large_output_externalization_path=str(storage),
+    )
+    rows = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "large tool output " * 40},
+    ]
+    with pytest.raises(LeafPrepUnavailable):
+        _serialize_leaf_input(
+            rows,
+            config=config,
+            hermes_home=str(tmp_path),
+            session_id="S",
+            externalize_write=False,
+        )
+    assert not storage.exists()
+
+
+def test_r1_f5_off_publication_records_progress_after_the_host_list_trim(
+    tmp_path, provider, _isolated
+):
+    engine = _engine(tmp_path, background_leaf_prep_enabled=False)
+    seen: dict[str, int] = {}
+
+    def lines(frame, event, arg):
+        if event == "line":
+            local = frame.f_locals
+            budget, working = local.get("budget"), local.get("working_messages")
+            if (
+                "published" not in seen
+                and engine._last_compacted_store_id
+                and working is not None
+            ):
+                seen["published"] = len(working)  # the host list when the frontier marker moved
+            if "progress" not in seen and getattr(budget, "leaves", 0) >= 1:
+                seen["progress"] = len(working)  # the host list when the leaf counted as progress
+        return lines
+
+    def calls(frame, event, arg):
+        return lines if frame.f_code.co_name == "_compress_impl" else None
+
+    try:
+        view = _crossing_view(engine)
+        sys.settrace(calls)
+        try:
+            engine.compress(view, current_tokens=tokens.count_messages_tokens(view))
+        finally:
+            sys.settrace(None)
+        # Base order (09e32580): marker, counters, rollups, host-list trim, then progress and holds.
+        assert seen["progress"] < seen["published"]
+    finally:
+        engine.shutdown()
