@@ -285,6 +285,7 @@ def test_r21_b_15s_estimates_condense_then_store_a_leaf_by_60(tmp_path, monkeypa
 
 def test_r21_c_a_frontier_under_its_target_keeps_r2(tmp_path, monkeypatch, clock, caplog):
     engine = _engine(tmp_path,
+        summary_prefix_target_tokens=400,  # This timing case deliberately keeps its 390-token frontier below target.
         # #1013 part B: foreground timing excludes background rollup calls
         large_output_externalization_enabled=False,
         large_output_active_replay_stubbing_enabled=False,

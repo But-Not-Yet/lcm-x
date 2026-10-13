@@ -52,6 +52,7 @@ logger = logging.getLogger(__name__)
 
 _THRESHOLD_FULL_SWEEP_MAX_PASSES = 12
 _THRESHOLD_FULL_SWEEP_MAX_SECONDS = 120.0
+_DEFAULT_SWEEP_TARGET_THRESHOLD_SHARE = 0.25
 _THRESHOLD_FULL_SWEEP_PARTIAL_STOP_REASONS = frozenset({
     "pass_budget_exhausted",
     "time_budget_exhausted",
@@ -1422,12 +1423,14 @@ class CompactionMixin:
             budget.soft = 0.0
         sweep_deadline = budget.t0 + budget.hard
         configured_sweep_target = int(self._config.summary_prefix_target_tokens)
-        sweep_target_tokens = max(
-            1,
-            configured_sweep_target
-            if configured_sweep_target > 0
-            else int(self._config.leaf_chunk_tokens),
-        )
+        if configured_sweep_target > 0:
+            sweep_target_tokens = configured_sweep_target
+        else:
+            sweep_target_tokens = int(self._config.leaf_chunk_tokens)
+            if self.threshold_tokens > 0:
+                # Default to one leaf budget capped at a quarter of the threshold, so a small window's prefix cannot fill it (rc3 compacted on every 32K call).
+                sweep_target_tokens = min(sweep_target_tokens, int(self.threshold_tokens * _DEFAULT_SWEEP_TARGET_THRESHOLD_SHARE))
+        sweep_target_tokens = max(1, sweep_target_tokens)
         sweep_summary_prefix_before = (
             self._summary_frontier_tokens() if threshold_full_sweep_active else 0
         )

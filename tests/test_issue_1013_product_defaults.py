@@ -55,7 +55,7 @@ def test_part_b_env_false_overrides_the_deployed_defaults(tmp_path, monkeypatch)
 def test_threshold_full_sweep_is_active_by_default(tmp_path, monkeypatch):
     engine, _hermes_home = _default_engine(tmp_path)
     engine._session_id = "defaults-sweep"
-    engine.threshold_tokens = 1
+    engine.threshold_tokens = 24_000  # A realistic threshold keeps the default prefix target above the fake leaves.
     messages = [{"role": "system", "content": "system"}]
     # Keep multiple sweep passes with the larger default leaf chunk.
     for index in range(100):
