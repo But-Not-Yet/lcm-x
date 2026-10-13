@@ -163,14 +163,56 @@ def test_oldest_prefix_rescue_loses_all_durable_source(tmp_path, summarize, capl
         summarize.side_effect = [RuntimeError("context length exceeded"), summarize.return_value]
         with caplog.at_level(logging.INFO):
             result = engine.compress(view, current_tokens=count_messages_tokens(view))
-        assert summarize.call_count == 2
-        assert "retrying with smaller oldest chunk" in caplog.text
+        assert summarize.call_count == 1
+        assert "retrying with smaller oldest chunk" not in caplog.text
+        assert sum(record.levelno == logging.WARNING and record.getMessage().startswith(WARNING)
+                   for record in caplog.records) == 1
         assert CONFLICT not in caplog.text
         assert engine._last_compression_status in {"noop", "sanitized"}
         assert engine._last_compression_noop_reason == NOOP
         assert result == view
         assert engine._store_complete_frontier() == frontier
         assert engine._dag.get_session_nodes(engine._session_id) == nodes
+        assert engine._store.get_session_messages(engine._session_id) == rows
+        engine._no_progress_hold = None  # exercise another pass after the hold expires
+        summarize.side_effect = [RuntimeError("context length exceeded"), summarize.return_value]
+        with caplog.at_level(logging.INFO):
+            result = engine.compress(view, current_tokens=count_messages_tokens(view))
+        assert summarize.call_count == 2
+        assert "retrying with smaller oldest chunk" not in caplog.text
+        assert sum(record.levelno == logging.WARNING and record.getMessage().startswith(WARNING)
+                   for record in caplog.records) == 1
+        assert result == view
+        assert engine._store_complete_frontier() == frontier
+        assert engine._dag.get_session_nodes(engine._session_id) == nodes
+        assert engine._store.get_session_messages(engine._session_id) == rows
+    finally:
+        engine.shutdown()
+
+
+def test_oldest_prefix_rescue_keeps_durable_source_and_publishes(tmp_path, summarize, caplog):
+    """#1147 r1: a mixed leaf still retries when its oldest prefix retains durable rows."""
+    engine = _engine(tmp_path, leaf_chunk_tokens=20_000, dynamic_leaf_chunk_max=20_000)
+    history = _history()
+    engine._ingest_messages(history)
+    assert engine.rotate_active_session(apply=True)["ok"]
+    engine.shutdown()
+    engine = _engine(tmp_path, leaf_chunk_tokens=20_000, dynamic_leaf_chunk_max=20_000)
+    try:
+        view = [*_history(6, "B"), *history]
+        engine.ingest(view)
+        frontier = engine._store_complete_frontier()
+        rows = engine._store.get_session_messages(engine._session_id)
+        summarize.side_effect = [RuntimeError("context length exceeded"), summarize.return_value]
+        with caplog.at_level(logging.INFO):
+            result = engine.compress(view, current_tokens=count_messages_tokens(view))
+        assert summarize.call_count == 2
+        assert "retrying with smaller oldest chunk" in caplog.text
+        assert WARNING not in caplog.text
+        assert CONFLICT not in caplog.text
+        assert result != view
+        assert engine._store_complete_frontier() > frontier
+        assert engine._dag.get_session_nodes(engine._session_id)
         assert engine._store.get_session_messages(engine._session_id) == rows
     finally:
         engine.shutdown()
