@@ -7,7 +7,7 @@ own `benchmarking.standalone` fallback; no Hermes code is imported.
 """
 from __future__ import annotations
 
-import hashlib, importlib, importlib.util, os, shutil, subprocess, sys, threading, time, types, uuid  # noqa: E401
+import hashlib, importlib, importlib.util, os, re, shutil, subprocess, sys, threading, time, types, uuid  # noqa: E401
 from pathlib import Path
 
 WORKTREE = Path(os.environ.get("S2_PRODUCT_WORKTREE", ".")).resolve()
@@ -17,6 +17,7 @@ LOCK = threading.Lock()
 CALLS: list[dict] = []      # every seam call since the last take()
 SUMMARIES: list[dict] = []  # every summarize_with_escalation return since the last take()
 _LANE = {"lane": None}
+LIMIT_RE = re.compile(r"429|usage limit|rate limit|too many requests", re.I)  # D5-A live brake marker
 
 def load_engine(arm=None):
     """Register the worktree as `hermes_lcm` (package __init__ not executed, as the harness and tests do)."""
@@ -142,7 +143,7 @@ class CodexEffortLane:
         prompt, out = base / "prompt.txt", base / "last-message.txt"
         prompt.write_text(lanes.flat_prompt(system, user_parts))
         eff, limit = effort or "medium", float(timeout or lanes.CALL_TIMEOUT_S)
-        cmd = ["codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only", "-m", self.model,
+        cmd = ["codex", "exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "-m", self.model,
                "-c", f"model_reasoning_effort={eff}", "-c", 'service_tier="default"', "--output-last-message", str(out), "-"]
         t0 = time.monotonic()
         try:
@@ -152,6 +153,9 @@ class CodexEffortLane:
             raise lanes.LaneError(f"timeout after {limit}s", limit)
         dt = round(time.monotonic() - t0, 2)
         if p.returncode != 0:
+            if LIMIT_RE.search(p.stderr or "") or LIMIT_RE.search(p.stdout or ""):  # one fixed line; never the output
+                print("codex lane: HTTP 429 usage limit marker", file=sys.stderr, flush=True)
+                raise lanes.LaneError(f"codex exit {p.returncode} LIMIT", dt)
             raise lanes.LaneError(f"codex exit {p.returncode}", dt)
         text = out.read_text() if out.exists() else ""
         shutil.rmtree(base, ignore_errors=True)
