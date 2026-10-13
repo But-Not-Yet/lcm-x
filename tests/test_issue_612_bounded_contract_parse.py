@@ -187,8 +187,11 @@ def test_1163_unclosed_valid_reply_is_accepted(reply, body, tolerated):
     f"{OPEN}\n{PLAIN_BODY}\n</summary>\nappended after the envelope\n{HINT}",
     f"{OPEN}\n<think>\n{PLAIN_BODY}",
     f"{OPEN}\nThinking process:\n{PLAIN_BODY}",
+    f"{OPEN}\n<summary>\n<think>\n{PLAIN_BODY}",
+    f"{OPEN}\n<summary>\n{PLAIN_BODY}",
 ], ids=["missing-hint", "truncated-mid-body", "chatter-after-hint", "two-opening-tags", "wrong-nonce", "short-body",
-        "text-after-closer", "text-after-summary-closer", "unclosed-think", "reasoning-header"])
+        "text-after-closer", "text-after-summary-closer", "unclosed-think", "reasoning-header", "wrapper-hides-think",
+        "unmatched-wrapper"])
 def test_1163_unclosed_invalid_reply_keeps_envelope_failure(reply):
     assert _check(reply) == ("", "envelope", ())
     assert escalation._unwrap_summary_contract(reply, NONCE, MAX_TOKENS) == ""
