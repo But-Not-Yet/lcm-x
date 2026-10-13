@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 from typing import NamedTuple, Optional
 
+from .config import host_message_uid_mode
 from .ingest_protection import quarantine_suspicious_assistant_messages
 from .message_analysis import _tool_call_id
 from .reconcile import _has_lossy_redacted_identity
@@ -133,7 +134,8 @@ class StoreCompleteMixin:
         owned_ids = [int(row[0]) for row in owned]
         lineage, _reason = self._host_uid_lineage_key()
         bound, canonical, composite = {}, {}, set()
-        if lineage:
+        # #1146 r2: absent uid bindings prove E2 copies only while the shadow writer runs.
+        if lineage and host_message_uid_mode() != "off":
             try:
                 bound = self._store.host_uid_uids_of_stores(lineage, owned_ids)
                 canonical = self._store.host_uid_uids_of_stores(lineage, owned_ids, kinds=("canonical",), require_disagree=True)

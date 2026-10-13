@@ -170,6 +170,22 @@ def test_01_same_leaf_copy_is_excluded(engine, evidence):
     assert set(copies) <= set(engine._store_complete_excluded)
 
 
+def test_01_e2_is_disabled_after_host_uid_mode_is_off(engine, monkeypatch):
+    monkeypatch.delenv("LCM_HOST_MESSAGE_UID", raising=False)
+    twin, repeat = _append(engine, [_text(), _text()])
+    _bind(engine, twin)
+    end = _append(engine, [_text("next turn", "user")])[0]
+    out = _walk(engine)
+    assert _ids(out) == [twin, end]
+    assert engine._store_complete_copy_exclusion_proofs == {repeat: twin}
+
+    monkeypatch.setenv("LCM_HOST_MESSAGE_UID", "off")
+    out = _walk(engine)
+    assert _ids(out) == [twin, repeat, end]
+    assert repeat not in engine._store_complete_excluded
+    assert engine._store_complete_copy_exclusion_proofs == {}
+
+
 def test_02_node_covered_twin_is_excluded_next_leaf(engine):
     originals = _append(engine, _segment())
     twin = originals[-1]
