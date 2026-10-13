@@ -260,6 +260,40 @@ def _prepared(engine, _isolated, view) -> list:
     return chain
 
 
+def test_rotate_restart_full_transcript_never_promotes_unread_start(
+    tmp_path, provider, _isolated
+):
+    engine = _engine(tmp_path)
+    try:
+        view = _crossing_view(engine)
+        engine.ingest(view)
+        assert engine.rotate_active_session(apply=True)["ok"]
+    finally:
+        engine.shutdown()
+
+    engine = _engine(tmp_path)
+    try:
+        for turn in range(3):
+            view = view + [
+                {"role": "user", "content": f"[N{turn}] new user{PAD}"},
+                {"role": "assistant", "content": f"new reply N{turn}{PAD}"},
+            ]
+            _turn_end(engine, view)
+        assert leaf_prep.ready_chain(engine._store.db_path, "conv", _frontier(engine))
+
+        result = engine.compress(view)
+
+        assert not _isolated.counters.get("promoted")
+        output_contents = {message.get("content") for message in result}
+        assert all(
+            message["content"] in output_contents
+            for message in view
+            if str(message.get("content", "")).startswith("[T")
+        )
+    finally:
+        engine.shutdown()
+
+
 # 3. each reject reason -------------------------------------------------------------------------------------------
 
 

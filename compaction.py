@@ -1065,6 +1065,11 @@ class CompactionMixin:
             )
             if anchored_input == []:
                 return None
+            # #1141: retain the foreground fallback for unread host rows at the frontier.
+            full_map = self._current_compress_store_ids_by_message_id or {}
+            claiming = {id(m) for m, claims in anchored_input or () if claims}
+            if selected_input and id(selected_input[0]) not in full_map and id(selected_input[0]) not in claiming:
+                return None  # the range starts at a host row the prepared summary never read
             summary_input_chunk, sources, anchor_claims = self._leaf_summary_input(anchored_input, selected_input)
             if not summary_input_chunk:
                 return None
