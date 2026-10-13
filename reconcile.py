@@ -69,6 +69,9 @@ _PRUNED_SKILL_RELOAD_NOTICE_HEADER = "[Skills pruned during compression — relo
 # salvage_grown_transcript) rewrites an old tool output in its list to exactly this text and keeps the
 # tool_call_id. The rewritten row is the stored occurrence, not a new one; the store keeps the full output.
 _HERMES_PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
+# hermes-agent agent/context_compressor.py ``_SALVAGE_KEEP_RECENT_TOOLS``: the salvage never clears the newest two
+# tool outputs of its list (the only writer of the placeholder), and the host only appends after it.
+_HERMES_SALVAGE_KEEP_RECENT_TOOLS = 2
 # The salvage clears only string outputs longer than this (context_compressor.py _PRUNE_MIN_CHARS), so a
 # placeholder stands only for a stored row longer than this.
 _HERMES_PRUNE_MIN_CHARS = 200
@@ -2949,6 +2952,17 @@ class ReconcileMixin:
         together, and a segment that cannot fully cover its needs debits
         nothing. Pinned by ``test_repeated_identical_tool_invocation_is_``
         ``persisted_not_replayed``.
+
+        #773: a Hermes salvage placeholder that took a stored row's identity is
+        proof only for an occurrence the list does not already hold, and never
+        when it is one of the list's newest two tool rows (the salvage never
+        clears those, and the host only appends after it). Accepted residual:
+        after a restart, a genuine call that reuses an id, returns the
+        placeholder text and has two or more newer tool outputs after it, with
+        its stored same-id occurrence outside the reconciled prefix, is read as
+        that occurrence's salvage replay and not stored; the input is the
+        salvage's own. Pinned by ``test_a_placeholder_for_a_stored_pair_after_``
+        ``a_new_row_is_still_a_replay``.
         """
         if not self._session_id or cursor >= len(messages):
             return set()
@@ -2971,6 +2985,9 @@ class ReconcileMixin:
         # prefix carries (its full row, or another placeholder for it) is accounted for, so a genuine new
         # call that reuses the id and returns the placeholder text is persisted, not suppressed.
         prefix_counts: Optional[Counter] = None  # the prefix's identities, read only when one is borrowed
+        # A placeholder among this list's newest two tool rows is no salvage product: a genuine output, never proof.
+        salvage_kept = set(
+            [i for i, m in enumerate(messages) if str(m.get("role") or "") == "tool"][-_HERMES_SALVAGE_KEEP_RECENT_TOOLS:])
         replayed: set[int] = set()
         index = max(0, cursor)
         while index < len(messages):
@@ -2999,16 +3016,18 @@ class ReconcileMixin:
                 tool_call_id = str(result.get("tool_call_id") or "")
                 content = normalize_content_value(result.get("content")) or ""
                 result_identity = self._message_replay_identity(result)
+                borrows = (content == _HERMES_PRUNED_TOOL_PLACEHOLDER
+                           and result_identity[1] != _HERMES_PRUNED_TOOL_PLACEHOLDER)
                 if (
                     tool_call_id in call_ids
                     and not _is_hermes_persisted_output_marker(content)
                     and not _has_lossy_redacted_identity(result_identity)
                     and result_identity in stored_identity_counts
+                    and not (borrows and probe in salvage_kept)
                 ):
                     result_indexes[tool_call_id] = probe
                     segment_needs[result_identity] += 1
-                    if (content == _HERMES_PRUNED_TOOL_PLACEHOLDER
-                            and result_identity[1] != _HERMES_PRUNED_TOOL_PLACEHOLDER):
+                    if borrows:
                         borrowed.add(result_identity)
                 probe += 1
             if borrowed and prefix_counts is None:
