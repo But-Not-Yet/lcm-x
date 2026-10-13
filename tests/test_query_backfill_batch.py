@@ -34,6 +34,20 @@ def test_backfill_many_matches_per_row_loop(tmp_path):
             store.close()
 
 
+def test_backfill_many_empty_batch_leaves_caller_transaction_open(tmp_path):
+    store = MessageStore(tmp_path / "empty-batch.db")
+    try:
+        store.append("s", {"role": "user", "content": "row"})
+        store._conn.execute("UPDATE messages SET content = 'pending' WHERE store_id = 1")
+        assert store._conn.in_transaction
+        assert store.backfill_observed_at_many(iter(())) == 0
+        assert store._conn.in_transaction  # an empty pass commits nothing, as the per-row loop did
+        store._conn.rollback()
+        assert store._conn.execute("SELECT content FROM messages WHERE store_id = 1").fetchone()[0] == "row"
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize("site", ["prefix", "commit"])
 def test_backfill_call_sites_batch_once(tmp_path, monkeypatch, site):
     def new_engine():
