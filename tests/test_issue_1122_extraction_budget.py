@@ -77,6 +77,126 @@ def test_extraction_timeout_reserves_next_summary_and_writes_leaf(
 
 
 @pytest.mark.parametrize("sweep_enabled", [True, False])
+def test_extraction_deadline_keeps_first_leaf_floor_headroom(
+    tmp_path, monkeypatch, clock, sweep_enabled
+):
+    engine = _engine(
+        tmp_path,
+        extraction_enabled=True,
+        summary_model="primary",
+        summary_timeout_ms=LCMConfig().summary_timeout_ms,
+        foreground_soft_seconds=60,
+        foreground_hard_seconds=120,
+        threshold_full_sweep_enabled=sweep_enabled,
+    )
+    engine._foreground_estimates.record_call("primary", 15.0)
+    provider = _provider(monkeypatch, clock, default=0.25)
+    extraction_calls = []
+    _advance_on(monkeypatch, engine, "_prepare_retained_user_anchor", clock, 75.0)
+    _advance_on(monkeypatch, engine, "_serialize_messages", clock, 3.0)
+    # Timeout handling/logging takes time before the first leaf's admit.
+    _advance_on(monkeypatch, engine, "_run_pre_compaction_extraction", clock, 1.0)
+
+    def hanging_extraction(**kwargs):
+        budget = engine._foreground_budget
+        extraction_calls.append((kwargs["timeout"], budget.usable_deadline - clock()))
+        clock.offset += kwargs["timeout"]
+        raise TimeoutError("extraction timed out")
+
+    monkeypatch.setattr(lcm_engine, "extract_before_compaction", hanging_extraction)
+    try:
+        view = _view()
+        engine.ingest(view)
+        engine.compress(view, current_tokens=engine.threshold_tokens + 1)
+        assert len(extraction_calls) == 1
+        assert extraction_calls[0][1] == pytest.approx(37.0)
+        assert len(provider.calls) == 1
+        assert provider.calls[0][1] >= 15.0
+        assert len(_leaves(engine)) == 1
+    finally:
+        engine.shutdown()
+
+
+def test_extraction_deadline_reserves_next_leaf_before_soft_target(
+    tmp_path, monkeypatch, clock
+):
+    engine = _engine(
+        tmp_path,
+        extraction_enabled=True,
+        summary_model="primary",
+        summary_timeout_ms=LCMConfig().summary_timeout_ms,
+        foreground_soft_seconds=60,
+        foreground_hard_seconds=120,
+    )
+    engine._foreground_estimates.record_call("primary", 20.0)
+    provider = _provider(monkeypatch, clock, default=20.0)
+    extraction_calls = []
+
+    def hanging_after_progress(**kwargs):
+        budget = engine._foreground_budget
+        if not budget.progress:
+            return
+        estimate = budget.estimate(engine._primary_summary_route())
+        extraction_calls.append(
+            (kwargs["timeout"], budget.t0 + budget.soft - estimate - 2.0 - clock(), estimate)
+        )
+        clock.offset += kwargs["timeout"]
+        raise TimeoutError("extraction timed out")
+
+    monkeypatch.setattr(lcm_engine, "extract_before_compaction", hanging_after_progress)
+    try:
+        view = _view()
+        engine.ingest(view)
+        engine.compress(view, current_tokens=engine.threshold_tokens + 1)
+        assert len(extraction_calls) == 1
+        timeout, soft_room, estimate = extraction_calls[0]
+        assert estimate == 20.0
+        assert timeout <= soft_room
+        assert len(provider.calls) == 2
+        assert 1000.0 + provider.calls[1][2] + estimate <= 1060.0
+        assert len(_leaves(engine)) == 2
+    finally:
+        engine.shutdown()
+
+
+def test_extraction_deadline_subtracts_serialization_time(tmp_path, monkeypatch, clock):
+    engine = _engine(tmp_path, extraction_enabled=True)
+    extraction_calls = []
+    _advance_on(monkeypatch, engine, "_serialize_messages", clock, 3.0)
+    monkeypatch.setattr(
+        lcm_engine, "extract_before_compaction", lambda **kwargs: extraction_calls.append(kwargs)
+    )
+    deadline = clock() + 10.0
+    try:
+        engine._run_pre_compaction_extraction(_view(), timeout_seconds=9.0, deadline=deadline)
+        assert len(extraction_calls) == 1
+        assert extraction_calls[0]["timeout"] == pytest.approx(deadline - clock(), abs=0.01)
+        assert extraction_calls[0]["timeout"] == pytest.approx(7.0, abs=0.01)
+    finally:
+        engine.shutdown()
+
+
+def test_extraction_deadline_skips_when_serialization_leaves_less_than_one_second(
+    tmp_path, monkeypatch, clock, caplog
+):
+    engine = _engine(tmp_path, extraction_enabled=True)
+    extraction_calls = []
+    _advance_on(monkeypatch, engine, "_serialize_messages", clock, 3.0)
+    monkeypatch.setattr(
+        lcm_engine, "extract_before_compaction", lambda **kwargs: extraction_calls.append(kwargs)
+    )
+    deadline = clock() + 3.5
+    try:
+        with caplog.at_level(logging.DEBUG, logger="hermes_lcm"):
+            engine._run_pre_compaction_extraction(_view(), deadline=deadline)
+        assert clock() == pytest.approx(deadline - 0.5)
+        assert extraction_calls == []
+        assert "Pre-compaction extraction skipped" in caplog.text
+    finally:
+        engine.shutdown()
+
+
+@pytest.mark.parametrize("sweep_enabled", [True, False])
 def test_disabled_extraction_is_not_called(tmp_path, monkeypatch, clock, sweep_enabled):
     engine = _engine(tmp_path, threshold_full_sweep_enabled=sweep_enabled)
     provider = _provider(monkeypatch, clock, default=0.25)
