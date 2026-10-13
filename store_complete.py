@@ -151,9 +151,9 @@ class StoreCompleteMixin:
             if row and not _has_lossy_redacted_identity(self._message_replay_identity(row, strip_carrier=False)):
                 e1 = (row.get("role") == "assistant" and any(_tool_call_id(call) for call in (row.get("tool_calls") or []))
                       or row.get("role") == "tool" and bool(str(row.get("tool_call_id") or "").strip()))
-                # Accepted residual: an unbound genuine repeat of a re-ingested twin can still be
-                # excluded without a composite witness; its bytes remain summarized through the twin.
-                matches = [t for t in by_key.get(key, ()) if e1 or (canonical.get(t) and not bound.get(sid) and sid not in composite)]
+                # #1146 r3: never E2 for user rows; the host may ingest the current turn before it mints its uid.
+                # Disclosed residual: an assistant row left unbound by a failed shadow write and also hidden can be excluded; its bytes stay summarized through the twin.
+                matches = [t for t in by_key.get(key, ()) if e1 or (row.get("role") != "user" and canonical.get(t) and not bound.get(sid) and sid not in composite)]
                 if matches:
                     twins[sid] = matches
             by_key.setdefault(key, []).append(sid)
