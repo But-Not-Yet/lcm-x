@@ -1065,16 +1065,24 @@ class CompactionMixin:
             )
             if anchored_input == []:
                 return None
-            # #1141: retain the foreground fallback for unread host rows at the frontier.
-            full_map = self._current_compress_store_ids_by_message_id or {}
-            claiming = {id(m) for m, claims in anchored_input or () if claims}
-            if selected_input and id(selected_input[0]) not in full_map and id(selected_input[0]) not in claiming:
-                return None  # the range starts at a host row the prepared summary never read
             summary_input_chunk, sources, anchor_claims = self._leaf_summary_input(anchored_input, selected_input)
             if not summary_input_chunk:
                 return None
-            return tuple(self._leaf_consumption(chunk, summary_input_chunk, sources, anchored_input, anchor_claims,
-                                                dependent_reply_message_ids)[3:])
+            consumption = tuple(self._leaf_consumption(chunk, summary_input_chunk, sources, anchored_input, anchor_claims,
+                                                       dependent_reply_message_ids)[3:])
+            # #1142 r3/r4: an unmapped start must resolve to durable rows the prepared leaf read.
+            full_map = self._current_compress_store_ids_by_message_id or {}
+            claiming = {id(m) for m, claims in anchored_input or () if claims}
+            if selected_input and id(selected_input[0]) not in full_map and id(selected_input[0]) not in claiming:
+                first_ids = self._get_store_ids_for_messages([selected_input[0]], full_map)
+                if not first_ids and self._generated_context_carrier_remainder(selected_input[0]) is not None:
+                    first_identity = self._message_replay_identity(self._leaf_summary_input(None, selected_input[:1])[0][0])
+                    first_ids = [store_id for message in summary_input_chunk
+                                 if self._message_replay_identity(message) == first_identity
+                                 for store_id in anchor_claims.get(id(message), ())]
+                if not first_ids or not set(first_ids).issubset(consumption[1]):
+                    return None
+            return consumption
         finally:
             self._store_complete_excluded, self._store_complete_cut = saved
 
