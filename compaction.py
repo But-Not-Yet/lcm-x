@@ -1957,12 +1957,22 @@ class CompactionMixin:
                 # Use the same dependency-filtered view as summarization so ignored
                 # turns cannot leak through derived assistant/tool replies.
                 if self._config.extraction_enabled:
-                    # #605: every foreground path, sweep on or off: extraction never outlasts the hard bound.
-                    self._run_pre_compaction_extraction(
-                        summary_input_chunk,
-                        timeout_seconds=max(0.001, min(self._config.summary_timeout_ms / 1000,
-                                                       sweep_deadline - time.monotonic())),
+                    # #1122: leave the next summary call its estimate, including the first leaf.
+                    now = time.monotonic()
+                    extraction_timeout = min(
+                        self._config.summary_timeout_ms / 1000,
+                        sweep_deadline - now,
+                        budget.usable_deadline - now - budget.estimate(self._primary_summary_route()),
                     )
+                    if extraction_timeout < 1.0:
+                        logger.debug(
+                            "Pre-compaction extraction skipped: less than 1s remains after reserving the next summary call"
+                        )
+                    else:
+                        self._run_pre_compaction_extraction(
+                            summary_input_chunk,
+                            timeout_seconds=extraction_timeout,
+                        )
                 if bool(
                     getattr(
                         self._config,
