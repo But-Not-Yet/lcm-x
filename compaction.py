@@ -570,6 +570,7 @@ class CompactionMixin:
             self._survival_fit_reason = None
             self._no_progress_candidate = False
             self._stub_first_exit_now = self._last_stub_first_exit = None  # #671: the latest compaction only
+            self._compress_calls += 1  # #1116: a stub-first proof becomes durable only for the latest call
             if bypass_cooldown:  # #651: a host recovery attempt is never cleanup-only maintenance
                 self._preflight_below_threshold_cleanup_only = self._preflight_automatic_request = False
                 # #684: nor held by a boundary cooldown.
@@ -797,6 +798,7 @@ class CompactionMixin:
                 # #1116: the host can still refuse or roll back the list, so the proof becomes durable only on its
                 # commit signal (the compression boundary), with the store tail of this compress().
                 proof["stub_first_last_store_id"] = self._commit_proof_last_store_id()
+                proof["stub_first_compress_call"] = self._compress_calls
         except Exception:
             self._compress_commit_proof = None
 

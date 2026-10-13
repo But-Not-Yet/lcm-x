@@ -19,7 +19,8 @@ Two heads reach it:
 The control runs the same flow with no stub-first pass between the compaction and the rebind. (d) and (e) start
 from a store that already holds such a stale proof (the stub-first pass of a version that wrote none): the upgrade
 restart is itself the cold bind, so it must reconcile past that proof. (f) is the reverse case: the host refuses or
-rolls back the stub-first list, so its proof must never become durable. (g) adopts through a rotation instead.
+rolls back the stub-first list, so its proof must never become durable, also not at a later boundary for another
+list. (g) adopts through a rotation instead, and (h) through Hermes's own in-place order.
 """
 from __future__ import annotations
 
@@ -103,6 +104,12 @@ class Host:
         self.live = result
         self.engine.on_session_start(self.sid, boundary_reason="compression", old_session_id=self.sid, platform="cli",
                                      conversation_id=CID, context_length=CONTEXT)
+
+    def commit_in_place(self, result, before):
+        """Hermes's in-place commit: commit_memory_session ends the session on the list compress() was given, the
+        archive commits, then the compression boundary fires (agent/conversation_compression.py)."""
+        self.engine.on_session_end(self.sid, before)
+        self.adopt(result)
 
     def rotate(self, result, before, child):
         """A Hermes rotation: the parent ends on the list compress() was given, the host continues in a child."""
@@ -424,5 +431,45 @@ def test_a_rotation_that_adopts_a_stub_first_list_re_keys_its_proof_to_the_child
     assert proof is not None and proof["session_id"] == "stub-first-proof-child"
     host.cold_rebind()
     assert host.stored_rows() == 0, "the child's cold bind replays the adopted list"
+    frontier, wedged = host.drive(caplog)
+    assert not wedged and host.frontier() > frontier
+
+
+def test_a_refused_stub_first_proof_is_not_made_durable_by_a_later_commit(stub_first_session, caplog, monkeypatch):
+    """The host refuses a stub-first list, and the next compress() fails and returns the #582 survival fit, which the
+    host commits. The boundary signals that commit, not the refused list: the earlier proof stays process-local."""
+    host = stub_first_session("summary", stub_first=False)
+    committed = host.engine._durable_commit_proof_payload()
+    stub_first_result(host, caplog)  # refused: host.live is unchanged, no boundary
+    while host.tokens() < int(CONTEXT * 0.97):
+        host.turn(tool_words=900)
+    assert host.engine._compress_commit_proof is not None, "the refused list's proof is still process-local"
+    before = deepcopy(host.live)
+    with monkeypatch.context() as patch:
+        patch.setattr(LCMEngine, "_compress_impl", lambda self, *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+        result, _status = host.compress()
+    assert result != before, "the survival fit rewrote the list"
+    host.commit_in_place(result, before)
+    assert host.engine._durable_commit_proof_payload()["created_at"] == committed["created_at"]
+
+
+# -- (h) Hermes's in-place order: the session-end commit, then the boundary --------------------------------------
+
+
+@pytest.mark.parametrize("restart", [True, False], ids=["cold", "warm"])
+@pytest.mark.parametrize("head", ["summary", "carrier"])
+def test_a_stub_first_list_committed_in_hermes_order_maps_and_progresses(stub_first_session, caplog, head, restart):
+    host = stub_first_session(head, stub_first=False)
+    result, before = stub_first_result(host, caplog)
+    host.commit_in_place(result, before)
+    rows = host.stored_rows()
+    host.clock += 0.5
+    host.live.append({"role": "user", "content": "next turn: " + host.words(25), "timestamp": host.clock})
+    if restart:
+        host.cold_rebind()
+    else:
+        host.engine.ingest(deepcopy(host.live))
+    assert host.stored_rows() == rows + 1, "only the new turn is stored"
+    assert host.unmapped() == []
     frontier, wedged = host.drive(caplog)
     assert not wedged and host.frontier() > frontier
