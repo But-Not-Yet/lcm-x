@@ -89,6 +89,7 @@ def _engine(tmp_path, *, window: int = WINDOW, **config) -> LCMEngine:
     settings = {
         "database_path": str(tmp_path / "lcm.db"),
         "background_leaf_prep_enabled": True,
+        "background_leaf_prep_max_calls": 64,  # chunks end at host-unit boundaries: more, smaller leaves
         "fresh_tail_count": 2,
         "leaf_chunk_tokens": CHUNK,
         "context_threshold": 0.75,
@@ -322,26 +323,160 @@ def test_session_rebind_rejects_with_binding_changed(engine, provider, _isolated
     view = _crossing_view(engine)
     chain = _prepared(engine, _isolated, view)
     engine._session_id = "S-next"  # the leaves were prepared for S
-    engine._compress_occurrences = None  # as compress() leaves it without a v4 proof
+    engine._current_compress_store_ids_by_message_id = {}
 
-    leaf_prep_promotion = engine._promote_prepared_leaves(
-        view, view, engine.threshold_tokens + 1, engine._new_foreground_budget()
+    match = engine._match_prepared_leaf(
+        view[1:],
+        view,
+        [],
+        set(),
+        engine.threshold_tokens + 1,
+        tokens.count_messages_tokens(view),
     )
 
-    assert leaf_prep_promotion is None
+    assert match is None
     assert _isolated.counters["rejected_binding_changed"] == len(chain)
 
 
-def test_missing_host_row_rejects_with_host_position_gap(engine, provider, _isolated):
-    view = _crossing_view(engine)
-    chain = _prepared(engine, _isolated, view)
-    gap = chain[0].covered_store_ids[2] - 1  # the view index of a covered row
-    shown = view[:gap] + view[gap + 1 :]
+def _emission_view(turns: int) -> list[dict]:
+    """Turns whose assistant emission is stored as two rows (a short text, then its tool call) and a result."""
+    rows = [{"role": "system", "content": "system prompt"}]
+    for i in range(turns):
+        call = {
+            "id": f"C{i}",
+            "type": "function",
+            "function": {"name": "read", "arguments": "{}"},
+        }
+        rows += [
+            {"role": "user", "content": f"[T{i}] user turn{PAD}"},
+            {"role": "assistant", "content": f"notes on T{i}"},
+            {
+                "role": "assistant",
+                "content": f"Read the fixture for C{i}.",
+                "tool_calls": [call],
+            },
+            {"role": "tool", "tool_call_id": f"C{i}", "content": f"result {i}{PAD}"},
+        ]
+    return rows
 
-    engine.compress(shown, current_tokens=tokens.count_messages_tokens(shown))
 
-    assert _isolated.counters["rejected_host_position_gap"] == len(chain)
+def _emission_crossing(engine) -> list[dict]:
+    turns = 1
+    while (
+        tokens.count_messages_tokens(_emission_view(turns)) <= engine.threshold_tokens
+    ):
+        turns += 1
+    return _emission_view(turns)
+
+
+def _merged(engine, view) -> list[dict]:
+    """The host's list once LCM's assembly merged each emission's adjacent assistant rows into one message."""
+    host = engine._sanitize_active_context_messages([dict(m) for m in view])
+    assert len(host) < len(view) and any(
+        m.get("tool_calls") and "notes on" in str(m.get("content")) for m in host
+    )
+    return host
+
+
+def _stored_count(engine) -> int:
+    return engine._store.connection.execute("SELECT COUNT(*) FROM messages").fetchone()[
+        0
+    ]
+
+
+def test_a_merged_assistant_emission_inside_a_prepared_leaf_is_promoted(
+    engine, provider, _isolated
+):
+    view = _emission_crossing(engine)
+    _turn_end(engine, view)
+    chain = leaf_prep.ready_chain(engine._store.db_path, "conv", 0)
+    stored = _stored_count(engine)
+
+    engine.compress(
+        _merged(engine, view), current_tokens=tokens.count_messages_tokens(view)
+    )
+
+    assert _stored_count(engine) == stored  # the merged message is no new row
+    assert _isolated.counters["promoted"] >= 1
+    leaves = _leaf_sources(engine)
+    assert leaves[0] == list(chain[0].covered_store_ids)
+    roles = dict(
+        engine._store.connection.execute(
+            "SELECT store_id, role FROM messages WHERE session_id = 'S'"
+        ).fetchall()
+    )
+    assert any(
+        roles[a] == roles[a + 1] == "assistant" for a in leaves[0] if a + 1 in leaves[0]
+    )  # the emission's text row and its tool-call row, both covered
+    flat = [store_id for ids in leaves for store_id in ids]
+    assert len(flat) == len(set(flat))
+
+
+def test_a_prepared_chunk_ending_inside_an_emission_is_rejected_never_published(
+    engine, provider, _isolated, monkeypatch
+):
+    # A worker that ends chunks only inside an emission (between its text row and its tool-call row).
+    monkeypatch.setattr(
+        leaf_prep,
+        "host_unit_boundary",
+        lambda previous, following: bool(
+            previous
+            and following
+            and previous.get("role") == following.get("role") == "assistant"
+        ),
+    )
+    view = _emission_crossing(engine)
+    _turn_end(engine, view)
+    chain = leaf_prep.ready_chain(engine._store.db_path, "conv", 0)
+    assert chain
+
+    engine.compress(
+        _merged(engine, view), current_tokens=tokens.count_messages_tokens(view)
+    )
+
+    assert _isolated.counters["rejected_host_unit_split"] == len(chain)
     assert _isolated.counters["promoted"] == 0
+    assert provider.on("MainThread") >= 1  # the leaf path summarised its own chunks
+    published = _leaf_sources(engine)
+    assert all(
+        ids != list(leaf.covered_store_ids) for leaf in chain for ids in published
+    )
+
+
+def test_a_chain_whose_first_row_is_glued_into_the_summary_carrier_is_promoted(
+    engine, provider, _isolated
+):
+    view = _crossing_view(engine)
+    engine._config.background_leaf_prep_enabled = False
+    result = engine.compress(view, current_tokens=tokens.count_messages_tokens(view))
+    engine._config.background_leaf_prep_enabled = True
+    longer = result + _view(40)[len(view) :]
+    _turn_end(engine, longer, tokens_now=engine.threshold_tokens - 1_000)
+    chain = leaf_prep.ready_chain(engine._store.db_path, "conv", _frontier(engine))
+    at = next(
+        i
+        for i, m in enumerate(longer)
+        if str(m.get("content")).startswith("[Recent Summary")
+    )
+    glued = longer[at + 1]
+    assert glued["role"] == "user"
+    # The host repairs role alternation: the summary and the next user row become one message (the carrier).
+    carrier = {
+        "role": "user",
+        "content": f"{longer[at]['content']}\n\n{glued['content']}",
+    }
+    host = longer[:at] + [carrier] + longer[at + 2 :]
+    assert engine._generated_context_carrier_remainder(carrier) == glued["content"]
+    stored = _stored_count(engine)
+
+    engine.compress(host, current_tokens=engine.threshold_tokens + 1)
+
+    assert _stored_count(engine) == stored
+    assert _isolated.counters["promoted"] >= 1
+    first = chain[0].covered_store_ids
+    assert list(first) in _leaf_sources(engine)  # the glued row opens the promoted leaf
+    flat = [store_id for ids in _leaf_sources(engine) for store_id in ids]
+    assert len(flat) == len(set(flat))
 
 
 def test_cache_bound_evicts_the_least_recently_used_conversation(

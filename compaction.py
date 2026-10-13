@@ -972,132 +972,141 @@ class CompactionMixin:
         self._sweep_budget_hold_until = 0.0  # #608: a stored leaf ends the hold
         self._no_progress_hold, self._no_progress_candidate = None, False  # #651: hidden-only leaves too
 
-    def _promote_prepared_leaves(self, working_messages, pressure_messages, estimated_active_tokens: int,
-                                 budget: ForegroundBudget):
-        """#787 (D-3, D-4, D-12): publish the ready chain of prepared leaves that starts at the durable frontier,
-        in order, through the fenced publication, until the conversation is at or below L. Each leaf must cover
-        exactly the next host rows after the summary scaffold, outside the fresh tail; inside the publication
-        transaction its coverage digest and route fingerprint are recomputed. The first rejection ends the chain
-        (counted by reason) and the foreground path continues. Returns None when nothing was published, else
-        (working, pressure, estimated tokens, promoted leaves, at or below L)."""
-        if not self._session_id or not self._conversation_id:
+    def _leaf_consumption(self, selected_raw_chunk, compacted_chunk, sources, anchored_input, anchor_claims,
+                          dependent_reply_message_ids):
+        """What a leaf summarised from ``compacted_chunk`` consumes (the leaf loop's derivation; #787 promotion
+        matches a prepared leaf with it): the compacted rows as host rows, their positions in the selected chunk,
+        the consumed host prefix, the summary lineage ids and the consumed store ids."""
+        anchor_claimed_ids = sorted({  # #436 R4: only claims whose text the summarizer actually read
+            store_id for message in compacted_chunk for store_id in anchor_claims.get(id(message), ())
+        })
+        compacted_chunk = [sources.get(id(message), message) for message in compacted_chunk]
+        compacted_summary_ids = {id(message) for message in compacted_chunk}
+        compacted_positions = [
+            idx for idx, message in enumerate(selected_raw_chunk) if id(message) in compacted_summary_ids
+        ]
+        last_compacted_raw_pos = max(compacted_positions) if compacted_positions else len(compacted_chunk) - 1
+        if anchored_input and not compacted_positions:
+            # #436 T6 / #581: a leaf of stored rows alone (hidden rows, or a rescue prefix of them)
+            # consumes no raw row; the boundary fallback never consumes rows the summarizer did not read.
+            last_compacted_raw_pos = -1
+        last_consumed_raw_pos = last_compacted_raw_pos
+        while (
+            not self._store_complete_cut
+            and last_consumed_raw_pos >= 0
+            and last_consumed_raw_pos + 1 < len(selected_raw_chunk)
+            and id(selected_raw_chunk[last_consumed_raw_pos + 1]) in dependent_reply_message_ids
+        ):
+            last_consumed_raw_pos += 1
+        source_lookup_chunk = selected_raw_chunk[: last_consumed_raw_pos + 1]
+        source_lineage_chunk = [
+            message for message in source_lookup_chunk if id(message) not in dependent_reply_message_ids
+        ]
+        full_map = self._current_compress_store_ids_by_message_id  # #535: the pass maps the whole list
+        source_store_ids = self._get_store_ids_for_messages(source_lineage_chunk, full_map)
+        source_store_ids = sorted(dict.fromkeys(source_store_ids + anchor_claimed_ids))
+        consumed_store_ids = self._get_store_ids_for_messages(source_lookup_chunk, full_map)
+        consumed_store_ids = sorted(dict.fromkeys(consumed_store_ids + anchor_claimed_ids))
+        return compacted_chunk, compacted_positions, source_lookup_chunk, source_store_ids, consumed_store_ids
+
+    def _leaf_summary_input(self, anchored_input, selected_input):
+        """The leaf loop's summariser input for a selected chunk: (rows, carrier rows by input row id, claims by
+        input row id). A carrier row is read as the real row glued behind its summary prefix."""
+        summary_input_chunk, sources = [], {}
+        anchor_claims: dict[int, list[int]] = {}  # #436 R4: id(input row) -> the store ids its text covers
+        for message, claims in anchored_input or [(message, []) for message in selected_input]:
+            remainder = self._generated_context_carrier_remainder(message)
+            if remainder is not None:
+                original = message
+                message = {**message, "content": remainder}
+                sources[id(message)] = original
+            if claims:
+                anchor_claims[id(message)] = claims
+            summary_input_chunk.append(message)
+        return summary_input_chunk, sources, anchor_claims
+
+    def _match_prepared_leaf(self, candidate_raw, working_messages, accounted_ids, dependent_reply_message_ids,
+                             estimated_active_tokens: int, raw_tokens_outside_tail: int):
+        """#787 (amendment M-1): the prepared leaf at the durable frontier and the host range ``candidate_raw[:k]``
+        whose consumption, derived exactly as the leaf loop derives it (claims included), equals the leaf's covered
+        rows at a tool-group-safe end: (leaf, chunk, L). None when nothing is ready, the conversation is at or
+        below L, or the chain was rejected (counted by reason)."""
+        if not self._session_id or not self._conversation_id or not candidate_raw:
             return None
         db_path, conversation_id = str(self._store.db_path), self._conversation_id
         state = self._lifecycle.get_by_conversation(conversation_id)
-        frontier = int(getattr(state, "current_frontier_store_id", 0) or 0)
-        chain = leaf_prep.ready_chain(db_path, conversation_id, frontier)
-        if not chain:
+        chain = leaf_prep.ready_chain(db_path, conversation_id, int(getattr(state, "current_frontier_store_id", 0) or 0))
+        bounds = leaf_prep.levels(self.threshold_tokens, self.context_length,
+                                  self._working_leaf_chunk_tokens(raw_tokens_outside_tail))
+        if not chain or bounds is None or estimated_active_tokens <= bounds[1]:
             return None
-        working, pressure = list(working_messages), list(pressure_messages)
-        lead = self._leading_anchor_count(working)
-        tail_start = self._fresh_tail_start(working)
-        start = lead
-        while start < tail_start and (
-            self._is_replayed_context_scaffold_message(working[start])
-            if self._compress_occurrences is None
-            else self._compress_occurrences.get(id(working[start]), (None, ()))[1] is None
-        ):
-            start += 1
-        chunk = self._working_leaf_chunk_tokens(count_messages_tokens(pressure[start:tail_start]))
-        bounds = leaf_prep.levels(self.threshold_tokens, self.context_length, chunk)
-        if bounds is None or estimated_active_tokens <= bounds[1]:
-            return None
-        low_water = bounds[1]
-        full_map = self._get_store_id_map_for_messages(working[lead:])
-        anchor_ids = self._get_store_ids_for_messages(working[:lead]) if lead else []
-        records = self._load_generated_ignored_dependent_reply_records()
-        hashes = self._load_generated_ignored_placeholder_hashes()
-        fingerprint = leaf_prep.route_fingerprint(self._config)
-        promoted, freed, reason = 0, 0, ""
-        for index, leaf in enumerate(chain):
-            if estimated_active_tokens <= low_water:
-                break
-            count = len(leaf.covered_store_ids)
-            window = working[start:start + count]
-            if leaf.session_id != self._session_id:
-                reason = "binding_changed"
-            elif leaf.route_fingerprint != fingerprint:
-                reason = "route_fingerprint_mismatch"
-            elif start + count > tail_start or tuple(full_map.get(id(m)) for m in window) != leaf.covered_store_ids \
-                    or any(self._prep_host_row_excluded(m, full_map[id(m)], records, hashes) for m in window):
-                reason = "host_position_gap"
-            if reason:
-                leaf_prep.reject(db_path, conversation_id, chain[index:], reason)
-                break
-            covered = list(leaf.covered_store_ids)
-            published_frontier = max(frontier, covered[-1])
-            carried_ranges = self._load_compression_carry_ranges()
-            filter_exclusion_proofs = self._stored_publication_filter_exclusions(
-                frontier, published_frontier, covered, {}, carried_ranges)
-            earliest_at, latest_at = self._store.get_time_bounds(covered)
-            source_tokens = count_messages_tokens(window)
-            node = SummaryNode(
-                session_id=self._session_id, depth=0, summary=leaf.summary, token_count=leaf.summary_tokens,
-                source_token_count=source_tokens, source_ids=covered, source_type="messages",
-                created_at=time.time(), earliest_at=earliest_at, latest_at=latest_at,
-                expand_hint=self._extract_expand_hint(leaf.summary),
+        leaf = chain[0]
+        if leaf.session_id != self._session_id:
+            reason = "binding_changed"
+        elif leaf.route_fingerprint != leaf_prep.route_fingerprint(self._config):
+            reason = "route_fingerprint_mismatch"
+        else:
+            full_map, last = self._current_compress_store_ids_by_message_id or {}, leaf.covered_store_ids[-1]
+            mapped = [full_map.get(id(message)) for message in candidate_raw]
+            # The range ends before the first host row mapped past the leaf, or right after the last one inside it.
+            k_high = next((i for i, store_id in enumerate(mapped) if store_id is not None and store_id > last),
+                          len(candidate_raw))
+            k_low = 1 + max((i for i, store_id in enumerate(mapped[:k_high]) if store_id is not None), default=-1)
+            for k in dict.fromkeys((k_high, k_low)):
+                if k <= 0 or tool_group_safe_end(candidate_raw, k) != k:
+                    continue
+                chunk = self._identity_anchor_extend_chunk(list(candidate_raw[:k]), candidate_raw)
+                if self._prepared_chunk_consumption(chunk, working_messages, accounted_ids,
+                                                    dependent_reply_message_ids) == list(leaf.covered_store_ids):
+                    return leaf, chunk, bounds[1]
+            reason = "host_unit_split"
+        self._reject_prepared_chain(leaf, reason)
+        return None
+
+    def _prepared_chunk_consumption(self, chunk, working_messages, accounted_ids, dependent_reply_message_ids):
+        """The store ids a leaf over ``chunk`` would consume, built as the leaf loop builds its input and claims;
+        None when no leaf can start there. The loop's store-complete state is restored afterwards."""
+        saved = getattr(self, "_store_complete_excluded", []), getattr(self, "_store_complete_cut", False)
+        selected_input = [message for message in chunk if id(message) not in dependent_reply_message_ids]
+        self._store_complete_excluded, self._store_complete_cut = [], False
+        try:
+            anchored_input = self._identity_anchor_summary_input(
+                selected_input, self._current_compress_store_ids_by_message_id, working_messages, chunk,
+                budget=max(1, int(self._config.leaf_chunk_tokens)), accounted_ids=list(accounted_ids),
             )
+            if anchored_input == []:
+                return None
+            summary_input_chunk, sources, anchor_claims = self._leaf_summary_input(anchored_input, selected_input)
+            if not summary_input_chunk:
+                return None
+            return self._leaf_consumption(chunk, summary_input_chunk, sources, anchored_input, anchor_claims,
+                                          dependent_reply_message_ids)[4]
+        finally:
+            self._store_complete_excluded, self._store_complete_cut = saved
 
-            def revalidate(conn, leaf=leaf) -> None:
-                if leaf_prep.route_fingerprint(self._config) != leaf.route_fingerprint:
-                    raise leaf_prep.PromotionRejected("route_fingerprint_mismatch")
-                if leaf_prep.committed_coverage_digest(conn, leaf.covered_store_ids) != leaf.coverage_digest:
-                    raise leaf_prep.PromotionRejected("coverage_digest_mismatch")
+    def _reject_prepared_chain(self, leaf, reason: str) -> None:
+        """#787: the first rejection ends the chain from ``leaf`` on, each leaf counted under ``reason``."""
+        db_path, conversation_id = str(self._store.db_path), str(self._conversation_id or "")
+        chain = leaf_prep.ready_chain(db_path, conversation_id, leaf.start_frontier) or [leaf]
+        leaf_prep.reject(db_path, conversation_id, chain, reason)
+        logger.info("LCM prepared leaf promotion rejected: reason=%s leaves=%d", reason, len(chain))
 
-            try:
-                self._publish_leaf_node(
-                    node, level=leaf.level, model=leaf.model, expected_frontier=frontier,
-                    consumed_store_ids=covered,
-                    publication_excluded_store_ids=[*anchor_ids, *leaf.excluded_store_ids, *filter_exclusion_proofs],
-                    filter_exclusion_proofs=filter_exclusion_proofs, carried_ranges=carried_ranges,
-                    before_publication=revalidate,
-                )
-            except leaf_prep.PromotionRejected as exc:
-                reason = exc.reason
-            except LifecycleBindingChangedError:
-                reason = "binding_changed"
-            except LifecyclePublicationConflictError as exc:
-                reason = "frontier_moved" if "frontier generation changed" in str(exc) else "fence_conflict"
-            except Exception as exc:
-                if not _is_sqlite_locked_error(exc):
-                    raise
-                logger.info("LCM prepared leaf promotion stopped: the store is locked")
-                break
-            if reason:
-                leaf_prep.reject(db_path, conversation_id, chain[index:], reason)
-                break
-            self._after_leaf_publication(node, published_frontier, count, 0, budget)
-            leaf_prep.promoted(db_path, conversation_id, leaf)
-            if start > lead:  # the summary scaffold, as the leaf loop drops it (#457)
-                del working[lead:start], pressure[lead:start]
-                tail_start, start = tail_start - (start - lead), lead
-            del working[start:start + count], pressure[start:start + count]
-            tail_start -= count
-            frontier = published_frontier
-            promoted += 1
-            freed += source_tokens - leaf.summary_tokens
-            estimated_active_tokens = max(0, estimated_active_tokens - source_tokens + leaf.summary_tokens)
-        if promoted or reason:
-            logger.info("LCM promoted %d prepared leaves: tokens_freed=%d low_water=%d at_low_water=%s%s",
-                        promoted, freed, int(low_water), estimated_active_tokens <= low_water,
-                        f" rejected={reason}" if reason else "")
-        if not promoted:
-            return None
-        return working, pressure, estimated_active_tokens, promoted, estimated_active_tokens <= low_water
+    def _prepared_leaf_summary(self, leaf):
+        """#787: the summariser step for a matched prepared leaf: its stored summary over the whole input, no call
+        (the worker keeps a level 3 leaf only when it is the verbatim source)."""
+        def summarize(chunk, **_kwargs):
+            self._last_leaf_summary_model, self._last_leaf_level_3_verbatim = leaf.model, leaf.level == 3
+            return chunk, count_messages_tokens(chunk), leaf.summary, leaf.level, 0
+        return summarize
 
-    def _prep_host_row_excluded(self, message, store_id: int, records, hashes) -> bool:
-        """#787: a mapped host row the leaf loop would drop or treat as a dependent reply (read-only checks)."""
-        text = text_content_for_pattern_matching(message.get("content")) or ""
-        if self._matches_ignore_message_patterns(message) or (
-                self._is_volatile_ignored_quarantine_placeholder(message, text)
-                and self._active_replay_placeholder_digest(text) in hashes):
-            return True
-        if not records:
-            return False
-        store_digest = self._ignored_dependent_reply_store_fingerprint({**message, "store_id": store_id})
-        content_digest = self._ignored_dependent_reply_content_fingerprint(message, text)
-        return any((store_digest and record.get("store") == store_digest)
-                   or (content_digest and record.get("content") == content_digest) for record in records)
+    def _prepared_leaf_revalidation(self, leaf):
+        """#787 (D-4): inside the publication transaction the covered rows and the route must be unchanged."""
+        def revalidate(conn) -> None:
+            if leaf_prep.route_fingerprint(self._config) != leaf.route_fingerprint:
+                raise leaf_prep.PromotionRejected("route_fingerprint_mismatch")
+            if leaf_prep.committed_coverage_digest(conn, leaf.covered_store_ids) != leaf.coverage_digest:
+                raise leaf_prep.PromotionRejected("coverage_digest_mismatch")
+        return revalidate
 
     def _fail_open_after_publication_failure(
         self,
@@ -1744,15 +1753,9 @@ class CompactionMixin:
                 pre_leaf_condensation_stop_reason=pre_leaf_condensation_reason,
             )
 
-        promoted_leaves = 0
-        if getattr(self._config, "background_leaf_prep_enabled", False):  # #787: prepared leaves first, no call
-            promotion = self._promote_prepared_leaves(working_messages, pressure_messages, estimated_active_tokens,
-                                                      budget)
-            if promotion is not None:
-                working_messages, pressure_messages, estimated_active_tokens, promoted_leaves, low_water = promotion
-                leaf_compacted_this_turn = dropped_replayed_scaffold_messages = True
-                if low_water:  # base design §4.4: the foreground leaf path runs only while still above L
-                    max_leaf_passes, sweep_stop_reason = 0, "prepared_leaves_promoted"
+        # #787 (amendment M-1): a leaf pass whose chunk matches a prepared leaf publishes it without the call
+        prep_enabled = bool(getattr(self._config, "background_leaf_prep_enabled", False))
+        promoted_leaves = prep_freed = prep_low_water = 0
         no_call_only, refused_input = False, None
         while leaf_passes < max_leaf_passes:
             if threshold_full_sweep_active and time.monotonic() >= sweep_deadline:
@@ -2108,11 +2111,15 @@ class CompactionMixin:
                 noop_reason = "no eligible leaf chunk selected"
                 break
             to_compact = self._identity_anchor_extend_chunk(to_compact, candidate_raw)  # #563
+            prepared = None
+            if prep_enabled and to_compact and not (hidden_backlog or force_overflow or no_call_only):
+                match = self._match_prepared_leaf(candidate_raw, working_messages, publication_excluded_store_ids,
+                                                  dependent_reply_message_ids, estimated_active_tokens,
+                                                  raw_tokens_outside_tail)
+                if match is not None:
+                    prepared, to_compact, prep_low_water = match
 
             selected_raw_chunk = to_compact
-            sources = {}
-            summary_input_chunk = []
-            anchor_claims: dict[int, list[int]] = {}  # #436 R4: id(input row) -> the store ids its text covers
             selected_input = [message for message in selected_raw_chunk if id(message) not in dependent_reply_message_ids]
             self._store_complete_excluded, self._store_complete_cut = [], False
             step_started = time.monotonic() if threshold_full_sweep_active else 0.0
@@ -2127,15 +2134,12 @@ class CompactionMixin:
                 noop_reason = "leaf would end before an unresolved retained occurrence"
                 break
             publication_excluded_store_ids.extend(self._store_complete_excluded)
-            for message, claims in anchored_input or [(message, []) for message in selected_input]:
-                remainder = self._generated_context_carrier_remainder(message)
-                if remainder is not None:
-                    original = message
-                    message = {**message, "content": remainder}
-                    sources[id(message)] = original
-                if claims:
-                    anchor_claims[id(message)] = claims
-                summary_input_chunk.append(message)
+            summary_input_chunk, sources, anchor_claims = self._leaf_summary_input(anchored_input, selected_input)
+            if prepared is not None and (not summary_input_chunk or self._leaf_consumption(
+                    selected_raw_chunk, summary_input_chunk, sources, anchored_input, anchor_claims,
+                    dependent_reply_message_ids)[4] != list(prepared.covered_store_ids)):
+                self._reject_prepared_chain(prepared, "host_unit_split")  # the pass reruns on its own chunk
+                continue
             if not summary_input_chunk:
                 compacted_chunk = selected_raw_chunk
                 source_tokens = count_messages_tokens(selected_raw_chunk)
@@ -2183,7 +2187,8 @@ class CompactionMixin:
                         summary_text,
                         _level,
                         _rescue_attempts,
-                    ) = self._summarize_leaf_chunk_with_rescue(
+                    ) = (self._summarize_leaf_chunk_with_rescue if prepared is None
+                         else self._prepared_leaf_summary(prepared))(
                         summary_input_chunk,
                         **summary_kwargs,
                     )
@@ -2209,40 +2214,12 @@ class CompactionMixin:
                         self._last_leaf_level_3_verbatim or self._last_leaf_content_filter_error):
                     sweep_stop_reason = "summary_result_rejected"
                     break
-            anchor_claimed_ids = sorted({  # #436 R4: only claims whose text the summarizer actually read
-                store_id for message in compacted_chunk for store_id in anchor_claims.get(id(message), ())
-            })
-            compacted_chunk = [sources.get(id(message), message) for message in compacted_chunk]
-            compacted_summary_ids = {id(message) for message in compacted_chunk}
-            compacted_positions = [
-                idx for idx, message in enumerate(selected_raw_chunk) if id(message) in compacted_summary_ids
-            ]
-            last_compacted_raw_pos = max(compacted_positions) if compacted_positions else len(compacted_chunk) - 1
-            if anchored_input and not compacted_positions:
-                # #436 T6 / #581: a leaf of stored rows alone (hidden rows, or a rescue prefix of them)
-                # consumes no raw row; the boundary fallback never consumes rows the summarizer did not read.
-                last_compacted_raw_pos = -1
-            last_consumed_raw_pos = last_compacted_raw_pos
-            while (
-                not self._store_complete_cut
-                and last_consumed_raw_pos >= 0
-                and last_consumed_raw_pos + 1 < len(selected_raw_chunk)
-                and id(selected_raw_chunk[last_consumed_raw_pos + 1]) in dependent_reply_message_ids
-            ):
-                last_consumed_raw_pos += 1
-            source_lookup_chunk = selected_raw_chunk[: last_consumed_raw_pos + 1]
+            compacted_chunk, compacted_positions, source_lookup_chunk, source_store_ids, consumed_store_ids = (
+                self._leaf_consumption(selected_raw_chunk, compacted_chunk, sources, anchored_input, anchor_claims,
+                                       dependent_reply_message_ids))
             selected_raw_len = len(source_lookup_chunk)
             remaining_messages = working_messages[leading_anchor_count + selected_raw_len:]
             source_tokens = count_messages_tokens(source_lookup_chunk)
-
-            source_lineage_chunk = [
-                message for message in source_lookup_chunk if id(message) not in dependent_reply_message_ids
-            ]
-            full_map = self._current_compress_store_ids_by_message_id  # #535: the pass maps the whole list
-            source_store_ids = self._get_store_ids_for_messages(source_lineage_chunk, full_map)
-            source_store_ids = sorted(dict.fromkeys(source_store_ids + anchor_claimed_ids))
-            consumed_store_ids = self._get_store_ids_for_messages(source_lookup_chunk, full_map)
-            consumed_store_ids = sorted(dict.fromkeys(consumed_store_ids + anchor_claimed_ids))
             earliest_at, latest_at = self._store.get_time_bounds(source_store_ids)
             summary_tokens = count_tokens(summary_text)
 
@@ -2290,8 +2267,17 @@ class CompactionMixin:
                     publication_excluded_store_ids=publication_excluded_store_ids,
                     filter_exclusion_proofs=filter_exclusion_proofs,
                     carried_ranges=carried_ranges,
+                    before_publication=None if prepared is None else self._prepared_leaf_revalidation(prepared),
                 )
             except Exception as exc:
+                if prepared is not None:  # #787: counted by reason; a failed revalidation reruns the pass
+                    if isinstance(exc, leaf_prep.PromotionRejected):
+                        self._reject_prepared_chain(prepared, exc.reason)
+                        continue
+                    if isinstance(exc, (LifecycleBindingChangedError, LifecyclePublicationConflictError)):
+                        self._reject_prepared_chain(prepared, "binding_changed" if isinstance(
+                            exc, LifecycleBindingChangedError) else "frontier_moved" if "frontier generation changed"
+                            in str(exc) else "fence_conflict")
                 if (
                     not _is_sqlite_locked_error(exc)
                     and not isinstance(exc, LifecycleBindingChangedError)
@@ -2319,6 +2305,10 @@ class CompactionMixin:
                 )
             self._after_leaf_publication(node, published_frontier, selected_raw_len,
                                          len(compacted_chunk) - len(compacted_positions), budget)
+            if prepared is not None:  # #787: a promoted pass spends no summariser pass
+                leaf_prep.promoted(str(self._store.db_path), self._conversation_id, prepared)
+                promoted_leaves, max_leaf_passes = promoted_leaves + 1, max_leaf_passes + 1
+                prep_freed += count_messages_tokens(source_lookup_chunk) - count_tokens(summary_text)
 
             pressure_remaining_messages = pressure_messages[leading_anchor_count + selected_raw_len:]
             working_messages = working_messages[:leading_anchor_count] + remaining_messages
@@ -2355,6 +2345,12 @@ class CompactionMixin:
                         context_is_assembled=True,
                     )
 
+            if prepared is not None:
+                if estimated_active_tokens <= prep_low_water:  # design §4.4, D-10: the leaf path stops at L
+                    sweep_stop_reason = "prepared_leaves_promoted"
+                    break
+                if not threshold_full_sweep_active:
+                    continue  # the next prepared leaf, else the leaf path's own pass
             if threshold_full_sweep_active:
                 leading_anchor_count = self._leading_anchor_count(working_messages)
                 remaining_fresh_tail_start = self._fresh_tail_start(working_messages)
@@ -2396,6 +2392,9 @@ class CompactionMixin:
                     if not (deferred_maintenance_active and critical_budget_pressure):
                         break
 
+        if promoted_leaves:
+            logger.info("LCM promoted %d prepared leaves: tokens_freed=%d low_water=%d at_low_water=%s",
+                        promoted_leaves, prep_freed, int(prep_low_water), estimated_active_tokens <= prep_low_water)
         if no_call_only:  # #628: this pass stored no leaf while every route is refused
             sweep_stop_reason, sweep_raw_drained = "summary_route_unavailable", False
             # review of #723: and returns the list it started with (no scaffold or ignored-backlog edit of its own)
