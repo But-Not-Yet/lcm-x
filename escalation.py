@@ -603,7 +603,8 @@ def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[
     ``tolerated`` names the known formatting mistakes that were accepted (#612): the ``</summary>`` closer, one
     ``<summary>`` wrapper around the whole body, one layer of quotes or emphasis on the closing hint, and
     ``unclosed_envelope`` (#1163). A missing closer is safe because it carries no nonce and the closing-hint check
-    still anchors the body. The
+    still anchors the body; it is not accepted when a closer appears anywhere after the opener (text written past
+    a closed envelope) or when the body opens with a reasoning marker (an unclosed reasoning block). The
     nonce opening tag, its uniqueness, the body minimum and a recognised closing hint are still required.
     """
     if not nonce:
@@ -627,7 +628,10 @@ def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[
         return "", "envelope", ()
     unclosed_envelope = not stripped.endswith(closing_tag)
     if unclosed_envelope:
-        # #1163: tolerate a missing closer only if every remaining check passes.
+        # #1163: tolerate a missing closer only if every remaining check passes. A closer anywhere after the
+        # opener means the envelope was closed and text followed it, which is not a missing closer.
+        if "</lcm-summary>" in stripped or "</summary>" in stripped:
+            return "", "envelope", ()
         tolerated.append("unclosed_envelope")
     if stripped.count(opening_tag) != 1:
         return "", "envelope" if unclosed_envelope else "nonce_count", ()
@@ -637,6 +641,9 @@ def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[
     if wrapper and "<summary>" not in wrapper.group("inner") and "</summary>" not in wrapper.group("inner"):
         body = wrapper.group("inner").strip()
         tolerated.append("summary_wrapper")
+    if unclosed_envelope and _REASONING_START_RE.match(body):
+        # The opener hides an unclosed reasoning block from _sanitize_reasoning_summary; never persist it.
+        return "", "envelope", ()
     minimum_body_tokens = max(4, min(16, max(1, int(max_tokens) // 16)))
     if count_tokens(body) < minimum_body_tokens:
         return "", "envelope" if unclosed_envelope else "short_body", ()

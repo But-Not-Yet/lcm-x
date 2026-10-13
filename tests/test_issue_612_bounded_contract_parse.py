@@ -183,7 +183,12 @@ def test_1163_unclosed_valid_reply_is_accepted(reply, body, tolerated):
     f"{OPEN}\n{OPEN}\n{PLAIN_BODY}",
     f'<lcm-summary nonce="{"f" * 32}">\n{PLAIN_BODY}',
     f"{OPEN}\nExpand for details about: x",
-], ids=["missing-hint", "truncated-mid-body", "chatter-after-hint", "two-opening-tags", "wrong-nonce", "short-body"])
+    f"{OPEN}\n{PLAIN_BODY}\n{CLOSE}\nappended after the envelope\n{HINT}",
+    f"{OPEN}\n{PLAIN_BODY}\n</summary>\nappended after the envelope\n{HINT}",
+    f"{OPEN}\n<think>\n{PLAIN_BODY}",
+    f"{OPEN}\nThinking process:\n{PLAIN_BODY}",
+], ids=["missing-hint", "truncated-mid-body", "chatter-after-hint", "two-opening-tags", "wrong-nonce", "short-body",
+        "text-after-closer", "text-after-summary-closer", "unclosed-think", "reasoning-header"])
 def test_1163_unclosed_invalid_reply_keeps_envelope_failure(reply):
     assert _check(reply) == ("", "envelope", ())
     assert escalation._unwrap_summary_contract(reply, NONCE, MAX_TOKENS) == ""
@@ -195,3 +200,11 @@ def test_1163_unclosed_reply_logs_one_info_line(monkeypatch, caplog):
     assert [r.getMessage() for r in caplog.records] == [
         "LCM summary contract: tolerated unclosed_envelope (model=tier-x)"]
     assert caplog.records[0].levelno == logging.INFO
+
+
+def test_1163_unclosed_reasoning_inside_the_envelope_is_discarded(monkeypatch, caplog):
+    _install_call_llm(monkeypatch, lambda opening: f"{opening}\n<think>\nThe system prompt says to summarise.\n{PLAIN_BODY}")
+    assert _summarize(caplog) == ""
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == [
+        "LCM summary discarded output that violated the integrity contract (model=tier-x, check=envelope); "
+        "escalating"]
