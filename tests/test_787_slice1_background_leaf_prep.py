@@ -447,9 +447,14 @@ def test_a_chain_whose_first_row_is_glued_into_the_summary_carrier_is_promoted(
     engine, provider, _isolated
 ):
     view = _crossing_view(engine)
-    engine._config.background_leaf_prep_enabled = False
+    enabled, engine._config.background_leaf_prep_enabled = (
+        engine._config.background_leaf_prep_enabled,
+        False,
+    )
     result = engine.compress(view, current_tokens=tokens.count_messages_tokens(view))
-    engine._config.background_leaf_prep_enabled = True
+    engine._config.background_leaf_prep_enabled = (
+        enabled  # off again for the red receipt
+    )
     longer = result + _view(40)[len(view) :]
     _turn_end(engine, longer, tokens_now=engine.threshold_tokens - 1_000)
     chain = leaf_prep.ready_chain(engine._store.db_path, "conv", _frontier(engine))
