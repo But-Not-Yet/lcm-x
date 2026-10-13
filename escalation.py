@@ -270,13 +270,14 @@ class SummaryCircuitBreaker:
     def _key(self, model: str | None) -> str:
         return (model or "").strip() or _DEFAULT_ROUTE_KEY
 
-    def allows(self, model: str | None, *, now: float | None = None) -> bool:
+    def allows(self, model: str | None, *, now: float | None = None, prune: bool = True) -> bool:
+        """True when the route is closed; ``prune=False`` (#787 worker) reads without dropping an expired entry."""
         key = self._key(model)
         current_time = time.monotonic() if now is None else now
         with self._lock:
             opened_until = self._open_until.get(key, 0.0)
             if opened_until <= current_time:
-                if key in self._open_until:
+                if prune and key in self._open_until:
                     self._open_until.pop(key, None)
                 return True
             return False
@@ -925,11 +926,13 @@ def summary_route_available(
     circuit_breaker: SummaryCircuitBreaker | None,
     *,
     route_key_prefix: str = "",
+    prune: bool = True,
 ) -> bool:
-    """True when no breaker is in use or it allows one route of the summary chain (#628)."""
+    """True when no breaker is in use or it allows one route of the summary chain (#628); ``prune=False`` reads
+    the breaker without changing it."""
     if circuit_breaker is None:
         return True
-    return any(circuit_breaker.allows(route_key_prefix + candidate)
+    return any(circuit_breaker.allows(route_key_prefix + candidate, **({} if prune else {"prune": False}))
                for candidate in _summary_model_chain(model, fallback_models))
 
 

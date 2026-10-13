@@ -20,6 +20,7 @@ import copy
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 import threading
 from collections import Counter, OrderedDict
@@ -30,6 +31,7 @@ from typing import Any, Dict, List, Optional
 from .config import hermes_auxiliary_compression_max_concurrency
 from .db_bootstrap import select_conversation_range
 from .fresh_tail import resolve_fresh_tail_boundary
+from .message_content import text_content_for_pattern_matching
 from .ingest_protection import (
     quarantine_suspicious_assistant_messages,
     redact_sensitive_value,
@@ -105,6 +107,7 @@ class _Job:
     breaker: Any
     foreground_guard: Any
     context: contextvars.Context = field(repr=False)
+    dependent_records: tuple = ()  # the session's marked ignored-dependent replies, read at enqueue
 
     @property
     def key(self) -> tuple:
@@ -174,6 +177,61 @@ def working_leaf_chunk_tokens(config, context_length: int, raw_tokens: int) -> i
     while working < ceiling and raw_tokens > working * 2:
         working = min(ceiling, working * 2)
     return working
+
+
+_SUMMARY_SCAFFOLD = re.compile(
+    r"\[(?:Recent|Session Arc|Durable|Depth-\d+) Summary \(d\d+, node \d+\)\]"
+)
+
+
+def excluded_from_summary_input(
+    row: Dict[str, Any], session_id: str, dependent_records
+) -> bool:
+    """Review r1 F1: a stored row the leaf loop keeps out of its summary input (a marked ignored-dependent reply,
+    an active-replay placeholder, replay scaffold). Preparation stops before it; read-only and conservative: the
+    foreground decides such rows."""
+    from .placeholder_ledger import PlaceholderLedgerMixin
+    from .reconcile import (
+        _PRESERVED_OBJECTIVE_CONTEXT_PREFIX,
+        _PRESERVED_TODO_CONTEXT_PREFIX,
+        ReconcileMixin,
+    )
+
+    role = str(row.get("role") or "")
+    text = text_content_for_pattern_matching(row.get("content")) or ""
+    if text.strip().startswith("[LCM active replay placeholder:"):
+        return True
+    if role != "tool" and (
+        text.lstrip().startswith(
+            (_PRESERVED_OBJECTIVE_CONTEXT_PREFIX, _PRESERVED_TODO_CONTEXT_PREFIX)
+        )
+        or ("[Expand for details:" in text and _SUMMARY_SCAFFOLD.search(text))
+    ):
+        return True
+    if role not in ("assistant", "tool") or not dependent_records:
+        return False
+    probe = type(
+        "_Probe",
+        (),
+        {
+            "_session_id": session_id,
+            "_current_compress_store_ids_by_message_id": {},
+            "_stable_tool_calls_identity": staticmethod(
+                ReconcileMixin._stable_tool_calls_identity
+            ),
+        },
+    )()  # the foreground's own fingerprints, without the engine
+    store = PlaceholderLedgerMixin._ignored_dependent_reply_store_fingerprint(
+        probe, row
+    )
+    content = PlaceholderLedgerMixin._ignored_dependent_reply_content_fingerprint(
+        probe, row, text
+    )
+    return any(
+        (store and record.get("store") == store)
+        or (content and record.get("content") == content)
+        for record in dependent_records
+    )
 
 
 def host_unit_boundary(
@@ -252,8 +310,8 @@ class _LeafPrep:
         self._worker: Optional[threading.Thread] = None
         self._running = False
         self._call_slot = threading.BoundedSemaphore(1)
-        self._spend_guard = None
-        self._spend_guard_shape: Optional[tuple] = None
+        # one worker spend guard per profile (Hermes home, store), kept across other profiles' jobs
+        self._spend_guards: "OrderedDict[tuple, tuple]" = OrderedDict()
         self.counters: Counter = Counter()
 
     # -- turn thread ---------------------------------------------------------------------------------------
@@ -403,20 +461,31 @@ class _LeafPrep:
             and int(row[1] or 0) == job.frontier
         )
 
-    def _guard(self, config):
+    def _guard(self, job: _Job):
+        config = job.config
         shape = (
             int(config.background_leaf_prep_max_calls),
             float(config.background_leaf_prep_window_s),
             float(config.summary_spend_backoff_seconds),
         )
-        if self._spend_guard is None or self._spend_guard_shape != shape:
+        identity = (job.hermes_home, job.db_path)
+        kept = self._spend_guards.get(identity)
+        if kept is None or kept[0] != shape:  # a new profile, or its own limits changed
             from .escalation import SummarySpendGuard
 
-            self._spend_guard = SummarySpendGuard(
-                max_calls=shape[0], window_seconds=shape[1], backoff_seconds=shape[2]
+            kept = (
+                shape,
+                SummarySpendGuard(
+                    max_calls=shape[0],
+                    window_seconds=shape[1],
+                    backoff_seconds=shape[2],
+                ),
             )
-            self._spend_guard_shape = shape
-        return self._spend_guard
+            self._spend_guards[identity] = kept
+        self._spend_guards.move_to_end(identity)
+        while len(self._spend_guards) > _PER_PROCESS:
+            self._spend_guards.popitem(last=False)
+        return kept[1]
 
     def _prepare(self, job: _Job) -> None:
         if self.generation(job.db_path) != job.generation:
@@ -507,7 +576,7 @@ class _LeafPrep:
                 break
             position += len(covered)
             freed += leaf.source_tokens - leaf.summary_tokens
-        guard = self._guard(config)
+        guard = self._guard(job)
         while freed < need and len(chain) < _PER_CONVERSATION and position < len(rows):
             remaining = messages[position:]
             if count_messages_tokens(remaining) < chunk_tokens:
@@ -530,7 +599,10 @@ class _LeafPrep:
             chunk = messages[position:end]
             # D-6: skip while the live route is open, the foreground guard is short or the own guard is spent
             if not summary_route_available(
-                config.summary_model, config.summary_fallback_models, job.breaker
+                config.summary_model,
+                config.summary_fallback_models,
+                job.breaker,
+                prune=False,  # a read of the live breaker, never a write
             ):
                 return
             if (
@@ -643,6 +715,9 @@ class _LeafPrep:
                 row.get("role") == "system"
                 or store_id in covered
                 or (foreign_id is not None and store_id > foreign_id)
+                or excluded_from_summary_input(
+                    row, job.session_id, job.dependent_records
+                )
             ):
                 break
             end += 1
@@ -711,6 +786,9 @@ def enqueue_after_turn(engine, history) -> bool:
         breaker=engine._summary_circuit_breaker,
         foreground_guard=engine._summary_spend_guard,
         context=contextvars.copy_context(),
+        dependent_records=tuple(
+            engine._load_generated_ignored_dependent_reply_records()
+        ),
     )
     return _LEAF_PREP.enqueue(job)
 
