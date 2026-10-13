@@ -1048,14 +1048,16 @@ class MessageStore:
                 out.setdefault(str(uid), []).append((int(store_id), str(kind)))
         return out
 
-    def host_uid_uids_of_stores(self, lineage_key: str, store_ids, kinds=("canonical", "version")) -> dict[int, set[str]]:
+    def host_uid_uids_of_stores(self, lineage_key: str, store_ids, kinds=("canonical", "version"),
+                                *, require_disagree: bool = False) -> dict[int, set[str]]:
         """``{store_id: {uid, ...}}`` in a lineage; #1124 requests canonical twins, all bindings for copies."""
         ids, out = sorted({int(sid) for sid in store_ids}), {}
         for start in range(0, len(ids) if self._host_uid_table_exists() else 0, 500):
             chunk = ids[start:start + 500]
             for store_id, uid in self._conn.execute(
                 f"SELECT store_id, uid FROM host_uid_bindings WHERE store_id IN ({','.join('?' * len(chunk))}) "
-                f"AND lineage_key = ? AND kind IN ({','.join('?' * len(kinds))})", [*chunk, lineage_key, *kinds]):
+                f"AND lineage_key = ? AND kind IN ({','.join('?' * len(kinds))}) "
+                "AND (? = 0 OR disagree_seen = 1)", [*chunk, lineage_key, *kinds, int(require_disagree)]):
                 out.setdefault(int(store_id), set()).add(str(uid))
         return out
 

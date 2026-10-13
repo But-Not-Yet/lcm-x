@@ -117,22 +117,27 @@ class StoreCompleteMixin:
             return {}, set()
         ids = [int(row["store_id"]) for row in rows]
         first = min(ids)
-        found = self._store.connection.execute(
-            "SELECT store_id, session_id, conversation_id, role, content, tool_call_id, tool_calls, tool_name "
-            "FROM messages WHERE store_id IN (SELECT value FROM json_each(?)) "
-            "OR (store_id > ? AND store_id < ?) ORDER BY store_id",
-            (str(ids), max(0, first - _COPY_WINDOW), first),
-        ).fetchall()
+        try:
+            found = self._store.connection.execute(
+                "SELECT store_id, session_id, conversation_id, role, content, tool_call_id, tool_calls, tool_name "
+                "FROM messages WHERE store_id IN (SELECT value FROM json_each(?)) "
+                "OR (store_id > ? AND store_id < ?) ORDER BY store_id",
+                (str(ids), max(0, first - _COPY_WINDOW), first),
+            ).fetchall()
+        except Exception:
+            logger.debug("LCM copy lookup unavailable", exc_info=True)
+            return {}, set()
         owned = [row for row in found if self._identity_anchor_owned(
             {"store_id": row[0], "session_id": row[1]}, carry)
             and str(row[2] or "").strip() in {"", str(self._conversation_id or "")}]
         owned_ids = [int(row[0]) for row in owned]
         lineage, _reason = self._host_uid_lineage_key()
-        bound, canonical = {}, {}
+        bound, canonical, composite = {}, {}, set()
         if lineage:
             try:
                 bound = self._store.host_uid_uids_of_stores(lineage, owned_ids)
-                canonical = self._store.host_uid_uids_of_stores(lineage, owned_ids, kinds=("canonical",))
+                canonical = self._store.host_uid_uids_of_stores(lineage, owned_ids, kinds=("canonical",), require_disagree=True)
+                composite = {int(r["related_store_id"]) for r in self._store.get_message_relations(owned_ids, "composite", related=True)}
             except Exception:  # optional uid evidence unavailable: E2 is false, never a guessed binding
                 bound, canonical = {}, {}
                 logger.debug("LCM copy uid evidence unavailable", exc_info=True)
@@ -144,7 +149,9 @@ class StoreCompleteMixin:
             if row and not _has_lossy_redacted_identity(self._message_replay_identity(row, strip_carrier=False)):
                 e1 = (row.get("role") == "assistant" and any(_tool_call_id(call) for call in (row.get("tool_calls") or []))
                       or row.get("role") == "tool" and bool(str(row.get("tool_call_id") or "").strip()))
-                matches = [t for t in by_key.get(key, ()) if e1 or (canonical.get(t) and not bound.get(sid))]
+                # Accepted residual: an unbound genuine repeat of a re-ingested twin can still be
+                # excluded without a composite witness; its bytes remain summarized through the twin.
+                matches = [t for t in by_key.get(key, ()) if e1 or (canonical.get(t) and not bound.get(sid) and sid not in composite)]
                 if matches:
                     twins[sid] = matches
             by_key.setdefault(key, []).append(sid)
@@ -184,7 +191,7 @@ class StoreCompleteMixin:
         loose = [int(row["store_id"]) for row in rows if int(row["store_id"]) not in mapped and row.get("role") != "system"
                  and str(row.get("conversation_id") or "").strip() in conversation
                  and not self._matches_ignore_message_patterns(row, stored_row=True)]
-        twins, twin_covered = self._store_complete_copy_twins(rows, carry)
+        twins, twin_covered = self._store_complete_copy_twins(rows, carry) if loose else ({}, set())
         if copy_lookup_out is not None:
             copy_lookup_out.append((twins, twin_covered))  # this leaf reuses the scheduler's bounded lookup
         # No current leaf yet: only node-covered twins prove a drained backlog. Retained unmapped
@@ -195,7 +202,7 @@ class StoreCompleteMixin:
                        for i, m in enumerate(working) if id(m) not in full_map]
         self._load_host_rewrite_overrides(candidates)
         blocked = set(_match_occurrences(candidates, self._stored_row_forms, occurrences)) if occurrences else set()
-        copies = {sid for sid, matches in twins.items() if sid not in blocked and any(t in twin_covered for t in matches)}
+        copies = {sid for sid, matches in twins.items() if not truncated and sid not in blocked and any(t in twin_covered for t in matches)}
         result = self._last_hidden_backlog = HiddenBacklog(
             len(set(loose) - self._store_complete_node_covered(loose) - copies), truncated)
         if result:
@@ -246,8 +253,9 @@ class StoreCompleteMixin:
             else:  # a retained occurrence: never hidden, the leaf ends before it
                 blocked.add(store_id)
         hidden = [row for row in candidates if int(row["store_id"]) not in taken | blocked]
-        copy_lookup = self._store_complete_copy_twins(rows, carry) if copy_lookup is None else copy_lookup
-        twins, twin_covered = copy_lookup
+        if copy_lookup is None and hidden:
+            copy_lookup = self._store_complete_copy_twins(rows, carry)
+        twins, twin_covered = copy_lookup if copy_lookup is not None else ({}, set())
         copy_proofs, admitted = {}, set()
         text = dict(zip((int(row["store_id"]) for row in hidden), self._store_complete_messages(hidden)))
 
@@ -350,6 +358,9 @@ class StoreCompleteMixin:
                 break
             out = out[:next(i for i, (m, ids) in enumerate(out) if any(s > hole for s in ids_of(m, ids)))]
             complete = False
+        if copy_proofs and not any(ids_of(m, ids) for m, ids in out):
+            return self._store_complete_input(chunk, given_claims, full_map, view, raw_chunk, frontier, carry,
+                                              budget, accounted_ids, scale=scale, scanned=(rows, truncated), copy_lookup=({}, set()))
         if not out or (not any(ids_of(m, ids) for m, ids in out)
                        and all(self._is_context_summary_content(m.get("content")) for m in chunk)):
             return []  # nothing to cover: at most a host summary of rows already at or below the frontier

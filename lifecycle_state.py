@@ -1046,7 +1046,8 @@ class LifecycleStateStore:
                 "Compaction publication coverage overlaps an explicit exclusion"
             )
         exclusion_proofs = filter_exclusion_proofs or {}
-        copy_proofs = copy_exclusion_proofs or {}
+        copy_proofs = {int(c): int(t) for c, t in (copy_exclusion_proofs or {}).items()
+                       if expected_frontier < int(c) <= covered_end}
         if not set(copy_proofs) <= set(excluded_ids):
             raise LifecyclePublicationConflictError("Compaction publication copy proof is not excluded")
         allowed_carry_ranges = [
