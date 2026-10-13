@@ -1,7 +1,9 @@
 """Arm registry: every arm is a set of the engine's own `LCM_*` env inputs (config.py ENV_FIELD_SPECS), never a patch."""
 from __future__ import annotations
+import hashlib
 import json
 import os
+from pathlib import Path
 
 # The managed fleet policy (PCS scripts/rollout-lcm-x-profile.sh `desired`, lines 198-205 of pcs-golden-build-e528dd53),
 # minus temporal rollups (FLEET_EXCLUDED; labelled). LCM_NATIVE_RECOVERY=false matches the fleet default (S8). Timeout 60 s = the engine default, set explicitly so config.json shows it.
@@ -64,11 +66,39 @@ CONTROLS = {"C0": "no compaction: the full admitted transcript as context; UNAVA
 BASE_ARMS.update({n: ({"LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUB_THRESHOLD_TOKENS": "10000"},
                       "Eval-2 pinned product arm; ablations live in the pin") for n in ("L0", "L1", "L1-H", "L1-noptr")})
 
+# D5-A (2026-10-14): the reference agent's own `LCM_*` set, read from the file named by S2_ARM_ENV_FILE (KEY=VALUE lines).
+ENV_FILE_ARM = "LCMX-env-file"
+HARNESS_KEYS = ("LCM_DATABASE_PATH", "LCM_HERMES_BASE_DIR")  # set inside the run dir by the harness; file values ignored
+SECRET_ENV: dict = {}  # VOYAGE_API_KEY from the file (embeddings on only); applied to the process env, never recorded
+
+def env_file_arm() -> dict:
+    """Only `LCM_*` keys are taken, plus VOYAGE_API_KEY when the file turns embeddings on; every other key is ignored and
+    named in env_file.ignored_keys. No fleet value is merged in."""
+    path = os.environ.get("S2_ARM_ENV_FILE")
+    if not path:
+        raise SystemExit(f"{ENV_FILE_ARM} needs S2_ARM_ENV_FILE")
+    path = Path(path).resolve()
+    raw = dict(ln.split("=", 1) for ln in path.read_text().splitlines()
+               if ln.strip() and not ln.lstrip().startswith("#") and "=" in ln)
+    raw = {k.strip(): v.strip() for k, v in raw.items()}
+    on = raw.get("LCM_EMBEDDINGS_ENABLED", "").lower() in ("1", "true", "yes", "on")
+    env = {k: v for k, v in raw.items() if k.startswith("LCM_") and k not in HARNESS_KEYS}
+    SECRET_ENV.clear()
+    if on and raw.get("VOYAGE_API_KEY"):
+        SECRET_ENV["VOYAGE_API_KEY"] = raw["VOYAGE_API_KEY"]
+    return {"name": ENV_FILE_ARM, "base": ENV_FILE_ARM, "open": False, "kind": "plain", "env": env,
+            "note": "reference agent LCM_* set from S2_ARM_ENV_FILE (D5-A)", "unsupported": None,
+            "env_file": {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "keys": len(env),
+                         "ignored_keys": sorted(k for k in raw if k not in env and k not in SECRET_ENV),
+                         "voyage_key_from_file": bool(SECRET_ENV)}}
+
 def all_arms() -> list[str]:
     return [a for b in BASE_ARMS for a in (b, b + "-open")] + list(CONTROLS)
 
 def resolve(arm: str) -> dict:
     """{name, base, open, kind, env|None, note, unsupported|None}"""
+    if arm == ENV_FILE_ARM:
+        return env_file_arm()
     pins = json.loads(os.environ.get("S2_ARM_PINS", "{}"))  # {arm: {worktree, sha}}; supplied by the orchestrator
     if arm.removesuffix("-open") in ("L0", "L1", "L1-H", "L1-noptr", "H") and not all(
             pins.get(arm.removesuffix("-open"), {}).get(k) for k in ("worktree", "sha")):
