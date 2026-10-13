@@ -1216,7 +1216,9 @@ def test_r2_b_a_guard_with_a_live_obligation_is_never_evicted(_isolated):
 
 def test_r2_b_a_full_table_of_live_guards_skips_the_new_profile(_isolated):
     for index in range(leaf_prep._PER_PROCESS):
-        _isolated._guard(_guard_job(f"busy-{index}")).record_call()  # a call inside each window
+        _isolated._guard(
+            _guard_job(f"busy-{index}")
+        ).record_call()  # a call inside each window
 
     assert _isolated._guard(_guard_job("new")) is None
     assert _isolated.counters["prep_guard_full"] == 1
