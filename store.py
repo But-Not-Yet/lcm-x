@@ -1000,7 +1000,7 @@ class MessageStore:
             """)
         self._identity_anchor_schema_ready = True
 
-    # -- v0.26.0 host uid shadow bindings: a droppable side table, never read for a decision ----------
+    # -- Host uid shadow bindings: droppable; #1124 reads canonical evidence only for copy exclusion --
 
     def _host_uid_table_exists(self) -> bool:
         with self._write_lock:
@@ -1048,14 +1048,14 @@ class MessageStore:
                 out.setdefault(str(uid), []).append((int(store_id), str(kind)))
         return out
 
-    def host_uid_uids_of_stores(self, lineage_key: str, store_ids) -> dict[int, set[str]]:
-        """``{store_id: {uid, ...}}``: the canonical and version bindings of ``store_ids`` in a lineage."""
+    def host_uid_uids_of_stores(self, lineage_key: str, store_ids, kinds=("canonical", "version")) -> dict[int, set[str]]:
+        """``{store_id: {uid, ...}}`` in a lineage; #1124 requests canonical twins, all bindings for copies."""
         ids, out = sorted({int(sid) for sid in store_ids}), {}
         for start in range(0, len(ids) if self._host_uid_table_exists() else 0, 500):
             chunk = ids[start:start + 500]
             for store_id, uid in self._conn.execute(
                 f"SELECT store_id, uid FROM host_uid_bindings WHERE store_id IN ({','.join('?' * len(chunk))}) "
-                "AND lineage_key = ? AND kind IN ('canonical', 'version')", [*chunk, lineage_key]):
+                f"AND lineage_key = ? AND kind IN ({','.join('?' * len(kinds))})", [*chunk, lineage_key, *kinds]):
                 out.setdefault(int(store_id), set()).add(str(uid))
         return out
 
