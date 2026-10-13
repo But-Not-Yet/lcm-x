@@ -236,6 +236,16 @@ def test_04_text_without_canonical_lineage_evidence_stays(engine, monkeypatch, b
     assert twin in _ids(out) and copy not in _ids(out)
 
 
+def test_e2_never_excludes_an_unbound_user_repeat(engine):
+    twin, repeat = _append(engine, [_text("continue", "user")] * 2)
+    _bind(engine, twin)
+    _node(engine, [twin])
+    _append(engine, [_text("end", "user")])
+    out = _walk(engine)
+    assert repeat not in engine._store_complete_copy_exclusion_proofs
+    assert repeat in _ids(out)
+
+
 def test_05_retained_unmapped_copy_stays_blocked(engine):
     control = _control(engine)
     _append(engine, [_text("before blocked", "user")])
