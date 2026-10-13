@@ -772,6 +772,7 @@ class LCMEngine(
         self._last_compress_leaves: Optional[tuple[str, int]] = None  # #597: latest call, bound conversation
         self._last_hidden_backlog: Optional[HiddenBacklog] = None  # #597: latest check in this compress()
         self._hidden_backlog_unknown_warned: set[str] = set()
+        self._unattributed_leaf_warned: set[tuple[str, int]] = set()
         # #618: one-shot from compress(): a hold is active at the survival ceiling, so the pass only fits.
         self._hold_fit_only_requested = False
         self._no_progress_candidate = False  # set by _compress_impl for compress()

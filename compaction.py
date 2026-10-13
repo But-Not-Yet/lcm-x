@@ -1555,7 +1555,7 @@ class CompactionMixin:
                 pre_leaf_condensation_stop_reason=pre_leaf_condensation_reason,
             )
 
-        no_call_only, refused_input = False, None
+        no_call_only, refused_input, unattributed_leaf_refused = False, None, False
         while leaf_passes < max_leaf_passes:
             if threshold_full_sweep_active and time.monotonic() >= sweep_deadline:
                 sweep_stop_reason = "time_budget_exhausted"
@@ -1929,6 +1929,22 @@ class CompactionMixin:
                 noop_reason = "leaf would end before an unresolved retained occurrence"
                 break
             publication_excluded_store_ids.extend(self._store_complete_excluded)
+            leaf_map = self._current_compress_store_ids_by_message_id or {}
+            if not any(claims for _message, claims in anchored_input or ()) and not any(
+                id(message) in leaf_map for message in selected_raw_chunk
+            ) and not self._get_store_ids_for_messages(selected_raw_chunk, leaf_map):
+                # #1141: refuse an unattributed leaf before extraction or a paid summary call.
+                frontier = self._store_complete_frontier()
+                warning_key = (self._conversation_id, frontier)
+                if warning_key not in self._unattributed_leaf_warned:
+                    self._unattributed_leaf_warned.add(warning_key)
+                    first_mapped = min((sid for sid in leaf_map.values() if sid > frontier), default="none")
+                    logger.warning(
+                        "LCM leaf chunk has no durable source above the frontier: frontier=%d rows=%d "
+                        "first_mapped_store_id=%s", frontier, len(selected_raw_chunk), first_mapped,
+                    )
+                noop_reason, unattributed_leaf_refused = "selected leaf chunk lacks raw store lineage", True
+                break
             for message, claims in anchored_input or [(message, []) for message in selected_input]:
                 remainder = self._generated_context_carrier_remainder(message)
                 if remainder is not None:
@@ -2045,6 +2061,9 @@ class CompactionMixin:
             source_store_ids = sorted(dict.fromkeys(source_store_ids + anchor_claimed_ids))
             consumed_store_ids = self._get_store_ids_for_messages(source_lookup_chunk, full_map)
             consumed_store_ids = sorted(dict.fromkeys(consumed_store_ids + anchor_claimed_ids))
+            if not consumed_store_ids:  # #1141: oldest-prefix rescue can discard the last durable source.
+                noop_reason, unattributed_leaf_refused = "selected leaf chunk lacks raw store lineage", True
+                break
             earliest_at, latest_at = self._store.get_time_bounds(source_store_ids)
             summary_tokens = count_tokens(summary_text)
 
@@ -2316,7 +2335,9 @@ class CompactionMixin:
                 self._ingest_cursor = len(sanitized_messages)
                 # A resumed committed prefix returns that compaction's output.
                 self._last_compression_status = "compacted" if resumed_prefix else "sanitized"
-                self._last_compression_noop_reason = ""
+                self._last_compression_noop_reason = (
+                    noop_reason if unattributed_leaf_refused else ""
+                )
                 self._note_fresh_tail_pressure_relieved()
             else:
                 if dropped_replayed_scaffold_messages:
