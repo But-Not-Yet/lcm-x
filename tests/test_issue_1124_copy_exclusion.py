@@ -1,6 +1,7 @@
 """#1124: copies need positive evidence and actual summary coverage, never a frontier guess."""
 
 import subprocess
+import sys
 import types
 from collections import Counter
 from pathlib import Path
@@ -8,15 +9,26 @@ from pathlib import Path
 import pytest
 
 import hermes_lcm.engine as lcm_engine
+import hermes_lcm.store_complete as lcm_store_complete
 from hermes_lcm.dag import SummaryNode
 from hermes_lcm.lifecycle_state import LifecyclePublicationConflictError
-from hermes_lcm.tokens import count_messages_tokens
+from hermes_lcm.tokens import count_message_tokens, count_messages_tokens
 
+from tests.test_host_uid_shadow import (
+    PAD,
+    ROLLBACK_READERS,
+    _bindings,
+    _engine as _uid_engine,
+    _m,
+    _skip_or_fail_in_ci,
+    _state_db,
+)
 from tests.test_issue_581_582_store_complete_survival import (
     _assert_contiguous,
     _engine,
     _frontier,
     _rows,
+    _turn,
 )
 
 
@@ -65,6 +77,7 @@ def _append(engine, messages, session="S", conversation="conv"):
 
 def _bind(engine, store_id, uid="original", kind="canonical", lineage="test:lineage"):
     engine._store.add_host_uid_bindings(lineage, [(store_id, uid, kind, "agree_new")])
+    engine._store.record_host_uid_checks(lineage, [(uid, store_id, False)])
 
 
 def _node(engine, ids, *, before_commit=None):
@@ -111,7 +124,7 @@ def _ids(out, mapping=None):
 def _publish(engine, out):
     ids = _ids(out)
     frontier = _frontier(engine)
-    proofs = engine._store_complete_copy_exclusion_proofs
+    proofs = getattr(engine, "_store_complete_copy_exclusion_proofs", {})
     _node(
         engine,
         ids,
@@ -123,7 +136,7 @@ def _publish(engine, out):
                 node_id,
                 frontier,
                 ids,
-                excluded_store_ids=engine._store_complete_excluded,
+                excluded_store_ids=getattr(engine, "_store_complete_excluded", []),
                 copy_exclusion_proofs=proofs,
             )
         ),
@@ -158,13 +171,17 @@ def test_01_same_leaf_copy_is_excluded(engine, evidence):
 
 
 def test_02_node_covered_twin_is_excluded_next_leaf(engine):
-    twin = _append(engine, _segment())[1]
-    _node(engine, [twin])
+    originals = _append(engine, _segment())
+    twin = originals[-1]
+    _publish(engine, [(message, [sid]) for message, sid in zip(_segment(), originals)])
+    assert _frontier(engine) == twin
     copy = _append(engine, [_segment()[1]])[0]
     end = _append(engine, [_text("next", "user")])[0]
     out = _walk(engine)
     assert copy not in _ids(out) and end in _ids(out)
     assert engine._store_complete_copy_exclusion_proofs == {copy: twin}
+    _publish(engine, out)
+    assert _frontier(engine) == end
 
 
 @pytest.mark.parametrize(
@@ -372,8 +389,15 @@ def test_12_v0262_reader_accepts_store_after_copy_publication(engine):
     _publish(engine, out)
     frontier = _frontier(engine)
     root = Path(__file__).resolve().parents[1]
+    commit = ROLLBACK_READERS["v0.26.2"]
+    if subprocess.run(
+        ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
+        cwd=root,
+        capture_output=True,
+    ).returncode:
+        _skip_or_fail_in_ci(f"the v0.26.2 commit {commit[:8]} is not in this checkout")
     code = subprocess.check_output(
-        ["git", "show", "v0.26.2:lifecycle_state.py"], cwd=root, text=True
+        ["git", "show", f"{commit}:lifecycle_state.py"], cwd=root, text=True
     )
     module = types.ModuleType("hermes_lcm._rollback_1124")
     module.__package__ = "hermes_lcm"
@@ -435,7 +459,12 @@ def test_13_fence_rejects_forged_copy_proof(engine, forgery):
     copy = _append(engine, [_text("wrong bytes") if forgery == "bytes" else original])[
         0
     ]
-    end = _append(engine, [_text("end", "user")])[0]
+    end = _append(engine, [original if forgery == "later" else _text("end", "user")])[0]
+    if forgery in ("foreign-session", "foreign-conversation"):
+        engine._lifecycle.stage_frontier_advance(
+            engine._store.connection, "conv", "S", twin
+        )
+        engine._store.connection.commit()
     proof = {copy: end if forgery == "later" else twin}
     before = _frontier(engine)
 
@@ -453,7 +482,12 @@ def test_13_fence_rejects_forged_copy_proof(engine, forgery):
             [twin, end] if forgery == "consumed-not-summarized" else [end],
             excluded_store_ids=(
                 [copy]
-                if forgery == "consumed-not-summarized"
+                if forgery
+                in (
+                    "consumed-not-summarized",
+                    "foreign-session",
+                    "foreign-conversation",
+                )
                 else [twin, copy]
                 if forgery != "not-excluded"
                 else [twin]
@@ -508,3 +542,326 @@ def test_copy_evidence_is_fail_safe(engine, risk):
     out = _walk(engine)
     assert copy in _ids(out) and copy not in engine._store_complete_excluded
     _assert_control(engine, out, control)
+
+
+@pytest.mark.parametrize("error", ["timeout", "context", "size-context"])
+def test_r1_rescue_prefix_before_copy_publishes(engine, monkeypatch, error):
+    calls = []
+
+    def summarize(**kwargs):
+        text = kwargs["text"]
+        calls.append(text)
+        if error == "size-context":
+            refused = len(text) > 450
+        else:
+            refused = sum(line.startswith("[") for line in text.splitlines()) >= 4
+        if refused:
+            if error == "timeout":
+                raise TimeoutError("summary timed out")
+            raise RuntimeError("prompt is too long: maximum context length exceeded")
+        return "Earlier turns", 1
+
+    monkeypatch.setattr(lcm_engine, "summarize_with_escalation", summarize)
+    fill = [
+        _text(f"filler {i} " + "x" * 60, "user" if i % 2 == 0 else "assistant")
+        for i in range(4 if error == "size-context" else 2)
+    ]
+    ids = _append(
+        engine,
+        [_text("control twin")]
+        + fill
+        + [_text("control twin"), _text("later " + "y" * 200, "user")],
+    )
+    twin, copy = ids[0], ids[-2]
+    _bind(engine, twin, "control")
+    tail = [_text("fresh", "user"), _text("fresh reply")]
+    _append(engine, tail)
+    engine._ingest_cursor = len(tail)
+    engine.compress(list(tail))
+    assert len(calls) >= 2
+    assert engine._last_compression_status == "compacted", (
+        engine._last_compression_noop_reason
+    )
+    assert twin <= _frontier(engine) < copy
+    for _ in range(2):
+        engine.note_turn_complete()
+        engine.compress(list(tail))
+    assert _frontier(engine) >= twin
+
+
+@pytest.mark.parametrize("path", ["r3-remainder", "mode-off"])
+def test_r2_real_ingest_genuine_unbound_repeat_stays(tmp_path, monkeypatch, path):
+    monkeypatch.setenv("LCM_HOST_MESSAGE_UID", "shadow")
+    _state_db(tmp_path, [("S", None, None)])
+    instance = _uid_engine(tmp_path)
+    try:
+        system = _text("stable system prompt", "system")
+        first = _m("user", "continue", 10.0, "u-c1")
+        reply = _m("assistant", "ok, continuing" + PAD, 11.0, "a-1")
+        head = _m("user", "head R" + PAD, 500.0, "u-r")
+        view = [system, first, reply] + ([head] if path == "r3-remainder" else [])
+        instance.ingest([dict(m) for m in view])
+        if path == "r3-remainder":
+            merged = _m("user", head["content"] + "\n\ncontinue", 500.0, "u-r")
+            view = [
+                system,
+                first,
+                reply,
+                merged,
+                _m("assistant", "reply 2", 501.0, "a-2"),
+            ]
+        else:
+            monkeypatch.setenv("LCM_HOST_MESSAGE_UID", "off")
+            view += [
+                _m("user", "continue", 20.0, "u-c2"),
+                _m("assistant", "again" + PAD, 21.0, "a-2"),
+            ]
+        instance.ingest([dict(m) for m in view])
+        twin, repeat = [
+            int(r["store_id"])
+            for r in _rows(instance)
+            if r["role"] == "user" and r["content"] == "continue"
+        ]
+        bound = {b[0]: b[3] for b in _bindings(instance)}
+        assert bound.get(twin) == "canonical" and repeat not in bound
+        _node(instance, [twin])
+        out = _walk(instance)
+        assert repeat in _ids(out)
+        assert repeat not in instance._store_complete_copy_exclusion_proofs
+        _publish(instance, out)
+        assert _frontier(instance) >= repeat
+        assert any(repeat in n.source_ids for n in instance._dag.get_session_nodes("S"))
+    finally:
+        instance.shutdown()
+
+
+def test_r2_recorded_composite_member_stays_after_twin_reingest(engine):
+    twin, repeat = _append(engine, [_text("continue", "user")] * 2)
+    _bind(engine, twin)
+    _node(engine, [twin])
+    engine._store.add_message_relations(
+        [[(twin, "composite", twin, 0, 10.0), (twin, "composite", repeat, 1, 10.0)]]
+    )
+    _append(engine, [_text("end", "user")])
+    out = _walk(engine)
+    assert (
+        repeat in _ids(out)
+        and repeat not in engine._store_complete_copy_exclusion_proofs
+    )
+
+
+def test_r2_canonical_without_disagreement_is_not_evidence(engine):
+    twin, repeat = _append(engine, [_text()] * 2)
+    engine._store.add_host_uid_bindings(
+        "test:lineage", [(twin, "original", "canonical", "agree_new")]
+    )
+    _append(engine, [_text("end", "user")])
+    out = _walk(engine)
+    assert repeat in _ids(out) and not engine._store_complete_copy_exclusion_proofs
+
+
+def _tagged_segment(tag):
+    call, result = _segment()
+    call["tool_calls"][0]["id"] = f"call_{tag}"
+    return [call, {**result, "tool_call_id": f"call_{tag}", "content": f"result {tag}"}]
+
+
+@pytest.mark.parametrize("page", [4, 2000])
+def test_r3_copy_page_schedules_and_advances(engine, monkeypatch, page):
+    monkeypatch.setattr(lcm_store_complete, "_SCAN_LIMIT", page)
+    originals = [m for i in range(page // 2 + 1) for m in _tagged_segment(i)]
+    ids = _append(engine, originals)
+    _publish(engine, [(m, [sid]) for m, sid in zip(originals, ids)])
+    copies = _append(engine, originals)
+    _append(
+        engine, [_text("real new turn " * 20, "user"), _text("real new reply " * 20)]
+    )
+    host = [_text(f"host turn {i} " * 20, "user") for i in range(4)]
+    tail = [_text("fresh", "user"), _text("fresh reply")]
+    view = host + tail
+    view_ids = _append(engine, view)
+    mapping = dict(zip(map(id, view), view_ids))
+    monkeypatch.setattr(
+        engine, "_get_store_id_map_for_messages", lambda _messages: mapping
+    )
+    backlog = engine._store_complete_backlog(view, 0)
+    assert backlog.truncated and backlog.rows >= page
+    out = _walk(engine, budget=400)
+    assert out and copies[0] in _ids(out)
+    _publish(engine, out)
+    assert _frontier(engine) > ids[-1]
+
+
+@pytest.mark.parametrize("calls", [1, 3], ids=["short-control", "full-page"])
+def test_r3_forced_copy_page_drains_real_rows(engine, monkeypatch, calls):
+    monkeypatch.setattr(lcm_store_complete, "_SCAN_LIMIT", 4)
+    originals = [m for i in range(calls) for m in _tagged_segment(i)]
+    ids = _append(engine, originals)
+    _publish(engine, [(m, [sid]) for m, sid in zip(originals, ids)])
+    _append(engine, originals)
+    real = _append(
+        engine, [_text("real new turn " * 20, "user"), _text("real new reply " * 20)]
+    )
+    monkeypatch.setattr(
+        lcm_engine, "summarize_with_escalation", lambda **kwargs: ("Earlier turns", 1)
+    )
+    view = []
+    frontiers = []
+    for turn in range(6):
+        host = [_text(f"host turn {turn}-{i} " * 20, "user") for i in range(4)]
+        tail = [_text("fresh", "user"), _text("fresh reply")]
+        _append(engine, host + tail)
+        view += host + tail
+        engine._ingest_cursor = len(view)
+        view = engine.compress(view, force=True, bypass_cooldown=True)
+        frontiers.append(_frontier(engine))
+        engine.note_turn_complete()
+    assert frontiers[-1] >= real[-1], frontiers
+
+
+def test_r5_ordinary_leaf_skips_unusable_lookup(tmp_path, monkeypatch):
+    instance = _engine(
+        tmp_path, dynamic_leaf_chunk_enabled=True, dynamic_leaf_chunk_max=400
+    )
+    lookups, hidden = [], []
+    cls = type(instance)
+    real_twins, real_messages = (
+        cls._store_complete_copy_twins,
+        cls._store_complete_messages,
+    )
+    monkeypatch.setattr(
+        cls,
+        "_store_complete_copy_twins",
+        lambda self, rows, carry: (
+            lookups.append(len(rows)) or real_twins(self, rows, carry)
+        ),
+    )
+    monkeypatch.setattr(
+        cls,
+        "_store_complete_messages",
+        lambda self, rows: hidden.append(len(rows)) or real_messages(self, rows),
+    )
+    monkeypatch.setattr(
+        lcm_engine, "summarize_with_escalation", lambda **kwargs: ("Earlier turns", 1)
+    )
+    try:
+        view = [
+            row for i in range(12) for row in _turn(f"T{i}", 100.0 * i, tool=i % 3 == 0)
+        ]
+        instance.ingest(view)
+        instance.compress(view)
+        assert instance._last_compression_status == "compacted"
+        assert hidden and not any(hidden)
+        assert not lookups
+    finally:
+        instance.shutdown()
+
+
+def test_r5_empty_backlog_skips_lookup(engine, monkeypatch):
+    _append(engine, [_text("system", "system")])
+    monkeypatch.setattr(
+        engine,
+        "_store_complete_copy_twins",
+        lambda *_: pytest.fail("lookup cannot be used"),
+    )
+    assert not engine._store_complete_backlog([], 0)
+
+
+def test_r5_extended_hidden_scan_computes_skipped_lookup(engine, monkeypatch):
+    monkeypatch.setattr(lcm_store_complete, "_SCAN_LIMIT", 2)
+    call, result = _segment()
+    ids = _append(engine, [call, result, result, _text("end", "user")])
+    end = _text("end", "user")
+    mapping = {id(call): ids[0], id(result): ids[1], id(end): ids[3]}
+    out = _walk(
+        engine, chunk=[call, result, end], mapping=mapping, view=[call, result, end]
+    )
+    assert out is not None and _ids(out, mapping) == [ids[0], ids[1], ids[3]]
+    assert engine._store_complete_copy_exclusion_proofs == {ids[2]: ids[1]}
+
+
+def test_r6_messages_lookup_failure_keeps_copies_summarized(
+    engine, monkeypatch, caplog
+):
+    twin, copy = _append(engine, [_segment()[1]] * 2)
+    end = _append(engine, [_text("end", "user")])[0]
+    connection = engine._store.connection
+
+    def deny_lookup(action, table, column, database, source):
+        import sqlite3
+
+        return (
+            sqlite3.SQLITE_DENY
+            if action == sqlite3.SQLITE_READ
+            and table == "messages"
+            and column == "tool_calls"
+            else sqlite3.SQLITE_OK
+        )
+
+    # Deny the SELECT's raw tool_calls column only after the ordinary owned-row read.
+    real_owned = engine._store_complete_owned_rows
+
+    def owned(*args, **kwargs):
+        rows = real_owned(*args, **kwargs)
+        connection.set_authorizer(deny_lookup)
+        return rows
+
+    monkeypatch.setattr(engine, "_store_complete_owned_rows", owned)
+    try:
+        with caplog.at_level("DEBUG"):
+            out = _walk(engine)
+        assert _ids(out) == [twin, copy, end]
+        assert not engine._store_complete_copy_exclusion_proofs
+        assert "copy lookup unavailable" in caplog.text
+    finally:
+        connection.set_authorizer(None)
+
+
+def test_r7_copy_past_last_covered_row_has_no_proof(engine):
+    twin, copy = _append(engine, [_segment()[1]] * 2)
+    out = _walk(engine)
+    assert _ids(out) == [twin]
+    assert not engine._store_complete_copy_exclusion_proofs
+    assert copy not in engine._store_complete_excluded
+    _publish(engine, out)
+    assert _frontier(engine) == twin
+
+
+def test_r7_tool_group_rollback_removes_admitted_twin(engine):
+    prefix = _text("prefix", "user")
+    call, result = _segment()
+    result = {**result, "content": "large result " * 100}
+    ids = _append(engine, [prefix, call, result, call, _text("end", "user")])
+    observed = []
+    original_trace = sys.gettrace()
+
+    def trace(frame, event, arg):
+        if (
+            event == "return"
+            and frame.f_code is engine._store_complete_input.__func__.__code__
+        ):
+            observed.append(set(frame.f_locals["admitted"]))
+        return trace
+
+    # The rollback ends this walk immediately, so pin its local coverage invariant at return.
+    try:
+        sys.settrace(trace)
+        out = _walk(
+            engine, budget=count_message_tokens(prefix) + count_message_tokens(call) + 1
+        )
+    finally:
+        sys.settrace(original_trace)
+    assert _ids(out) == [ids[0]]
+    assert observed == [{ids[0]}]
+    assert not engine._store_complete_copy_exclusion_proofs
+
+
+def test_r7_retained_unmapped_copy_stays_in_backlog_label(engine, monkeypatch):
+    twin = _append(engine, [_text()])[0]
+    _bind(engine, twin)
+    _publish(engine, [(_text(), [twin])])
+    _append(engine, [_text()])
+    monkeypatch.setattr(engine, "_get_store_id_map_for_messages", lambda _messages: {})
+    backlog = engine._store_complete_backlog([_text()], 0)
+    assert backlog.rows == 1 and not backlog.truncated
+    assert engine._hidden_backlog_status() == {"hidden_rows": 1}
