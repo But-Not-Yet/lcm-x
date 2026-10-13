@@ -40,6 +40,7 @@ _PRESET_FIELDS = (
     "context_threshold",
     "fresh_tail_count",
     "leaf_chunk_tokens",
+    "leaf_target_max_tokens",
     "condensation_fanin",
     "incremental_max_depth",
 )
@@ -57,6 +58,7 @@ _CODEX_GPT_LONG_CONTEXT = LCMPreset(
         "context_threshold": 0.75,
         "fresh_tail_count": 24,
         "leaf_chunk_tokens": 24_000,
+        "leaf_target_max_tokens": 2_000,
     },
     unsupported_runtime_fields={},
     applies_to=(
@@ -104,6 +106,7 @@ _CODEX_SPARK_CONTEXT = LCMPreset(
         "context_threshold": 0.75,
         "fresh_tail_count": 16,
         "leaf_chunk_tokens": 24_000,
+        "leaf_target_max_tokens": 2_000,
     },
     unsupported_runtime_fields={},
     applies_to=(

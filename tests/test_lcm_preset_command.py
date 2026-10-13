@@ -10,6 +10,7 @@ _PRESET_ENV_VARS = (
     "LCM_CONTEXT_THRESHOLD",
     "LCM_FRESH_TAIL_COUNT",
     "LCM_LEAF_CHUNK_TOKENS",
+    "LCM_LEAF_TARGET_MAX_TOKENS",
     "LCM_CONDENSATION_FANIN",
     "LCM_INCREMENTAL_MAX_DEPTH",
 )
@@ -100,6 +101,7 @@ def test_lcm_preset_show_exposes_spark_provenance_without_mutating_config(tmp_pa
     assert "LCM_CONTEXT_THRESHOLD=0.75" in result
     assert "LCM_FRESH_TAIL_COUNT=16" in result
     assert "LCM_LEAF_CHUNK_TOKENS=24000" in result
+    assert "LCM_LEAF_TARGET_MAX_TOKENS=2000" in result
     assert "runtime_mutation: no" in result
     assert before == (engine._config.context_threshold, engine._config.fresh_tail_count, engine._config.leaf_chunk_tokens)
 
@@ -140,6 +142,7 @@ def test_lcm_preset_suggest_does_not_lower_codex_gpt55_autoraised_threshold(tmp_
     assert "LCM_CONTEXT_THRESHOLD: keep runtime auto-raised value 0.85 (preset 0.75)" in result
     assert "LCM_FRESH_TAIL_COUNT=24" in result
     assert "LCM_LEAF_CHUNK_TOKENS=24000" in result
+    assert "LCM_LEAF_TARGET_MAX_TOKENS=2000" in result
     context_delta = next(item for item in payload["dry_run_delta"] if item["field"] == "context_threshold")
     assert context_delta == {
         "field": "context_threshold",
@@ -163,6 +166,7 @@ def test_lcm_preset_suggest_reports_spark_for_128k_context_window(tmp_path, monk
     assert "LCM_CONTEXT_THRESHOLD=0.75" in result
     assert "LCM_FRESH_TAIL_COUNT=16" in result
     assert "LCM_LEAF_CHUNK_TOKENS=24000" in result
+    assert "LCM_LEAF_TARGET_MAX_TOKENS=2000" in result
     assert "note: suggestion only; no live config was changed" in result
 
 
@@ -248,6 +252,7 @@ def test_lcm_preset_apply_requires_dry_run_and_does_not_mutate_config(tmp_path, 
     assert "LCM_CONTEXT_THRESHOLD=0.75" in dry_run
     assert "LCM_FRESH_TAIL_COUNT=24" in dry_run
     assert "LCM_LEAF_CHUNK_TOKENS=24000" in dry_run
+    assert "LCM_LEAF_TARGET_MAX_TOKENS=2000" in dry_run
     assert "unsupported_runtime_fields: (none)" in dry_run
     assert "note: no live config was changed" in dry_run
     assert before == (engine._config.context_threshold, engine._config.fresh_tail_count, engine._config.leaf_chunk_tokens)
@@ -266,6 +271,7 @@ def test_lcm_preset_apply_spark_dry_run_uses_benchmarked_128k_values(tmp_path, m
     assert "LCM_CONTEXT_THRESHOLD=0.75" in result
     assert "LCM_FRESH_TAIL_COUNT=16" in result
     assert "LCM_LEAF_CHUNK_TOKENS=24000" in result
+    assert "LCM_LEAF_TARGET_MAX_TOKENS=2000" in result
     assert "unsupported_runtime_fields: (none)" in result
     assert before == (engine._config.context_threshold, engine._config.fresh_tail_count, engine._config.leaf_chunk_tokens)
 
@@ -282,6 +288,20 @@ def test_lcm_preset_apply_dry_run_keeps_explicit_managed_env_values(tmp_path, mo
     assert "LCM_LEAF_CHUNK_TOKENS: keep explicit value 12000 (preset 24000)" in result
     assert "LCM_FRESH_TAIL_COUNT=24" in result
     assert engine._config.leaf_chunk_tokens == 12_000
+
+
+def test_lcm_preset_apply_dry_run_keeps_explicit_summary_cap(tmp_path, monkeypatch):
+    _clear_preset_env(monkeypatch)
+    monkeypatch.setenv("LCM_LEAF_TARGET_MAX_TOKENS", "12000")
+    engine = _engine(tmp_path)
+    engine._config.leaf_target_max_tokens = 12_000
+
+    result = handle_lcm_command("preset apply codex_gpt_long_context --dry-run", engine)
+
+    assert "status: dry-run" in result
+    assert "LCM_LEAF_TARGET_MAX_TOKENS: keep explicit value 12000 (preset 2000)" in result
+    assert "LCM_LEAF_TARGET_MAX_TOKENS=2000" not in result
+    assert engine._config.leaf_target_max_tokens == 12_000
 
 
 def test_lcm_preset_dry_run_does_not_honor_invalid_env_overrides(tmp_path, monkeypatch):

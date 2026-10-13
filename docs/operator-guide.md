@@ -758,12 +758,14 @@ The current runtime preset dry-run previews are:
 # codex_gpt_long_context: near-272k GPT/Codex routes
 LCM_CONTEXT_THRESHOLD=0.75
 LCM_FRESH_TAIL_COUNT=24
-LCM_LEAF_CHUNK_TOKENS=8000
+LCM_LEAF_CHUNK_TOKENS=24000
+LCM_LEAF_TARGET_MAX_TOKENS=2000
 
 # codex_spark_context: near-128k GPT-5.3 Codex Spark routes
 LCM_CONTEXT_THRESHOLD=0.75
 LCM_FRESH_TAIL_COUNT=16
-LCM_LEAF_CHUNK_TOKENS=8000
+LCM_LEAF_CHUNK_TOKENS=24000
+LCM_LEAF_TARGET_MAX_TOKENS=2000
 ```
 
 ### Migrating off gpt-5.4 (codex-auth retirement 2026-08-31)
