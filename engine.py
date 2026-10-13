@@ -3483,6 +3483,16 @@ class LCMEngine(
         self._apply_session_start_metadata(session_id, kwargs)
         self._last_compacted_store_id = int(state.current_frontier_store_id or 0)
         proof = self._compress_commit_proof
+        if (
+            proof
+            and proof.get("stub_first")
+            and proof.get("session_id") == session_id
+            and proof.get("conversation_id") == self._conversation_id
+            and not (proof.get("published") or proof.get("native") or proof.get("recovery") or proof.get("filtered"))
+        ):
+            # #1116: Hermes fires this boundary only after it committed the compression, so the stub-first list
+            # compress() handed it is the host's now: its proof becomes durable, as the rotation re-key does.
+            self._persist_compress_commit_proof(proof, last_store_id=proof.get("stub_first_last_store_id"))
         cursor_proven = bool(
             proof
             and proof.get("session_id") == session_id
