@@ -960,18 +960,6 @@ class CompactionMixin:
             model=model,
         )
 
-    def _after_leaf_publication(self, node: SummaryNode, published_frontier: int, host_rows: int, hidden_rows: int,
-                                budget: ForegroundBudget) -> None:
-        """A published leaf moves the in-process frontier marker and the host/hidden row counters, invalidates
-        rollups, counts as the compaction's progress and ends the #608 and #651 holds."""
-        self._last_compacted_store_id = published_frontier
-        self._compress_host_rows_consumed += host_rows
-        self._compress_hidden_rows_consumed += hidden_rows
-        self._invalidate_rollups_for_published_node(node)
-        budget.progress, budget.leaves = budget.progress or "leaf", budget.leaves + 1
-        self._sweep_budget_hold_until = 0.0  # #608: a stored leaf ends the hold
-        self._no_progress_hold, self._no_progress_candidate = None, False  # #651: hidden-only leaves too
-
     def _leaf_consumption(self, selected_raw_chunk, compacted_chunk, sources, anchored_input, anchor_claims,
                           dependent_reply_message_ids):
         """What a leaf summarised from ``compacted_chunk`` consumes (the leaf loop's derivation; #787 promotion
@@ -1056,16 +1044,17 @@ class CompactionMixin:
                 if k <= 0 or tool_group_safe_end(candidate_raw, k) != k:
                     continue
                 chunk = self._identity_anchor_extend_chunk(list(candidate_raw[:k]), candidate_raw)
+                covered = list(leaf.covered_store_ids)  # review r1 F1: the summary's text and the consumption
                 if self._prepared_chunk_consumption(chunk, working_messages, accounted_ids,
-                                                    dependent_reply_message_ids) == list(leaf.covered_store_ids):
+                                                    dependent_reply_message_ids) == (covered, covered):
                     return leaf, chunk, bounds[1]
             reason = "host_unit_split"
         self._reject_prepared_chain(leaf, reason)
         return None
 
     def _prepared_chunk_consumption(self, chunk, working_messages, accounted_ids, dependent_reply_message_ids):
-        """The store ids a leaf over ``chunk`` would consume, built as the leaf loop builds its input and claims;
-        None when no leaf can start there. The loop's store-complete state is restored afterwards."""
+        """(summary lineage ids, consumed ids) of a leaf over ``chunk``, built as the leaf loop builds its input and
+        claims; None when no leaf can start there. The loop's store-complete state is restored afterwards."""
         saved = getattr(self, "_store_complete_excluded", []), getattr(self, "_store_complete_cut", False)
         selected_input = [message for message in chunk if id(message) not in dependent_reply_message_ids]
         self._store_complete_excluded, self._store_complete_cut = [], False
@@ -1079,8 +1068,8 @@ class CompactionMixin:
             summary_input_chunk, sources, anchor_claims = self._leaf_summary_input(anchored_input, selected_input)
             if not summary_input_chunk:
                 return None
-            return self._leaf_consumption(chunk, summary_input_chunk, sources, anchored_input, anchor_claims,
-                                          dependent_reply_message_ids)[4]
+            return tuple(self._leaf_consumption(chunk, summary_input_chunk, sources, anchored_input, anchor_claims,
+                                                dependent_reply_message_ids)[3:])
         finally:
             self._store_complete_excluded, self._store_complete_cut = saved
 
@@ -2135,9 +2124,9 @@ class CompactionMixin:
                 break
             publication_excluded_store_ids.extend(self._store_complete_excluded)
             summary_input_chunk, sources, anchor_claims = self._leaf_summary_input(anchored_input, selected_input)
-            if prepared is not None and (not summary_input_chunk or self._leaf_consumption(
+            if prepared is not None and (not summary_input_chunk or tuple(self._leaf_consumption(
                     selected_raw_chunk, summary_input_chunk, sources, anchored_input, anchor_claims,
-                    dependent_reply_message_ids)[4] != list(prepared.covered_store_ids)):
+                    dependent_reply_message_ids)[3:]) != (list(prepared.covered_store_ids),) * 2):
                 self._reject_prepared_chain(prepared, "host_unit_split")  # the pass reruns on its own chunk
                 continue
             if not summary_input_chunk:
@@ -2303,18 +2292,23 @@ class CompactionMixin:
                     condensation_passes=pre_leaf_condensation_passes,  # #653: completed pre-leaf passes
                     context_is_assembled=context_is_assembled,
                 )
-            self._after_leaf_publication(node, published_frontier, selected_raw_len,
-                                         len(compacted_chunk) - len(compacted_positions), budget)
-            if prepared is not None:  # #787: a promoted pass spends no summariser pass
-                leaf_prep.promoted(str(self._store.db_path), self._conversation_id, prepared)
-                promoted_leaves, max_leaf_passes = promoted_leaves + 1, max_leaf_passes + 1
-                prep_freed += count_messages_tokens(source_lookup_chunk) - count_tokens(summary_text)
+            self._last_compacted_store_id = published_frontier
+            self._compress_host_rows_consumed += selected_raw_len
+            self._compress_hidden_rows_consumed += len(compacted_chunk) - len(compacted_positions)
+            self._invalidate_rollups_for_published_node(node)
 
             pressure_remaining_messages = pressure_messages[leading_anchor_count + selected_raw_len:]
             working_messages = working_messages[:leading_anchor_count] + remaining_messages
             pressure_messages = pressure_messages[:leading_anchor_count] + pressure_remaining_messages
             leaf_compacted_this_turn, no_call_only, refused_input = True, False, None
+            budget.progress, budget.leaves = budget.progress or "leaf", budget.leaves + 1
+            self._sweep_budget_hold_until = 0.0  # #608: a stored leaf ends the hold
+            self._no_progress_hold, self._no_progress_candidate = None, False  # #651: hidden-only leaves too
             leaf_passes += 1
+            if prepared is not None:  # #787: a promoted pass spends no summariser pass
+                leaf_prep.promoted(str(self._store.db_path), self._conversation_id, prepared)
+                promoted_leaves, max_leaf_passes = promoted_leaves + 1, max_leaf_passes + 1
+                prep_freed += count_messages_tokens(source_lookup_chunk) - count_tokens(summary_text)
             level3_leaves += _level == 3
             estimated_active_tokens = max(0, estimated_active_tokens - source_tokens + summary_tokens)
             if (

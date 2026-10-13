@@ -1351,7 +1351,11 @@ def maybe_externalize_payload(
         return None
 
     try:
-        storage_dir = resolve_large_output_storage_dir(config, hermes_home=hermes_home)
+        storage_dir = (
+            resolve_large_output_storage_dir(config, hermes_home=hermes_home)
+            if write
+            else get_large_output_storage_dir(config, hermes_home=hermes_home, create=False)  # no directory either
+        )
     except OSError as exc:
         logger.warning("Large payload externalization skipped (non-blocking): %s", exc)
         return None

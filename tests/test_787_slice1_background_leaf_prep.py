@@ -972,7 +972,9 @@ def test_r1_f1_a_durable_dependent_reply_is_never_published_in_a_prepared_summar
     engine, provider, _isolated
 ):
     view = _crossing_view(engine)
-    marker = "reply to T1 alpha"  # T1's reply only (T10 reads "reply to T10 alpha")
+    marker = (
+        "reply to T6 alpha"  # T6's reply only (T60 would read "reply to T60 alpha")
+    )
     reply = 1 + next(
         i for i, m in enumerate(view) if str(m.get("content")).startswith(marker)
     )  # store ids follow the view (system prompt = 1)
@@ -988,14 +990,57 @@ def test_r1_f1_a_durable_dependent_reply_is_never_published_in_a_prepared_summar
             }
         ]
     )
-    provider.result = lambda prompt: SUMMARY + (
-        " [dependent reply text]" if marker in prompt else ""
+    provider.result = lambda prompt: (
+        SUMMARY + (" [dependent reply text]" if marker in prompt else "")
     )
     _turn_end(engine, view)
-    assert _isolated.counters["prepared"] >= 1
+    assert _isolated.counters["prepared"] >= 1  # leaves before the reply are prepared
 
     engine.compress(view, current_tokens=tokens.count_messages_tokens(view))
 
+    summaries = [
+        node.summary for node in engine._dag.get_session_nodes("S", limit=100_000)
+    ]
+    assert summaries and not any("[dependent reply text]" in s for s in summaries)
+
+
+def test_r1_f1_promotion_needs_the_summary_source_as_well_as_the_consumption(
+    engine, provider, _isolated, monkeypatch
+):
+    # A worker without the stop: its leaf summarises the marked reply the leaf loop consumes but never reads.
+    monkeypatch.setattr(
+        leaf_prep,
+        "excluded_from_summary_input",
+        lambda *args: False,
+        raising=False,
+    )
+    view = _crossing_view(engine)
+    marker = "reply to T1 alpha"
+    reply = 1 + next(
+        i for i, m in enumerate(view) if str(m.get("content")).startswith(marker)
+    )
+    engine.ingest(view)
+    engine._write_generated_ignored_dependent_reply_records(
+        [
+            {
+                "store": engine._ignored_dependent_reply_store_fingerprint(
+                    {"role": "assistant", "store_id": reply}
+                )
+            }
+        ]
+    )
+    provider.result = lambda prompt: (
+        SUMMARY + (" [dependent reply text]" if marker in prompt else "")
+    )
+    _turn_end(engine, view)
+    chain = leaf_prep.ready_chain(engine._store.db_path, "conv", 0)
+    holding = next(i for i, leaf in enumerate(chain) if reply in leaf.covered_store_ids)
+
+    engine.compress(view, current_tokens=tokens.count_messages_tokens(view))
+
+    # The leaves before it are promoted; the one holding the reply ends the chain.
+    assert _isolated.counters["promoted"] == holding
+    assert _isolated.counters["rejected_host_unit_split"] == len(chain) - holding
     summaries = [
         node.summary for node in engine._dag.get_session_nodes("S", limit=100_000)
     ]
@@ -1022,7 +1067,9 @@ def test_r1_f2_each_profile_keeps_its_worker_spend_guard_across_interleaved_jobs
         first.last_prompt_tokens = WINDOW  # far above L: the chain would grow
         first._prepare_leaves_after_turn(view)
         assert _isolated.wait_idle(10)
-        assert provider.on("lcm-leaf-prep") == before  # still no slot for the first profile
+        assert (
+            provider.on("lcm-leaf-prep") == before
+        )  # still no slot for the first profile
     finally:
         first.shutdown()
         second.shutdown()
@@ -1090,9 +1137,13 @@ def test_r1_f5_off_publication_records_progress_after_the_host_list_trim(
                 and engine._last_compacted_store_id
                 and working is not None
             ):
-                seen["published"] = len(working)  # the host list when the frontier marker moved
+                seen["published"] = len(
+                    working
+                )  # the host list when the frontier marker moved
             if "progress" not in seen and getattr(budget, "leaves", 0) >= 1:
-                seen["progress"] = len(working)  # the host list when the leaf counted as progress
+                seen["progress"] = len(
+                    working
+                )  # the host list when the leaf counted as progress
         return lines
 
     def calls(frame, event, arg):
