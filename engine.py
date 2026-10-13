@@ -6480,6 +6480,7 @@ class LCMEngine(
         messages: List[Dict[str, Any]],
         *,
         timeout_seconds: Optional[float] = None,
+        deadline: Optional[float] = None,
     ) -> None:
         """Best-effort extraction of decisions before compaction."""
         try:
@@ -6489,16 +6490,20 @@ class LCMEngine(
                 base = self._hermes_home or os.path.expanduser("~/.hermes")
                 output_path = os.path.join(base, "lcm-extractions")
             extraction_model = self._config.extraction_model or self._config.summary_model
+            timeout = timeout_seconds if timeout_seconds is not None else self._config.summary_timeout_ms / 1000
+            if deadline is not None:
+                timeout = min(timeout_seconds or self._config.summary_timeout_ms / 1000, deadline - time.monotonic())
+                if timeout < 1.0:
+                    logger.debug(
+                        "Pre-compaction extraction skipped: less than 1s remains after reserving the next summary call"
+                    )
+                    return
             extract_before_compaction(
                 serialized_messages=serialized,
                 output_path=output_path,
                 session_id=self._session_id or "",
                 model=extraction_model,
-                timeout=(
-                    timeout_seconds
-                    if timeout_seconds is not None
-                    else self._config.summary_timeout_ms / 1000
-                ),
+                timeout=timeout,
             )
         except Exception as e:
             logger.warning("Pre-compaction extraction failed (non-blocking): %s", e)
