@@ -1160,3 +1160,64 @@ def test_r1_f5_off_publication_records_progress_after_the_host_list_trim(
         assert seen["progress"] < seen["published"]
     finally:
         engine.shutdown()
+
+
+# Review round 2 (PR #1142) ------------------------------------------------------------------------------------------
+
+
+def test_r2_a_the_off_stub_trial_keeps_base_storage_resolution(tmp_path, provider):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a regular file: no directory can be created under it")
+    engine = _engine(
+        tmp_path,
+        background_leaf_prep_enabled=False,
+        large_output_externalization_enabled=True,
+        large_output_active_replay_stubbing_enabled=True,
+        large_output_externalization_path=str(blocker / "payloads"),
+    )
+    try:
+        message = {
+            "role": "tool",
+            "tool_call_id": "c1",
+            "content": "large tool output " * 400,
+        }
+        # The #671/#726 no-write trial: storage cannot be created, so no stub (as at 09e32580).
+        assert (
+            engine._maybe_stub_active_tool_result(
+                message, is_recovery_tool_result=False, threshold_tokens=1, write=False
+            )
+            is None
+        )
+    finally:
+        engine.shutdown()
+
+
+def _guard_job(name: str, max_calls: int = 2):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        config=LCMConfig(background_leaf_prep_max_calls=max_calls),
+        hermes_home=f"home-{name}",
+        db_path=f"db-{name}",
+    )
+
+
+def test_r2_b_a_guard_with_a_live_obligation_is_never_evicted(_isolated):
+    tripped = _isolated._guard(_guard_job("A"))
+    for _ in range(2):
+        tripped.record_call()
+    assert tripped.remaining() == 0  # A is in its backoff
+    for index in range(leaf_prep._PER_PROCESS):  # 64 other profiles arrive
+        assert _isolated._guard(_guard_job(f"other-{index}")) is not None
+
+    assert _isolated._guard(_guard_job("A")) is tripped and tripped.remaining() == 0
+    assert len(_isolated._spend_guards) <= leaf_prep._PER_PROCESS
+
+
+def test_r2_b_a_full_table_of_live_guards_skips_the_new_profile(_isolated):
+    for index in range(leaf_prep._PER_PROCESS):
+        _isolated._guard(_guard_job(f"busy-{index}")).record_call()  # a call inside each window
+
+    assert _isolated._guard(_guard_job("new")) is None
+    assert _isolated.counters["prep_guard_full"] == 1
+    assert len(_isolated._spend_guards) == leaf_prep._PER_PROCESS
