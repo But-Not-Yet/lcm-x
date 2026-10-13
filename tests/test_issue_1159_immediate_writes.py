@@ -1,4 +1,4 @@
-"""#1159 DDL-rollback writes wait for a concurrent writer."""
+"""#1159 DDL-rollback write waits and #1112 transient FTS schema checks."""
 
 import sqlite3
 import threading
@@ -6,8 +6,9 @@ import time
 
 import pytest
 
+from hermes_lcm import db_bootstrap
 from hermes_lcm.dag import SummaryDAG, SummaryNode
-from hermes_lcm.store import MessageStore
+from hermes_lcm.store import MessageStore, build_message_fts_spec
 
 
 @pytest.mark.parametrize("kind", ["store", "dag"])
@@ -56,3 +57,69 @@ def test_ddl_rollback_write_waits_for_other_writer(tmp_path, kind):
         holder.rollback()
         holder.close()
         owner.close()
+
+
+class _ConnectionProxy:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def __getattr__(self, name):
+        return getattr(self.conn, name)
+
+
+@pytest.mark.parametrize("schema_kind", ["code", "vtable_text"])
+@pytest.mark.parametrize("failures", [1, 2])
+def test_structural_schema_error_rechecks_once(tmp_path, monkeypatch, schema_kind, failures):
+    store = MessageStore(tmp_path / "schema-recheck.db")
+    proxy = _ConnectionProxy(store.connection)
+    attempts = 0
+
+    def execute(sql, *args):
+        nonlocal attempts
+        if sql.startswith("PRAGMA table_info"):
+            attempts += 1
+            if attempts <= failures:
+                exc = sqlite3.DatabaseError(
+                    "database schema has changed" if schema_kind == "code"
+                    else "vtable constructor failed: messages_fts"
+                )
+                if schema_kind == "code":
+                    exc.sqlite_errorcode = sqlite3.SQLITE_SCHEMA
+                raise exc
+        return store.connection.execute(sql, *args)
+
+    monkeypatch.setattr(proxy, "execute", execute)
+    trace = []
+    store.connection.set_trace_callback(trace.append)
+    try:
+        assert db_bootstrap._fts_needs_rebuild_structural(
+            proxy, build_message_fts_spec()
+        ) is (failures == 2)
+        assert attempts == 2
+        assert not store.connection.in_transaction
+        assert not any(sql.startswith("BEGIN") for sql in trace)
+    finally:
+        store.close()
+
+
+def test_structural_lock_error_precedes_vtable_retry(tmp_path, monkeypatch):
+    store = MessageStore(tmp_path / "lock-precedence.db")
+    proxy = _ConnectionProxy(store.connection)
+    attempts = 0
+
+    def execute(sql, *args):
+        nonlocal attempts
+        if sql.startswith("PRAGMA table_info"):
+            attempts += 1
+            exc = sqlite3.OperationalError("vtable constructor failed: messages_fts")
+            exc.sqlite_errorcode = sqlite3.SQLITE_BUSY
+            raise exc
+        return store.connection.execute(sql, *args)
+
+    monkeypatch.setattr(proxy, "execute", execute)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="vtable constructor failed"):
+            db_bootstrap._fts_needs_rebuild_structural(proxy, build_message_fts_spec())
+        assert attempts == 1
+    finally:
+        store.close()
