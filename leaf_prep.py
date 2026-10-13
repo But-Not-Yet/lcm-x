@@ -43,7 +43,7 @@ REJECT_REASONS = (
     "binding_changed",
     "coverage_digest_mismatch",
     "route_fingerprint_mismatch",
-    "host_position_gap",
+    "host_unit_split",
     "fence_conflict",
     "stale_evicted",
 )
@@ -174,6 +174,20 @@ def working_leaf_chunk_tokens(config, context_length: int, raw_tokens: int) -> i
     while working < ceiling and raw_tokens > working * 2:
         working = min(ceiling, working * 2)
     return working
+
+
+def host_unit_boundary(
+    previous: Optional[Dict[str, Any]], following: Optional[Dict[str, Any]]
+) -> bool:
+    """Amendment M-1 item 5: a prepared chunk ends between two stored rows only where the host cannot merge
+    them into one message: before a user or system row, or after a tool result that no further result follows.
+    Never inside one assistant emission (its content and tool-call rows) or a tool group."""
+    if previous is None or following is None:
+        return False
+    role = following.get("role")
+    return role in ("user", "system") or (
+        previous.get("role") == "tool" and role != "tool"
+    )
 
 
 def levels(
@@ -446,6 +460,10 @@ class _LeafPrep:
         if len(raw) >= _SCAN_LIMIT:
             return  # the newest rows (the fresh tail) were not read
         rows = [_decode_row(row) for row in raw]
+        following = {  # the next stored row, tail included: what the host could merge a chunk end with
+            int(row["store_id"]): rows[index + 1] if index + 1 < len(rows) else None
+            for index, row in enumerate(rows)
+        }
         messages = _summary_input(rows, config, job.hermes_home, job.session_id)
         tail = resolve_fresh_tail_boundary(
             messages,
@@ -494,7 +512,22 @@ class _LeafPrep:
             remaining = messages[position:]
             if count_messages_tokens(remaining) < chunk_tokens:
                 return  # never a partial chunk: the next turn brings more rows
-            chunk = select_oldest_leaf_chunk(remaining, chunk_tokens)
+            end = position + len(select_oldest_leaf_chunk(remaining, chunk_tokens))
+
+            def unit_end(end: int) -> bool:
+                return host_unit_boundary(
+                    rows[end - 1], following.get(int(rows[end - 1]["store_id"]))
+                )
+
+            while end > position and not unit_end(end):  # back to a host-unit boundary,
+                end -= 1
+            if end == position:  # else forward to the next one inside the eligible rows
+                end = position + 1
+                while end < len(rows) and not unit_end(end):
+                    end += 1
+                if not unit_end(end):
+                    return
+            chunk = messages[position:end]
             # D-6: skip while the live route is open, the foreground guard is short or the own guard is spent
             if not summary_route_available(
                 config.summary_model, config.summary_fallback_models, job.breaker
@@ -552,6 +585,8 @@ class _LeafPrep:
             if result.level == 3 and not result.level_3_verbatim:
                 return  # a truncation is never prepared; the foreground decides about level 3 (#652)
             covered_rows = rows[position : position + len(result.chunk)]
+            if not unit_end(position + len(covered_rows)):
+                return  # a rescue prefix that ends inside a host unit could never be promoted
             start = chain[-1].covered_end if chain else job.frontier
             leaf = PreparedLeaf(
                 session_id=job.session_id,
