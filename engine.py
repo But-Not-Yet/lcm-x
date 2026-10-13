@@ -1775,6 +1775,11 @@ class LCMEngine(
         until, reason = self._no_progress_hold
         return {"reason": reason, "until": time.time() + max(0.0, until - time.monotonic())}  # #618: wall clock
 
+    def _zero_leaf_streak_status(self) -> Optional[dict]:
+        """#1162: this conversation's consecutive over-threshold passes that stored no leaf, and the last reason."""
+        streak = self.__dict__.get("_zero_leaf_streaks", {}).get(self._hold_conversation_key())
+        return dict(streak) if streak else None
+
     def record_rejected_compaction(self) -> None:
         """#651 host breaker hook: the host refused the last compaction (the result would be larger). Called
         without arguments inside an error-swallowing wrapper. #665: a refusal of a bypassed (auxiliary or
@@ -5015,6 +5020,7 @@ class LCMEngine(
             "threshold_full_sweep": dict(self._last_threshold_full_sweep),
             "last_stub_first_exit": dict(self._last_stub_first_exit) if self._last_stub_first_exit else None,
             "no_progress_hold": self._no_progress_hold_status(),
+            "zero_leaf_streak": self._zero_leaf_streak_status(),
             "ingest_failure_count": self._ingest_failure_count,
             "consecutive_ingest_failures": self._consecutive_ingest_failures,
             "last_ingest_error": self._last_ingest_error,
