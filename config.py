@@ -667,7 +667,7 @@ class LCMConfig:
 
     # -- Compaction thresholds ---
     # Max source tokens in a leaf chunk before summarization triggers
-    leaf_chunk_tokens: int = 8_000
+    leaf_chunk_tokens: int = 24_000
     # Fraction of context window that triggers compaction (0.0–1.0)
     context_threshold: float = 0.75
     # Per-model threshold overrides. Keys are matched as substrings against
@@ -1054,7 +1054,7 @@ class LCMConfig:
     # receives twice the target as max_tokens. Defaults reproduce the historical constants.
     leaf_target_ratio: float = 0.20
     leaf_target_min_tokens: int = 2_000
-    leaf_target_max_tokens: int = 12_000
+    leaf_target_max_tokens: int = 2_000
     # Summariser prompt version (#646): 1 = original prompts and 2x output
     # ceiling; 2 = v2 prompts, focus directives in the policy, 3x ceiling.
     summary_prompt_version: int = 1
