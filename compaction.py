@@ -1335,8 +1335,10 @@ class CompactionMixin:
         # replay-safe view so quarantined assistant loops do not enter summaries
         # or provider context after the durable row has been written.
         span_started = time.monotonic()
-        working_messages = self._ingest_messages(messages)
-        self._pre_leaf_span("ingest", span_started)  # #1127: ingest and reconcile, untimed by the sweep steps
+        try:
+            working_messages = self._ingest_messages(messages)
+        finally:  # #1127: ingest and reconcile, untimed by the sweep steps; a raised lock wait is theirs too
+            self._pre_leaf_span("ingest", span_started)
         # #488: project the complete admitted list ONCE; subset consumers read a row's occurrence
         # here. Only a row at exactly one position is registered (F6): a copy or an aliased row
         # is unproven (full identity).
@@ -1997,12 +1999,14 @@ class CompactionMixin:
                 if self._config.extraction_enabled:
                     # #605: every foreground path, sweep on or off: extraction never outlasts the hard bound.
                     span_started = time.monotonic()
-                    self._run_pre_compaction_extraction(
-                        summary_input_chunk,
-                        timeout_seconds=max(0.001, min(self._config.summary_timeout_ms / 1000,
-                                                       sweep_deadline - time.monotonic())),
-                    )
-                    self._pre_leaf_span("extraction", span_started)
+                    try:
+                        self._run_pre_compaction_extraction(
+                            summary_input_chunk,
+                            timeout_seconds=max(0.001, min(self._config.summary_timeout_ms / 1000,
+                                                           sweep_deadline - time.monotonic())),
+                        )
+                    finally:
+                        self._pre_leaf_span("extraction", span_started)
                 if bool(
                     getattr(
                         self._config,
