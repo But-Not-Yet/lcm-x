@@ -1207,6 +1207,15 @@ class MessageStore:
             self._conn.commit()
             return cur.rowcount > 0
 
+    def backfill_observed_at_many(self, pairs) -> int:
+        """R5: batch proven ``(store_id, stamp)`` backfills, never overwriting a value."""
+        with self._write_lock, self._conn:
+            return self._conn.executemany(
+                "UPDATE messages SET observed_at = ?, observed_at_source = 'host_message_timestamp' "
+                "WHERE store_id = ? AND observed_at IS NULL",
+                [(float(stamp), int(store_id)) for store_id, stamp in pairs],
+            ).rowcount
+
     def has_session_messages(self, session_id: str) -> bool:
         """Whether a session contains any messages, without counting them."""
         return bool(self._conn.execute(
