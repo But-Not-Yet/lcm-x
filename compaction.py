@@ -27,6 +27,7 @@ from .dag import SummaryNode
 from .escalation import ForegroundBudget, ForegroundEstimates, SweepBudgetExhausted
 from .externalize import ingest_payload_writes, payload_lookup_scope
 from .fresh_tail import tool_group_safe_end
+from . import leaf_prep
 from .lifecycle_state import LifecycleBindingChangedError, LifecyclePublicationConflictError
 from .message_content import text_content_for_pattern_matching
 from .reconcile import (
@@ -64,6 +65,21 @@ _THRESHOLD_FULL_SWEEP_PARTIAL_STOP_REASONS = frozenset({
     "condensation_no_progress",
     "no_same_depth_condensation_group",
 })
+
+
+def select_oldest_leaf_chunk(
+    candidate_raw: List[Dict[str, Any]],
+    working_leaf_chunk_tokens: int,
+) -> List[Dict[str, Any]]:
+    selected: list[Dict[str, Any]] = []
+    used = 0
+    for msg in candidate_raw:
+        msg_tokens = count_message_tokens(msg)
+        if used + msg_tokens > working_leaf_chunk_tokens and selected:
+            break
+        selected.append(msg)
+        used += msg_tokens
+    return list(candidate_raw[: tool_group_safe_end(candidate_raw, len(selected))])
 
 
 class CompactionMixin:
@@ -542,15 +558,7 @@ class CompactionMixin:
         candidate_raw: List[Dict[str, Any]],
         working_leaf_chunk_tokens: int,
     ) -> List[Dict[str, Any]]:
-        selected: list[Dict[str, Any]] = []
-        used = 0
-        for msg in candidate_raw:
-            msg_tokens = count_message_tokens(msg)
-            if used + msg_tokens > working_leaf_chunk_tokens and selected:
-                break
-            selected.append(msg)
-            used += msg_tokens
-        return list(candidate_raw[: tool_group_safe_end(candidate_raw, len(selected))])
+        return select_oldest_leaf_chunk(candidate_raw, working_leaf_chunk_tokens)
 
     def compress(self, messages: List[Dict[str, Any]],
                  current_tokens: int = None,
@@ -909,6 +917,187 @@ class CompactionMixin:
             )
         except Exception:
             logger.debug("LCM durable compaction-commit proof write failed", exc_info=True)
+
+    def _publish_leaf_node(
+        self,
+        node: SummaryNode,
+        *,
+        level: int,
+        model: str,
+        expected_frontier: int,
+        consumed_store_ids: List[int],
+        publication_excluded_store_ids: List[int],
+        filter_exclusion_proofs: Dict[int, Any],
+        carried_ranges: List[tuple[str, int, int]],
+        before_publication=None,
+    ) -> None:
+        """Write one leaf and stage its fenced frontier advance in one transaction (lifecycle_state.py
+        ``stage_compaction_publication``). ``before_publication(conn)`` (#787 promotion) re-validates first, in
+        that transaction; it raises to reject."""
+        before_commit = None
+        if self._session_id and self._conversation_id:
+            publication_session_id = self._session_id
+            publication_conversation_id = self._conversation_id
+            def stage_frontier(conn, node_id) -> None:
+                if before_publication is not None:
+                    before_publication(conn)
+                self._lifecycle.stage_compaction_publication(
+                    conn,
+                    publication_conversation_id,
+                    publication_session_id,
+                    node_id,
+                    expected_frontier,
+                    consumed_store_ids,
+                    publication_excluded_store_ids,
+                    filter_exclusion_proofs,
+                    carried_ranges,
+                )
+            before_commit = stage_frontier
+        self._dag.add_node(
+            node,
+            before_commit=before_commit,
+            escalation_level=level or None,  # #441; 0 = placeholder, no model call
+            model=model,
+        )
+
+    def _after_leaf_publication(self, node: SummaryNode, published_frontier: int, host_rows: int, hidden_rows: int,
+                                budget: ForegroundBudget) -> None:
+        """A published leaf moves the in-process frontier marker and the host/hidden row counters, invalidates
+        rollups, counts as the compaction's progress and ends the #608 and #651 holds."""
+        self._last_compacted_store_id = published_frontier
+        self._compress_host_rows_consumed += host_rows
+        self._compress_hidden_rows_consumed += hidden_rows
+        self._invalidate_rollups_for_published_node(node)
+        budget.progress, budget.leaves = budget.progress or "leaf", budget.leaves + 1
+        self._sweep_budget_hold_until = 0.0  # #608: a stored leaf ends the hold
+        self._no_progress_hold, self._no_progress_candidate = None, False  # #651: hidden-only leaves too
+
+    def _promote_prepared_leaves(self, working_messages, pressure_messages, estimated_active_tokens: int,
+                                 budget: ForegroundBudget):
+        """#787 (D-3, D-4, D-12): publish the ready chain of prepared leaves that starts at the durable frontier,
+        in order, through the fenced publication, until the conversation is at or below L. Each leaf must cover
+        exactly the next host rows after the summary scaffold, outside the fresh tail; inside the publication
+        transaction its coverage digest and route fingerprint are recomputed. The first rejection ends the chain
+        (counted by reason) and the foreground path continues. Returns None when nothing was published, else
+        (working, pressure, estimated tokens, promoted leaves, at or below L)."""
+        if not self._session_id or not self._conversation_id:
+            return None
+        db_path, conversation_id = str(self._store.db_path), self._conversation_id
+        state = self._lifecycle.get_by_conversation(conversation_id)
+        frontier = int(getattr(state, "current_frontier_store_id", 0) or 0)
+        chain = leaf_prep.ready_chain(db_path, conversation_id, frontier)
+        if not chain:
+            return None
+        working, pressure = list(working_messages), list(pressure_messages)
+        lead = self._leading_anchor_count(working)
+        tail_start = self._fresh_tail_start(working)
+        start = lead
+        while start < tail_start and (
+            self._is_replayed_context_scaffold_message(working[start])
+            if self._compress_occurrences is None
+            else self._compress_occurrences.get(id(working[start]), (None, ()))[1] is None
+        ):
+            start += 1
+        chunk = self._working_leaf_chunk_tokens(count_messages_tokens(pressure[start:tail_start]))
+        bounds = leaf_prep.levels(self.threshold_tokens, self.context_length, chunk)
+        if bounds is None or estimated_active_tokens <= bounds[1]:
+            return None
+        low_water = bounds[1]
+        full_map = self._get_store_id_map_for_messages(working[lead:])
+        anchor_ids = self._get_store_ids_for_messages(working[:lead]) if lead else []
+        records = self._load_generated_ignored_dependent_reply_records()
+        hashes = self._load_generated_ignored_placeholder_hashes()
+        fingerprint = leaf_prep.route_fingerprint(self._config)
+        promoted, freed, reason = 0, 0, ""
+        for index, leaf in enumerate(chain):
+            if estimated_active_tokens <= low_water:
+                break
+            count = len(leaf.covered_store_ids)
+            window = working[start:start + count]
+            if leaf.session_id != self._session_id:
+                reason = "binding_changed"
+            elif leaf.route_fingerprint != fingerprint:
+                reason = "route_fingerprint_mismatch"
+            elif start + count > tail_start or tuple(full_map.get(id(m)) for m in window) != leaf.covered_store_ids \
+                    or any(self._prep_host_row_excluded(m, full_map[id(m)], records, hashes) for m in window):
+                reason = "host_position_gap"
+            if reason:
+                leaf_prep.reject(db_path, conversation_id, chain[index:], reason)
+                break
+            covered = list(leaf.covered_store_ids)
+            published_frontier = max(frontier, covered[-1])
+            carried_ranges = self._load_compression_carry_ranges()
+            filter_exclusion_proofs = self._stored_publication_filter_exclusions(
+                frontier, published_frontier, covered, {}, carried_ranges)
+            earliest_at, latest_at = self._store.get_time_bounds(covered)
+            source_tokens = count_messages_tokens(window)
+            node = SummaryNode(
+                session_id=self._session_id, depth=0, summary=leaf.summary, token_count=leaf.summary_tokens,
+                source_token_count=source_tokens, source_ids=covered, source_type="messages",
+                created_at=time.time(), earliest_at=earliest_at, latest_at=latest_at,
+                expand_hint=self._extract_expand_hint(leaf.summary),
+            )
+
+            def revalidate(conn, leaf=leaf) -> None:
+                if leaf_prep.route_fingerprint(self._config) != leaf.route_fingerprint:
+                    raise leaf_prep.PromotionRejected("route_fingerprint_mismatch")
+                if leaf_prep.committed_coverage_digest(conn, leaf.covered_store_ids) != leaf.coverage_digest:
+                    raise leaf_prep.PromotionRejected("coverage_digest_mismatch")
+
+            try:
+                self._publish_leaf_node(
+                    node, level=leaf.level, model=leaf.model, expected_frontier=frontier,
+                    consumed_store_ids=covered,
+                    publication_excluded_store_ids=[*anchor_ids, *leaf.excluded_store_ids, *filter_exclusion_proofs],
+                    filter_exclusion_proofs=filter_exclusion_proofs, carried_ranges=carried_ranges,
+                    before_publication=revalidate,
+                )
+            except leaf_prep.PromotionRejected as exc:
+                reason = exc.reason
+            except LifecycleBindingChangedError:
+                reason = "binding_changed"
+            except LifecyclePublicationConflictError as exc:
+                reason = "frontier_moved" if "frontier generation changed" in str(exc) else "fence_conflict"
+            except Exception as exc:
+                if not _is_sqlite_locked_error(exc):
+                    raise
+                logger.info("LCM prepared leaf promotion stopped: the store is locked")
+                break
+            if reason:
+                leaf_prep.reject(db_path, conversation_id, chain[index:], reason)
+                break
+            self._after_leaf_publication(node, published_frontier, count, 0, budget)
+            leaf_prep.promoted(db_path, conversation_id, leaf)
+            if start > lead:  # the summary scaffold, as the leaf loop drops it (#457)
+                del working[lead:start], pressure[lead:start]
+                tail_start, start = tail_start - (start - lead), lead
+            del working[start:start + count], pressure[start:start + count]
+            tail_start -= count
+            frontier = published_frontier
+            promoted += 1
+            freed += source_tokens - leaf.summary_tokens
+            estimated_active_tokens = max(0, estimated_active_tokens - source_tokens + leaf.summary_tokens)
+        if promoted or reason:
+            logger.info("LCM promoted %d prepared leaves: tokens_freed=%d low_water=%d at_low_water=%s%s",
+                        promoted, freed, int(low_water), estimated_active_tokens <= low_water,
+                        f" rejected={reason}" if reason else "")
+        if not promoted:
+            return None
+        return working, pressure, estimated_active_tokens, promoted, estimated_active_tokens <= low_water
+
+    def _prep_host_row_excluded(self, message, store_id: int, records, hashes) -> bool:
+        """#787: a mapped host row the leaf loop would drop or treat as a dependent reply (read-only checks)."""
+        text = text_content_for_pattern_matching(message.get("content")) or ""
+        if self._matches_ignore_message_patterns(message) or (
+                self._is_volatile_ignored_quarantine_placeholder(message, text)
+                and self._active_replay_placeholder_digest(text) in hashes):
+            return True
+        if not records:
+            return False
+        store_digest = self._ignored_dependent_reply_store_fingerprint({**message, "store_id": store_id})
+        content_digest = self._ignored_dependent_reply_content_fingerprint(message, text)
+        return any((store_digest and record.get("store") == store_digest)
+                   or (content_digest and record.get("content") == content_digest) for record in records)
 
     def _fail_open_after_publication_failure(
         self,
@@ -1555,6 +1744,15 @@ class CompactionMixin:
                 pre_leaf_condensation_stop_reason=pre_leaf_condensation_reason,
             )
 
+        promoted_leaves = 0
+        if getattr(self._config, "background_leaf_prep_enabled", False):  # #787: prepared leaves first, no call
+            promotion = self._promote_prepared_leaves(working_messages, pressure_messages, estimated_active_tokens,
+                                                      budget)
+            if promotion is not None:
+                working_messages, pressure_messages, estimated_active_tokens, promoted_leaves, low_water = promotion
+                leaf_compacted_this_turn = dropped_replayed_scaffold_messages = True
+                if low_water:  # base design §4.4: the foreground leaf path runs only while still above L
+                    max_leaf_passes, sweep_stop_reason = 0, "prepared_leaves_promoted"
         no_call_only, refused_input = False, None
         while leaf_passes < max_leaf_passes:
             if threshold_full_sweep_active and time.monotonic() >= sweep_deadline:
@@ -2083,28 +2281,15 @@ class CompactionMixin:
             # prefix, including trailing dependent replies. Summary lineage
             # excludes those replies; their durable ledger drives replay cleanup.
             try:
-                before_commit = None
-                if self._session_id and self._conversation_id:
-                    publication_session_id = self._session_id
-                    publication_conversation_id = self._conversation_id
-                    def stage_frontier(conn, node_id) -> None:
-                        self._lifecycle.stage_compaction_publication(
-                            conn,
-                            publication_conversation_id,
-                            publication_session_id,
-                            node_id,
-                            expected_frontier,
-                            consumed_store_ids,
-                            publication_excluded_store_ids,
-                            filter_exclusion_proofs,
-                            carried_ranges,
-                        )
-                    before_commit = stage_frontier
-                self._dag.add_node(
+                self._publish_leaf_node(
                     node,
-                    before_commit=before_commit,
-                    escalation_level=_level or None,  # #441; 0 = placeholder, no model call
+                    level=_level,
                     model=self._take_leaf_summary_model(),
+                    expected_frontier=expected_frontier,
+                    consumed_store_ids=consumed_store_ids,
+                    publication_excluded_store_ids=publication_excluded_store_ids,
+                    filter_exclusion_proofs=filter_exclusion_proofs,
+                    carried_ranges=carried_ranges,
                 )
             except Exception as exc:
                 if (
@@ -2132,18 +2317,13 @@ class CompactionMixin:
                     condensation_passes=pre_leaf_condensation_passes,  # #653: completed pre-leaf passes
                     context_is_assembled=context_is_assembled,
                 )
-            self._last_compacted_store_id = published_frontier
-            self._compress_host_rows_consumed += selected_raw_len
-            self._compress_hidden_rows_consumed += len(compacted_chunk) - len(compacted_positions)
-            self._invalidate_rollups_for_published_node(node)
+            self._after_leaf_publication(node, published_frontier, selected_raw_len,
+                                         len(compacted_chunk) - len(compacted_positions), budget)
 
             pressure_remaining_messages = pressure_messages[leading_anchor_count + selected_raw_len:]
             working_messages = working_messages[:leading_anchor_count] + remaining_messages
             pressure_messages = pressure_messages[:leading_anchor_count] + pressure_remaining_messages
             leaf_compacted_this_turn, no_call_only, refused_input = True, False, None
-            budget.progress, budget.leaves = budget.progress or "leaf", budget.leaves + 1
-            self._sweep_budget_hold_until = 0.0  # #608: a stored leaf ends the hold
-            self._no_progress_hold, self._no_progress_candidate = None, False  # #651: hidden-only leaves too
             leaf_passes += 1
             level3_leaves += _level == 3
             estimated_active_tokens = max(0, estimated_active_tokens - source_tokens + summary_tokens)
@@ -2476,6 +2656,7 @@ class CompactionMixin:
                     "partial" if final_stop_reason in _THRESHOLD_FULL_SWEEP_PARTIAL_STOP_REASONS else "completed"
                 ),
                 "leaf_passes": leaf_passes,
+                **({"promoted_leaves": promoted_leaves} if promoted_leaves else {}),  # #787
                 "condensation_passes": pre_leaf_condensation_passes + condensation_passes,
                 "pre_leaf_condensation_passes": pre_leaf_condensation_passes,
                 "pre_leaf_condensation_stop_reason": pre_leaf_condensation_reason,

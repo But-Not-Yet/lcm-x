@@ -21,7 +21,7 @@ from collections import Counter, deque
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from agent.context_engine import ContextEngine
 
@@ -154,6 +154,7 @@ from .reconcile import _COMPACTION_COMMIT_PROOF_METADATA_PREFIX, ReconcileMixin,
 from .reconcile import _emission_identity
 from .reconcile import _has_lossy_redacted_identity, _merge_append_cut, _proof_user_identity
 from .compaction import CompactionMixin
+from . import leaf_prep
 from .identity_anchor import IdentityAnchorMixin, _raw_remainder, identity_anchor_enabled
 from .host_uid import HostUidShadowMixin
 from .host_uid_emit import carry_identity, identity_emit_enabled, record_absorbed_message, sync_cached_host_metadata
@@ -455,6 +456,300 @@ def _normalize_total_compactions(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return 0
     return value
+
+
+class LeafPrepUnavailable(RuntimeError):
+    """#787: a background preparation cannot serialize this source without writing a payload file."""
+
+
+class LeafSummaryResult(NamedTuple):
+    """#787: one leaf summary and its provenance, returned instead of written to the engine."""
+
+    chunk: List[Dict[str, Any]]
+    source_tokens: int
+    summary: str
+    level: int
+    attempts: int
+    model: str
+    content_filter_error: bool
+    level_3_verbatim: bool
+
+
+def _leaf_target_tokens_for(config, source_tokens: int) -> int:
+    """Leaf summary target (#614); defaults give a fixed 2,000-token target: min(2000, max(2000, 20%)).
+
+    A config object built without the #614 fields uses the class defaults.
+    """
+    ratio = getattr(config, "leaf_target_ratio", LCMConfig.leaf_target_ratio)
+    floor = getattr(config, "leaf_target_min_tokens", LCMConfig.leaf_target_min_tokens)
+    cap = getattr(config, "leaf_target_max_tokens", LCMConfig.leaf_target_max_tokens)
+    return min(cap, max(floor, int(source_tokens * ratio)))
+
+
+def _next_leaf_rescue_chunk_for(
+    config,
+    select_oldest: Callable[[List[Dict[str, Any]], int], List[Dict[str, Any]]],
+    current_chunk: List[Dict[str, Any]],
+    current_source_tokens: int,
+    final: bool = False,
+) -> List[Dict[str, Any]]:
+    if len(current_chunk) <= 1:
+        return []
+
+    # #1123: the rescue may shrink to the pre-v0.27.0 8,000-token chunk, and the last attempt goes straight to it,
+    # so a 24,000-token default leaf reaches a small-context summariser within its three attempts
+    # (24k -> 18k -> 8k); at or below 8,000 nothing changes.
+    floor_tokens = max(1, min(config.leaf_chunk_tokens, _LEAF_RESCUE_FLOOR_TOKENS))
+    if final and floor_tokens < config.leaf_chunk_tokens:
+        shrink_targets = [floor_tokens]
+    else:
+        shrink_targets = [
+            max(floor_tokens, int(current_source_tokens * 0.75)),
+            max(floor_tokens, int(current_source_tokens * 0.50)),
+        ]
+
+    for target in shrink_targets:
+        if target >= current_source_tokens:
+            continue
+        smaller = select_oldest(current_chunk, target)
+        if smaller and len(smaller) < len(current_chunk):
+            return smaller
+
+    return current_chunk[: tool_group_safe_end(current_chunk, len(current_chunk) - 1)]
+
+
+def _is_retry_worthy_leaf_summary_error(exc: Exception) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    message = str(exc).lower()
+    retry_markers = (
+        "context length",
+        "maximum context",
+        "max context",
+        "too many tokens",
+        "token limit",
+        "prompt is too long",
+        "input too long",
+        "request too large",
+        "timed out",
+        "timeout",
+    )
+    return any(marker in message for marker in retry_markers)
+
+
+def _primary_summary_route_for(config, circuit_breaker) -> str:
+    """#605: the route key whose estimate an engine-level admission reads: the first one the circuit allows."""
+    chain = _summary_model_chain(config.summary_model, config.summary_fallback_models)
+    return next((model for model in chain if circuit_breaker.allows(model)), chain[0])
+
+
+def _serialize_leaf_input(
+    messages: List[Dict[str, Any]],
+    *,
+    config,
+    hermes_home: str,
+    session_id: str,
+    externalize_write: bool = True,
+) -> Tuple[str, bool]:
+    """Serialize messages into labeled text for the summarizer.
+
+    *session_id* names the session that owns the rows. A large tool result is externalized under that session.
+    Message texts, tool arguments and previews share leaf_chunk_tokens (#611). ``externalize_write=False`` (#787,
+    background preparation) writes no payload file and raises LeafPrepUnavailable for a result whose file is not
+    already on disk.
+    """
+    parts: List[List[Any]] = []  # per message: literal strings and indexes into texts
+    texts: List[str] = []
+    kinds: List[str] = []
+
+    def text(value: str, kind: str = "message") -> int:
+        texts.append(value)
+        kinds.append(kind)
+        return len(texts) - 1
+
+    matched_tool_ids = _matched_tool_call_ids(messages)
+    tool_result_names = _tool_result_names(messages)
+    for index, msg in enumerate(messages):
+        role = msg.get("role", "unknown")
+        content = redact_sensitive_value(
+            msg.get("content") or "",
+            config,
+            parse_json_strings=False,
+        )
+        if role == "tool":
+            tool_id = str(msg.get("tool_call_id") or "").strip()
+            externalized = maybe_externalize_tool_output(
+                content,
+                tool_call_id=tool_id,
+                session_id=session_id,
+                config=config,
+                hermes_home=hermes_home,
+                tool_name=str(msg.get("tool_name") or tool_result_names.get(index, "")),
+                **({} if externalize_write else {"write": False}),
+            )
+            if externalized and not externalize_write and not Path(externalized["path"]).exists():
+                raise LeafPrepUnavailable("externalized tool result payload is not on disk")
+            if externalized:
+                preview = externalized_preview(sanitize_pre_compaction_content(content))
+                parts.append([f"[TOOL RESULT {tool_id}]: " + externalized["placeholder"], text(preview, "preview")])
+            else:
+                parts.append([f"[TOOL RESULT {tool_id}]: ", text(sanitize_pre_compaction_content(content))])
+            continue
+
+        content = sanitize_pre_compaction_content(content)
+
+        if role == "assistant":
+            # The host's in-memory chat history may set tool_calls to None for
+            # shape uniformity; stored rows never can (MessageStore.to_openai_msg
+            # drops the key when the value is falsy). Treat any falsy value as
+            # "no tool calls" rather than iterating it.
+            tool_calls = msg.get("tool_calls") or []
+            matched_tool_calls = [
+                tc for tc in tool_calls
+                if not _tool_call_id(tc) or _tool_call_id(tc) in matched_tool_ids
+            ]
+            if _is_synthetic_assistant_noise(content):
+                if not matched_tool_calls:
+                    continue
+                content = ""
+            part: List[Any] = ["[ASSISTANT]: ", text(content)]
+            if matched_tool_calls:
+                part.append("\n[Tool calls:\n")
+                first = True
+                for tc in matched_tool_calls:
+                    if isinstance(tc, dict):
+                        fn = tc.get("function", {})
+                        name = fn.get("name", "?")
+                        args = fn.get("arguments", "")
+                        args = redact_sensitive_value(
+                            args,
+                            config,
+                            parse_json_strings=True,
+                        )
+                        args = sanitize_pre_compaction_tool_arguments(args)
+                        part += [("" if first else "\n") + f"  {name}(", text(args, "arguments"), ")"]
+                        first = False
+                part.append("\n]")
+            parts.append(part)
+            continue
+
+        parts.append([f"[{role.upper()}]: ", text(content)])
+
+    clipped_texts = clip_to_budget(texts, config.leaf_chunk_tokens, kinds)
+    clipped = any(before != after for before, after in zip(texts, clipped_texts))
+    texts = clipped_texts
+    return "\n\n".join("".join(texts[x] if isinstance(x, int) else x for x in part) for part in parts), clipped
+
+
+def summarize_leaf_chunk_with_rescue(
+    initial_chunk: List[Dict[str, Any]],
+    *,
+    config,
+    focus_topic: Optional[str],
+    circuit_breaker,
+    spend_guard,
+    serialize: Callable[[List[Dict[str, Any]]], Tuple[str, bool]],
+    leaf_target_tokens: Callable[[int], int],
+    next_rescue_chunk: Callable[..., List[Dict[str, Any]]],
+    primary_route: Callable[[], str],
+    retry_worthy: Callable[[Exception], bool],
+    budget: Optional[ForegroundBudget] = None,
+    deadline: Optional[float] = None,
+    route_key_prefix: str = "",
+) -> LeafSummaryResult:
+    """#787 D-2: the leaf summariser with its adaptive rescue (#751), every input explicit, the provenance and the
+    level 3 flags returned. The foreground passes its live values; a background preparation passes a snapshot,
+    its own breaker prefix and spend guard and no budget."""
+    attempt_chunk = list(initial_chunk)
+    max_attempts = 3
+    attempt_number = 0
+
+    while attempt_chunk and attempt_number < max_attempts:
+        attempt_number += 1
+        source_tokens = count_messages_tokens(attempt_chunk)
+        serialized, clipped = serialize(attempt_chunk)
+        token_budget = leaf_target_tokens(source_tokens)
+        logger.info(  # #611 recorder: the serialized summariser input of this leaf call
+            "LCM leaf summary input: input_tokens=%d source_tokens=%d messages=%d",
+            count_tokens(serialized), source_tokens, len(attempt_chunk),
+        )
+
+        # #751: a size refusal is excused only when a smaller chunk can still be tried
+        rescue_chunk = (
+            next_rescue_chunk(attempt_chunk, source_tokens, final=attempt_number + 1 >= max_attempts)
+            if attempt_number < max_attempts else []
+        )
+        can_rescue = bool(rescue_chunk) and len(rescue_chunk) < len(attempt_chunk)
+        try:
+            timeout_seconds = config.summary_timeout_ms / 1000
+            if budget is not None:  # #605: the chain caps each attempt; refuse here before any work
+                budget.admit(primary_route())
+            elif deadline is not None:
+                remaining_seconds = deadline - time.monotonic()
+                if remaining_seconds < _THRESHOLD_FULL_SWEEP_MIN_CALL_SECONDS:
+                    raise SweepBudgetExhausted("threshold full sweep time budget exhausted")
+                timeout_seconds = min(timeout_seconds, remaining_seconds)
+            provenance: dict[str, str] = {}
+            summary_text, level = summarize_with_escalation(
+                text=serialized,
+                source_tokens=source_tokens,
+                token_budget=token_budget,
+                depth=0,
+                model=config.summary_model,
+                fallback_models=config.summary_fallback_models,
+                reasoning_effort=config.summary_reasoning_effort,
+                circuit_breaker=circuit_breaker,
+                spend_guard=spend_guard,
+                timeout=timeout_seconds,
+                l2_budget_ratio=config.l2_budget_ratio,
+                l3_truncate_tokens=config.l3_truncate_tokens,
+                focus_topic=focus_topic or "",
+                custom_instructions=config.custom_instructions,
+                prompt_version=getattr(config, "summary_prompt_version", 1),
+                provenance=provenance,
+                **({"budget": budget} if budget is not None else
+                   {"deadline": deadline} if deadline is not None else {}),  # #666/#605: every attempt
+                **({"route_key_prefix": route_key_prefix} if route_key_prefix else {}),  # #787: prep keys
+                verbatim_small_source=not clipped,  # #605 F2; #947: clipped input is not whole
+                # #751: a refusal for size reaches the rescue below; without a smaller chunk it counts as before
+                context_length_rescue=can_rescue,
+            )
+            if level == 3 and provenance.get("context_length_error") and summary_text != serialized and can_rescue:
+                logger.warning(
+                    "LCM leaf summarization retrying with smaller oldest chunk after a context-length "
+                    "refusal (attempt %d/%d, %d→%d messages)",
+                    attempt_number, max_attempts, len(attempt_chunk), len(rescue_chunk),
+                )
+                attempt_chunk = rescue_chunk
+                continue
+            return LeafSummaryResult(
+                attempt_chunk, source_tokens, summary_text, level, attempt_number,
+                model=provenance.get("model", ""),
+                content_filter_error=bool(provenance.get("content_filter_error")),
+                # #652: no fragment; #947: a clipped source returned unchanged by the level-3 fallback is a fragment
+                level_3_verbatim=level == 3 and not clipped and summary_text == serialized,
+            )
+        except Exception as exc:
+            if isinstance(exc, SweepBudgetExhausted):
+                raise  # a smaller chunk cannot get the time back
+            if attempt_number >= max_attempts or not retry_worthy(exc):
+                raise
+            smaller_chunk = next_rescue_chunk(
+                attempt_chunk, source_tokens, final=attempt_number + 1 >= max_attempts
+            )
+            if not smaller_chunk or len(smaller_chunk) >= len(attempt_chunk):
+                raise
+            logger.warning(
+                "LCM leaf summarization retrying with smaller oldest chunk after retry-worthy failure: %s (attempt %d/%d, %d→%d messages)",
+                exc,
+                attempt_number,
+                max_attempts,
+                len(attempt_chunk),
+                len(smaller_chunk),
+            )
+            attempt_chunk = smaller_chunk
+
+    raise RuntimeError("adaptive leaf rescue exhausted without a valid chunk")
 
 
 _OVERFLOW_RECOVERY_PLACEHOLDER = (
@@ -988,6 +1283,7 @@ class LCMEngine(
 
     def _close_storage(self) -> None:
         """Best-effort close of currently bound SQLite helpers."""
+        self._discard_prepared_leaves()
         for attr in (
             "_adaptive_retrieval",
             "_store",
@@ -1020,6 +1316,7 @@ class LCMEngine(
 
     def _reset_profile_runtime_state(self) -> None:
         """Clear process-local session state that cannot cross profile homes."""
+        self._discard_prepared_leaves()  # #787: a configured database path keeps its store across homes
         self._store.clear_context_windows()
         # R6-4: survival-fit warnings belong to the store they were raised on.
         self._survival_fit_pending_warning, self._survival_fit_warned = None, set()
@@ -1692,8 +1989,7 @@ class LCMEngine(
 
     def _primary_summary_route(self) -> str:
         """#605: the route key whose estimate an engine-level admission reads: the first one the circuit allows."""
-        chain = _summary_model_chain(self._config.summary_model, self._config.summary_fallback_models)
-        return next((model for model in chain if self._summary_circuit_breaker.allows(model)), chain[0])
+        return _primary_summary_route_for(self._config, self._summary_circuit_breaker)
 
     def _foreground_budget_seconds(self) -> tuple[float, float]:
         """#605: (soft, hard) seconds; an invalid hard is 120, an invalid soft 60, and soft is at most hard."""
@@ -1788,6 +2084,21 @@ class LCMEngine(
         leaves = self._last_compress_leaves
         progress = leaves is not None and leaves[0] == self._hold_conversation_key() and leaves[1] >= 1
         self._start_no_progress_hold("host_rejected_progress" if progress else "host_rejected")
+
+    def _discard_prepared_leaves(self) -> None:
+        """#787: shutdown and storage rebind drop this store's queued preparations and prepared leaves."""
+        store = getattr(self, "_store", None)
+        if store is not None:
+            leaf_prep.discard(store.db_path)
+
+    def _prepare_leaves_after_turn(self, history) -> None:
+        """#787 (default off): after a completed turn's ingest, enqueue one background leaf preparation (O(1))."""
+        if not getattr(self._config, "background_leaf_prep_enabled", False):
+            return
+        try:
+            leaf_prep.enqueue_after_turn(self, history)
+        except Exception:
+            logger.debug("LCM background leaf preparation enqueue failed", exc_info=True)
 
     def note_turn_complete(self) -> None:
         """#597/#922/#904: end turn-paced holds at the end of a foreground turn of this engine (never a
@@ -2136,22 +2447,7 @@ class LCMEngine(
                 self._record_ingest_failure("per-turn ingest()", e)
 
     def _is_retry_worthy_leaf_summary_error(self, exc: Exception) -> bool:
-        if isinstance(exc, TimeoutError):
-            return True
-        message = str(exc).lower()
-        retry_markers = (
-            "context length",
-            "maximum context",
-            "max context",
-            "too many tokens",
-            "token limit",
-            "prompt is too long",
-            "input too long",
-            "request too large",
-            "timed out",
-            "timeout",
-        )
-        return any(marker in message for marker in retry_markers)
+        return _is_retry_worthy_leaf_summary_error(exc)
 
     def _next_leaf_rescue_chunk(
         self,
@@ -2159,40 +2455,12 @@ class LCMEngine(
         current_source_tokens: int,
         final: bool = False,
     ) -> List[Dict[str, Any]]:
-        if len(current_chunk) <= 1:
-            return []
-
-        # #1123: the rescue may shrink to the pre-v0.27.0 8,000-token chunk, and the last attempt goes straight to it,
-        # so a 24,000-token default leaf reaches a small-context summariser within its three attempts
-        # (24k -> 18k -> 8k); at or below 8,000 nothing changes.
-        floor_tokens = max(1, min(self._config.leaf_chunk_tokens, _LEAF_RESCUE_FLOOR_TOKENS))
-        if final and floor_tokens < self._config.leaf_chunk_tokens:
-            shrink_targets = [floor_tokens]
-        else:
-            shrink_targets = [
-                max(floor_tokens, int(current_source_tokens * 0.75)),
-                max(floor_tokens, int(current_source_tokens * 0.50)),
-            ]
-
-        for target in shrink_targets:
-            if target >= current_source_tokens:
-                continue
-            smaller = self._select_oldest_leaf_chunk(current_chunk, target)
-            if smaller and len(smaller) < len(current_chunk):
-                return smaller
-
-        return current_chunk[: tool_group_safe_end(current_chunk, len(current_chunk) - 1)]
+        return _next_leaf_rescue_chunk_for(
+            self._config, self._select_oldest_leaf_chunk, current_chunk, current_source_tokens, final=final)
 
     def _leaf_target_tokens(self, source_tokens: int) -> int:
-        """Leaf summary target (#614); defaults give a fixed 2,000-token target: min(2000, max(2000, 20%)).
-
-        A config object built without the #614 fields uses the class defaults.
-        """
-        cfg = self._config
-        ratio = getattr(cfg, "leaf_target_ratio", LCMConfig.leaf_target_ratio)
-        floor = getattr(cfg, "leaf_target_min_tokens", LCMConfig.leaf_target_min_tokens)
-        cap = getattr(cfg, "leaf_target_max_tokens", LCMConfig.leaf_target_max_tokens)
-        return min(cap, max(floor, int(source_tokens * ratio)))
+        """Leaf summary target (#614); defaults give a fixed 2,000-token target: min(2000, max(2000, 20%))."""
+        return _leaf_target_tokens_for(self._config, source_tokens)
     def _take_leaf_summary_model(self) -> str:
         """Return and clear the model that produced the last leaf summary (#441)."""
         model = getattr(self, "_last_leaf_summary_model", "")
@@ -2205,94 +2473,25 @@ class LCMEngine(
         focus_topic: Optional[str] = None,
         deadline: Optional[float] = None,
     ) -> tuple[List[Dict[str, Any]], int, str, int, int]:
-        attempt_chunk = list(initial_chunk)
-        budget = self._foreground_call_budget()
-        max_attempts = 3
-        attempt_number = 0
-
-        while attempt_chunk and attempt_number < max_attempts:
-            attempt_number += 1
-            source_tokens = count_messages_tokens(attempt_chunk)
-            serialized, clipped = self._serialize_messages_with_clip(attempt_chunk)
-            token_budget = self._leaf_target_tokens(source_tokens)
-            logger.info(  # #611 recorder: the serialized summariser input of this leaf call
-                "LCM leaf summary input: input_tokens=%d source_tokens=%d messages=%d",
-                count_tokens(serialized), source_tokens, len(attempt_chunk),
-            )
-
-            # #751: a size refusal is excused only when a smaller chunk can still be tried
-            rescue_chunk = (
-                self._next_leaf_rescue_chunk(attempt_chunk, source_tokens, final=attempt_number + 1 >= max_attempts)
-                if attempt_number < max_attempts else []
-            )
-            can_rescue = bool(rescue_chunk) and len(rescue_chunk) < len(attempt_chunk)
-            try:
-                timeout_seconds = self._config.summary_timeout_ms / 1000
-                if budget is not None:  # #605: the chain caps each attempt; refuse here before any work
-                    budget.admit(self._primary_summary_route())
-                elif deadline is not None:
-                    remaining_seconds = deadline - time.monotonic()
-                    if remaining_seconds < _THRESHOLD_FULL_SWEEP_MIN_CALL_SECONDS:
-                        raise SweepBudgetExhausted("threshold full sweep time budget exhausted")
-                    timeout_seconds = min(timeout_seconds, remaining_seconds)
-                provenance: dict[str, str] = {}
-                summary_text, level = summarize_with_escalation(
-                    text=serialized,
-                    source_tokens=source_tokens,
-                    token_budget=token_budget,
-                    depth=0,
-                    model=self._config.summary_model,
-                    fallback_models=self._config.summary_fallback_models,
-                    reasoning_effort=self._config.summary_reasoning_effort,
-                    circuit_breaker=self._summary_circuit_breaker,
-                    spend_guard=self._summary_spend_guard,
-                    timeout=timeout_seconds,
-                    l2_budget_ratio=self._config.l2_budget_ratio,
-                    l3_truncate_tokens=self._config.l3_truncate_tokens,
-                    focus_topic=focus_topic or "",
-                    custom_instructions=self._config.custom_instructions,
-                    prompt_version=getattr(self._config, "summary_prompt_version", 1),
-                    provenance=provenance,
-                    **({"budget": budget} if budget is not None else
-                       {"deadline": deadline} if deadline is not None else {}),  # #666/#605: every attempt
-                    verbatim_small_source=not clipped,  # #605 F2; #947: clipped input is not whole
-                    # #751: a refusal for size reaches the rescue below; without a smaller chunk it counts as before
-                    context_length_rescue=can_rescue,
-                )
-                if level == 3 and provenance.get("context_length_error") and summary_text != serialized and can_rescue:
-                    logger.warning(
-                        "LCM leaf summarization retrying with smaller oldest chunk after a context-length "
-                        "refusal (attempt %d/%d, %d→%d messages)",
-                        attempt_number, max_attempts, len(attempt_chunk), len(rescue_chunk),
-                    )
-                    attempt_chunk = rescue_chunk
-                    continue
-                self._last_leaf_summary_model = provenance.get("model", "")
-                self._last_leaf_content_filter_error = bool(provenance.get("content_filter_error"))
-                # #652: no fragment; #947: a clipped source returned unchanged by the level-3 fallback is a fragment too
-                self._last_leaf_level_3_verbatim = level == 3 and not clipped and summary_text == serialized
-                return attempt_chunk, source_tokens, summary_text, level, attempt_number
-            except Exception as exc:
-                if isinstance(exc, SweepBudgetExhausted):
-                    raise  # a smaller chunk cannot get the time back
-                if attempt_number >= max_attempts or not self._is_retry_worthy_leaf_summary_error(exc):
-                    raise
-                smaller_chunk = self._next_leaf_rescue_chunk(
-                    attempt_chunk, source_tokens, final=attempt_number + 1 >= max_attempts
-                )
-                if not smaller_chunk or len(smaller_chunk) >= len(attempt_chunk):
-                    raise
-                logger.warning(
-                    "LCM leaf summarization retrying with smaller oldest chunk after retry-worthy failure: %s (attempt %d/%d, %d→%d messages)",
-                    exc,
-                    attempt_number,
-                    max_attempts,
-                    len(attempt_chunk),
-                    len(smaller_chunk),
-                )
-                attempt_chunk = smaller_chunk
-
-        raise RuntimeError("adaptive leaf rescue exhausted without a valid chunk")
+        """The foreground leaf summariser: the live values in, the provenance written back (#441, #652)."""
+        result = summarize_leaf_chunk_with_rescue(
+            initial_chunk,
+            config=self._config,
+            focus_topic=focus_topic,
+            circuit_breaker=self._summary_circuit_breaker,
+            spend_guard=self._summary_spend_guard,
+            serialize=self._serialize_messages_with_clip,
+            leaf_target_tokens=self._leaf_target_tokens,
+            next_rescue_chunk=self._next_leaf_rescue_chunk,
+            primary_route=self._primary_summary_route,
+            retry_worthy=self._is_retry_worthy_leaf_summary_error,
+            budget=self._foreground_call_budget(),
+            deadline=deadline,
+        )
+        self._last_leaf_summary_model = result.model
+        self._last_leaf_content_filter_error = result.content_filter_error
+        self._last_leaf_level_3_verbatim = result.level_3_verbatim
+        return result.chunk, result.source_tokens, result.summary, result.level, result.attempts
 
     # -- ContextEngine optional methods ------------------------------------
 
@@ -5015,6 +5214,8 @@ class LCMEngine(
             "threshold_full_sweep": dict(self._last_threshold_full_sweep),
             "last_stub_first_exit": dict(self._last_stub_first_exit) if self._last_stub_first_exit else None,
             "no_progress_hold": self._no_progress_hold_status(),
+            **({"background_leaf_prep": leaf_prep.status()}  # #787 D-13; absent while off
+               if getattr(self._config, "background_leaf_prep_enabled", False) else {}),
             "ingest_failure_count": self._ingest_failure_count,
             "consecutive_ingest_failures": self._consecutive_ingest_failures,
             "last_ingest_error": self._last_ingest_error,
@@ -6730,84 +6931,12 @@ class LCMEngine(
         bound session. A large tool result is externalized under that session.
         Message texts, tool arguments and previews share leaf_chunk_tokens (#611).
         """
-        parts: List[List[Any]] = []  # per message: literal strings and indexes into texts
-        texts: List[str] = []
-        kinds: List[str] = []
-
-        def text(value: str, kind: str = "message") -> int:
-            texts.append(value)
-            kinds.append(kind)
-            return len(texts) - 1
-
-        matched_tool_ids = _matched_tool_call_ids(messages)
-        tool_result_names = _tool_result_names(messages)
-        for index, msg in enumerate(messages):
-            role = msg.get("role", "unknown")
-            content = redact_sensitive_value(
-                msg.get("content") or "",
-                self._config,
-                parse_json_strings=False,
-            )
-            if role == "tool":
-                tool_id = str(msg.get("tool_call_id") or "").strip()
-                externalized = maybe_externalize_tool_output(
-                    content,
-                    tool_call_id=tool_id,
-                    session_id=self._session_id if session_id is None else session_id,
-                    config=self._config,
-                    hermes_home=self._hermes_home,
-                    tool_name=str(msg.get("tool_name") or tool_result_names.get(index, "")),
-                )
-                if externalized:
-                    preview = externalized_preview(sanitize_pre_compaction_content(content))
-                    parts.append([f"[TOOL RESULT {tool_id}]: " + externalized["placeholder"], text(preview, "preview")])
-                else:
-                    parts.append([f"[TOOL RESULT {tool_id}]: ", text(sanitize_pre_compaction_content(content))])
-                continue
-
-            content = sanitize_pre_compaction_content(content)
-
-            if role == "assistant":
-                # The host's in-memory chat history may set tool_calls to None for
-                # shape uniformity; stored rows never can (MessageStore.to_openai_msg
-                # drops the key when the value is falsy). Treat any falsy value as
-                # "no tool calls" rather than iterating it.
-                tool_calls = msg.get("tool_calls") or []
-                matched_tool_calls = [
-                    tc for tc in tool_calls
-                    if not _tool_call_id(tc) or _tool_call_id(tc) in matched_tool_ids
-                ]
-                if _is_synthetic_assistant_noise(content):
-                    if not matched_tool_calls:
-                        continue
-                    content = ""
-                part: List[Any] = ["[ASSISTANT]: ", text(content)]
-                if matched_tool_calls:
-                    part.append("\n[Tool calls:\n")
-                    first = True
-                    for tc in matched_tool_calls:
-                        if isinstance(tc, dict):
-                            fn = tc.get("function", {})
-                            name = fn.get("name", "?")
-                            args = fn.get("arguments", "")
-                            args = redact_sensitive_value(
-                                args,
-                                self._config,
-                                parse_json_strings=True,
-                            )
-                            args = sanitize_pre_compaction_tool_arguments(args)
-                            part += [("" if first else "\n") + f"  {name}(", text(args, "arguments"), ")"]
-                            first = False
-                    part.append("\n]")
-                parts.append(part)
-                continue
-
-            parts.append([f"[{role.upper()}]: ", text(content)])
-
-        clipped_texts = clip_to_budget(texts, self._config.leaf_chunk_tokens, kinds)
-        clipped = any(before != after for before, after in zip(texts, clipped_texts))
-        texts = clipped_texts
-        return "\n\n".join("".join(texts[x] if isinstance(x, int) else x for x in part) for part in parts), clipped
+        return _serialize_leaf_input(
+            messages,
+            config=self._config,
+            hermes_home=self._hermes_home,
+            session_id=self._session_id if session_id is None else session_id,
+        )
 
     # -- Internal: tool-pair sanitization ------------------------------------
 
@@ -9101,6 +9230,7 @@ class LCMEngine(
             self._stable_use_closed = True
 
     def _shutdown_unlocked(self):
+        self._discard_prepared_leaves()
         cleanup = [
             self._unregister_active_engine_binding,
             *(

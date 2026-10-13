@@ -460,6 +460,17 @@ class SummarySpendGuard:
             self._prune(current_time)
             self._record_call_locked(current_time)
 
+    def remaining(self, *, now: float | None = None) -> float:
+        """#787: calls the window still allows, recording nothing (0 during a backoff; unlimited when disabled)."""
+        if self.max_calls <= 0:
+            return math.inf
+        current_time = time.monotonic() if now is None else now
+        with self._lock:
+            if current_time < self._backoff_until:
+                return 0
+            cutoff = current_time - self.window_seconds
+            return max(0, self.max_calls - sum(1 for t in self._calls if t >= cutoff))
+
     def clear(self) -> None:
         with self._lock:
             self._calls.clear()
