@@ -173,3 +173,26 @@ def test_statements_of_other_threads_are_not_counted(tmp_path, summaries, caplog
         assert _seconds(lines[0], "total") >= 1.0 and "slow_sql=0/0.0s" in lines[0], lines[0]
     finally:
         engine.shutdown()
+
+
+def test_an_ingest_that_raises_on_the_lock_still_records_its_span(tmp_path, summaries, caplog):
+    """Review r1: the ingest waits ~1.2 s on the held lock and then raises "database is locked"; the line
+    still puts that wait in the ingest span, not only in the slow-statement count."""
+    engine = _engine(tmp_path, foreground_hard_seconds=0.5)
+    view = _view()
+    try:
+        engine.ingest(view)
+        engine._store._conn.execute("PRAGMA busy_timeout=1200")  # the store's statements give up after 1.2 s
+        grown = [*view, *_turn("N1", 100.0)]
+        with _Writer(tmp_path / "lcm.db", hold=3.0), caplog.at_level(logging.WARNING, logger="hermes_lcm"):
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                engine.compress(grown, current_tokens=engine.threshold_tokens + 1)
+        lines = _lines(caplog)
+        assert len(lines) == 1, lines
+        line = lines[0]
+        assert re.search(r"slow_sql=1/1\.\ds", line), line
+        assert _seconds(line, "ingest") >= 1.0 and _seconds(line, "pre_loop") >= _seconds(line, "ingest"), line
+        assert _seconds(line, "unaccounted") >= 0.0
+        assert type(engine._store._conn) is sqlite3.Connection
+    finally:
+        engine.shutdown()
