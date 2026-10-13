@@ -123,3 +123,47 @@ def test_t8_a_valid_reply_still_tolerates_nothing():
 
 def test_the_no_nonce_path_is_unchanged():
     assert escalation._check_summary_contract("anything at all", "", MAX_TOKENS) == ("anything at all", "", ())
+
+
+# -- T9-T12: an echoed ``<summary body ...>``/``</summary>`` pair inside the envelope -----------------------
+#
+# The model echoes the placeholder line from the contract template and closes it with ``</summary>``,
+# wrapping the real body (Expand line included) in between. The opening-tag path sliced off only the
+# outer ``</lcm-summary>``, so the stray ``</summary>`` line stayed at the end of the body, the Expand
+# line was no longer last, and a real summary was rejected on ``closing_hint``. The opening-tag path now
+# strips the same echo the envelope-less path already strips, tolerating it under the existing
+# ``summary_wrapper`` name.
+
+def test_t9_envelope_with_echoed_placeholder_and_closer_is_accepted():
+    body, check, tolerated = _check(f"{OPEN}\n{PLACEHOLDER}\n{PLAIN_BODY}\n</summary>\n{CLOSE}")
+    assert check == "" and "summary_wrapper" in tolerated
+    assert body == PLAIN_BODY
+    assert PLACEHOLDER not in body
+    assert body.splitlines()[-1] == HINT
+
+
+def test_t10_envelope_with_only_the_echoed_placeholder_line_is_accepted():
+    body, check, tolerated = _check(f"{OPEN}\n{PLACEHOLDER}\n{PLAIN_BODY}\n{CLOSE}")
+    assert check == "" and "summary_wrapper" in tolerated
+    assert body == PLAIN_BODY
+    assert PLACEHOLDER not in body
+
+
+def test_t11_valid_body_without_an_echoed_placeholder_keeps_the_612_closer_semantics():
+    # No ``<summary body`` echo and the outer closer IS ``</summary>``: the #612 summary_closer
+    # tolerance must handle it exactly as before -- the stray line is consumed as the closer, never
+    # stripped as an echo, and the tolerated tuple stays exactly ("summary_closer",).
+    body, check, tolerated = _check(f"{OPEN}\n{PLAIN_BODY}\n</summary>")
+    assert check == "" and tolerated == ("summary_closer",)
+    assert body == PLAIN_BODY
+
+
+def test_t11_body_legitimately_ending_in_a_summary_tag_is_not_mis_stripped():
+    # Outer ``</lcm-summary>`` closer, body ends with an ordinary line plus a lone ``</summary>`` and
+    # there is no ``<summary body`` echo: the lone tag is not an echo of the placeholder pair, so the
+    # reply fails the Expand-line gate as before rather than being rescued by a strip.
+    assert _check(f"{OPEN}\n{LINES}\n</summary>\n{CLOSE}") == ("", "closing_hint", ())
+
+
+def test_t12_stripping_the_echo_leaves_only_junk_and_is_rejected_as_short_body():
+    assert _check(f"{OPEN}\n{PLACEHOLDER}\nNothing to report.\n</summary>\n{CLOSE}") == ("", "short_body", ())

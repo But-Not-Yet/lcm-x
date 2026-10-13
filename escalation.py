@@ -549,6 +549,19 @@ def _validate_summary_body(body: str, max_tokens: int, tolerated: list[str]) -> 
     return body, "", tuple(tolerated)
 
 
+def _strip_summary_placeholder_echo(body: str) -> tuple[str, bool]:
+    """Drop echoed ``<summary body ...>`` placeholder lines from a summary body.
+
+    The contract template shows the placeholder line between the envelope tags, and quantized models
+    echo it verbatim into their reply. Returns ``(cleaned_body, stripped_any)``; the caller decides
+    whether the echo is tolerated, because the envelope-less path already tolerates it under
+    ``missing_envelope`` while the opening-tag path names it ``summary_wrapper``.
+    """
+    lines = body.splitlines()
+    kept = [line for line in lines if not line.lstrip().startswith("<summary body")]
+    return "\n".join(kept).strip(), len(kept) != len(lines)
+
+
 def _check_envelopeless_summary(stripped: str, max_tokens: int) -> tuple[str, str, tuple[str, ...]]:
     """Judge a reply that never opened the envelope by its content alone.
 
@@ -557,7 +570,8 @@ def _check_envelopeless_summary(stripped: str, max_tokens: int) -> tuple[str, st
     hijack decision moves to the content gates. Echoed prompt furniture is removed first: the
     ``<summary body ...>`` placeholder line and a trailing orphan ``</lcm-summary>``/``</summary>``.
     """
-    kept = [line for line in stripped.splitlines() if not line.lstrip().startswith("<summary body")]
+    body, _ = _strip_summary_placeholder_echo(stripped)
+    kept = body.splitlines()
     while kept and kept[-1].strip() in ("</lcm-summary>", "</summary>"):
         kept.pop()
     return _validate_summary_body("\n".join(kept).strip(), max_tokens, ["missing_envelope"])
@@ -606,6 +620,26 @@ def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[
     else:
         tolerated.append("missing_closer")
         body = stripped[len(opening_tag) :].strip()
+    # Symmetric with the envelope-less path: strip an echoed ``<summary body ...>`` placeholder line.
+    # When the echo opened a ``</summary>`` the slice did not consume (the outer closer was
+    # ``</lcm-summary>``), the orphan line is stripped too -- but only alongside an echo and only when
+    # a non-empty body remains, so a body that legitimately ends in a lone ``</summary>`` under an
+    # ``</lcm-summary>`` closer is never mis-stripped, and the #612 literal-``<summary>`` wrapper
+    # tolerance in ``_validate_summary_body`` keeps handling its shape untouched.
+    stripped_body, echo_stripped = _strip_summary_placeholder_echo(body)
+    if not stripped_body:
+        # An echo-only body keeps its pre-strip shape: the placeholder line itself fails the
+        # Expand-line gate, exactly as the #612 "placeholder-only" case always did.
+        echo_stripped = False
+    else:
+        body = stripped_body
+        if echo_stripped:
+            tolerated.append("summary_wrapper")
+        body_lines = body.splitlines()
+        if echo_stripped and body_lines[-1].strip() == "</summary>":
+            remainder = "\n".join(body_lines[:-1]).strip()
+            if remainder:
+                body = remainder
     return _validate_summary_body(body, max_tokens, tolerated)
 
 
