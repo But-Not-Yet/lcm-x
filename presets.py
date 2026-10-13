@@ -88,7 +88,7 @@ _CODEX_GPT_LONG_CONTEXT = LCMPreset(
             "dropped_rows": 0,
             "baseline_dropped_rows": 47,
         },
-        "evidence": "v0.27.0 per-message-wait replay cell (#1123, #1128): 24k chunk with a 2,000-token summary cap vs 8k, Sol summary route",
+        "evidence": "v0.27.0 per-message-wait replay cell (#1123, #1128): 24k chunk with a 2,000-token summary cap vs 8k, Sol summary route, 120 s summary timeout (the shipped LCM_SUMMARY_TIMEOUT_MS default)",
     },
     notes=(
         "Benchmark-only candidate until the preset surface matures. "
@@ -99,7 +99,7 @@ _CODEX_GPT_LONG_CONTEXT = LCMPreset(
 _CODEX_SPARK_CONTEXT = LCMPreset(
     name="codex_spark_context",
     family="GPT/Codex Spark 128k",
-    description="Benchmark-backed candidate for GPT-5.3 Codex Spark / 128k Codex-style routes.",
+    description="Provisional candidate for GPT-5.3 Codex Spark / 128k Codex-style routes; inherits the long-context 24k cell (no 128k cell yet).",
     policy_path="benchmarks/policies/codex_spark_context.yaml",
     policy_version="2",
     runtime_env={

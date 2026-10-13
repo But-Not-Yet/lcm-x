@@ -55,6 +55,8 @@ def test_lcm_preset_show_exposes_codex_provenance_without_mutating_config(tmp_pa
     assert "Track S" in result
     assert "6 runs per arm" in result
     assert "--turn-end-notify" in result
+    assert "evidence: v0.27.0 per-message-wait replay cell" in result and "vs 8k" in result  # names the baseline_* arm
+    assert "120 s summary timeout" in result
     assert get_preset("codex_gpt_long_context").provenance["metric_summary"] == {
         "compactions_per_100_messages": 20.0,
         "baseline_compactions_per_100_messages": 87.0,
@@ -93,6 +95,7 @@ def test_lcm_preset_show_exposes_spark_provenance_without_mutating_config(tmp_pa
     assert "Inherited long-context replay cell (#1123, #1128)" in result
     assert "no separate 128k cell has run yet" in result
     assert "headroom metrics are omitted" in result
+    assert "description: Provisional candidate for GPT-5.3 Codex Spark" in result
     assert get_preset("codex_spark_context").provenance["metric_summary"] == {}
     assert "metric_summary: (none recorded for this preset)" in result
     assert "score: (unknown)" not in result

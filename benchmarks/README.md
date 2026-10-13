@@ -232,9 +232,9 @@ Current shipped preset provenance from `presets.py`:
 
 - `codex_gpt_long_context`: policy file `benchmarks/policies/codex_gpt_long_context.yaml`, policy version `2`, benchmark version `pmw-1`.
   - Fixture suite: Track S, Sol summary route, `--turn-end-notify`, 6 runs per arm.
-  - Evidence: v0.27.0 per-message-wait replay cell (#1123, #1128): 24k chunk with a 2,000-token summary cap vs 8k, Sol summary route.
+  - Evidence: v0.27.0 per-message-wait replay cell (#1123, #1128): 24k chunk with a 2,000-token summary cap vs 8k, Sol summary route, 120 s summary timeout (the shipped `LCM_SUMMARY_TIMEOUT_MS` default). The baseline metrics below are the 8k arm.
   - Metrics (candidate vs baseline): compactions per 100 messages `20.0` vs `87.0`; mean wait per message `10.0s` vs `52.4s`; waited-message share `0.20` vs `0.85`; facts kept at cp304 `0.853` vs `0.683`; summary-call failures `0` vs `124`; dropped rows `0` vs `47`.
-- `codex_spark_context`: policy file `benchmarks/policies/codex_spark_context.yaml`, policy version `2`, benchmark version `pmw-1`.
+- `codex_spark_context` (provisional): policy file `benchmarks/policies/codex_spark_context.yaml`, policy version `2`, benchmark version `pmw-1`.
   - Fixture suite: inherited long-context replay cell (#1123, #1128).
   - Evidence: inherits the long-context cell's 24k chunk; #1139 bounds the effective chunk at a quarter of the threshold, equal to 24,000 at a 96k threshold. No separate 128k cell has run yet.
   - Metric summary: none recorded for this preset; prior 8k headroom metrics are omitted because they are unverified at 24k.
