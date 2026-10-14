@@ -1180,6 +1180,10 @@ class LCMEngine(
         self._context_length_source = ""
         self._update_model_pending_session_start = False
         self.threshold_tokens = 0
+        # Host live-config surface (tui_gateway/session_compression.py:167
+        # writes this before any recompute): must exist with an initial None
+        # so the host's read/write never raises AttributeError.
+        self.threshold_tokens_cap: Optional[int] = None
         self.context_threshold = self._config.context_threshold
         self.threshold_percent = self.context_threshold
         self._context_threshold_source = (
@@ -1749,6 +1753,61 @@ class LCMEngine(
         assembly_cap = self._effective_assembly_token_cap()
         return threshold_tokens(context_threshold_tokens, assembly_cap)
 
+    # -- host live compression-config surface -------------------------------
+    # tui_gateway/session_compression.py (_apply_live_compression_config)
+    # writes compression params onto the SELECTED engine and calls these
+    # three private methods; the host's own recompute paths
+    # (agent/context_compressor.py:2223/:2693, tools/delegate_tool.py:191)
+    # call _apply_threshold_tokens_cap. Semantics copied verbatim from
+    # agent/context_compressor.py (read-only reference, 2026-10-13):
+    #   _coerce_max_tokens :2731-2738 (aliased _coerce_threshold_tokens_cap
+    #   at :2741), _effective_threshold_cap :2665-2668,
+    #   _apply_threshold_tokens_cap :2743-2752, _effective_threshold_percent
+    #   :2754-2759. Known limits: the host stacks an extra
+    #   _aux_context_ceiling layer (:2750-2752) from its feasibility probe;
+    #   lcm-x has no such concept, so that layer is not stacked. The host
+    #   ABC (agent/context_engine.py) does not declare any of these names —
+    #   a future host upgrade may introduce further private names the same
+    #   way, and each will need mirroring here.
+
+    @staticmethod
+    def _coerce_threshold_tokens_cap(value) -> Optional[int]:
+        """Normalize a threshold_tokens cap to a positive int, or None for "no cap"."""
+        try:
+            ivalue = int(value) if value is not None else 0
+        except (TypeError, ValueError):
+            return None
+        return ivalue if ivalue > 0 else None
+
+    @staticmethod
+    def _effective_threshold_percent(context_length: int, threshold_percent: float) -> float:
+        """Raise-only small-context threshold floor: models under 512K trigger at >= 75%.
+
+        Constants copied from the host's module-level values
+        (agent/context_compressor.py:1150-1151: _SMALL_CTX_WINDOW_LIMIT =
+        512_000, _SMALL_CTX_THRESHOLD_PERCENT = 0.75). lcm-x stores
+        threshold_percent as a 0-1 fraction, so the 0.75 floor is the same
+        scale as the host's default 0.5 (host DEFAULT_CONFIG
+        compression.threshold = 0.5, verified 2026-10-13).
+        """
+        if context_length and context_length < 512_000:
+            return max(threshold_percent, 0.75)
+        return threshold_percent
+
+    def _effective_threshold_cap(self, context_length: int) -> Optional[int]:
+        """The configured cap clamped to the window; None when no cap is configured.
+
+        Host parity: agent/context_compressor.py:2665-2668.
+        """
+        cap = getattr(self, "threshold_tokens_cap", None)
+        return min(cap, context_length) if cap is not None and cap > 0 else None
+
+    def _apply_threshold_tokens_cap(self) -> None:
+        """Clamp threshold_tokens to the configured cap (itself clamped to the context length)."""
+        cap = self._effective_threshold_cap(self.context_length)
+        if cap is not None and cap < self.threshold_tokens:
+            self.threshold_tokens = cap
+
     def _set_context_length(
         self,
         context_length: Any,
@@ -1816,6 +1875,12 @@ class LCMEngine(
             # intermediate ratio on later recomputes; absolute still wins
             # above, but disabling auto-raise keeps status/percent honest.
             self._config.codex_gpt55_autoraise_enabled = False
+        # Durable host cap: re-apply the written threshold_tokens_cap on every
+        # recompute (host parity: agent/context_compressor.py:2693 applies it
+        # after recomputation, #114707). Applied after the absolute override:
+        # LCM_ABSOLUTE_THRESHOLD_TOKENS is an operator pin and wins over a
+        # host-configured cap.
+        self._apply_threshold_tokens_cap()
         return True
 
     def _session_metadata_matches_active_runtime(
