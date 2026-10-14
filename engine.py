@@ -8886,8 +8886,10 @@ class LCMEngine(
 
         Read-only by default (``apply=False``). Returns a preview describing
         what would change. When ``apply=True``, advances the lifecycle frontier
-        marker past the pre-tail raw messages so they are no longer replayed
-        into active context on subsequent bootstrap. Raw messages remain in
+        marker past the pre-tail raw messages. This prevents replay into active
+        context on subsequent bootstrap only on hosts that rebuild the context
+        from the store. Hermes reloads its own transcript, so
+        ``/lcm rotate apply`` refuses there (#1141). Raw messages remain in
         the SQLite store and are recoverable through ``lcm_load_session`` and
         ``lcm_expand`` — the lossless raw recovery contract is preserved.
 
@@ -8897,9 +8899,9 @@ class LCMEngine(
 
         - The **persisted lifecycle frontier**
           (``lifecycle_state.current_frontier_store_id``) is the
-          bootstrap signal — on next session start, raw rows at or
-          below it are not replayed into the active context. Rotate
-          advances this marker.
+          bootstrap signal — on hosts that rebuild context from the
+          store, raw rows at or below it are not replayed into the
+          active context on next session start. Rotate advances this marker.
         - The **in-process source-mapping marker**
           (``self._last_compacted_store_id``) tracks raw rows that the
           *current process* has already moved into summary DAG nodes.
@@ -8911,8 +8913,8 @@ class LCMEngine(
           the same process can still summarize them with correct
           ``source_ids`` lineage. On next process start,
           ``_bind_lifecycle_state`` reads the persisted frontier into
-          the in-process marker — at that point the active context is
-          being built from scratch, so the contract holds.
+          the in-process marker. That contract holds only when the host
+          rebuilds the active context from the store, unlike Hermes.
 
         Refusal/no-op reason codes (returned as ``reason``):
 

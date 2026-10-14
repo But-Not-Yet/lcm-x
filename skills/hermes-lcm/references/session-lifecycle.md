@@ -12,17 +12,15 @@ Hermes commits a compaction by calling the session-end hook with the list it com
 
 ## `/lcm rotate`
 
-`/lcm rotate` is different from `/new`:
+`/lcm rotate` is a read-only preview of the tail-preserving frontier for the
+active session. It keeps `session_id` and `conversation_id` and reports the
+configured fresh tail, pre-tail message count, current and planned lifecycle
+frontier, and rolling backup path. The preview refuses ignored or stateless sessions.
 
-- it keeps the current `session_id` and `conversation_id`;
-- preview is read-only;
-- apply creates/updates the rolling rotate backup first;
-- it preserves the configured fresh tail;
-- it advances the lifecycle frontier past older raw messages so bootstrap does not replay them into active context;
-- it does not delete raw source rows or call a summarization model.
+`/lcm rotate apply` is refused on Hermes (#1141): Hermes reloads its own
+transcript after a restart, so advancing the frontier without summaries leaves
+rows LCM-X cannot map. No backup is created and no lifecycle state is changed.
+Use `/compress here N` to summarise everything except the most recent N messages.
+Raw source rows remain recoverable through `lcm_load_session` and `lcm_expand`.
 
-Run normal compaction before rotate when older material must be represented in summary nodes. Even without a summary, pre-tail raw rows remain recoverable through `lcm_load_session` and `lcm_expand`.
-
-Rotate refuses ignored or stateless sessions. Repeating an already-satisfied rotate reports a no-op and preserves the previous known-good rolling backup.
-
-Use a separate session when the user wants a new active conversational boundary. Use rotate when the problem is active transcript/frontier size without changing identity.
+Use a separate session when the user wants a new active conversational boundary.
