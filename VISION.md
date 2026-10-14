@@ -53,7 +53,7 @@ This page states what we are building and how we will know it works. The [roadma
 - **Proven quality ships on.**
   - A feature becomes the default when it passes one pre-declared, paired measurement on held-out questions, read by a frontier model.
   - The measurement must show a significant gain in evidence or answer quality.
-  - It ships on even when it uses more tokens; we publish tokens per query beside every number, and every default can be turned off.
+  - It ships on even when it uses more tokens; we publish tokens per query beside every number, and every default can be turned off. Token cost is not a gate; losslessness and the user's wait are.
 - **Built in, not bolted on.** From v0.27.1 the default install includes local semantic search; from v0.28.0 a local reranker, if it passes its measurement. Cloud providers are optional upgrades.
 - **The user's wait is a product metric.** Compaction time and prompt-cache breaks count as much as summary quality.
 - **Default configuration is the product.** The numbers we publish are for the configuration users actually run, beside our best configuration and labelled as such.

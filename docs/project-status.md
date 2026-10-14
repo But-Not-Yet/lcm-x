@@ -44,7 +44,7 @@ At v0.23.1 acceptance, reranking, binary prescreen/int8, proactive recall, V4 as
 
 ## Current program
 
-Issue #658 is the tracker, and [ROADMAP.md](../ROADMAP.md) lays the work out by horizon and milestone. H1 compaction continues in the v0.27.0 (summary quality) and v0.28.0 (invisible compaction) milestones; the summary prompt default stays v1 (#660). The H2 recall re-baseline on the v0.26.0 GA has its own milestone.
+Issue #658 is the tracker, and [ROADMAP.md](../ROADMAP.md) lays the work out by horizon and milestone. H1 compaction continues in the v0.27.0 (summary quality) and v0.30.0 (invisible compaction) milestones; the summary prompt default stays v1 (#660). H2 recall work runs in v0.27.1 (local semantic recall on by default), v0.28.0 (agentic memory) and v0.29.0 (derived memory and a second harness).
 
 From v0.26.0, every release candidate also carries a recall scorecard (#898). The full-text-only configuration (the shipped default until v0.27.1; from v0.27.1 the gated row is the shipped default, local semantic recall on) is scored against the previous GA question by question, and two embeddings-on configurations are recorded once per minor.
 
