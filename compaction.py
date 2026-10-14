@@ -644,10 +644,11 @@ class CompactionMixin:
             self._compress_occurrences = None
             self._last_compression_status = "error"
             self._last_compression_noop_reason = ""
+            self._survival_fit_reason = f"exception:{type(exc).__name__}"
             if isinstance(exc, Exception):  # #582: an over-window list survives the failure, fitted
                 try:
                     self._store.rollback_pending_write()
-                    reason = f"exception:{type(exc).__name__}"
+                    reason = self._survival_fit_reason
                     fitted = self._survival_fit(messages, messages, current_tokens, after_exception=True,
                                                 **self._survival_fit_args(messages, current_tokens, reason,
                                                                           bypass_cooldown))
@@ -701,12 +702,13 @@ class CompactionMixin:
             if exited:  # #671: the free cuts reached the target before any model call
                 reason = "stub_first_exit"
             logger.info("LCM compaction stop: reason=%s leaves=%d progress=%s elapsed=%.1fs pre=%.1fs calls=%.1fs "
-                        "finalize=%.1fs backlog_tokens=%d%s%s%s", reason, budget.leaves, budget.progress or "none", elapsed,
+                        "finalize=%.1fs backlog_tokens=%d%s%s%s%s", reason, budget.leaves, budget.progress or "none", elapsed,
                         pre, calls, finalize, self._raw_backlog_tokens(result) if isinstance(result, list) else 0,
                         f" host={budget.host:.1f}s" if budget.host > 0 else "",
                         " tokens_before={tokens_before} tokens_after={tokens_after} target={target_tokens} "
                         "backlog_rows={backlog_rows}".format(**exited) if exited else "",
-                        " blocked=store_id:%d,role:%s,kind:%s" % blocked[:3] if blocked else "")  # #1162: the row
+                        " blocked=store_id:%d,role:%s,kind:%s" % blocked[:3] if blocked else "",  # #1162: the row
+                        f" failure={self._survival_fit_reason}" if reason == "error" and self._survival_fit_reason else "")
         except Exception:
             logger.debug("LCM compaction stop line failed", exc_info=True)
         try:  # #1162: consecutive over-threshold passes that ran a leaf selection and stored no leaf (in memory)
