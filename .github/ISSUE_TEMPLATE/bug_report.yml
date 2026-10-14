@@ -5,16 +5,15 @@ name: Bug report
 description: Something in LCM-X is broken or behaves unexpectedly.
 labels: ["bug", "triage-pending"]
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Thanks for the report. From the next release, your Hermes agent can draft it for you: ask it to "report a problem with LCM-X".
-        **Security problems** (cross-session context exposure, unauthorized local reads, or non-cloud credential leaks, or anything that exposes a secret) go to a [private advisory](https://github.com/electricsheephq/lcm-x/security/advisories/new), not here.
-        **Problems in Hermes itself** belong in [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent/issues).
   - type: textarea
     id: what_happened
     attributes:
       label: What happened
+      description: >-
+        **Security problems** (cross-session context exposure, unauthorized local reads, non-cloud credential leaks,
+        or anything that exposes a secret) go to a [private advisory](https://github.com/electricsheephq/lcm-x/security/advisories/new),
+        not here. **Problems in Hermes itself** belong in [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent/issues).
+        Your Hermes agent can draft this report for you: ask it to "report a problem with LCM-X".
     validations:
       required: true
   - type: textarea
@@ -38,6 +37,7 @@ body:
     attributes:
       label: Plugin version
       description: The hermes-lcm-x entry from `hermes plugins list --json` (version and source sha), or the exact commit SHA.
+      placeholder: Exact commit SHA for v0.27.0 or main, for example 0123456789abcdef...
     validations:
       required: true
   - type: input
@@ -72,15 +72,12 @@ body:
     id: diagnostics
     attributes:
       label: Diagnostics
-      description: Read-only `/lcm status` and `/lcm doctor`, or the `lcm_status` and `lcm_doctor` tools with default arguments. Slash commands are disabled by default; do not run repair or apply modes to reproduce.
+      description: >-
+        Read-only `/lcm status` and `/lcm doctor`, or the `lcm_status` and `lcm_doctor` tools with default arguments
+        (slash commands are disabled by default; do not run repair or apply modes to reproduce). Add short log excerpts,
+        for example from `hermes logs --since 1h -n 2000 | grep -i lcm`, only the relevant LCM-X or Hermes config, and
+        what you already ran or checked. Leave out tokens, keys and private message text.
       render: text
-  - type: textarea
-    id: logs
-    attributes:
-      label: Relevant log lines
-      description: Short excerpts only, for example from `hermes logs -n 300 | grep -i lcm`. Leave out tokens, keys and private message text.
-      render: text
-
   - type: textarea
     id: impact_regression
     attributes:
@@ -95,31 +92,6 @@ body:
         Is context missing, duplicated, reordered, misattributed, or visible across sessions/profiles?
     validations:
       required: true
-
-  - type: textarea
-    id: config
-    attributes:
-      label: Relevant config
-      description: Include only the relevant LCM-X or Hermes config. Redact secrets.
-      render: yaml
-      placeholder: |
-        context:
-          engine: lcm-x
-        lcm:
-          ...
-    validations:
-      required: false
-
-  - type: textarea
-    id: validation
-    attributes:
-      label: Validation attempted
-      description: What did you run or check already?
-      placeholder: |
-        - pytest tests/test_lcm_engine.py -q -> fails at ...
-        - python -m compileall -q . -> passes
-    validations:
-      required: false
 
   - type: checkboxes
     id: checks
