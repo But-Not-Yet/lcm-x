@@ -506,3 +506,50 @@ def test_step2_never_hides_a_generated_carrier(tmp_path, monkeypatch, caplog):
     _disable_e(monkeypatch)
     base = _carrier_assembly(tmp_path / "base")
     assert json.dumps(out, sort_keys=True) == json.dumps(base, sort_keys=True)
+
+
+def test_hidden_survival_projection_raw_row_is_covered_in_store_order(tmp_path, monkeypatch, caplog):
+    """Re-check r2 construction: tr1 arrives as its survival-fit projection (a bounded copy whose only source is
+    raw row tr1), which the store-id map resolves to tr1's id, so step 2 hides it. That is lossless: once the host
+    commits the step-2 view, later passes cover tr1's raw row in exactly one leaf, in store order."""
+    caplog.set_level(logging.WARNING, logger="hermes_lcm")
+    applied = _steps(monkeypatch)
+    engine, host = _engine(tmp_path), _Host()
+    stops = _stops(engine)
+    try:
+        view = [m for i in range(1, 4) for m in (host.user(f"[T{i}] ask"), host.reply(f"reply to T{i}"))]
+        out0 = list(engine.compress(view, current_tokens=count_messages_tokens(view)))
+        rows = [host.user("[T4] ask"), host.reply("reply to T4"), host.user("continue", pad=PAD * 3), host.call(1),
+                host.result(1, pad=PAD * 10), host.user("continue", pad=PAD * 3), host.call(2), host.result(2)]
+        engine.ingest(out0 + rows)
+        source = next(int(r["store_id"]) for r in engine._store.get_session_messages("S", limit=100_000)
+                      if r.get("tool_call_id") == "call_1")
+        projected = engine._survival_projection([rows[4]], {id(rows[4]): source}, 0)[0]
+        assert projected != rows[4] and len(_host_text(projected)) < len(_host_text(rows[4]))
+        tail = rows[1:4] + [projected] + rows[5:]
+        assert engine._get_store_id_map_for_messages(tail)[id(projected)] == source
+        out = engine._assemble_context(None, tail, assembly_cap_override=1300)
+        assert applied == [2] and projected not in out and rows[3] not in out, applied  # step 2 hid tc1 + projection
+        assert [_host_text(m)[:11] for m in out[1:3]] == ["reply to T4", "continue al"]
+        engine._ingest_cursor, engine._ingest_cursor_needs_reconcile = len(out), False  # the host commits it
+        view, frontiers = out, [_frontier(engine)]
+        for k in range(3, 9):
+            view = view + [host.call(k), host.result(k)]
+            engine.ingest(view)
+            engine.note_turn_complete()
+            view = view + [host.reply(f"reply {k}"), host.user(f"[N{k}] ask")]
+            stops.append(False)
+            out = list(engine.compress(view, current_tokens=count_messages_tokens(view)))
+            engine._no_progress_hold = None
+            assert _host_keep_last_reply(view, out) is None and engine._last_compression_status != "error"
+            frontiers.append(_frontier(engine))
+            view = out
+        leaves = [n for n in engine._dag.get_session_nodes("S") if n.source_type == "messages"]
+        holding = [sorted(int(s) for s in n.source_ids) for n in leaves if source in {int(s) for s in n.source_ids}]
+        _assert_lossless(engine)
+    finally:
+        engine.shutdown()
+    assert all(b > a for a, b in zip(frontiers, frontiers[1:])), frontiers
+    assert not any(stops) and not [r for r in caplog.records if "publication" in r.getMessage()]
+    assert frontiers[-1] > source and len(holding) == 1, holding
+    assert holding[0] == list(range(holding[0][0], holding[0][-1] + 1)), holding  # contiguous store-order span
