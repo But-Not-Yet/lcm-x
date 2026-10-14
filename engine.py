@@ -20,6 +20,7 @@ import uuid
 from collections import Counter, deque
 from contextlib import contextmanager
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -179,6 +180,16 @@ from . import tools as lcm_tools
 
 logger = logging.getLogger(__name__)
 _NATIVE_RECOVERY_WARNING_LOGGED = False
+
+
+@lru_cache(maxsize=1)
+def _model_only_display_metadata_key() -> Optional[str]:
+    """Older hosts keep today's display behavior; resolve the host capability once."""
+    try:
+        from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
+        return MODEL_ONLY_DISPLAY_METADATA_KEY
+    except (ImportError, AttributeError):
+        return None
 
 _ASSERTION_EXTRACTION_PROCESS_SLOT = threading.BoundedSemaphore(1)
 _EMBEDDING_SCHEMA_READY: set[tuple[Path, bool]] = set()
@@ -6817,6 +6828,7 @@ class LCMEngine(
         *,
         insert_missing_tool_stubs: bool = True,
         merge_adjacent_assistants: bool = True,
+        generated_rows: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """Drop unsafe assistant-only noise, then repair tool sequencing.
 
@@ -6834,7 +6846,10 @@ class LCMEngine(
         cleaned: list[Dict[str, Any]] = []
         dropped_assistant_messages = 0
         stripped_assistant_messages = 0
+        generated_ids = {id(row) for row in generated_rows or []}
+        cleaned_generated = []
         for msg in messages:
+            generated = id(msg) in generated_ids
             msg = self._sanitize_active_preserved_objective_message(msg)
             if msg.get("role") == "assistant":
                 cleaned_msg = _clean_active_assistant_message(msg)
@@ -6844,8 +6859,12 @@ class LCMEngine(
                 if cleaned_msg is not msg:
                     stripped_assistant_messages += 1
                 cleaned.append(cleaned_msg)
+                if generated:
+                    cleaned_generated.append(cleaned_msg)
                 continue
             cleaned.append(msg)
+            if generated:
+                cleaned_generated.append(msg)
 
         if dropped_assistant_messages:
             logger.info(
@@ -6862,12 +6881,15 @@ class LCMEngine(
             cleaned,
             insert_missing_tool_stubs=insert_missing_tool_stubs,
         )
+        if generated_rows is not None:
+            # Follow cleanup copies without giving a carrier the generated row's identity.
+            generated_rows[:] = cleaned_generated
         if not merge_adjacent_assistants:
             return paired
         # Merge any assistant rows left adjacent once tool rows were dropped —
         # emit an alternation-clean active context so downstream loads don't
         # have to repair it and the persisted message count matches replay.
-        return _merge_adjacent_assistant_messages(paired)
+        return _merge_adjacent_assistant_messages(paired, generated_rows=generated_rows)
 
     @staticmethod
     def _active_tool_stub_content(original_content: Any, placeholder: str) -> Any:
@@ -8295,10 +8317,12 @@ class LCMEngine(
                                          proactive_msg, generated_context_row, tail_selected)
         result.extend(tail_selected)
 
+        generated_rows = [row for row in result if any(row is source for source in
+                          (summary_message, proactive_msg, generated_context_row))]
         # ── Active-context cleanup / tool-pair guardrail ──
         # Drop assistant turns that carry only blank/internal structured content,
         # then ensure provider-valid tool-call/result sequencing.
-        result = self._sanitize_active_context_messages(result)
+        result = self._sanitize_active_context_messages(result, generated_rows=generated_rows)
         if leading_msg is None:
             while result and result[0].get("role") in {"assistant", "tool"}:
                 result = result[1:]
@@ -8328,7 +8352,19 @@ class LCMEngine(
                     trimmed = msg.copy()
                     trimmed["content"] = "\n\n---\n\n".join(parts)
                     trimmed_result.append(trimmed)
-            result = self._sanitize_active_context_messages(trimmed_result)
+                    generated_rows = [trimmed if row is msg else row
+                                      for row in generated_rows]
+            result = self._sanitize_active_context_messages(trimmed_result, generated_rows=generated_rows)
+
+        # Stamp only final standalone generated occurrences, never a same-text host row.
+        # Explicit carriers and assistant merges with human text are not generated rows.
+        # Measurement candidates above never receive display metadata.
+        key = _model_only_display_metadata_key() if generated_rows else None
+        if key is not None:
+            generated_ids = {id(row) for row in generated_rows}
+            for row in result:
+                if id(row) in generated_ids:
+                    row["display_metadata"] = {**(row.get("display_metadata") or {}), key: True}
         if not persist:
             return result
 
