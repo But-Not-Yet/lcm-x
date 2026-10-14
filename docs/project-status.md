@@ -46,7 +46,7 @@ At v0.23.1 acceptance, reranking, binary prescreen/int8, proactive recall, V4 as
 
 Issue #658 is the tracker, and [ROADMAP.md](../ROADMAP.md) lays the work out by horizon and milestone. H1 compaction continues in the v0.27.0 (summary quality) and v0.28.0 (invisible compaction) milestones; the summary prompt default stays v1 (#660). The H2 recall re-baseline on the v0.26.0 GA has its own milestone.
 
-From v0.26.0, every release candidate also carries a recall scorecard (#898). The default configuration (embeddings off) is scored against the previous GA question by question, and two embeddings-on configurations are recorded once per minor.
+From v0.26.0, every release candidate also carries a recall scorecard (#898). The full-text-only configuration (the shipped default until v0.27.1; from v0.27.1 the gated row is the shipped default, local semantic recall on) is scored against the previous GA question by question, and two embeddings-on configurations are recorded once per minor.
 
 No answer-accuracy rows exist yet for a current release. The newest scoreboard rows for LongMemEval-S, LoCoMo and LongMemEval-V2 are from July and August 2026, on older releases. They are re-measured on v0.26.0 in H2.
 
