@@ -35,9 +35,9 @@ an authority for writes or automatic merges.
 
 Search open and closed issues and pull requests before filing. Use the bug form's
 headings: What happened, What you expected, Steps to reproduce, Plugin version,
-Hermes version, Where it happened, Operating system, Diagnostics, and Relevant log
-lines; retain the Impact, regression range, and data symptoms, Relevant config,
-and Validation attempted fields. Maintainers filing through the CLI pass
+Hermes version, Where it happened, Operating system, Diagnostics, and Impact,
+regression range, and data symptoms. Put short log excerpts, the relevant config,
+and what you already ran under Diagnostics. Maintainers filing through the CLI pass
 `--label bug,triage-pending` or `--label bug,triaged` after triage, plus
 `--label agent-drafted` when an agent wrote the report. These labels do not grant
 filing authority; show the draft and obtain the reporter's approval first.
