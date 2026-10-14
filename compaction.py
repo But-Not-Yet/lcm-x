@@ -1032,13 +1032,17 @@ class CompactionMixin:
     ) -> Optional[List[Dict[str, Any]]]:
         """#671: the list the leaf path returns when no leaf runs (summary prefix, externalized placeholders, the
         aged stub tier), assembled without a model call, when the survival fit's host measure puts it at or under
-        min(threshold - leaf chunk, 0.95 x threshold); else None and the compaction goes on as before. No row is
+        min(threshold - leaf chunk, 0.95 x threshold), lowered to int(ratio x threshold) by a set
+        ``stub_first_exit_target_ratio``; else None and the compaction goes on as before. No row is
         deleted: the rows no leaf summarised stay stored and are recorded as backlog."""
         if not (self._config.large_output_active_replay_stubbing_enabled
                 and self._config.large_output_externalization_enabled):
             return None
         threshold = int(self.threshold_tokens or 0)
         target = min(threshold - int(self._config.leaf_chunk_tokens), int(threshold * _RECOVERY_THRESHOLD_SHARE))
+        ratio = getattr(self._config, "stub_first_exit_target_ratio", 0.0)
+        if 0 < ratio <= 1:  # 0 (unset) keeps the built-in target; a ratio only ever lowers it
+            target = min(target, int(threshold * ratio))
         if target <= 0:
             return None
         leading = self._leading_anchor_count(working_messages)
