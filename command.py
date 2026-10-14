@@ -925,6 +925,7 @@ def _rotate_text(engine) -> str:
     if preview.get("noop"):
         lines.append(f"reason: {preview.get('reason', 'no_change')}")
         lines.append("note: read-only preview — rotate apply would be a no-op for this session")
+        lines.append("note: if an earlier LCM-X already rotated this session and Hermes restarted since, compaction can stop on the rows below that frontier and /compress here N will not repair it: start a new session with /new (raw rows stay recoverable via lcm_load_session; in-place fix tracked in #1184)")
     else:
         lines.append("note: read-only preview — on Hermes, use `/compress here N` to compact (rotate apply is refused, #1141)")
         lines.append("note: if an earlier LCM-X already rotated this session and Hermes restarted since, compaction can stop on the rows below that frontier and /compress here N will not repair it: start a new session with /new (raw rows stay recoverable via lcm_load_session; in-place fix tracked in #1184)")
