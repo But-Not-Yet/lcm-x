@@ -24,7 +24,7 @@ from collections import Counter
 from typing import Any, Dict, List, Optional
 
 from .dag import SummaryNode
-from .escalation import ForegroundBudget, ForegroundEstimates, SweepBudgetExhausted
+from .escalation import ForegroundBudget, ForegroundEstimates, SweepBudgetExhausted, _summary_call
 from .externalize import ingest_payload_writes, payload_lookup_scope
 from .fresh_tail import tool_group_safe_end
 from .lifecycle_state import LifecycleBindingChangedError, LifecyclePublicationConflictError
@@ -564,6 +564,8 @@ class CompactionMixin:
         self._last_compress_leaves = None
         self._last_hidden_backlog = None
         self._compress_forced_overflow = False
+        self._last_compression_noop_reason = ""  # #1162: a fit's cause belongs to this pass
+        _summary_call.error = None  # the thread-local summary failure must not outlive its pass
         budget = self._foreground_budget = self._new_foreground_budget()  # #605 K1: the clock starts here
         thread_context = getattr(self, "_thread_context", None)  # D5: per thread; the engine is shared with live children
         if thread_context is not None:

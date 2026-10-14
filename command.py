@@ -1906,8 +1906,9 @@ def _doctor_text(engine) -> str:
                          "a short projected row (head + mark) and stores it again on a cold resume (#601 duplicates); "
                          "to roll back further, stop Hermes and move the configured database file (by default lcm.db, "
                          "with its -wal and -shm companions) aside and keep it")
+        last_cause = f"; last cause {survival_fit['last_cause']}" if survival_fit.get("last_cause") else ""
         observations.append(f"survival_fit: {applied}; last reason "
-                            f"{survival_fit.get('last_reason') or '(unknown)'}; projected_count "
+                            f"{survival_fit.get('last_reason') or '(unknown)'}{last_cause}; projected_count "
                             f"{'unknown' if projected is None else projected}; unreached_budget_count "
                             f"{survival_fit.get('unreached_budget_count', 0)}; last_reached_budget "
                             f"{survival_fit.get('last_reached_budget', 'unknown')}; last_uncovered_rows "

@@ -32,6 +32,7 @@ import time
 from itertools import islice
 from typing import Any, Dict, List, Optional
 
+from .escalation import _summary_call
 from .host_uid import _valid_uid
 from .host_uid_emit import ADDRESS_KEYS, IDENTITY_KEYS, identity_emit_enabled, record_absorbed_message
 from .message_analysis import _is_codex_interim
@@ -45,9 +46,13 @@ logger = logging.getLogger(__name__)
 SURVIVAL_FIT_COUNTER_KEY = "survival_fit:counter"
 _NOTICE = ("[LCM survival fit: {n} earlier messages (store ids {first}..{last}) are stored verbatim but not in "
            "live context; lcm_grep / lcm_load_session reach them.]")
-_WARNING = ("LCM could not summarise part of this conversation in time. To keep the session alive, {n} older "
-            "messages left live context; they stay stored verbatim and searchable (lcm_grep, lcm_load_session). "
-            "/lcm doctor reports it.")
+_WARNING_SUMMARY_FAILED = ("LCM could not summarise part of this conversation in time. To keep the session alive, {n} older "
+                           "messages left live context; they stay stored verbatim and searchable (lcm_grep, lcm_load_session). "
+                           "/lcm doctor reports it.")
+_WARNING = _WARNING_SUMMARY_FAILED
+_WARNING_FITTED = ("To keep this conversation within the model's context window, {n} older messages left live context "
+                   "before LCM could summarise them; they stay stored verbatim and searchable (lcm_grep, lcm_load_session). "
+                   "/lcm doctor reports why.")
 _NOTICE_RE = re.compile(r"(?:\n\n)?\[LCM survival fit: \d+ earlier messages \(store ids [^()\]]*\) are stored verbatim "
                         r"but not in live context; lcm_grep / lcm_load_session reach them\.\]")
 _PROJECTED = ("[LCM survival fit: this {role} message ({tokens} tokens) is stored verbatim as store id {store_id}; "
@@ -584,6 +589,14 @@ class SurvivalFitMixin:
     def _survival_record(self, reason, count, ids, before, after, budget, projected, notice, *, shortened=True,
                          warn_user=True) -> None:
         """Log the fit, update the doctor counter and warn the user once per conversation."""
+        call_budget = self._foreground_call_budget()
+        plain_reason = reason.removeprefix("exit_fit:").removeprefix("recovery_attempt:")
+        summary_failed = bool(
+            (plain_reason in {"noop", "error"} or plain_reason.startswith("exception:"))
+            and call_budget is not None and call_budget.first_call_started is not None
+            and getattr(_summary_call, "error", None) is not None)
+        cause = (getattr(self, "_last_compression_noop_reason", "")
+                 if not summary_failed and not getattr(self, "_survival_fit_reason", None) else "")
         uncovered = 0
         if shortened:
             try:  # a diagnostic: its failure never fails the fit
@@ -600,6 +613,7 @@ class SurvivalFitMixin:
                 "unknown" if uncovered is None else uncovered, projected, before, after, budget,
             )
         self._last_survival_fit = {"reason": reason, "dropped_rows": count, "notice": notice, "at": time.time(),
+                                   **({"cause": cause} if cause else {}),
                                    "uncovered_rows": uncovered, "reached_budget": after <= budget}
 
         def counted(record):  # runs inside the store's write transaction: concurrent engines add, never overwrite
@@ -609,6 +623,7 @@ class SurvivalFitMixin:
             except (TypeError, ValueError, OverflowError):  # #618 item 14: a damaged count restarts the record
                 return {**counted({}), "count_lost": True}
             return {"count": count + 1, "last_reason": reason, "last_at": time.time(),
+                    **({"last_cause": cause} if cause else {}),
                     "last_conversation": str(self._conversation_id or self._session_id or ""),
                     "last_reached_budget": after <= budget,
                     "last_uncovered_rows": uncovered,
@@ -635,7 +650,8 @@ class SurvivalFitMixin:
         key = str(self._conversation_id or self._session_id or "")
         if shortened and warn_user and key not in self._survival_fit_warned:
             self._survival_fit_warned.add(key)
-            self._survival_fit_pending_warning = (key, _WARNING.format(n=count))  # R6-4: owned by its conversation
+            warning = _WARNING_SUMMARY_FAILED if summary_failed else _WARNING_FITTED
+            self._survival_fit_pending_warning = (key, warning.format(n=count))  # R6-4: owned by its conversation
             self.emit_automatic_compaction_status = True  # the host asks the hook below once more
 
     def get_automatic_compaction_status_message(self, *, phase: str, default_message: str, **context: Any):
