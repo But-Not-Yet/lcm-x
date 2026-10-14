@@ -450,6 +450,18 @@ def _summary_part_text(node) -> str:
     )
 
 
+def _visible_reply_text(message: Any) -> str:
+    """#1162: the stripped text of a row Hermes' reply anchor treats as the visible reply, else ''."""
+    if not isinstance(message, dict) or message.get("role") != "assistant" or message.get("tool_calls"):
+        return ""
+    content = message.get("content")
+    if message.get("_compressed_summary") or LCMEngine._is_context_summary_content(content):
+        return ""
+    if isinstance(content, list):  # Hermes _message_text
+        content = "\n".join(str(p.get("text") or p.get("content") or "") for p in content if isinstance(p, dict))
+    return content.strip() if isinstance(content, str) else ""
+
+
 def _normalize_total_compactions(value: Any) -> int:
     """Return a persisted compaction total only when it is a valid counter."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -7891,9 +7903,11 @@ class LCMEngine(
         retained_user_message: Optional[Dict[str, Any]] = None,
         stub_over_cap_tool_results: bool = False,
         persist: bool = True,
+        _reply_rejected: tuple = (),
     ) -> List[Dict[str, Any]]:
         """Build the active context from DAG summaries + fresh tail. ``persist=False`` (#671: the stub-first
         trial) writes nothing: no payload file, fold lineage, snapshot digest or emission candidates, no recall.
+        ``_reply_rejected``: #1162 E steps already rejected for this assembly (internal re-entry only).
 
         Structure:
           [leading anchors: system and, when proven, the sole real user]
@@ -7946,6 +7960,7 @@ class LCMEngine(
         anchor_part: Optional[str] = None
         anchor_candidates: List[str] = []
         summary_budget = None
+        kept_reply = None
         if assembly_cap is not None:
             used = count_messages_tokens(result)
             kept_tail_reversed: list[Dict[str, Any]] = []
@@ -8055,6 +8070,8 @@ class LCMEngine(
                 tail_token_total += msg_tokens
             tail_selected = list(reversed(kept_tail_reversed))
             summary_budget = max(0, assembly_cap - used - tail_token_total)
+            tail_selected, summary_budget, kept_reply = self._keep_newest_reply(
+                tail_messages, anchor_source, tail_for_selection, tail_selected, summary_budget, _reply_rejected)
         if anchor_source is not None:
             anchor_candidates = self._latest_user_context_anchor_candidates(anchor_source, tail_selected)
             anchor_part = anchor_candidates[0] if anchor_candidates else None
@@ -8305,14 +8322,14 @@ class LCMEngine(
         if (
             assembly_cap is not None
             and anchor_part is not None
-            and count_messages_tokens(result) > assembly_cap
+            and count_messages_tokens(result) > assembly_cap + (kept_reply or {}).get("tokens", 0)
         ):
             if any(_PRESERVED_OBJECTIVE_CONTEXT_PREFIX in (normalize_content_value(m.get("content")) or "")
                    for m in result):
                 logger.warning(
                     "LCM assembly: %d token(s) over the cap after sanitizing; dropping the preserved user "
                     "objective from the active context as a last resort (the store keeps it)",
-                    count_messages_tokens(result) - assembly_cap,
+                    count_messages_tokens(result) - assembly_cap - (kept_reply or {}).get("tokens", 0),
                 )
             trimmed_result: list[Dict[str, Any]] = []
             for msg in result:
@@ -8329,6 +8346,13 @@ class LCMEngine(
                     trimmed["content"] = "\n\n---\n\n".join(parts)
                     trimmed_result.append(trimmed)
             result = self._sanitize_active_context_messages(trimmed_result)
+        if kept_reply is not None and (why := self._kept_reply_rejection(
+                result, kept_reply, kept_reply["objective"] and bool(anchor_candidates),
+                ([system_msg] if system_msg is not None else []) + ([retained_user_message] if retained_user_message
+                                                                     is not None else []) + list(anchor_source))):
+            return self._assemble_context(  # #1162 E: the next step, or the base output with the residual log
+                system_msg, tail_messages, assembly_cap_override, include_lcm_note, retained_user_message,
+                stub_over_cap_tool_results, persist, (*kept_reply["rejected"], f"step{kept_reply['step']}={why}"))
         if not persist:
             return result
 
@@ -8352,6 +8376,7 @@ class LCMEngine(
         # assembled by this engine. Ingested input is not trusted replay proof.
         self._remember_compacted_active_replay_snapshot(result)
         self._pending_emission_candidates = emission_candidates
+        self._kept_reply_mark = (result, kept_reply["tokens"]) if kept_reply is not None else None
         return result
 
     def _mint_assembled_engine_uids(self, result, candidates, summary_message, carried_tail, recall_row,
@@ -8381,6 +8406,63 @@ class LCMEngine(
             uid = next((row.get("message_uid") for row, *_spec in generated if row is candidate.get("row")), None)
             if uid is not None:
                 candidate["engine_uid"] = uid
+
+    def _keep_newest_reply(self, tail_messages, anchor_source, selection, kept, room, rejected):
+        """#1162 E: a capped selection that keeps rows stored after an uncovered newest visible reply A but drops A
+        makes Hermes re-add A behind them (its reply anchor binds the last text twin of A's follower), and leaf
+        selection then stops before A's view slot on every pass. Step 1 extends the kept suffix back to A when the
+        gap after A fits the summary room; step 2 (after any step-1 rejection) puts A right before the first kept
+        user row, hiding only rows the store-id map resolves. Step 1 keeps room for the preserved objective the
+        base view would carry. Returns (tail, room, reply or None); ``rejected`` lists the steps already rejected."""
+        start = len(selection) - len(kept)  # the selector keeps a contiguous newest suffix
+        a = next((i for i in range(len(selection) - 1, -1, -1) if _visible_reply_text(selection[i])), None)
+        text = next((t for m in reversed(tail_messages) if (t := _visible_reply_text(m))), "")
+        if a is None or not kept or a >= start or _visible_reply_text(selection[a]) != text:
+            return kept, room, None
+        ids = self._get_store_id_map_for_messages(selection)
+        reply_id = int(ids.get(id(selection[a])) or 0)
+        if reply_id <= int(self._last_compacted_store_id or 0):
+            return kept, room, None
+        objective = next((tokens for c in self._latest_user_context_anchor_candidates(anchor_source, kept) if (
+            tokens := count_message_tokens({"role": "user", "content": strip_injected_context_blocks(c)})) <= room), 0)
+        reply = {"store_id": reply_id, "text": text, "tokens": count_message_tokens(selection[a]),
+                 "rejected": rejected, "objective": objective > 0}
+        if not rejected:
+            gap = count_messages_tokens(self._sanitize_tool_pairs(list(selection[a + 1:start])))
+            if gap + objective <= room:
+                return selection[a:start] + kept, room - gap, {**reply, "step": 1}
+            reply["rejected"] = rejected = ("step1=room",)
+        if len(rejected) == 1:
+            u = next((i for i, m in enumerate(kept) if m.get("role") == "user"), None)
+            if u is not None and all(int(ids.get(id(m)) or 0) > 0 for m in kept[:u]):
+                return [selection[a], *kept[u:]], room + count_messages_tokens(kept[:u]), {**reply, "step": 2}
+            rejected = (*rejected, "step2=no_user_row" if u is None else "step2=unmapped_row")
+        logger.info("LCM assembly: reply_keep=residual store_id=%d (%s); returning the base view",
+                    reply_id, ", ".join(rejected))
+        return kept, room, None
+
+    def _kept_reply_rejection(self, result, reply, objective_due, host_input) -> str:
+        """#1162 E on the finished result: '' when it keeps a leading user row and any pending preserved objective,
+        does not outgrow the host input (Hermes refuses only on '>'), and shows a host-visible twin of A before
+        every kept row stored after A; else the reason."""
+        first = next((m for m in result if m.get("role") != "system"), {})
+        twin = next((i for i, m in enumerate(result) if _visible_reply_text(m) == reply["text"]), None)
+        if first.get("role") != "user":
+            return "leading_row"
+        if objective_due and not any(
+                _PRESERVED_OBJECTIVE_CONTEXT_PREFIX in (normalize_content_value(m.get("content")) or "") for m in result):
+            return "objective"
+        if count_messages_tokens(result) > count_messages_tokens(host_input):
+            return "growth"
+        ids = self._get_store_id_map_for_messages(result)
+        if twin is None or any(int(ids.get(id(m)) or 0) > reply["store_id"] for m in result[:twin]):
+            return "postcondition"
+        return ""
+
+    def _kept_reply_tokens(self, compressed) -> int:
+        """#1162 E: tokens of the reply the assembly that returned ``compressed`` kept over its cap (else 0)."""
+        mark = getattr(self, "_kept_reply_mark", None)
+        return mark[1] if mark is not None and mark[0] is compressed else 0
 
     @staticmethod
     def _missing_tool_result_stub(tool_call_id: str) -> Dict[str, Any]:
@@ -8467,7 +8549,8 @@ class LCMEngine(
         if effective_cap is None:
             self._last_overflow_recovery_failed = False
         else:
-            self._last_overflow_recovery_failed = count_messages_tokens(compressed) > effective_cap
+            self._last_overflow_recovery_failed = (
+                count_messages_tokens(compressed) > effective_cap + self._kept_reply_tokens(compressed))
             if self._last_overflow_recovery_failed:
                 logger.warning(
                     "LCM overflow recovery could not get under cap=%d; returning best-effort context (%d tokens)",
