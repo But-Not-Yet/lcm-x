@@ -8694,6 +8694,7 @@ def lcm_status(args: Dict[str, Any], **kwargs) -> str:
         "threshold_full_sweep": full_status.get("threshold_full_sweep"),
         "last_stub_first_exit": full_status.get("last_stub_first_exit"),
         "no_progress_hold": full_status.get("no_progress_hold"),
+        "zero_leaf_streak": full_status.get("zero_leaf_streak"),  # #1162
         "model": full_status.get("model", ""),
         "provider": full_status.get("provider", ""),
         "raw_context_length": full_status.get("raw_context_length", engine.context_length),

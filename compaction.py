@@ -568,7 +568,7 @@ class CompactionMixin:
         thread_context = getattr(self, "_thread_context", None)  # D5: per thread; the engine is shared with live children
         if thread_context is not None:
             thread_context.foreground_budget = budget
-        returned, self._leaf_selection_ran = None, False  # #1162: set when the leaf loop runs
+        returned = None
         try:
             self._pending_emission_candidates = []
             self._survival_fit_emission = None
@@ -668,7 +668,7 @@ class CompactionMixin:
             self._foreground_budget = None
             if thread_context is not None:
                 thread_context.foreground_budget = None
-            self._finish_foreground_budget(budget, returned, current_tokens if current_tokens is not None else messages)
+            self._finish_foreground_budget(budget, returned, current_tokens if (current_tokens or 0) > 0 else messages)
 
     def _new_foreground_budget(self) -> ForegroundBudget:
         soft, hard = self._foreground_budget_seconds()
@@ -692,10 +692,11 @@ class CompactionMixin:
                 reason = str(self._last_threshold_full_sweep.get("stop_reason") or reason)
             elif reason != "error" and budget.stop_reason:  # a time stop with the sweep off (#605)
                 reason = budget.stop_reason
+            retained = any(str(text or "").startswith(_RETAINED_NOOP_REASON)
+                           for text in (reason, self._last_compression_noop_reason))
             if reason.startswith(_RETAINED_NOOP_REASON):  # sweep on: base's #581 text exactly; the row is blocked=
-                reason = _RETAINED_NOOP_REASON
-            blocked = getattr(self, "_store_complete_blocked", None) if self._leaf_selection_ran and str(
-                self._last_compression_noop_reason or "").startswith(_RETAINED_NOOP_REASON) else None
+                reason = _RETAINED_NOOP_REASON  # (also after leaves of the same sweep, whose no-op reason is empty)
+            blocked = getattr(self, "_store_complete_blocked", None) if budget.selected and retained else None
             exited = getattr(self, "_stub_first_exit_now", None) if reason != "error" else None
             if exited:  # #671: the free cuts reached the target before any model call
                 reason = "stub_first_exit"
@@ -711,9 +712,9 @@ class CompactionMixin:
         try:  # #1162: consecutive over-threshold passes that ran a leaf selection and stored no leaf (in memory)
             streaks, key = self.__dict__.setdefault("_zero_leaf_streaks", {}), self._hold_conversation_key()
             if budget.leaves or (observed if isinstance(observed, (int, float)) else count_messages_tokens(
-                    observed or [])) < self.threshold_tokens:
-                streaks.pop(key, None)  # a leaf, or a pass at or under the threshold: fresh
-            elif self.threshold_tokens > 0 and self._leaf_selection_ran:  # held/cleanup-only calls never count
+                    observed or [])) <= self.threshold_tokens:
+                streaks.pop(key, None)  # a leaf, or a pass at or under the threshold (0 tokens: unknown): fresh
+            elif self.threshold_tokens > 0 and budget.selected:  # held, cleanup-only and no-chunk calls never count
                 streaks[key] = {"passes": streaks.get(key, {}).get("passes", 0) + 1, "last_reason": str(
                     self._last_compression_noop_reason or reason or self._last_compression_status or "unknown")}
         except Exception:
@@ -1581,7 +1582,6 @@ class CompactionMixin:
 
         no_call_only, refused_input = False, None
         while leaf_passes < max_leaf_passes:
-            self._leaf_selection_ran = True
             if threshold_full_sweep_active and time.monotonic() >= sweep_deadline:
                 sweep_stop_reason = "time_budget_exhausted"
                 break
@@ -1934,6 +1934,7 @@ class CompactionMixin:
             if not to_compact and not hidden_backlog:
                 noop_reason = "no eligible leaf chunk selected"
                 break
+            budget.selected = True  # #1162: a chunk is selected; a pass that then stores no leaf counts
             to_compact = self._identity_anchor_extend_chunk(to_compact, candidate_raw)  # #563
 
             selected_raw_chunk = to_compact

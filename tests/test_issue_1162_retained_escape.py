@@ -193,10 +193,18 @@ def test_a_sanitizing_retained_stop_is_not_pressure_relief(tmp_path, summaries, 
         engine.shutdown()
 
 
+def _streak(engine):
+    return (engine.get_status()["zero_leaf_streak"] or {}).get("passes")
+
+
+def _drop_r(view) -> list:
+    return [m for m in view if not str(m.get("content", "")).startswith("[R] retained")]
+
+
 def test_doctor_warns_on_a_zero_leaf_streak_and_clears_after_a_leaf(tmp_path, summaries, lines):
-    """Three consecutive over-threshold passes without a leaf warn with the last reason; a stored leaf clears it."""
-    engine = _engine(tmp_path, False, fresh_tail_count=8, fresh_tail_pressure_yield_enabled=False)
-    view = [row for i in range(1, 3) for row in _turn(f"T{i}", 100.0 * i)]  # all of it is fresh tail
+    """Three consecutive over-threshold passes that select a chunk and store no leaf warn with the last reason (in
+    lcm_status too); a stored leaf clears it."""
+    engine, view = _reorder(tmp_path, False)
 
     def doctor():
         report = json.loads(lcm_tools.lcm_doctor({}, engine=engine))
@@ -205,45 +213,50 @@ def test_doctor_warns_on_a_zero_leaf_streak_and_clears_after_a_leaf(tmp_path, su
     try:
         assert doctor() == {"check": "compaction_progress", "status": "pass", "detail": {"passes": 0}}
         streaks = []
-        for _ in range(3):
+        for _ in range(4):  # the leaf before R, then R stops every pass
             view, _trace = _passes(engine, view, 1, lines)
-            streaks.append((engine.get_status()["zero_leaf_streak"] or {}).get("passes"))
-            if len(streaks) < 3:
+            streaks.append(_streak(engine))
+            if len(streaks) < 4:
                 assert doctor()["status"] == "pass"
-        assert streaks == [1, 2, 3]
-        check = doctor()
-        assert check["status"] == "warn" and check["detail"]["passes"] == 3
-        assert check["detail"]["last_reason"] == "no eligible raw backlog outside fresh tail"
+        assert streaks == [None, 1, 2, 3]
+        check, named = doctor(), f"{RETAINED} (store_id={_r_id(engine)} role=user kind=shown)"
+        assert check["status"] == "warn" and check["detail"] == {"passes": 3, "last_reason": named}
+        assert json.loads(lcm_tools.lcm_status({}, engine=engine))["zero_leaf_streak"] == check["detail"]
         report = json.loads(lcm_tools.lcm_doctor({}, engine=engine))
-        assert any(item["check"] == "compaction_progress" and item["warning_only"] for item in report["guidance"])
-        view, trace = _passes(engine, view + [row for i in range(3, 9) for row in _turn(f"T{i}", 100.0 * i)], 1,
-                              lines)
+        guidance = next(item for item in report["guidance"] if item["check"] == "compaction_progress")
+        assert guidance["warning_only"] and "blocked=" in guidance["operator_action"]
+        view, trace = _passes(engine, _drop_r(view), 1, lines)  # the host stops showing R: a leaf
         assert trace[0]["leaves"] >= 1, _show(trace)
-        assert engine.get_status()["zero_leaf_streak"] is None and doctor()["status"] == "pass"
+        assert _streak(engine) is None and doctor()["status"] == "pass"
     finally:
         engine.shutdown()
 
 
-# -- review of 559ce54f: the streak counts only real over-threshold passes; the stop line keeps one reason token --
-
-def _streak(engine):
-    return (engine.get_status()["zero_leaf_streak"] or {}).get("passes")
-
+# -- review of 559ce54f: the streak counts only real over-threshold passes; the stop line keeps base's reason ---
 
 def _streak_of_three(tmp_path, lines):
-    engine = _engine(tmp_path, False, fresh_tail_count=8, fresh_tail_pressure_yield_enabled=False)
-    view = [row for i in range(1, 3) for row in _turn(f"T{i}", 100.0 * i)]  # all of it is fresh tail
-    view, _trace = _passes(engine, view, 3, lines)
+    engine, view = _reorder(tmp_path, False)
+    view, _trace = _passes(engine, view, 4, lines)
     assert _streak(engine) == 3
     return engine, view
 
 
+def _one_pass(engine, view, **kwargs):
+    view = engine.compress(view, **kwargs)
+    engine.note_turn_complete()
+    engine._no_progress_hold = None
+    return view
+
+
 def test_a_pass_at_or_under_the_threshold_clears_the_streak(tmp_path, summaries, lines):
-    """Review 2: the streak is consecutive OVER-threshold passes: a pass the host observes under it starts it over,
-    and so does the pressure-yield entry point that sees the session under the threshold."""
+    """Review 2: the streak is consecutive OVER-threshold passes: a pass the host observes at or under it starts it
+    over, and so does the pressure-yield entry point that sees the session under the threshold."""
     engine, view = _streak_of_three(tmp_path, lines)
     try:
-        engine.compress(view, current_tokens=1)
+        view = _one_pass(engine, view, current_tokens=1)
+        assert _streak(engine) is None
+        view, _trace = _passes(engine, view, 1, lines)
+        view = _one_pass(engine, view, current_tokens=engine.threshold_tokens)  # exactly at the threshold
         assert _streak(engine) is None
         view, _trace = _passes(engine, view, 1, lines)
         assert _streak(engine) == 1
@@ -254,20 +267,79 @@ def test_a_pass_at_or_under_the_threshold_clears_the_streak(tmp_path, summaries,
         engine.shutdown()
 
 
-def test_only_passes_that_select_a_leaf_count(tmp_path, summaries, lines):
-    """Review 3: calls the #651 hold turns into cleanup-only maintenance run no leaf selection and never count; a
-    new session that keeps the conversation id starts without the old streak."""
-    engine = _engine(tmp_path, False, fresh_tail_count=8, fresh_tail_pressure_yield_enabled=False)
-    view = [row for i in range(1, 3) for row in _turn(f"T{i}", 100.0 * i)]
+def test_an_unknown_host_count_counts_the_view(tmp_path, summaries, lines):
+    """PR round 1: ``current_tokens=0`` is an unknown host count (as in compress()): the view decides, so an
+    over-threshold pass that stores no leaf still counts."""
+    engine, view = _streak_of_three(tmp_path, lines)
     try:
-        view = engine.compress(view, current_tokens=10_000)
+        _one_pass(engine, view, current_tokens=0)
+        assert _streak(engine) == 4
+    finally:
+        engine.shutdown()
+
+
+def test_only_passes_that_select_a_leaf_count(tmp_path, summaries, lines, monkeypatch):
+    """Review 3: calls the #651 hold turns into cleanup-only maintenance, and passes that select no chunk, never
+    count; a new session that keeps the conversation id starts without the old streak."""
+    engine, view = _reorder(tmp_path, False)
+    try:
+        view, _trace = _passes(engine, view, 1, lines)  # the leaf before R
+        view = engine.compress(view, current_tokens=10_000)  # R stops it; the #651 hold arms
         assert _streak(engine) == 1 and engine._no_progress_hold is not None
         for _ in range(2):  # held: the hold is not cleared between these calls
             view = engine.compress(view, current_tokens=10_000)
             assert engine._last_compression_status == "sanitized"
         assert _streak(engine) == 1
+        engine._no_progress_hold = None
+        with monkeypatch.context() as patch:
+            patch.setattr(engine, "_select_oldest_leaf_chunk", lambda *_args, **_kwargs: [])
+            patch.setattr(engine, "_store_complete_backlog", lambda *_args, **_kwargs: False)
+            view = _one_pass(engine, view, current_tokens=10_000)  # no chunk selected
+            assert engine._last_compression_noop_reason == "no eligible leaf chunk selected"
+        assert _streak(engine) == 1
         engine.on_session_start("S2", platform="cli", context_length=200_000, conversation_id="conv")
         assert _streak(engine) is None
+    finally:
+        engine.shutdown()
+
+
+def test_an_overlapping_compaction_keeps_this_pass_counted(tmp_path, summaries, lines, monkeypatch):
+    """PR round 1: the selection mark belongs to its compress() call (its budget), so a compaction that overlaps it on
+    the shared engine (a child's call, here an empty one inside this pass) does not unmark this pass."""
+    engine, view = _streak_of_three(tmp_path, lines)
+    extend, overlapped = engine._identity_anchor_extend_chunk, []
+
+    def overlapping(chunk, candidates):
+        if not overlapped:
+            overlapped.append(engine.compress([], current_tokens=0))
+        return extend(chunk, candidates)
+
+    monkeypatch.setattr(engine, "_identity_anchor_extend_chunk", overlapping)
+    try:
+        _one_pass(engine, view, current_tokens=10_000)
+        assert overlapped and engine._last_compression_noop_reason.startswith(RETAINED)
+        assert _streak(engine) == 1  # the overlapping empty call cleared the streak; this pass still counted
+    finally:
+        engine.shutdown()
+
+
+def test_a_sweep_that_stores_leaves_then_stops_names_the_row(tmp_path, summaries, lines):
+    """PR round 1: a threshold sweep that stores leaves and then stops at a retained occurrence (its no-op reason is
+    empty after the leaves; the sweep record keeps the reason) keeps blocked= on its stop line, reason= as on base."""
+    from hermes_lcm.escalation import ForegroundBudget, ForegroundEstimates
+
+    engine, _view = _reorder(tmp_path, True)
+    try:
+        budget = ForegroundBudget(soft=0, hard=120.0, configured_timeout=60.0, estimates=ForegroundEstimates())
+        budget.sweep_active, budget.leaves, budget.selected = True, 2, True
+        engine._last_compression_status, engine._last_compression_noop_reason = "compacted", ""
+        engine._last_threshold_full_sweep = {"stop_reason": f"{RETAINED} (store_id=3 role=user kind=shown)"}
+        engine._store_complete_blocked = (3, "user", "shown", 0, frozenset({3}))
+        engine._leaf_selection_ran = True  # (the per-engine mark of the previous revision, for its red receipt)
+        start = len(lines)
+        engine._finish_foreground_budget(budget, [], 10_000)
+        line = next(msg for _lvl, msg in lines[start:] if msg.startswith("LCM compaction stop:"))
+        assert f"reason={RETAINED} leaves=2 " in line and line.endswith(" blocked=store_id:3,role:user,kind:shown")
     finally:
         engine.shutdown()
 
