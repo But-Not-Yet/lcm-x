@@ -35,10 +35,13 @@ jobs:
             if (/Agent-drafted with Hermes/i.test(body) && !labels.includes('agent-drafted')) add.push('agent-drafted');
             if (add.length) await github.rest.issues.addLabels({ ...repo, issue_number: number, labels: add });
 
-            // Versions present: at least two semver strings or commit shas (plugin + Hermes). A rare needless
-            // reminder is acceptable.
-            const versions = (body.match(/\bv?\d+\.\d+\.\d+\b/g) || []).length + (body.match(/\b[0-9a-f]{7,40}\b/g) || []).length;
-            if (versions >= 2) return;
+            // Skip the reminder only when BOTH are present: a plugin version (semver or commit sha) AND a Hermes
+            // version, read from the form's "Hermes version" field or a "Hermes [Agent] vX.Y" string. A rare
+            // needless reminder is acceptable.
+            const hasPlugin = /\bv?\d+\.\d+\.\d+\b/.test(body) || /\b[0-9a-f]{7,40}\b/.test(body);
+            const hermesField = (body.match(/### Hermes version[ \t]*\n+([^\n#][^\n]*)/) || [])[1] || '';
+            const hasHermes = /\d+\.\d+/.test(hermesField) || /\bhermes(?: agent)?\s+v?\d+\.\d+/i.test(body);
+            if (hasPlugin && hasHermes) return;
 
             const marker = '<!-- lcm-x-issue-intake -->';
             const existing = await github.paginate(github.rest.issues.listComments, { ...repo, issue_number: number, per_page: 100 });
