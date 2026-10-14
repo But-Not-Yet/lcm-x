@@ -1073,6 +1073,16 @@ view while an ignored or stateless side channel is bound. Before the first
 normal message constructs an agent, or in a genuinely sessionless process,
 `session_id: (unbound)` and `threshold_tokens: (uninitialized)` remain expected.
 
+### Reporting a bug
+
+Run the read-only `/lcm status` and `/lcm doctor` diagnostics, or ask your agent to use
+`lcm_status` and `lcm_doctor` with default arguments if slash commands are unavailable.
+Slash commands are disabled by default; never run repair or apply modes to reproduce a bug.
+From the next release, ask your Hermes agent to "report a problem with LCM-X"; it shows a draft for your approval.
+Search existing issues, then use the [bug report form](https://github.com/electricsheephq/lcm-x/issues/new?template=bug_report.yml).
+Include versions and short, redacted excerpts from `hermes logs -n 300 | grep -i lcm`.
+For security problems, use the [private advisory form](https://github.com/electricsheephq/lcm-x/security/advisories/new).
+
 ## Architecture
 
 The engine sits between Hermes context assembly and the backing conversation
