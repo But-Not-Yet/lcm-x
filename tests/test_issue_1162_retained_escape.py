@@ -8,6 +8,7 @@ Engine-level, on a scratch store with a stub summariser (the repro of the #1162 
 from __future__ import annotations
 
 import json
+import re
 import logging
 
 import pytest
@@ -94,7 +95,7 @@ def _passes(engine, view, n, lines, label="") -> tuple[list, list[dict]]:
             "label": label, "status": engine._last_compression_status,
             "reason": engine._last_compression_noop_reason, "frontier": _frontier(engine),
             "leaves": int(stop.split("leaves=", 1)[1].split(" ", 1)[0]) if "leaves=" in stop else None,
-            "stop": stop.split(" elapsed=", 1)[0], "rows": len(view),
+            "stop": stop.split(" elapsed=", 1)[0], "line": stop, "rows": len(view),
             "warnings": [msg for lvl, msg in new if lvl >= logging.WARNING],
         })
     return view, trace
@@ -159,7 +160,11 @@ def test_the_first_retained_stop_names_the_blocking_row(tmp_path, summaries, lin
         assert named.startswith(RETAINED + " (store_id=") and named.endswith(" kind=shown)"), _show(trace)
         if name == "reorder":
             assert named == f"{RETAINED} (store_id={_r_id(engine)} role=user kind=shown)"
-        assert trace[-1]["leaves"] == 0 and f"reason={named} leaves=0" in trace[-1]["stop"], _show(trace)
+        store_id, role = named.split("(store_id=", 1)[1].split(" kind=", 1)[0].split(" role=")
+        line = trace[-1]["line"]  # reason= exactly as on base (sweep on: the #581 text); the row is its own field
+        assert trace[-1]["leaves"] == 0 and line.endswith(f" blocked=store_id:{store_id},role:{role},kind:shown")
+        assert re.search(f"reason={RETAINED} leaves=0 progress=" if sweep else "reason=(noop|sanitized) leaves=0 "
+                         "progress=", line) and "(store_id=" not in line, line
         assert f"LCM compression no-op: {named}" in [msg for _lvl, msg in lines[start:]]
         status = engine.get_status()
         assert status["last_compression_noop_reason"] == named
@@ -215,5 +220,70 @@ def test_doctor_warns_on_a_zero_leaf_streak_and_clears_after_a_leaf(tmp_path, su
                               lines)
         assert trace[0]["leaves"] >= 1, _show(trace)
         assert engine.get_status()["zero_leaf_streak"] is None and doctor()["status"] == "pass"
+    finally:
+        engine.shutdown()
+
+
+# -- review of 559ce54f: the streak counts only real over-threshold passes; the stop line keeps one reason token --
+
+def _streak(engine):
+    return (engine.get_status()["zero_leaf_streak"] or {}).get("passes")
+
+
+def _streak_of_three(tmp_path, lines):
+    engine = _engine(tmp_path, False, fresh_tail_count=8, fresh_tail_pressure_yield_enabled=False)
+    view = [row for i in range(1, 3) for row in _turn(f"T{i}", 100.0 * i)]  # all of it is fresh tail
+    view, _trace = _passes(engine, view, 3, lines)
+    assert _streak(engine) == 3
+    return engine, view
+
+
+def test_a_pass_at_or_under_the_threshold_clears_the_streak(tmp_path, summaries, lines):
+    """Review 2: the streak is consecutive OVER-threshold passes: a pass the host observes under it starts it over,
+    and so does the pressure-yield entry point that sees the session under the threshold."""
+    engine, view = _streak_of_three(tmp_path, lines)
+    try:
+        engine.compress(view, current_tokens=1)
+        assert _streak(engine) is None
+        view, _trace = _passes(engine, view, 1, lines)
+        assert _streak(engine) == 1
+        engine._config.fresh_tail_pressure_yield_enabled = True
+        engine._maybe_engage_fresh_tail_pressure_yield(view, 1, eligible_tokens=0)
+        assert _streak(engine) is None
+    finally:
+        engine.shutdown()
+
+
+def test_only_passes_that_select_a_leaf_count(tmp_path, summaries, lines):
+    """Review 3: calls the #651 hold turns into cleanup-only maintenance run no leaf selection and never count; a
+    new session that keeps the conversation id starts without the old streak."""
+    engine = _engine(tmp_path, False, fresh_tail_count=8, fresh_tail_pressure_yield_enabled=False)
+    view = [row for i in range(1, 3) for row in _turn(f"T{i}", 100.0 * i)]
+    try:
+        view = engine.compress(view, current_tokens=10_000)
+        assert _streak(engine) == 1 and engine._no_progress_hold is not None
+        for _ in range(2):  # held: the hold is not cleared between these calls
+            view = engine.compress(view, current_tokens=10_000)
+            assert engine._last_compression_status == "sanitized"
+        assert _streak(engine) == 1
+        engine.on_session_start("S2", platform="cli", context_length=200_000, conversation_id="conv")
+        assert _streak(engine) is None
+    finally:
+        engine.shutdown()
+
+
+def test_the_stop_line_parsers_read_the_blocked_line(tmp_path, summaries, lines):
+    """Review 4: the in-repo stop-line parsers (#605, the host fallback, #671) read a stop line with ``blocked=``."""
+    from tests.test_host_fallback_stop_line import STOP as host_fallback
+    from tests.test_issue_605_foreground_budget import STOP_LINE as foreground_budget
+    from tests.test_issue_671_stub_first_exit import STOP as stub_first_exit
+
+    engine, view = _reorder(tmp_path, False)
+    try:
+        view, trace = _passes(engine, view, 3, lines)
+        line = next(t["line"] for t in trace if " blocked=" in t["line"])
+        for parser in (foreground_budget, host_fallback, stub_first_exit):
+            found = parser.search(line)
+            assert found and found.group(1) == "noop" and found.group(2) == "0", (parser.pattern, line)
     finally:
         engine.shutdown()

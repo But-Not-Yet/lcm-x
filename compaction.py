@@ -131,6 +131,7 @@ class CompactionMixin:
         self._last_gate_tokens = rough
         if self.threshold_tokens > 0 and rough < self.threshold_tokens:
             self._note_fresh_tail_pressure_relieved()
+            self.__dict__.get("_zero_leaf_streaks", {}).pop(self._hold_conversation_key(), None)  # #1162
         pre_ingest_placeholder_ambiguous_noop = False
         pre_ingest_noop_reason = ""
         pre_ingest_placeholder_cleanup_requested = False
@@ -567,7 +568,7 @@ class CompactionMixin:
         thread_context = getattr(self, "_thread_context", None)  # D5: per thread; the engine is shared with live children
         if thread_context is not None:
             thread_context.foreground_budget = budget
-        returned = None
+        returned, self._leaf_selection_ran = None, False  # #1162: set when the leaf loop runs
         try:
             self._pending_emission_candidates = []
             self._survival_fit_emission = None
@@ -691,26 +692,28 @@ class CompactionMixin:
                 reason = str(self._last_threshold_full_sweep.get("stop_reason") or reason)
             elif reason != "error" and budget.stop_reason:  # a time stop with the sweep off (#605)
                 reason = budget.stop_reason
-            elif reason in ("noop", "sanitized") and str(self._last_compression_noop_reason or "").startswith(
-                    _RETAINED_NOOP_REASON):
-                reason = self._last_compression_noop_reason  # #1162: the sweep-off stop names the blocking row
+            if reason.startswith(_RETAINED_NOOP_REASON):  # sweep on: base's #581 text exactly; the row is blocked=
+                reason = _RETAINED_NOOP_REASON
+            blocked = getattr(self, "_store_complete_blocked", None) if self._leaf_selection_ran and str(
+                self._last_compression_noop_reason or "").startswith(_RETAINED_NOOP_REASON) else None
             exited = getattr(self, "_stub_first_exit_now", None) if reason != "error" else None
             if exited:  # #671: the free cuts reached the target before any model call
                 reason = "stub_first_exit"
             logger.info("LCM compaction stop: reason=%s leaves=%d progress=%s elapsed=%.1fs pre=%.1fs calls=%.1fs "
-                        "finalize=%.1fs backlog_tokens=%d%s%s", reason, budget.leaves, budget.progress or "none", elapsed,
+                        "finalize=%.1fs backlog_tokens=%d%s%s%s", reason, budget.leaves, budget.progress or "none", elapsed,
                         pre, calls, finalize, self._raw_backlog_tokens(result) if isinstance(result, list) else 0,
                         f" host={budget.host:.1f}s" if budget.host > 0 else "",
                         " tokens_before={tokens_before} tokens_after={tokens_after} target={target_tokens} "
-                        "backlog_rows={backlog_rows}".format(**exited) if exited else "")
+                        "backlog_rows={backlog_rows}".format(**exited) if exited else "",
+                        " blocked=store_id:%d,role:%s,kind:%s" % blocked[:3] if blocked else "")  # #1162: the row
         except Exception:
             logger.debug("LCM compaction stop line failed", exc_info=True)
-        try:  # #1162: consecutive over-threshold passes that stored no leaf, per conversation (in memory)
+        try:  # #1162: consecutive over-threshold passes that ran a leaf selection and stored no leaf (in memory)
             streaks, key = self.__dict__.setdefault("_zero_leaf_streaks", {}), self._hold_conversation_key()
-            if budget.leaves:
-                streaks.pop(key, None)
-            elif self.threshold_tokens > 0 and (observed if isinstance(observed, (int, float)) else count_messages_tokens(
-                    observed or [])) >= self.threshold_tokens:
+            if budget.leaves or (observed if isinstance(observed, (int, float)) else count_messages_tokens(
+                    observed or [])) < self.threshold_tokens:
+                streaks.pop(key, None)  # a leaf, or a pass at or under the threshold: fresh
+            elif self.threshold_tokens > 0 and self._leaf_selection_ran:  # held/cleanup-only calls never count
                 streaks[key] = {"passes": streaks.get(key, {}).get("passes", 0) + 1, "last_reason": str(
                     self._last_compression_noop_reason or reason or self._last_compression_status or "unknown")}
         except Exception:
@@ -1578,6 +1581,7 @@ class CompactionMixin:
 
         no_call_only, refused_input = False, None
         while leaf_passes < max_leaf_passes:
+            self._leaf_selection_ran = True
             if threshold_full_sweep_active and time.monotonic() >= sweep_deadline:
                 sweep_stop_reason = "time_budget_exhausted"
                 break
