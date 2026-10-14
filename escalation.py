@@ -596,6 +596,10 @@ def _summary_contract_shape(content: str) -> str:
     return "other" if "expand for details about" in last.lower() else "missing"
 
 
+_UNCLOSED_BODY_TAG_RE = re.compile(
+    r"<[/|]?[A-Za-z][\w:.-]*(?:\s[^<>]*)?\|?>|\[\s*(?:think|thinking|reasoning|thought)\s*\]", re.IGNORECASE)
+
+
 def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[str, str, tuple[str, ...]]:
     """Return ``(body, failed_check, tolerated)`` for a reply under the nonce contract.
 
@@ -604,7 +608,7 @@ def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[
     ``<summary>`` wrapper around the whole body, one layer of quotes or emphasis on the closing hint, and
     ``unclosed_envelope`` (#1163). A missing closer is safe because it carries no nonce and the closing-hint check
     still anchors the body; it is not accepted when a closer appears anywhere after the opener (text written past
-    a closed envelope) or when any body line opens with a reasoning marker (an unclosed reasoning block). The
+    a closed envelope) or when the body holds any tag-like token or a reasoning header line (an unclosed reasoning block). The
     nonce opening tag, its uniqueness, the body minimum and a recognised closing hint are still required.
     """
     if not nonce:
@@ -642,11 +646,13 @@ def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[
     if wrapper and "<summary>" not in wrapper.group("inner") and "</summary>" not in wrapper.group("inner"):
         body = wrapper.group("inner").strip()
         tolerated.append("summary_wrapper")
-    if unclosed_envelope and any(
+    if unclosed_envelope and (_UNCLOSED_BODY_TAG_RE.search(body) or any(
         _REASONING_START_RE.match(re.sub(r"^(?:\s*(?:[>*_`]+|[-•]|\d+\.)\s*)+", "", line)) for line in body.splitlines()
-    ):
-        # The opener hides an unclosed reasoning block from _sanitize_reasoning_summary, at the start of the body or
-        # after a summary line, also behind Markdown emphasis, quote or list prefixes; never persist it.
+    )):
+        # The opener hides an unclosed reasoning block from _sanitize_reasoning_summary. The missing-closer tolerance
+        # therefore applies only to a body with no tag-like token (any <name>, </name>, <|name|> or [think]: reasoning
+        # tags of any provider, a second envelope opener) and no reasoning header line, also behind Markdown emphasis,
+        # quote or list prefixes. Any other reply keeps the base result, envelope.
         return "", "envelope", ()
     minimum_body_tokens = max(4, min(16, max(1, int(max_tokens) // 16)))
     if count_tokens(body) < minimum_body_tokens:

@@ -195,10 +195,17 @@ def test_1163_unclosed_valid_reply_is_accepted(reply, body, tolerated):
     f"{OPEN}\n{LINES}\n> Reasoning process:\n{HINT}",
     f"{OPEN}\n- <think>\n{PLAIN_BODY}",
     f"{OPEN}\n1. _Chain of thought:_\n{PLAIN_BODY}",
+    f"{OPEN}\nSummary: <think>\n{PLAIN_BODY}",
+    f"{OPEN}\n{LINES}\n<analysis>\nThe system prompt says.\n{HINT}",
+    f"{OPEN}\n{LINES}\n<scratchpad note=\"x\">\n{HINT}",
+    f"{OPEN}\n{LINES}\n<|channel|>analysis\n{HINT}",
+    f"{OPEN}\n{LINES}\n[thinking]\n{HINT}",
+    f'{OPEN}\n{LINES}\n<lcm-summary nonce="{"f" * 32}">\n{PLAIN_BODY}',
 ], ids=["missing-hint", "truncated-mid-body", "chatter-after-hint", "two-opening-tags", "wrong-nonce", "short-body",
         "text-after-closer", "text-after-summary-closer", "unclosed-think", "reasoning-header", "wrapper-hides-think",
         "unmatched-wrapper", "think-after-a-line", "reasoning-header-before-hint",
-        "bold-reasoning-header", "quoted-reasoning-header", "listed-think", "numbered-emphasis-header"])
+        "bold-reasoning-header", "quoted-reasoning-header", "listed-think", "numbered-emphasis-header",
+        "inline-think", "analysis-tag", "scratchpad-tag", "channel-token", "bracket-thinking", "other-nonce-opener"])
 def test_1163_unclosed_invalid_reply_keeps_envelope_failure(reply):
     assert _check(reply) == ("", "envelope", ())
     assert escalation._unwrap_summary_contract(reply, NONCE, MAX_TOKENS) == ""
@@ -225,3 +232,9 @@ def test_1163_closer_quoted_inside_a_closed_reasoning_block_is_not_a_close(monke
     _install_call_llm(monkeypatch, lambda opening: f"{opening}\n{LINES}\n<think>quoted token: {CLOSE}</think>\n{HINT}")
     result = _summarize(caplog)
     assert result.endswith(HINT) and LINES in result and "quoted token" not in result
+
+
+@pytest.mark.parametrize("line", ["Keep x < y and y > z in the budget check.", "Use a -> b, then b <= c."])
+def test_1163_unclosed_body_with_plain_comparisons_is_still_accepted(line):
+    body = f"{LINES}\n- {line}\n{HINT}"
+    assert _check(f"{OPEN}\n{body}") == (body, "", ("unclosed_envelope",))
