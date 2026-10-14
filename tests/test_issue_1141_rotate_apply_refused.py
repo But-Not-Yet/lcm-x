@@ -2,7 +2,7 @@
 
 import pytest
 
-from hermes_lcm.command import handle_lcm_command
+from hermes_lcm.command import _rotate_apply_unchecked, handle_lcm_command
 from tests.test_lcm_rotate import _build_engine, _seed_messages
 
 
@@ -37,6 +37,22 @@ def test_rotate_names_new_for_already_rotated_session(tmp_path, command):
 
         result = handle_lcm_command(command, engine)
 
+        assert "/new" in result
+        assert "#1184" in result
+    finally:
+        engine.shutdown()
+
+
+def test_rotate_noop_preview_names_new_for_already_rotated_session(tmp_path):
+    engine = _build_engine(tmp_path, fresh_tail_count=3)
+    try:
+        _seed_messages(engine, count=10)
+        _rotate_apply_unchecked(engine)
+
+        result = handle_lcm_command("rotate", engine)
+
+        assert "status: noop" in result
+        assert "reason: frontier_already_ahead" in result
         assert "/new" in result
         assert "#1184" in result
     finally:
