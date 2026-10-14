@@ -6,6 +6,8 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
+- Config: `LCM_STUB_FIRST_EXIT_TARGET_RATIO` (default `0`, env only) lowers the stub-first exit's target to min(threshold - `LCM_LEAF_CHUNK_TOKENS`, 0.95 x threshold, int(ratio x threshold)); stub cuts that stay over it take the leaf path as before. With a large window the built-in target leaves a long live list (712,500 tokens at a 750,000-token threshold); `0.2` exits only at 150,000 or under. `0` keeps today's target; a negative value, a value over `1` or a non-number keeps it with a config warning. `lcm_status` `last_stub_first_exit` and the `LCM compaction stop:` line show the applied target, and `lcm_status` `config` shows the ratio. Unset, compaction is unchanged. (#1193, #671)
+
 ## v0.27.0 (summary quality)
 
 - Fix: the default summary-prefix sweep target is one leaf budget, capped at a quarter of the compaction threshold, so small windows no longer fill their threshold with summaries. Explicit targets are unchanged. In the deterministic 32K-window replay, compactions fall from 360 in rc3 to 78 (rc2: 116). (rc4)
