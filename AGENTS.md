@@ -31,6 +31,17 @@ an authority for writes or automatic merges.
 - Give every verified review finding one terminal disposition: fixed now, accepted follow-up
   linked to an issue, accepted tradeoff/won't-fix, false/not-applicable, or escalated.
 
+## Filing issues
+
+Search open and closed issues and pull requests before filing. Use the bug form's
+headings: What happened, What you expected, Steps to reproduce, Plugin version,
+Hermes version, Where it happened, Operating system, Diagnostics, and Relevant log
+lines; retain the Impact, regression range, and data symptoms, Relevant config,
+and Validation attempted fields. Maintainers filing through the CLI pass
+`--label bug,triage-pending` or `--label bug,triaged` after triage, plus
+`--label agent-drafted` when an agent wrote the report. These labels do not grant
+filing authority; show the draft and obtain the reporter's approval first.
+
 ## Bugs And Regressions
 
 - Reproduce a bug on the exact current `main` SHA or identify the mandatory invariant it
