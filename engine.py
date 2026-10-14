@@ -8154,12 +8154,18 @@ class LCMEngine(
                 # #653: within a depth the newest parts are kept first; kept parts render in the order above.
                 kept_indexes = []
                 for index in sorted(range(len(summary_parts)), key=lambda i: (part_keys[i][0], -i)):
+                    if assembly_cap is None and part_keys[index] == (-1, None):
+                        # #1221: the default bound budgets nodes; survival fit keeps the objective.
+                        summary_parts[index] = strip_injected_context_blocks(summary_parts[index])
+                        kept_indexes.append(index)
+                        continue
                     candidate = "\n\n---\n\n".join(
                         strip_injected_context_blocks(summary_parts[i])
                         if part_keys[i] == (-1, None) and count_message_tokens({
                             "role": summary_role, "content": summary_parts[i],
                         }) > summary_budget else summary_parts[i]
-                        for i in sorted(kept_indexes + [index]))
+                        for i in sorted(kept_indexes + [index])
+                        if assembly_cap is not None or part_keys[i] != (-1, None))
                     candidate_msg = {"role": summary_role, "content": candidate}
                     if count_message_tokens(candidate_msg) > summary_budget:
                         continue

@@ -63,7 +63,9 @@ def test_short_row_stays_whole_and_projection_moves_on(tmp_path, rough_counts, l
         ids = [engine._store.append("S", message, conversation_id="conv") for message in [short, long]]
         row = engine._store.get(ids[0])
         assert engine._survival_projected_fields(row, 585, survival_fit._HEAD, survival_fit._TAIL)["content"] == short["content"]
-        projected = engine._survival_projection([short, long], {id(short): ids[0], id(long): ids[1]}, 0)
+        projected_long = engine._survival_projection([long], {id(long): ids[1]}, rough_counts([long]) - 1)
+        limit = engine._survival_measure([short, *projected_long])
+        projected = engine._survival_projection([short, long], {id(short): ids[0], id(long): ids[1]}, limit)
         assert projected[0] is short
         assert projected[1]["content"].startswith(long["content"][:1200])
         assert survival_fit._PROJECTED_PREFIX in projected[1]["content"]
@@ -242,7 +244,9 @@ def test_growing_projection_is_skipped_and_next_row_is_projected(tmp_path):
                                                     survival_fit._HEAD, survival_fit._TAIL)
         candidate = {**dense, **{key: value for key, value in fields.items() if value is not None}}
         assert tokens > 256 and survival_fit.count_message_tokens(candidate) > tokens
-        projected = engine._survival_projection([dense, long], {id(dense): ids[0], id(long): ids[1]}, 0)
+        projected_long = engine._survival_projection([long], {id(long): ids[1]}, engine._survival_measure([long]) - 1)
+        limit = engine._survival_measure([dense, *projected_long])
+        projected = engine._survival_projection([dense, long], {id(dense): ids[0], id(long): ids[1]}, limit)
         assert projected[0] is dense
         assert survival_fit.count_message_tokens(projected[1]) < survival_fit.count_message_tokens(long)
     finally:
