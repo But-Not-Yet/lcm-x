@@ -251,6 +251,11 @@ class SurvivalFitMixin:
                                        taken=(message.get("message_uid") for message in taken))
             if absorbed_from is not None:
                 record_absorbed_message(row, absorbed_from)
+        if proof_kind == "survival_summary":
+            from .engine import _model_only_display_metadata_key
+            key = _model_only_display_metadata_key()
+            if key is not None:
+                row["display_metadata"] = {**(row.get("display_metadata") or {}), key: True}
         return row
 
     def _survival_cut(self, result, lead: int, budget: int, persisted: bool, reason: str, store_ids,

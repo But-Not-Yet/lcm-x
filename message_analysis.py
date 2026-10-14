@@ -155,6 +155,12 @@ def _merge_adjacent_assistant_messages(
             generated_ids.discard(id(collapsed[-1]))
             if generated:
                 generated_ids.add(id(prev))
+            elif "model_only" in (prev.get("display_metadata") or {}):
+                metadata = {key: value for key, value in prev["display_metadata"].items() if key != "model_only"}
+                if metadata:
+                    prev["display_metadata"] = metadata
+                else:
+                    prev.pop("display_metadata", None)
             prev_calls = list(prev.get("tool_calls") or [])
             new_calls = list(msg.get("tool_calls") or [])
             if host_message_uid_mode() != "off" and host_uid_capable():

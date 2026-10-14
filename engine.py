@@ -7562,6 +7562,12 @@ class LCMEngine(
     ) -> Dict[str, Any]:
         """Fold generated context into a same-role tail without losing metadata."""
         merged = message.copy()
+        if "model_only" in (merged.get("display_metadata") or {}):
+            metadata = {key: value for key, value in merged["display_metadata"].items() if key != "model_only"}
+            if metadata:
+                merged["display_metadata"] = metadata
+            else:
+                merged.pop("display_metadata", None)
         content = message.get("content")
         if isinstance(content, list):
             merged["content"] = [
