@@ -927,6 +927,7 @@ def _rotate_text(engine) -> str:
         lines.append("note: read-only preview — rotate apply would be a no-op for this session")
     else:
         lines.append("note: read-only preview — on Hermes, use `/compress here N` to compact (rotate apply is refused, #1141)")
+        lines.append("note: if an earlier LCM-X already rotated this session and Hermes restarted since, compaction can stop on the rows below that frontier and /compress here N will not repair it: start a new session with /new (raw rows stay recoverable via lcm_load_session; in-place fix tracked in #1184)")
         lines.append("note: pre-tail raw messages remain in the store and recoverable via lcm_load_session")
     return "\n".join(lines)
 
@@ -938,6 +939,7 @@ def _rotate_apply_text(engine) -> str:
         "reason: host_owns_transcript",
         "note: Hermes reloads its own transcript after a restart, so advancing the frontier without summaries leaves rows LCM-X cannot map (#1141)",
         "note: use `/compress here N` to summarise everything except the most recent N messages",
+        "note: if an earlier LCM-X already rotated this session and Hermes restarted since, compaction can stop on the rows below that frontier and /compress here N will not repair it: start a new session with /new (raw rows stay recoverable via lcm_load_session; in-place fix tracked in #1184)",
         "note: no backup was created and no lifecycle state was changed",
     ])
 
