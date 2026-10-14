@@ -21,6 +21,7 @@ frontier, and rolling backup path. The preview refuses ignored or stateless sess
 transcript after a restart, so advancing the frontier without summaries leaves
 rows LCM-X cannot map. No backup is created and no lifecycle state is changed.
 Use `/compress here N` to summarise everything except the most recent N messages.
+If an earlier LCM-X already rotated this session and Hermes restarted since, compaction can stop on rows below that frontier and `/compress here N` will not repair it: start a new session with `/new` (raw rows stay recoverable via `lcm_load_session`; in-place fix tracked in #1184).
 Raw source rows remain recoverable through `lcm_load_session` and `lcm_expand`.
 
 Use a separate session when the user wants a new active conversational boundary.

@@ -1,5 +1,7 @@
 """#1141: Hermes owns transcript replay, so rotate apply must not mutate."""
 
+import pytest
+
 from hermes_lcm.command import handle_lcm_command
 from tests.test_lcm_rotate import _build_engine, _seed_messages
 
@@ -23,6 +25,20 @@ def test_rotate_apply_refused_without_backup_or_lifecycle_change(tmp_path):
         after = engine._lifecycle.get_by_conversation(engine._conversation_id)
         assert after.current_frontier_store_id == frontier
         assert engine.get_status()["last_rotate_at"] == last_rotate_at
+    finally:
+        engine.shutdown()
+
+
+@pytest.mark.parametrize("command", ["rotate apply", "rotate"])
+def test_rotate_names_new_for_already_rotated_session(tmp_path, command):
+    engine = _build_engine(tmp_path, fresh_tail_count=3)
+    try:
+        _seed_messages(engine, count=10)
+
+        result = handle_lcm_command(command, engine)
+
+        assert "/new" in result
+        assert "#1184" in result
     finally:
         engine.shutdown()
 
