@@ -250,6 +250,8 @@ def doctor_guidance_for_check(check: dict[str, Any]) -> dict[str, Any] | None:
                       "unsummarised stored rows removed from live context; unknown_coverage_fit_count counts "
                       "shortened fits whose coverage could not be read, so while it is above 0 uncovered_fit_count "
                       "is a lower bound")
+        if detail.get("last_cause"):
+            rationale += f"; last cause {detail['last_cause']}"
     elif name == "cleanup_candidates":
         action = DOCTOR_ACTION_BACKUP_FIRST_CLEANUP
         command = "run `/lcm doctor clean` first; if candidates are expected junk/noise, run `/lcm backup` before `/lcm doctor clean apply`"
