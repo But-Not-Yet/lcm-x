@@ -6,6 +6,8 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
+- Fix: `/lcm rotate apply` is refused on Hermes because it reloads its own transcript after a restart; use `/compress here N` to summarise everything except the most recent N messages. (#1141)
+
 ## v0.27.0 (summary quality)
 
 - Fix: the default summary-prefix sweep target is one leaf budget, capped at a quarter of the compaction threshold, so small windows no longer fill their threshold with summaries. Explicit targets are unchanged. In the deterministic 32K-window replay, compactions fall from 360 in rc3 to 78 (rc2: 116). (rc4)
