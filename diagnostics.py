@@ -206,8 +206,8 @@ def doctor_guidance_for_check(check: dict[str, Any]) -> dict[str, Any] | None:
         warning_only = True
         rationale = "context pressure is an operating state, not persisted-state corruption"
     elif name == "compaction_progress":
-        command = ("inspect lcm_status zero_leaf_streak and the 'LCM compaction stop' lines: the reason names what stops "
-                   "the leaf (for a retained occurrence, its store_id, role and kind); stored rows stay intact and "
+        command = ("inspect lcm_status zero_leaf_streak and the 'LCM compaction stop' lines: reason= names what stops "
+                   "the leaf, and for a retained occurrence blocked= gives its store_id, role and kind; stored rows stay intact and "
                    "reachable (lcm_grep / lcm_expand); a new session clears a stop that persists")
         warning_only = True
         rationale = ("over-threshold passes that store no leaf leave the session over its threshold, so every turn pays "
