@@ -16,8 +16,12 @@ from hermes_lcm.assertion_store import SourceSnapshot
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.dag import SummaryNode
 from hermes_lcm.engine import LCMEngine
+from hermes_lcm.message_analysis import _merge_adjacent_assistant_messages
 from hermes_lcm.reconcile import _emission_identity, _PRESERVED_OBJECTIVE_CONTEXT_PREFIX
 from hermes_lcm.tokens import count_messages_tokens
+from tests.test_overflow_reserves_sanitizer_stubs import (
+    OBJECTIVE, add_summaries, assemble, assistant_calls, full_cap, result,
+)
 
 
 def _host(monkeypatch, key="model_only"):
@@ -76,6 +80,90 @@ def _compress(engine, messages):
 def _summary_rows(output):
     return [row for row in output if " Summary (d" in str(row.get("content"))
             and "System instructions." not in str(row.get("content"))]
+
+
+@pytest.mark.parametrize("key", ["model_only", "host_model_only"])
+def test_r2_survival_fit_stamps_standalone_summary(engine, monkeypatch, key):
+    _host(monkeypatch, key)
+    _seed(engine)
+    tail = [{"role": "user", "content": "Older request. " + "detail " * 200},
+            {"role": "assistant", "content": "Older reply. " + "detail " * 200},
+            {"role": "user", "content": "Newest human request."},
+            {"role": "assistant", "content": "Newest human reply."}]
+    engine.ingest(tail)
+    incoming = engine._assemble_context(None, tail)
+    remainder = engine._generated_context_carrier_remainder(incoming[0])
+    assert remainder == tail[0]["content"]
+    summary = incoming[0]["content"][:engine._verified_lcm_summary_prefix_end(incoming[0]["content"])]
+    budget = count_messages_tokens([{"role": "user", "content": summary}, *tail[-2:]])
+    engine._ingest_cursor = len(incoming)
+    engine._ingest_cursor_needs_reconcile = False
+    fitted = engine._survival_fit(incoming, incoming, 0, "recovery_attempt:test", request_cap=budget)
+    assert fitted is not incoming and fitted[0]["content"] == summary
+    assert fitted[0].get("display_metadata") == {key: True}
+    assert fitted[1:] == tail[-2:]
+    assert all(key not in row.get("display_metadata", {}) for row in fitted[1:])
+    assert "display_metadata" not in incoming[0]  # a carrier holds human text
+    metadata = {"origin": "survival", key: False}
+    row = {"role": "user", "content": summary, "display_metadata": metadata}
+    engine._survival_summary_identity(row, summary, None, "survival_summary")
+    assert row["display_metadata"] == {"origin": "survival", key: True}
+    assert metadata == {"origin": "survival", key: False}
+    carrier = {"role": "user", "content": summary + "\n\nHuman request."}
+    engine._survival_summary_identity(carrier, summary, None, "carrier")
+    assert "display_metadata" not in carrier
+    _host(monkeypatch, None)
+    unsupported = {"role": "user", "content": summary}
+    engine._survival_summary_identity(unsupported, summary, None, "survival_summary")
+    assert "display_metadata" not in unsupported
+
+
+@pytest.mark.parametrize("origin", [False, True], ids=["empty-metadata", "keep-other-metadata"])
+@pytest.mark.parametrize("path", ["assistant-merge", "prepend-text", "prepend-list", "prepend-dict"])
+def test_r2_human_text_merge_removes_stale_marker(origin, path):
+    metadata = {"model_only": True, **({"origin": "host"} if origin else {})}
+    row = {"role": "assistant", "content": "Earlier generated context.", "display_metadata": metadata}
+    if path == "assistant-merge":
+        human = {"role": "assistant", "content": "Human-visible reply."}
+        generated = [row]
+        merged = _merge_adjacent_assistant_messages([row, human], generated_rows=generated)[0]
+        assert generated == []
+    else:
+        row["content"] = ("Human-visible reply." if path == "prepend-text" else
+                          [{"type": "text", "text": "Human-visible reply."}] if path == "prepend-list" else
+                          {"type": "text", "text": "Human-visible reply."})
+        merged = LCMEngine._prepend_generated_context_to_message(row, "Generated context.")
+    assert "Human-visible reply." in str(merged["content"])
+    assert "model_only" not in merged.get("display_metadata", {})
+    assert merged.get("display_metadata") == ({"origin": "host"} if origin else None)
+    assert row["display_metadata"] is metadata and metadata["model_only"] is True
+    if path == "assistant-merge":
+        other = {"role": "assistant", "content": "More generated context."}
+        generated = [row, other]
+        merged = _merge_adjacent_assistant_messages([row, other], generated_rows=generated)[0]
+        assert generated == [merged] and merged["display_metadata"]["model_only"] is True
+
+
+def test_r2_over_cap_trim_tracks_generated_summary(engine, monkeypatch, caplog):
+    nodes = add_summaries(engine)
+    tail = [assistant_calls("call-0", "call-1"), result("call-0"), result("call-1")]
+    cap = full_cap(engine, nodes, tail)
+    original = LCMEngine._sanitize_active_context_messages
+
+    def inflating(self, messages, **options):
+        cleaned = original(self, messages, **options)
+        if options.get("insert_missing_tool_stubs", True) and any(
+            _PRESERVED_OBJECTIVE_CONTEXT_PREFIX in str(row.get("content", "")) for row in cleaned
+        ):
+            cleaned = [*cleaned, {"role": "user", "content": "unbudgeted " * 400}]
+        return cleaned
+
+    monkeypatch.setattr(LCMEngine, "_sanitize_active_context_messages", inflating)
+    output = assemble(engine, tail, cap)
+    assert OBJECTIVE not in "\n".join(str(row.get("content")) for row in output)
+    assert "dropping the preserved user objective" in caplog.text
+    summaries = [row for row in output if "orchard" in str(row.get("content"))]
+    assert summaries and all(row.get("display_metadata") == {"model_only": True} for row in summaries)
 
 
 def test_t1_compaction_marks_only_standalone_summary(engine):
