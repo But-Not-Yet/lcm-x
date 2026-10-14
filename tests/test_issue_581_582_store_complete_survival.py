@@ -483,6 +483,51 @@ def test_e_survival_fit_after_an_injected_publication_conflict(tmp_path, summari
         engine.shutdown()
 
 
+def test_issue_1180_stop_line_names_publication_failure(tmp_path, summaries, host_estimator, caplog):
+    engine = _engine(tmp_path, context_length=WINDOW)
+    view = _long_view()
+    try:
+        engine.ingest(view)
+
+        def conflict(*args, **kwargs):
+            raise LifecyclePublicationConflictError("injected conflict (ids only)")
+
+        engine._lifecycle.stage_compaction_publication = conflict
+        with caplog.at_level(logging.INFO, logger="hermes_lcm"):
+            result = engine.compress(view, current_tokens=host_estimator(view))
+        _assert_fitted(engine, view, result, host_estimator)
+        stops = [r.getMessage() for r in caplog.records if r.getMessage().startswith("LCM compaction stop:")]
+        assert len(stops) == 1 and "reason=error " in stops[0]
+        assert "failure=publication_invariant_conflict" in stops[0].split()
+    finally:
+        engine.shutdown()
+
+
+@pytest.mark.parametrize("fitted", [False, True], ids=["raised", "fitted"])
+def test_issue_1180_stop_line_names_compress_exception(tmp_path, monkeypatch, host_estimator, caplog, fitted):
+    engine = _engine(tmp_path, context_length=WINDOW)
+    view = _long_view() if fitted else _turn("short", 100.0)
+    try:
+        engine.ingest(view)
+
+        def fail(*args, **kwargs):
+            raise RuntimeError("injected compress failure")
+
+        monkeypatch.setattr(engine, "_compress_impl", fail)
+        with caplog.at_level(logging.INFO, logger="hermes_lcm"):
+            if fitted:
+                result = engine.compress(view, current_tokens=host_estimator(view))
+                _assert_fitted(engine, view, result, host_estimator)
+            else:
+                with pytest.raises(RuntimeError, match="injected compress failure"):
+                    engine.compress(view, current_tokens=host_estimator(view))
+        stops = [r.getMessage() for r in caplog.records if r.getMessage().startswith("LCM compaction stop:")]
+        assert len(stops) == 1 and "reason=error " in stops[0]
+        assert "failure=exception:RuntimeError" in stops[0].split()
+    finally:
+        engine.shutdown()
+
+
 def test_e_survival_fit_after_a_sweep_deadline(tmp_path, summaries, host_estimator, monkeypatch):
     monkeypatch.setattr(lcm_compaction, "_THRESHOLD_FULL_SWEEP_MAX_SECONDS", 0.0)
     engine = _engine(tmp_path, context_length=WINDOW, context_threshold=0.5, threshold_full_sweep_enabled=True)

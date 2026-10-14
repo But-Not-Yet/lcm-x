@@ -6,6 +6,10 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
+- Fix: compaction stop lines with `reason=error` include a single-token `failure=` cause, including
+  `publication_invariant_conflict` and `exception:<Type>`. The doctor's context pressure uses the larger of
+  the provider's prompt count and the latest host-gate observation, matching the gate. (#1180, #1175)
+
 ## v0.27.0 (summary quality)
 
 - Fix: the default summary-prefix sweep target is one leaf budget, capped at a quarter of the compaction threshold, so small windows no longer fill their threshold with summaries. Explicit targets are unchanged. In the deterministic 32K-window replay, compactions fall from 360 in rc3 to 78 (rc2: 116). (rc4)

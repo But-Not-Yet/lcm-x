@@ -906,7 +906,8 @@ no condensation and no summariser call. The rows no leaf summarised stay stored 
 are recorded as raw backlog; the stop reason `stub_first_exit` is a partial stop in
 `lcm_status` (`last_stub_first_exit`, and the threshold sweep record when the sweep is
 on), the doctor and the `LCM compaction stop:` line, with the tokens before and after,
-the target and the backlog rows left. Recovery attempts, forced overflow and calls
+the target and the backlog rows left. On error stops, `reason=error` stays unchanged
+and a trailing `failure=` field names the known cause (#1180). Recovery attempts, forced overflow and calls
 below the threshold never take this exit; when the cuts miss the target the
 compaction runs as before.
 
