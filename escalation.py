@@ -307,6 +307,21 @@ class SummaryCircuitBreaker:
             self._config_episodes.discard(key)  # #682: a success ends the episode
             self._note(key, None, None)
 
+    def record_hang(self, model: str | None, *, now: float | None = None) -> None:
+        """#1137: a route that used the whole foreground window opens immediately."""
+        key = self._key(model)
+        current_time = time.monotonic() if now is None else now
+        with self._lock:
+            first = self._open_until.get(key, 0.0) <= current_time
+            cooldown = max(0, int(self.cooldown_seconds or 0))
+            self._open_until[key] = current_time + cooldown
+            self._note(key, "hung", None)
+        if first:
+            logger.warning(
+                "LCM summary route circuit opened for %s: route used the whole window; cooldown=%ss",
+                key, cooldown,
+            )
+
     def record_config_error(self, model: str | None, *, route: dict | None = None, error: BaseException | None = None,
                             now: float | None = None, sent_model: str | None = None) -> None:
         """#682: a route that cannot serve its model opens on the first failure; one WARNING per episode.
@@ -1058,7 +1073,11 @@ def _invoke_summary_llm_chain(
             budget.record_call(route_key, started, ended)
             if result is None and _is_budget_cut(error, budget, budget_bound, ended - started, call_timeout,
                                                  deadline_installed):
-                # #605 F4: the budget, not the route, ended the call: no circuit failure, no fallback.
+                # #1137: a full-window hang opens this route for the NEXT compaction.
+                full_window = min(budget.configured_timeout, budget.hard - budget.reserve - budget.leaf_reserve)
+                if circuit_breaker is not None and budget_bound and call_timeout >= 0.9 * full_window:
+                    circuit_breaker.record_hang(route_key)
+                # #605 F4: still stop this compaction, with no time left for a fallback.
                 raise budget.stop("summariser call cut by the foreground budget")
         if circuit_breaker is not None and route:
             circuit_breaker.note_route(route_key, route)

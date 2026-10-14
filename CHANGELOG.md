@@ -6,6 +6,8 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
+- Fix: a summary route that hangs for the whole foreground budget window opens its circuit immediately, so the next compaction can use a fallback route. Partial-window budget cuts still leave the circuit closed. (#1137)
+
 ## v0.27.0 (summary quality)
 
 - Fix: the default summary-prefix sweep target is one leaf budget, capped at a quarter of the compaction threshold, so small windows no longer fill their threshold with summaries. Explicit targets are unchanged. In the deterministic 32K-window replay, compactions fall from 360 in rc3 to 78 (rc2: 116). (rc4)
