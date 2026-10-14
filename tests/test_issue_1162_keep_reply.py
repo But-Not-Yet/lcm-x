@@ -471,3 +471,38 @@ def test_p6_retained_user_and_carrier_shapes(tmp_path, monkeypatch, caplog, carr
     _disable_e(monkeypatch)
     _base_tail, base = _retained_user_assembly(tmp_path / "base", carrier, cap)
     assert json.dumps(out, sort_keys=True) == json.dumps(base, sort_keys=True)
+
+
+def _carrier_assembly(tmp_path):
+    """Review construction (#1162 E r2): e2 tail [A, huge F, carrier(tc1), tr1, F2, tc2, tr2] under cap 1300, where
+    carrier(tc1) is a generated-context fold of tc1 registered through the folded-tail lineage, so the store-id map
+    resolves it to tc1's raw row. Step 1 has no room; step 2 would hide the carrier."""
+    engine, host = _engine(tmp_path), _Host()
+    try:
+        view = [m for i in range(1, 4) for m in (host.user(f"[T{i}] ask"), host.reply(f"reply to T{i}"))]
+        out0 = list(engine.compress(view, current_tokens=count_messages_tokens(view)))
+        big = PAD * 3
+        rows = [host.user("[T4] ask"), host.reply("reply to T4"), host.user("continue", pad=big), host.call(1),
+                host.result(1), host.user("continue", pad=big), host.call(2), host.result(2)]
+        engine.ingest(out0 + rows)
+        call_id = next(int(r["store_id"]) for r in engine._store.get_session_messages("S", limit=100_000)
+                       if r["role"] == "assistant" and "call_1" in json.dumps(r.get("tool_calls")))
+        carrier = engine._prepend_generated_context_to_message(rows[3], out0[0]["content"])
+        assert engine._write_folded_tail_lineage(carrier, call_id)
+        tail = rows[1:3] + [carrier] + rows[4:]
+        assert engine._get_store_id_map_for_messages(tail)[id(carrier)] == call_id
+        return engine._assemble_context(None, tail, assembly_cap_override=1300, persist=False)
+    finally:
+        engine.shutdown()
+
+
+def test_step2_never_hides_a_generated_carrier(tmp_path, monkeypatch, caplog):
+    """Step 2 hides only raw stored occurrences: a registered fold (generated context + tc1) maps to tc1's store id,
+    yet it is generated, so step 2 refuses it and the shape yields the base output with one residual line."""
+    caplog.set_level(logging.INFO, logger="hermes_lcm")
+    out = _carrier_assembly(tmp_path / "e")
+    residual = [r.getMessage() for r in caplog.records if RESIDUAL in r.getMessage()]
+    assert len(residual) == 1 and "step1=room, step2=not_raw_row" in residual[0], [_host_text(m)[:20] for m in out]
+    _disable_e(monkeypatch)
+    base = _carrier_assembly(tmp_path / "base")
+    assert json.dumps(out, sort_keys=True) == json.dumps(base, sort_keys=True)

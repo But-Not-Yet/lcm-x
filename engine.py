@@ -8412,7 +8412,8 @@ class LCMEngine(
         makes Hermes re-add A behind them (its reply anchor binds the last text twin of A's follower), and leaf
         selection then stops before A's view slot on every pass. Step 1 extends the kept suffix back to A when the
         gap after A fits the summary room; step 2 (after any step-1 rejection) puts A right before the first kept
-        user row, hiding only rows the store-id map resolves. Step 1 keeps room for the preserved objective the
+        user row, hiding only raw stored occurrences (never a fold, carrier or scaffold, though the store-id map
+        resolves a registered fold to its source). Step 1 keeps room for the preserved objective the
         base view would carry. Returns (tail, room, reply or None); ``rejected`` lists the steps already rejected."""
         start = len(selection) - len(kept)  # the selector keeps a contiguous newest suffix
         a = next((i for i in range(len(selection) - 1, -1, -1) if _visible_reply_text(selection[i])), None)
@@ -8434,9 +8435,11 @@ class LCMEngine(
             reply["rejected"] = rejected = ("step1=room",)
         if len(rejected) == 1:
             u = next((i for i, m in enumerate(kept) if m.get("role") == "user"), None)
-            if u is not None and all(int(ids.get(id(m)) or 0) > 0 for m in kept[:u]):
+            if u is not None and all(int(ids.get(id(m)) or 0) > 0 and not self._is_registered_folded_tail_message(m)
+                                     and self._generated_context_carrier_remainder(m) is None
+                                     and not self._is_replayed_context_scaffold_message(m) for m in kept[:u]):
                 return [selection[a], *kept[u:]], room + count_messages_tokens(kept[:u]), {**reply, "step": 2}
-            rejected = (*rejected, "step2=no_user_row" if u is None else "step2=unmapped_row")
+            rejected = (*rejected, "step2=no_user_row" if u is None else "step2=not_raw_row")
         logger.info("LCM assembly: reply_keep=residual store_id=%d (%s); returning the base view",
                     reply_id, ", ".join(rejected))
         return kept, room, None
