@@ -6,6 +6,8 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
+- Fix: non-sweep admission uses the working leaf size, and oversized indivisible leaves retry with the existing 8,000-token input clip. Leaf target defaults remain fixed at 2,000 tokens; ratio-only settings pinned by equal MIN and MAX warn, and the min-only reset warning names `LCM_LEAF_TARGET_MAX_TOKENS`. (#1134, #1132, #1138)
+
 ## v0.27.0 (summary quality)
 
 - Fix: the default summary-prefix sweep target is one leaf budget, capped at a quarter of the compaction threshold, so small windows no longer fill their threshold with summaries. Explicit targets are unchanged. In the deterministic 32K-window replay, compactions fall from 360 in rc3 to 78 (rc2: 116). (rc4)
