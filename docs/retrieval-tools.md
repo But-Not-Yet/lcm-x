@@ -448,8 +448,9 @@ Version 1 is deliberately narrow:
   per file, and caps externalized result material at 64,000 response characters
 - a result includes the ref, tool-call id, bounded snippet, line and byte
   position, original content byte/character sizes, and `scan_truncated`
-- `externalized_refs` is optional; explicit invalid, missing, symlinked, or
-  foreign-session refs are rejected rather than silently widened
+- `externalized_refs` is optional, and an empty list is the same as omitting it;
+  explicit invalid, missing, symlinked, or foreign-session refs are rejected
+  rather than silently widened
 
 Cross-session externalized search remains unsupported. Search the historical
 row first, load the intended session, or recover a known current-session ref
