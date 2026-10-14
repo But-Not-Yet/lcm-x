@@ -5,6 +5,7 @@ rule that re-adds a reply the engine dropped; the flow tests commit its result a
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections import Counter
@@ -553,3 +554,54 @@ def test_hidden_survival_projection_raw_row_is_covered_in_store_order(tmp_path, 
     assert not any(stops) and not [r for r in caplog.records if "publication" in r.getMessage()]
     assert frontiers[-1] > source and len(holding) == 1, holding
     assert holding[0] == list(range(holding[0][0], holding[0][-1] + 1)), holding  # contiguous store-order span
+
+
+def test_host_growth_rejects_kept_reply_and_returns_residual(tmp_path, monkeypatch, caplog):
+    """A host-only growth rejection tries both E steps, then returns the base view once."""
+    caplog.set_level(logging.INFO, logger="hermes_lcm")
+    applied = _steps(monkeypatch)
+    checked, original = [], LCMEngine._kept_reply_rejection
+
+    def estimate(messages):
+        texts = [_host_text(m) for m in messages]
+        return 101 if any(t.startswith("reply to T4") for t in texts) and not any(
+            t.startswith("[T4] ask") for t in texts) else 100
+
+    def rejection(self, result, reply, objective_due, host_input):
+        checked.append((count_messages_tokens(result), count_messages_tokens(host_input),
+                        estimate(result), estimate(host_input)))
+        return original(self, result, reply, objective_due, host_input)
+
+    monkeypatch.setattr(lcm_engine, "_host_estimate", estimate, raising=False)  # semantic RED on be9b4b0d
+    monkeypatch.setattr(LCMEngine, "_kept_reply_rejection", rejection)
+    engine, host = _engine(tmp_path / "e"), _Host()
+    try:
+        view = _overflow_view(engine, host, fpad=" small")
+        out = _overflow_pass(engine, view, 560)
+    finally:
+        engine.shutdown()
+    assert checked and all(tokens <= input_tokens and rough > input_rough
+                           for tokens, input_tokens, rough, input_rough in checked), checked
+    assert estimate(out) <= estimate(view)
+    assert applied == [1, 2, None], applied
+    residual = [r.getMessage() for r in caplog.records if RESIDUAL in r.getMessage()]
+    assert len(residual) == 1 and "step1=growth, step2=growth" in residual[0], residual
+    _disable_e(monkeypatch)
+    engine, host = _engine(tmp_path / "base"), _Host()
+    try:
+        base = _overflow_pass(engine, _overflow_view(engine, host, fpad=" small"), 560)
+    finally:
+        engine.shutdown()
+    assert json.dumps(out, sort_keys=True) == json.dumps(base, sort_keys=True)
+
+
+@pytest.mark.parametrize("estimate", [100, None], ids=["host_equal", "host_none"])
+def test_host_equal_or_none_preserves_p1_e2_base_bytes(tmp_path, monkeypatch, estimate):
+    """Break-even and unavailable host estimates retain the exact be9b4b0d P1 e2 output."""
+    monkeypatch.setattr(lcm_engine, "_host_estimate", lambda _messages: estimate, raising=False)
+    engine, trace = _e2(tmp_path, passes=0)
+    engine.shutdown()
+    out = trace[0]["out"]
+    assert out[1]["content"].startswith("reply to T4") and not trace[0]["inserted"]
+    digest = hashlib.sha256(json.dumps(out, sort_keys=True).encode()).hexdigest()
+    assert digest == "753a59bec6fddd1e0c9ec4777d5e3b0b808d69edefaee038d38b65639f1acbad", digest

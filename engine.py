@@ -158,7 +158,7 @@ from .identity_anchor import IdentityAnchorMixin, _raw_remainder, identity_ancho
 from .host_uid import HostUidShadowMixin
 from .host_uid_emit import carry_identity, identity_emit_enabled, record_absorbed_message, sync_cached_host_metadata
 from .store_complete import HiddenBacklog, StoreCompleteMixin
-from .survival_fit import SurvivalFitMixin, _carries_survival_notice
+from .survival_fit import SurvivalFitMixin, _carries_survival_notice, _host_estimate
 from .db_bootstrap import refresh_legacy_conversation_ids
 from .reset_state import ResetStateMixin
 from .bypass import BypassMixin
@@ -8456,6 +8456,9 @@ class LCMEngine(
                 _PRESERVED_OBJECTIVE_CONTEXT_PREFIX in (normalize_content_value(m.get("content")) or "") for m in result):
             return "objective"
         if count_messages_tokens(result) > count_messages_tokens(host_input):
+            return "growth"
+        host_result, host_before = _host_estimate(result), _host_estimate(host_input)
+        if host_result is not None and host_before is not None and host_result > host_before:
             return "growth"
         ids = self._get_store_id_map_for_messages(result)
         if twin is None or any(int(ids.get(id(m)) or 0) > reply["store_id"] for m in result[:twin]):
