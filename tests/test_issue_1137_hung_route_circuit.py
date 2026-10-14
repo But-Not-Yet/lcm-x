@@ -106,6 +106,28 @@ def test_partial_window_masked_error_remains_a_budget_cut(monkeypatch, clock, co
     assert breaker.route_status(["m1"])["last_error_class"] is None
 
 
+def test_early_host_fence_cut_is_a_budget_cut_not_a_hang(monkeypatch, clock):
+    """The host's own compression deadline can fall before LCM's usable deadline (host timeout below
+    foreground_hard_seconds): a cut after 30 s of a 115 s grant must not open the route as hung."""
+    calls = []
+
+    def early_fence(prompt, max_tokens, model="", timeout=None, reasoning_effort=""):
+        calls.append((model, timeout))
+        clock.offset += 30.0
+        raise TimeoutError("auxiliary stream timed out at the host compression deadline")
+
+    monkeypatch.setattr(escalation, "_invoke_summary_llm", early_fence)
+    breaker = escalation.SummaryCircuitBreaker()
+    budget = _budget()
+    with pytest.raises(escalation.SweepBudgetExhausted) as raised:
+        _summarize(breaker, budget, fallback_models=["m2"])
+    assert raised.value.reason == "time_budget_exhausted"
+    assert calls == [("m1", pytest.approx(115.0, abs=0.5))]
+    assert breaker._failures == {} and breaker._open_until == {}
+    assert breaker.route_status(["m1"])["last_error_class"] is None
+    assert breaker.allows("m1")
+
+
 def test_full_window_hang_opens_only_the_rollup_prefixed_key(monkeypatch, clock):
     calls = _provider(monkeypatch, clock)
     breaker = escalation.SummaryCircuitBreaker()

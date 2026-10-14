@@ -1075,7 +1075,8 @@ def _invoke_summary_llm_chain(
                                                  deadline_installed):
                 # #1137: a full-window hang opens this route for the NEXT compaction.
                 full_window = min(budget.configured_timeout, budget.hard - budget.reserve - budget.leaf_reserve)
-                if circuit_breaker is not None and budget_bound and call_timeout >= 0.9 * full_window:
+                if (circuit_breaker is not None and budget_bound and call_timeout >= 0.9 * full_window
+                        and ended - started >= 0.9 * full_window):  # an early host fence is not a hang
                     circuit_breaker.record_hang(route_key)
                 # #605 F4: still stop this compaction, with no time left for a fallback.
                 raise budget.stop("summariser call cut by the foreground budget")
