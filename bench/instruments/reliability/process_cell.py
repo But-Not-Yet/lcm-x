@@ -85,6 +85,8 @@ def read_jsonl(path: Path) -> list[dict]:
 
 
 def unsupported(cell: dict, transport: str) -> str | None:
+    if cell["id"].startswith("default-window/"):
+        return "default-window bars require R1 ordered provider_request telemetry; R2 is not covered"
     if transport == "gateway-process":
         return None if cell["transport"] == "gateway" else "an R1 acp-transport cell; it runs under acp-process"
     if transport == "api-server":

@@ -198,6 +198,68 @@ Not measured: the summariser is a scripted fake that keeps tags only, so P5 on L
 (fresh tail and head anchor), not whether a real summary carries the constraint; literal presence does not prove an
 instruction is obeyed. P3/P4 (plan, goal) and the plain-Hermes arm are #659 PR B/C.
 
+## Shipped-default small windows (R1, opt-in)
+
+Select `--cells 'default-window/*'` explicitly. These backtest cells are excluded
+from `--cells all` and nightly admission: the bounded three-attempt backtest did
+**not** establish both required historical RED/GREEN patterns. R2 returns
+UNSUPPORTED because it lacks these ordered R1 request records. No existing cell
+or bar changes its verdict.
+
+All three use `lcm_env={}` (unlike `None`, which selects `tight()`). Their generated
+host config omits the harness's usual `compression.threshold: 0.8`, so the plugin
+uses each ref's shipped default: rc8 is 0.75, while the #936-era refs are 0.35.
+No LCM tuning override is injected. Other cells retain their existing config.
+
+- `default-window/32k-cadence`: 400 turns, 50 filler repeats per user
+  (about 290 tokens), 100 repeats per fake summary (about 600 tokens).
+- `default-window/64k-cadence`: 100 turns, 400 filler repeats per user
+  (about 2,300 tokens), 300 repeats per fake summary (about 1,750 tokens).
+  At rc8 the triggers are 24,000/48,000 tokens. Traffic totals about
+  116,000/230,000 tokens, enough for several compactions; fake summaries and
+  assistant replies add pressure. Effective thresholds and input/output token
+  counts are recorded on each opt-in `compaction` event.
+- `default-window/64k-large-objective`: a short setup, then the **current**
+  request on turn 2 has 3,500 filler repeats (about 20,125 tokens). Twenty-four
+  distinct reads in that turn (40 lines each) push it outside the fresh tail;
+  ordinary traffic continues through turn 40. The setup avoids the independent
+  sole-user anchoring rule. This workload did not isolate #1221.
+
+The #930 default prefix budget is dynamic, not a fixed 64K constant. At culprit
+`112388f7` (`engine.py:7826`) it is `max(C - O - A - T, C // 4)`:
+`C` is the survival ceiling, `O` assembly overhead, `A` leading anchors and
+`T` the selected tail. With the default 15% reserve, `C=54,400` and the floor
+is **13,600** at 64,000. At rc8 (`engine.py:8127`), `T` is the larger of the
+selected tail and its repaired tool-pair measurement; enabled recall also
+reserves its budget. The floor is still 13,600. The objective exceeds the
+floor, but that alone does not prove it exceeds the observed dynamic bound.
+Rc6/rc8 exempt an over-bound objective from summary pruning; the cell must still
+prove that path and separate the historical parent before admission.
+
+Only the cadence cells declare **C1**: in ordered `transcript.jsonl`, begin at
+the first non-final chat `compaction` with status `compacted` or `host_native`.
+Each later `provider_request` counts once in the denominator, including the first
+following that commit. Count it once in the numerator if at least one commit
+occurred since the preceding request. Noops do not clear a pending commit;
+multiple commits before a request still count once. Final/cron records do not
+count. Fail when `2 * preceded_by_compaction > model_calls`; no measured calls
+is INCONCLUSIVE. This absolute bound is independent of the backtest refs.
+
+Only the objective cell declares the R1 **F4** equivalent: for every non-final
+committed chat compaction, the first following model request must contain the
+complete current user request in one message. Metadata stores a boolean and tag
+presence, never request text. A tag alone cannot pass. A missing complete request
+fails; absent telemetry or a commit without a following request is INCONCLUSIVE.
+The existing B1-B9 bars still apply. R2 continuity diagnostics are unchanged.
+
+The final backtest detects excessive 64K cadence at `2c6dfef9` (63/84 calls),
+versus parent `86fc834e` (17/84) and fixed refs (31/84), but fixed 64K cells have
+an inconclusive forced `/compress` check. The 32K culprit fails B8 and the other
+refs pass. The objective cell reports F4 present for both culprit and parent;
+other bars fail, including B8 at rc8. These are **not** a validated positive
+control or a pre-rc gate. Future admission needs a newly authorized bounded
+scenario and the complete historical/host GREEN pattern, without weakening bars.
+
 ## Positive controls
 `controls.py` holds each control's refs, hosts, cells and expected red/green pattern; `run_matrix.py --control
 PC-1 --out <dir>` runs it and writes CONTROL.json (HOLDS or the mismatches). PC-1 is a differential: lcm-x `47bd28e7` (before #498, the #494 fix) vs `ae1fb16d` on ref-0.21.5, rs34-0.21.5

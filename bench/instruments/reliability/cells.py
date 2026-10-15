@@ -163,6 +163,27 @@ def probe_cells() -> list[dict]:
     return out
 
 
+def default_window_cells() -> list[dict]:
+    """Shipped-default backtest candidates: small-window cadence and a large current objective."""
+    out = [cell(f"default-window/{window // 1000}k-cadence", [], in_place=True, window=window,
+                turns=400 if window == 32000 else 100, repeat=50 if window == 32000 else 400,
+                lcm_env={}, min_compactions=3, summary_repeat=100 if window == 32000 else 300,
+                assistant={"real_usage": True}, bars=[*BARS, "C1"],
+                doc="Default 75% trigger; 400/100 turns of about 290/2,300 tokens at 32k/64k; "
+                    "C1 fails when over half the model calls after the first commit follow a commit.")
+           for window in (32000, 64000)]
+    out.append(cell("default-window/64k-large-objective", [], in_place=True, window=64000,
+                    turns=40, repeat=400, user={"repeat_from": {"2": 3500, "3": 400}}, lcm_env={},
+                    assistant={"real_usage": True}, min_compactions=2, bars=[*BARS, "F4"],
+                    tool_plan=[{"turns": [2], "calls": [{"name": "read_file", "args": {
+                        "path": f"{{files}}/big-{k:02d}.txt"}}]} for k in range(1, 25)],
+                    big_files=24, big_lines=40,
+                    doc="Current objective (turn 2 after a short setup) about 20,125 tokens, above the 13,600-token prefix-budget floor at 64k; "
+                        "distinct reads in that turn push it outside the 24k fresh tail, then ordinary traffic. "
+                        "F4 requires the complete current request in the first model request after each commit."))
+    return out
+
+
 def registry() -> list[dict]:
     crash = {"kind": "crash_after_compaction_before_reply"}
     group559 = [{"name": "read_file", "args": {"path": "{files}/small.txt"}},
@@ -285,9 +306,9 @@ def registry() -> list[dict]:
 
 def validate(c: dict) -> None:
     assert c["transport"] in TRANSPORTS, c["id"]
-    assert set(c["bars"]) <= set(BARS + DRAIN_BARS), c["id"]
+    assert set(c["bars"]) <= set(BARS + DRAIN_BARS + ("C1", "F4")), c["id"]
     assert {f["kind"] for f in c["faults"]} <= FAULTS, c["id"]
-    assert c["window"] in (128000, 1000000), c["id"]
+    assert c["window"] in (32000, 64000, 128000, 1000000), c["id"]
     assert all(t in ISSUES or t in (483, 494, 519) for t in c["targets"]), c["id"]
     # Native recovery was removed (O2): only a native-on-off cell (an older lcm-x ref with it ON) may set it.
     assert not c["native_recovery"] or c.get("from_ref"), c["id"]
@@ -296,7 +317,8 @@ def validate(c: dict) -> None:
 
 
 def select(patterns: str, extra=(), opt_in=()) -> list[dict]:
-    """``opt_in`` cells (R2 process_cell.R2_PROBE_CELLS) match an explicit pattern only, never ``all``."""
+    """Default-window backtests and ``opt_in`` probes match explicit patterns only, never ``all``."""
+    opt_in = (*default_window_cells(), *opt_in)
     cells = registry() + list(extra)  # extra: transport-only cells (R2 process_cell.R2_CELLS)
     for c in cells + list(opt_in):
         validate(c)
