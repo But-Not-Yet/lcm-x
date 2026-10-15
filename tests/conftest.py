@@ -7,6 +7,13 @@ import sys
 import importlib.util
 from pathlib import Path
 
+from tests.phase0_hygiene import product_env_keys
+
+_IMPORT_FAILURES = {}
+# Measured with/without the CI host stub: only engine needs agent.context_engine.
+# Allow that missing host dependency, never arbitrary errors in engine itself.
+_OPTIONAL_HOST_IMPORTS = {"hermes_lcm.engine": {"agent", "agent.context_engine"}}
+
 # Make the repo root importable (for agent.context_engine etc.)
 repo_root = str(Path(__file__).resolve().parent.parent.parent.parent)
 if repo_root not in sys.path:
@@ -45,8 +52,10 @@ if pkg_name not in sys.modules:
             setattr(mod, py_file.stem, sub_mod)
             try:
                 sub_spec.loader.exec_module(sub_mod)
-            except Exception:
-                pass  # some modules may fail (e.g. engine needs agent)
+            except Exception as exc:
+                _IMPORT_FAILURES[sub_name] = exc
+                sys.modules.pop(sub_name, None)
+                delattr(mod, py_file.stem)
 
 
 def load_cli():
@@ -58,6 +67,33 @@ def load_cli():
 
 
 import pytest  # noqa: E402
+
+
+def pytest_report_header(config):
+    return [
+        f"LCM import failure: {name}: {type(exc).__name__}: {exc}"
+        for name, exc in sorted(_IMPORT_FAILURES.items())
+    ]
+
+
+def pytest_sessionstart(session):
+    unexpected = [
+        name for name, exc in _IMPORT_FAILURES.items()
+        if not (
+            isinstance(exc, ModuleNotFoundError)
+            and exc.name in _OPTIONAL_HOST_IMPORTS.get(name, ())
+        )
+    ]
+    if unexpected:
+        raise pytest.UsageError("Unexpected plugin import failures:\n" + "\n".join(pytest_report_header(None)))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_product_environment(monkeypatch, tmp_path):
+    for key in product_env_keys(plugin_dir):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+
 
 _MAINTENANCE_SCHEDULERS = ("_ROLLUP_MAINTENANCE_SCHEDULER", "_EMBEDDING_MAINTENANCE_SCHEDULER")
 
