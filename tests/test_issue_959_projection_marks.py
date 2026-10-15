@@ -135,7 +135,7 @@ def test_projection_with_unchanged_calls_keeps_main_bytes(tmp_path, content):
                                                         "tool_calls": assistant["tool_calls"]}).encode()
         expected = {**assistant, "content": expected_text} if len(content) > 1200 else assistant
         projected = engine._survival_projection(
-            [assistant], {id(assistant): row["store_id"]}, engine._survival_measure([expected]))[0]
+            [assistant], {id(assistant): row["store_id"]}, 0 if tokens < 256 else engine._survival_measure([expected]))[0]
         assert json.dumps(projected).encode() == json.dumps(expected).encode()
         assert assistant == original
     finally:
@@ -193,7 +193,7 @@ def test_second_projection_of_a_storage_only_projection_keeps_a_mark(tmp_path, m
         assert survival_fit._PROJECTED_PREFIX in first["content"]
         assert survival_fit.count_message_tokens(first) >= 256
         second = engine._survival_projection(
-            [first], {id(first): row["store_id"]}, engine._survival_measure([first]))[0]
+            [first], {id(first): row["store_id"]}, engine._survival_measure([first]) - 1)[0]
         source = engine._survival_projection_source(second, "assistant", normalize_content_value(second["content"]) or "")
         assert source is not None and source["store_id"] == row["store_id"]
     finally:
