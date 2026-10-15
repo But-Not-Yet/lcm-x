@@ -29,7 +29,8 @@ from hermes_lcm.engine import LCMEngine
 for name, examples in (("ci", 25), ("nightly", 1000)):
     settings.register_profile(name, max_examples=examples, stateful_step_count=12,
                               derandomize=True, deadline=None, database=None)
-settings.load_profile(os.environ.get("LCM_HYPOTHESIS_PROFILE", "ci"))
+# Applied to these machines only, never session-wide: LCM_HYPOTHESIS_PROFILE=nightly runs 1,000 examples.
+PROFILE = settings.get_profile(os.environ.get("LCM_HYPOTHESIS_PROFILE", "ci"))
 
 
 def identity(message):
@@ -62,6 +63,8 @@ def retry_resend_1179(host, replacement):
             and host[-2].get("message_uid") != replacement.get("message_uid"))
 
 
+# Each entry excludes an input shape only while its issue's strict xfail stands in test_identity_seeds.py
+# (enforced there by test_known_open_exclusions_track_their_strict_xfails).
 KNOWN_OPEN = {1179: retry_resend_1179}
 
 
@@ -196,3 +199,4 @@ class ExactlyOnceMachine(RuleBasedStateMachine):
 
 
 TestExactlyOnce = ExactlyOnceMachine.TestCase
+TestExactlyOnce.settings = PROFILE
