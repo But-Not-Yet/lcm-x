@@ -276,7 +276,7 @@ def markdown(report):
     lines.extend(f"- {key}: {len(value)}" for key, value in changes.items())
     warnings = report["metrics"]["warnings"]
     # Reserve a heading and bounded details for every category, plus warnings.
-    entry_budget = min(3, (60 - len(lines) - len(changes) - bool(warnings)) // len(changes))
+    entry_budget = max(1, min(3, (60 - len(lines) - len(changes) - bool(warnings)) // len(changes)))
     for group, rows in changes.items():
         lines.append(f"### {group}")
         entries = list(rows.items()) if isinstance(rows, dict) else rows
@@ -286,7 +286,7 @@ def markdown(report):
             lines.append(f"- {len(entries) - shown} more; see --format json")
     if warnings:
         lines.append(f"Warnings ({len(warnings)}): {'; '.join(warnings[:2])}")
-    return "\n".join(lines)
+    return "\n".join(lines[:60])
 
 
 def main():
