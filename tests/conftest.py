@@ -3,6 +3,7 @@
 Patches the plugin modules so they can be imported both as a package
 (relative imports during plugin loading) and directly during testing.
 """
+import hashlib
 import sys
 import importlib.util
 from pathlib import Path
@@ -89,10 +90,12 @@ def pytest_sessionstart(session):
 
 
 @pytest.fixture(autouse=True)
-def _isolate_product_environment(monkeypatch, tmp_path):
+def _isolate_product_environment(monkeypatch, request, tmp_path_factory):
     for key in product_env_keys(plugin_dir):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    # A unique, not-yet-created home per test; requesting tmp_path here would create ~7,600 directories.
+    test_id = hashlib.sha1(request.node.nodeid.encode()).hexdigest()[:16]
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path_factory.getbasetemp() / "hermes-home" / test_id))
 
 
 _MAINTENANCE_SCHEDULERS = ("_ROLLUP_MAINTENANCE_SCHEDULER", "_EMBEDDING_MAINTENANCE_SCHEDULER")
