@@ -1,4 +1,4 @@
-"""Confirmed Phase 0 footguns; strict xfails become failures when fixed."""
+"""Confirmed Phase 0 footguns and regression probes."""
 
 from collections import OrderedDict
 import threading
@@ -24,10 +24,6 @@ class _ClosedBeforeQuery(AssertionError):
     pass
 
 
-@pytest.mark.xfail(
-    strict=True, raises=_ClosedBeforeQuery,
-    reason="P0.9.4 pooled store closed between acquisition and query — fix in the post-GA window",
-)
 @pytest.mark.parametrize("action", ["third-key-eviction", "reset"])
 def test_handed_out_vector_store_survives_until_query(tmp_path, monkeypatch, action):
     # Isolate this pool so cleanup never closes stores owned by another test.
@@ -66,7 +62,9 @@ def test_handed_out_vector_store_survives_until_query(tmp_path, monkeypatch, act
     def evict():
         try:
             for engine in (engines[1:] if action == "third-key-eviction" else engines[1:2]):
-                original(engine, vector_store_cls=VectorStore, scan_rows=None)
+                _, store_lock, _ = original(engine, vector_store_cls=VectorStore, scan_rows=None)
+                with store_lock:
+                    pass
             if action == "reset":
                 retrieval_core._reset_vector_store_pool()
         except BaseException as exc:

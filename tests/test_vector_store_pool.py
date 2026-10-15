@@ -86,3 +86,46 @@ def test_pooled_store_is_reused_after_query_error(engines):
         _run(engines[0], query)
     assert _run(engines[0]) is first
     assert first._conn.execute("SELECT 1").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("action", ["third-key-eviction", "reset"])
+@pytest.mark.parametrize("fail_query", [False, True])
+def test_retired_store_closes_after_last_release(engines, monkeypatch, action, fail_query):
+    first = _run(engines[0])
+    closed = []
+    original_close = first.close
+
+    def close():
+        closed.append(first)
+        original_close()
+
+    monkeypatch.setattr(first, "close", close)
+
+    def inner_query(store):
+        assert store is first
+        if action == "reset":
+            retrieval_core._reset_vector_store_pool()
+        else:
+            _run(engines[1])
+            _run(engines[2])
+        assert first not in [entry["store"] for entry in retrieval_core._vector_store_pool.values()]
+        assert not closed
+        assert store._conn.execute("SELECT 1").fetchone()[0] == 1
+
+    def outer_query(store):
+        _run(engines[0], inner_query)  # A second reservation uses the same entry.
+        assert not closed  # Releasing one borrower must not close the other.
+        assert store._conn.execute("SELECT 1").fetchone()[0] == 1
+        if fail_query:
+            raise ValueError("query failed")
+        return 42
+
+    if fail_query:
+        with pytest.raises(ValueError, match="query failed"):
+            _run(engines[0], outer_query)
+    else:
+        assert _run(engines[0], outer_query) == 42
+    assert closed == [first]
+    assert first._conn is None
+    retrieval_core._reset_vector_store_pool()
+    assert closed == [first]
