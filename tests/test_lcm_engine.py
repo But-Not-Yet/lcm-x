@@ -13723,25 +13723,35 @@ class TestSessionRollover:
 
         assert "LCM session-end lifecycle finalization interrupted" in caplog.text
 
-    @pytest.mark.latency
-    def test_on_session_end_returns_quickly_under_real_sqlite_writer_lock(self, engine, caplog):
+    def test_on_session_end_returns_quickly_under_real_sqlite_writer_lock(self, engine, caplog, monkeypatch, latency_check):
         engine.on_session_start("test-session", platform="discord")
         engine._store._conn.execute("PRAGMA busy_timeout=750")
         engine._lifecycle._conn.execute("PRAGMA busy_timeout=750")
+        original_timeout = lcm_engine._temporary_sqlite_busy_timeout
+        timeout_args = []
+
+        def recorded_timeout(connections, timeout_ms):
+            timeout_args.append(timeout_ms)
+            assert timeout_ms == 50
+            return original_timeout(connections, timeout_ms)
+
+        monkeypatch.setattr(lcm_engine, "_temporary_sqlite_busy_timeout", recorded_timeout)
 
         locker = sqlite3.connect(str(engine._store.db_path), timeout=1.0, isolation_level=None)
         locker.execute("PRAGMA journal_mode=WAL")
         locker.execute("BEGIN IMMEDIATE")
         try:
-            started = time.monotonic()
+            started = time.monotonic() if latency_check else None
             with caplog.at_level(logging.WARNING):
                 engine.on_session_end("test-session", [{"role": "user", "content": "hello"}])
-            elapsed = time.monotonic() - started
+            elapsed = time.monotonic() - started if latency_check else None
         finally:
             locker.execute("ROLLBACK")
             locker.close()
 
-        assert elapsed < 0.3
+        if latency_check:
+            assert elapsed < 0.3
+        assert timeout_args == [50]
         assert engine._store._conn.execute("PRAGMA busy_timeout").fetchone()[0] == 750
         assert engine._lifecycle._conn.execute("PRAGMA busy_timeout").fetchone()[0] == 750
         assert "LCM session-end raw-message ingest skipped due to SQLite lock" in caplog.text
