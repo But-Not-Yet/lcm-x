@@ -2331,12 +2331,13 @@ def test_recall_event_time_read_cannot_outlive_the_deadline(recall_engine, monke
         monkeypatch.setattr(time, "monotonic", lambda: now[0])
 
     def blocked_read(conn):
-        # The private connection's progress handler must end this read at the
-        # request deadline, well before its generous recursion cap.
+        # Only the private connection's progress handler can end the timed read.
+        # The logical-clock case has a cap as a hang guard for a missing handler.
         if not latency_check:
             now[0] += 2.0
+        guard = " WHERE x < 10000000" if not latency_check else ""
         conn.execute(
-            "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 10000000) "
+            "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n" + guard + ") "
             "SELECT count(*) FROM n"
         ).fetchall()
 
