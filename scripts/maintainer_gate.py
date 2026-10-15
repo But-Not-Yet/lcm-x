@@ -31,6 +31,23 @@ MEMORY_MIGRATION_FILES = {
     "scripts/backfill_externalized_tool_outputs.py",
     "scripts/import_lossless_claw.py",
 }
+# Synchronous ingest/assembly/compaction, lifecycle/identity and pre-LLM
+# consumers traced one module deep at 4e603ed6. Conditional turn branches count;
+# startup-only, command-only and deferred background work do not.
+TURN_PATH_FILES = {
+    "__init__.py", "answer_contract.py", "assertion_store.py", "aux_session.py",
+    "bypass.py", "codex_routing.py", "command.py", "compaction.py", "config.py", "dag.py",
+    "db_bootstrap.py", "diagnostics.py", "embedding_maintenance.py", "engine.py",
+    "engine_registry.py",
+    "escalation.py", "evidence_compiler.py", "externalize.py", "extraction.py",
+    "fresh_tail.py", "host_uid.py", "host_uid_emit.py", "identity_anchor.py",
+    "ingest_protection.py", "lifecycle_state.py", "message_analysis.py",
+    "message_content.py", "message_patterns.py", "placeholder_ledger.py",
+    "prefix_matching.py", "reconcile.py", "reset_state.py", "rollup_builder.py",
+    "sanitize.py", "selective_compiler.py", "selective_recall.py",
+    "session_patterns.py", "sqlite_util.py", "store.py", "store_complete.py",
+    "summary_input_clip.py", "survival_fit.py", "tokens.py", "tools.py", "vector_store.py",
+}
 FINDING_GATE_CLASSES = {"MERGE_BLOCKING", "RELEASE_BLOCKING", "NON_BLOCKING"}
 TERMINAL_FINDING_DISPOSITIONS = {
     "FIXED_NOW",
@@ -180,6 +197,8 @@ def _named_risks(paths: list[str]) -> list[str]:
         for path in paths
     ):
         risks.append("lcm-memory-preservation")
+    if any(path in TURN_PATH_FILES for path in paths):
+        risks.append("turn-path")
     return risks
 
 
@@ -193,13 +212,20 @@ def review_lanes_hint(changed_files: Any) -> dict[str, Any]:
             "required_review_lanes": ["acceptance", "adversarial"],
         }
     risks = _named_risks(paths)
-    return {
+    hint = {
         "changed_files": "supplied",
         "named_risks": risks,
         "required_review_lanes": (
             ["acceptance", "adversarial"] if risks else ["acceptance"]
         ),
     }
+    if "turn-path" in risks:
+        hint["turn_path_probe_packet"] = [
+            "Consumer enumeration: rg call sites for every changed helper and effects on each consumer.",
+            "Previous-GA differential row: tests/differential (opt-in).",
+            "Sibling shapes: neighbouring windows, row roles, and recovery paths.",
+        ]
+    return hint
 
 
 def _landing_authorization_gate(data: dict[str, Any], head_sha: str) -> list[str]:
