@@ -6,6 +6,8 @@ import shutil
 import subprocess
 import sys
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/maintainability/report.py"
 BASELINE = SCRIPT.with_name("baseline.json")
@@ -34,6 +36,9 @@ def test_repository_baseline():
 
 def test_growth_and_baseline_round_trip(tmp_path):
     shutil.copyfile(ROOT / "reset_state.py", tmp_path / "reset_state.py")
+    declarations = tmp_path / "scripts/maintainability/attr_lifetimes.json"
+    declarations.parent.mkdir(parents=True)
+    declarations.write_text("{}\n")
     baseline = tmp_path / "baseline.json"
     original = run(tmp_path, "--baseline", str(baseline), "--write-baseline")
     assert original["metrics"]["warnings"] == []
@@ -133,3 +138,74 @@ def test_incomplete_collection_is_report_only(tmp_path, monkeypatch):
     result = run(tmp_path, "--baseline", str(tmp_path / "baseline.json"), "--write-baseline")
     assert "Ruff metrics unavailable" in result["metrics"]["warnings"][0]
     assert not (tmp_path / "baseline.json").exists()
+
+
+def lifetime_tree(root, declarations):
+    (root / "engine.py").write_text('''class LCMEngine:
+    def __init__(self):
+        self._existing = 0
+        self._new = 1
+''')
+    baseline = root / "baseline.json"
+    baseline.write_text(json.dumps({"version": 1, "attributes": {"_existing": ["engine.py"]}}))
+    path = root / "scripts/maintainability/attr_lifetimes.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(declarations))
+    return baseline, path
+
+
+def test_new_attribute_without_lifetime(tmp_path):
+    baseline, _ = lifetime_tree(tmp_path, {})
+    result = run(tmp_path, "--baseline", str(baseline))
+    assert result["changes"]["new_attributes_without_lifetime"] == ["_new"]
+    assert result["changes"]["invalid_lifetimes"] == []
+    assert result["changes"]["stale_lifetimes"] == []
+    assert result["metrics"]["warnings"] == []
+
+
+@pytest.mark.parametrize("lifetime", ["process", "profile", "conversation", "session", "invocation"])
+@pytest.mark.parametrize("with_reason", [False, True])
+def test_new_attribute_with_lifetime(tmp_path, lifetime, with_reason):
+    entry = {"lifetime": lifetime, "why": "Cleared at the declared boundary."} if with_reason else lifetime
+    baseline, _ = lifetime_tree(tmp_path, {"_new": entry})
+    result = run(tmp_path, "--baseline", str(baseline))
+    assert result["changes"]["new_attributes"] == ["_new"]
+    assert result["changes"]["new_attributes_without_lifetime"] == []
+    assert result["changes"]["invalid_lifetimes"] == []
+    assert result["changes"]["stale_lifetimes"] == []
+
+
+@pytest.mark.parametrize("entry", [
+    "forever", None, [], {}, {"lifetime": []}, {"lifetime": "forever"},
+    {"lifetime": "session", "why": 1}, {"lifetime": "session", "why": "two\nlines"},
+    {"lifetime": "session", "typo": "ignored?"},
+])
+def test_invalid_and_stale_lifetimes(tmp_path, entry):
+    baseline, _ = lifetime_tree(tmp_path, {"_new": entry, "_removed": "process"})
+    result = run(tmp_path, "--baseline", str(baseline))
+    assert result["changes"]["invalid_lifetimes"] == ["_new"]
+    assert result["changes"]["stale_lifetimes"] == ["_removed"]
+    assert result["changes"]["new_attributes_without_lifetime"] == ["_new"]
+
+
+def test_missing_lifetime_file_warns_once(tmp_path):
+    baseline, path = lifetime_tree(tmp_path, {})
+    path.unlink()
+    result = run(tmp_path, "--baseline", str(baseline))
+    assert result["metrics"]["warnings"] == ["Attribute lifetime declarations missing; using no declarations."]
+    assert result["changes"]["new_attributes_without_lifetime"] == ["_new"]
+    assert result["changes"]["invalid_lifetimes"] == []
+    assert result["changes"]["stale_lifetimes"] == []
+
+
+def test_lifetime_markdown_keeps_all_categories_with_many_changes(tmp_path):
+    baseline, _ = lifetime_tree(tmp_path, {"_new": None, "_removed": "process"})
+    result = run(tmp_path, "--baseline", str(baseline))
+    result["changes"] = {group: [f"entry_{i}" for i in range(20)] for group in result["changes"]}
+    result["metrics"]["warnings"] = ["An advisory warning."]
+    rendered = report.markdown(result)
+    assert len(rendered.splitlines()) <= 60
+    for group in result["changes"]:
+        assert f"### {group}\n- entry_0\n" in rendered
+    assert rendered.count("more; see --format json") == len(result["changes"])
+    assert "An advisory warning." in rendered
