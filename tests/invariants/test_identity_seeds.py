@@ -19,6 +19,12 @@ class RetryCollapse(AssertionError):
 class RetryDiscoveryMachine(ExactlyOnceMachine):
     include_known_open = True
 
+    @rule(text=st.sampled_from(("alpha", "same text")), structured=st.booleans(), retry=st.booleans())
+    def new_turn(self, text, structured, retry):
+        # The open issue's seed is a plain retry. Tool retries have a separate
+        # deterministic xfail below so a broader failure cannot hide in this one.
+        super().new_turn(text, structured, 0, retry, "lookup")
+
     @invariant()
     def exactly_once(self):
         try:
@@ -41,11 +47,36 @@ def test_machine_discovers_retry_1179():
 def test_retry_1179():
     machine = RetryDiscoveryMachine()
     try:
-        machine.new_turn("alpha", False, 0, False, "lookup")
-        machine.new_turn("same text", False, 0, False, "lookup")
+        machine.new_turn("alpha", False, False)
+        machine.new_turn("same text", False, False)
         machine.exactly_once()
-        machine.new_turn("same text", False, 0, True, "lookup")
+        machine.new_turn("same text", False, True)
         machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+class RetryToolCollapse(AssertionError):
+    """The #1179 retry shape also loses the assistant call before its result."""
+
+
+@pytest.mark.xfail(strict=True, reason="#1179-shaped retry also skips its first assistant tool call",
+                   raises=RetryToolCollapse)
+def test_retry_1179_with_tool_call():
+    machine = RetryDiscoveryMachine()
+    try:
+        machine.new_turn("alpha", False, False)
+        machine.new_turn("same text", False, False)
+        machine.exactly_once()
+        ExactlyOnceMachine.new_turn(machine, "same text", False, 1, True, "lookup")
+        expected, actual = list(map(identity, machine.occurrences)), list(map(identity, machine.rows()))
+        try:
+            assert_occurrences(machine.occurrences, machine.rows())
+        except AssertionError as error:
+            index = machine.retry_occurrence_index
+            if actual == expected[:index] + expected[index + 2:]:
+                raise RetryToolCollapse(str(error)) from error
+            raise
     finally:
         machine.teardown()
 
