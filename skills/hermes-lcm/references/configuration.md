@@ -282,7 +282,7 @@ checkout root. Credential entries list only variable names, never values.
 | --- | --- | --- | --- |
 | `LCM_ABSOLUTE_THRESHOLD_TOKENS` | `engine.py` | Absolute compaction threshold override | each call — `_set_context_length()` with a positive context length, through model updates, session-start metadata, or cloning |
 | `LCM_ENABLE_SLASH_COMMAND` | `__init__.py` | Optional slash-command registration | plugin registration |
-| `LCM_HERMES_BASE_DIR` | `engine.py`, `externalize.py`, `diagnostics.py` | Storage containment boundary | each call — storage-directory resolution or state-database containment validation; `_get_allowed_hermes_base()` also reads it when called (currently no callers) |
+| `LCM_HERMES_BASE_DIR` | `engine.py`, `externalize.py`, `diagnostics.py` | Storage containment boundary | each call — storage-directory resolution or state-database containment validation; `_get_allowed_hermes_base()` also reads it when called (tests only; no production caller) |
 | `LCM_IDENTITY_ANCHOR` | `identity_anchor.py` | Identity-anchor switch | each call — `identity_anchor_enabled()` checks during ingest, replay identity handling, and compaction |
 | `LCM_FTS_INTEGRITY_CHECK_INTERVAL_HOURS` | `db_bootstrap.py` | Startup integrity-check interval | database open — startup FTS validation, after structural checks pass |
 | `LCM_FTS_INTEGRITY_BACKGROUND` | `db_bootstrap.py` | Background integrity-check switch | database open — startup FTS validation, when a deep check is due |
