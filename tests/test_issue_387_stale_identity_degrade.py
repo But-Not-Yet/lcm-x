@@ -12,8 +12,10 @@ import pytest
 import hermes_lcm.embedding_provider as providers
 import hermes_lcm.ingest_protection as privacy
 import hermes_lcm.tools as tools
+from hermes_lcm.command import handle_lcm_command
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.dag import SummaryDAG, SummaryNode
+from hermes_lcm.engine import LCMEngine
 from hermes_lcm.vector_store import EmbeddingIdentity, VectorStore
 from hermes_lcm.store import MessageStore
 
@@ -22,6 +24,58 @@ REASON = (
     "revision; run /lcm embed warmup, then /lcm embed backfill --apply"
 )
 TEXT = "Zebrawood orchard has a beagle puppy named Biscuit."
+
+
+@pytest.fixture
+def diagnostic_engine(tmp_path):
+    config = LCMConfig(
+        database_path=str(tmp_path / "doctor.db"),
+        embeddings_enabled=True,
+        embedding_provider="voyage",
+        embedding_model="voyage-4-large",
+    )
+    engine = LCMEngine(config=config, hermes_home=str(tmp_path / "home"))
+    engine._session_id = "session-a"
+    engine.context_length = 200000
+    engine.store_id = engine._store.append("session-a", {"role": "user", "content": TEXT})
+    engine.node_id = engine._dag.add_node(SummaryNode(
+        session_id="session-a", depth=0, summary=TEXT,
+        source_ids=[engine.store_id], source_type="messages", created_at=1, latest_at=1,
+    ))
+    try:
+        yield engine
+    finally:
+        engine.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("stale_tasks", "remedy"),
+    [(["summary"], "/lcm embed warmup, then /lcm embed backfill --apply")],
+)
+def test_doctor_stale_corpus_remedy_on_every_surface(diagnostic_engine, monkeypatch, stale_tasks, remedy):
+    engine = diagnostic_engine
+    _seed(engine, "old" if "summary" in stale_tasks else "matching")
+    _seed(engine, "old" if "chunk" in stale_tasks else "matching", task="chunk")
+    monkeypatch.setenv("VOYAGE_API_KEY", "synthetic-test-key")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("doctor attempted to construct an embedding provider")
+
+    monkeypatch.setattr(tools, "resolve_provider", forbidden)
+    monkeypatch.setattr(providers, "resolve_provider", forbidden)
+    standalone = tools._embedding_provider_health_check(engine)
+    payload = json.loads(tools.lcm_doctor({}, engine=engine))
+    emitted = next(check for check in payload["checks"] if check["check"] == "embedding_provider_health")
+    assert emitted == standalone
+    assert emitted["detail"]["stale_tasks"] == stale_tasks
+    assert emitted["detail"]["remedy"] == remedy
+    reason = (
+        "embedding_identity_stale: stored vectors use an older embedding privacy "
+        f"revision; run {remedy}"
+    )
+    assert emitted["detail"]["reason"] == reason
+    text = handle_lcm_command("doctor", engine)
+    assert f"embedding_provider_health: warn ({reason})" in text
 
 
 class CloudProvider:
