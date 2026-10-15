@@ -531,6 +531,9 @@ def test_process_phase_deadline_is_an_error_with_its_cause(tmp_path, monkeypatch
     if not latency_check:
         now = [0.0]
         monkeypatch.setattr(PC, "time", types.SimpleNamespace(monotonic=lambda: now[0]))
+        # Host startup must not spend real selector time against a logical clock.
+        monkeypatch.setattr(AD.AcpProcess, "initialize", lambda _proc, _timeout: None)
+        monkeypatch.setattr(AD.AcpProcess, "new_session", lambda _proc, _cwd, _timeout: "test-session")
 
         def timed_out_prompt(_proc, _sid, _text, timeout):
             timeouts.append(timeout)

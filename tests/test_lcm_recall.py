@@ -2326,6 +2326,7 @@ def test_recall_event_time_read_cannot_outlive_the_deadline(recall_engine, monke
     _seed_event_time_rows(recall_engine)
     recall_engine._config.recall_query_timeout_s = 1.0
     connect_timeouts = []
+    read_errors = []
     now = [0.0]
     if not latency_check:
         monkeypatch.setattr(time, "monotonic", lambda: now[0])
@@ -2336,10 +2337,14 @@ def test_recall_event_time_read_cannot_outlive_the_deadline(recall_engine, monke
         if not latency_check:
             now[0] += 2.0
         guard = " WHERE x < 10000000" if not latency_check else ""
-        conn.execute(
-            "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n" + guard + ") "
-            "SELECT count(*) FROM n"
-        ).fetchall()
+        try:
+            conn.execute(
+                "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n" + guard + ") "
+                "SELECT count(*) FROM n"
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            read_errors.append(str(exc))
+            raise
 
     def recorded_connect(*args, **kwargs):
         connect_timeouts.append(kwargs.get("timeout"))
@@ -2356,6 +2361,8 @@ def test_recall_event_time_read_cannot_outlive_the_deadline(recall_engine, monke
     )
     if latency_check:
         assert time.monotonic() - started < 1.0 + 0.5
+    else:
+        assert len(read_errors) == 1 and "interrupt" in read_errors[0].lower()
     assert payload["hits"]
     assert not any("event_time" in hit for hit in payload["hits"])
     assert payload["event_time_unavailable"] is True
