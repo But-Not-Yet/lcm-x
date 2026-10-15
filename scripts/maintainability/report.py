@@ -23,6 +23,7 @@ CONFIG_GETATTR = re.compile(
 DDL = re.compile(r"\b(?:CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX)|ALTER\s+TABLE)\b", re.I)
 RULES = {"C901": "cc", "PLR0912": "branches", "PLR0915": "statements"}
 SITE_GROUPS = ("imports", "config_getattr", "private_refs", "ddl_outside_schema")
+LIFETIMES = {"process", "profile", "conversation", "session", "invocation"}
 
 
 def python_files(root):
@@ -208,7 +209,35 @@ def collect(root):
     return result
 
 
-def compare(current, baseline):
+def load_lifetimes(path, warnings):
+    try:
+        declarations = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(declarations, dict):
+            raise ValueError("expected an object")
+        return declarations
+    except FileNotFoundError:
+        warnings.append("Attribute lifetime declarations missing; using no declarations.")
+    except (OSError, UnicodeError, ValueError):
+        warnings.append("Attribute lifetime declarations unreadable or not an object; using no declarations.")
+    return {}
+
+
+def valid_lifetime(entry):
+    if isinstance(entry, dict):
+        if set(entry) - {"lifetime", "why"}:
+            return False
+        why = entry.get("why", "")
+        if not isinstance(why, str) or len(why.splitlines()) > 1:
+            return False
+        entry = entry.get("lifetime")
+    return isinstance(entry, str) and entry in LIFETIMES
+
+
+def compare(current, baseline, lifetimes=None):
+    lifetimes = lifetimes or {}
+    invalid = sorted(name for name, entry in lifetimes.items() if not valid_lifetime(entry))
+    declared = set(lifetimes) - set(invalid)
+    new_attributes = sorted(set(current["attributes"]) - set(baseline.get("attributes", {})))
     growth, new_functions = [], []
     for key, metric in current["functions"].items():
         old = baseline.get("functions", {}).get(key)
@@ -225,7 +254,10 @@ def compare(current, baseline):
         "function_growth": sorted(growth, key=lambda row: (-row["delta"].get("loc", 0),
                                                            -row["delta"].get("cc", 0), row["function"])),
         "new_large_functions": sorted(new_functions, key=lambda row: (-row["loc"], row["function"])),
-        "new_attributes": sorted(set(current["attributes"]) - set(baseline.get("attributes", {}))),
+        "new_attributes": new_attributes,
+        "new_attributes_without_lifetime": sorted(set(new_attributes) - declared),
+        "invalid_lifetimes": invalid,
+        "stale_lifetimes": sorted(set(lifetimes) - set(current["attributes"])),
         "new_writers": {attr: sorted(set(modules) - set(baseline["attributes"][attr]))
                         for attr, modules in current["attributes"].items()
                         if attr in baseline.get("attributes", {})
@@ -242,17 +274,19 @@ def markdown(report):
     changes = report["changes"]
     lines.append("## Changes from baseline")
     lines.extend(f"- {key}: {len(value)}" for key, value in changes.items())
-    # Reserve lines for every category, even when function growth is large.
+    warnings = report["metrics"]["warnings"]
+    # Reserve a heading and bounded details for every category, plus warnings.
+    entry_budget = min(3, (60 - len(lines) - len(changes) - bool(warnings)) // len(changes))
     for group, rows in changes.items():
         lines.append(f"### {group}")
         entries = list(rows.items()) if isinstance(rows, dict) else rows
-        lines.extend(f"- {entry}" for entry in entries[:3])
-        if len(entries) > 3:
-            lines.append(f"- {len(entries) - 3} more; see --format json")
-    warnings = report["metrics"]["warnings"]
+        shown = entry_budget - 1 if len(entries) > entry_budget else len(entries)
+        lines.extend(f"- {entry}" for entry in entries[:shown])
+        if len(entries) > shown:
+            lines.append(f"- {len(entries) - shown} more; see --format json")
     if warnings:
         lines.append(f"Warnings ({len(warnings)}): {'; '.join(warnings[:2])}")
-    return "\n".join(lines[:60])
+    return "\n".join(lines)
 
 
 def main():
@@ -263,6 +297,7 @@ def main():
     args = parser.parse_args()
     try:
         metrics = collect(Path.cwd().resolve())
+        lifetimes = load_lifetimes(Path("scripts/maintainability/attr_lifetimes.json"), metrics["warnings"])
         baseline = {}
         if args.baseline.exists():
             try:
@@ -280,7 +315,7 @@ def main():
             else:
                 args.baseline.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n")
                 baseline = metrics
-        report = {"metrics": metrics, "changes": compare(metrics, baseline)}
+        report = {"metrics": metrics, "changes": compare(metrics, baseline, lifetimes)}
         print(json.dumps(report, sort_keys=True) if args.format == "json" else markdown(report))
     except Exception as error:
         # Monitoring must not become a build gate, including on an operational error.
