@@ -115,7 +115,7 @@ def test_warning_presence(monkeypatch, key, field, raw, value, before, after):
     if raw is not None:
         monkeypatch.setenv("LCM_" + key, raw)
     warnings = config.LCMConfig.from_env().config_source_warnings
-    assert bool(warnings) is before
+    assert bool(warnings) is after
     if warnings:
         assert len(warnings) == 1
         assert "LCM_" + key in warnings[0]
@@ -129,3 +129,72 @@ def test_parsers_keep_dictionary_contract(caplog):
         "LCM_RECALL_ARM_WEIGHTS: negative weight -1.0 for arm 'fts' is invalid; using default 0.5"
     ]
     assert config._parse_model_thresholds_env("broken,:.2,bad:nan,ok:.5") == {"ok": .5}
+
+
+@pytest.mark.parametrize("key,raw,effect", [
+    ("CONTEXT_THRESHOLD", "1.1", "using 1.1 unchanged"),
+    ("SURVIVAL_RESERVE", "-1", "clamped to 0.0"),
+    ("SURVIVAL_RESERVE", "1", "clamped to 0.9"),
+    ("SURVIVAL_RESERVE", "nan", "clamped to 0.0"),
+    ("LEAF_CHUNK_TOKENS", "0", "leaf sizing clamped to 1"),
+    ("SUMMARY_TIMEOUT_MS", "0", "using 0 unchanged"),
+    ("EMBEDDING_PROVIDER", "voyge", "ProviderUnavailable"),
+    ("PREANSWER_EVIDENCE_MODE", "bogus", "ignored; using 'off'"),
+    ("EMBEDDING_STORAGE_DTYPE", "float8", "ignored; using 'float32'"),
+])
+def test_warning_names_raw_and_consumer_effect(monkeypatch, key, raw, effect):
+    monkeypatch.setenv("LCM_" + key, raw)
+    warning, = config.LCMConfig.from_env().config_source_warnings
+    assert f"LCM_{key}={raw!r}" in warning
+    assert effect in warning
+
+
+@pytest.mark.parametrize("key,accepted", [
+    ("EMBEDDING_PROVIDER", ["voyage", "voyageai", "ollama", "fastembed", "fast-embed",
+                            "openai-compatible", "openai", "siliconflow"]),
+    ("PREANSWER_EVIDENCE_MODE", ["off", "legacy_selective", "requirements_v1"]),
+    ("EMBEDDING_STORAGE_DTYPE", ["float32", "int8"]),
+])
+def test_choice_warning_lists_accepted_set_and_bounds_raw(monkeypatch, key, accepted):
+    raw = "x" * 80
+    monkeypatch.setenv("LCM_" + key, raw)
+    warning, = config.LCMConfig.from_env().config_source_warnings
+    assert f"LCM_{key}={repr(raw)[:40]}" in warning
+    assert "x" * 41 not in warning
+    for token in accepted:
+        assert repr(token) in warning
+
+
+@pytest.mark.parametrize("key,raw,dropped", [
+    ("RECALL_ARM_WEIGHTS", "bad,unknown=1,fts=oops,summary=nan,chunk=-1",
+     ["bad", "unknown=1", "fts=oops", "summary=nan", "chunk=-1"]),
+    ("MODEL_THRESHOLDS", "bad,:.5,model:bad,zero:0,high:1.1,nan:nan,ok:.5",
+     ["bad", ":.5", "model:bad", "zero:0", "high:1.1", "nan:nan"]),
+])
+def test_dropped_items_are_listed_once_per_key(monkeypatch, key, raw, dropped):
+    monkeypatch.setenv("LCM_" + key, raw)
+    warning, = config.LCMConfig.from_env().config_source_warnings
+    assert "LCM_" + key in warning
+    assert "using" in warning
+    for item in dropped:
+        assert repr(item) in warning
+
+
+def test_malformed_source_reader_does_not_range_warn_on_host_fallback(monkeypatch, tmp_path):
+    (tmp_path / "config.yaml").write_text("lcm:\n  context_threshold: 7.5\n")
+    monkeypatch.setenv("LCM_CONTEXT_THRESHOLD", "bad")
+    c = config.LCMConfig.from_env()
+    assert c.context_threshold == 7.5
+    assert c.config_sources["context_threshold"] == "config_yaml:lcm.context_threshold"
+    assert c.config_source_warnings == ["invalid env LCM_CONTEXT_THRESHOLD='bad' ignored"]
+
+
+@pytest.mark.parametrize("key,raw", [
+    ("CONTEXT_THRESHOLD", " " * 60 + "1.1"),
+    ("SURVIVAL_RESERVE", " " * 60 + "-.1"),
+])
+def test_range_raw_repr_is_bounded(monkeypatch, key, raw):
+    monkeypatch.setenv("LCM_" + key, raw)
+    warning, = config.LCMConfig.from_env().config_source_warnings
+    assert f"LCM_{key}={repr(raw)[:40]}" in warning
+    assert repr(raw) not in warning
