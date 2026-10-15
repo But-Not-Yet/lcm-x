@@ -1,23 +1,23 @@
 # Previous-GA differential backtest
 
 Measured 2026-10-15 against GA `6800cf45ad05280e6cf6fa9e1ad96c62b7132646`.
-S1/S1b product candidate: rc7 `432bc4567c7b6201f83421bb9e5402eee7980302`; S1c candidate: rc8 `4e603ed65f137a909606afccfc735c691e363d25`.
-S1b starts at harness head `d0a27b259cd5d1d04b974aeb7dee70ceadb810e0`, whose production files match rc7.
+Earlier product candidate: rc7 `432bc4567c7b6201f83421bb9e5402eee7980302`; current product candidate: rc8 `4e603ed65f137a909606afccfc735c691e363d25`.
+The corrected public comparison starts at harness head `d0a27b259cd5d1d04b974aeb7dee70ceadb810e0`, whose production files match rc7.
 The original historical receipts used checkout `3c9b34bc1165905869369c7d93f914aec95fdf5c`.
-S1b corrects R2's stale objective probe, compares managed GA defaults by default, and adds C1 summary coverage.
+The corrected public comparison fixes R2's stale objective probe, compares managed GA defaults by default, and adds C1 summary coverage.
 The 32K #1247 shape has 734 uncovered rows on both managed GA and rc7; the bare-GA comparison exposes the gap.
 The absolute zero-gap expectation is retained as a dedicated strict xfail. Two exact #1123 R3 cells are accepted
 separately: 40K compress runs and 64K provider calls. No production code changed.
 This is advisory synthetic evidence. It is not a release gate or proof of runtime readiness.
 
-## S1c historical inputs and rc8 (2026-10-16)
+## Historical inputs and rc8 (2026-10-16)
 
 The branch merged rc8 `4e603ed65f137a909606afccfc735c691e363d25` with merge commit
 `cd2a17f0c7dcaa5a3df5cd564023b5149aec6703`. All new authored changes are tests/docs only.
 Every oracle, threshold and pre-existing delta is unchanged. The sole added delta is the explicitly
-requested `D1233_LAST_RESORT_USER_MARK`: projection / P_USER only, candidate marks nonempty and a
-subset of GA marks, linked to [#1233](https://github.com/electricsheephq/lcm-x/issues/1233).
-This does not accept R2, a new user index, public-layer marks, or any absolute overflow.
+requested `D1233_LAST_RESORT_USER_MARK`: projection / P_USER only, candidate marks nonempty and equal to GA marks, and
+`not (ga["out_tokens"] <= case["limit"] < cand["out_tokens"])`, linked to [#1233](https://github.com/electricsheephq/lcm-x/issues/1233).
+This does not accept R2, different user-mark sets, public-layer marks, or candidate overflow where GA fit.
 
 ### Inputs and seams
 
@@ -71,11 +71,10 @@ three new historical inputs, parallel #1220, and sequential #1227 n90/n113/n128.
 | rc7 | `432bc4567c7b6201f83421bb9e5402eee7980302` | 7 | 0 | 0 | 7.24 |
 | rc8 | `4e603ed65f137a909606afccfc735c691e363d25` | 7 | 0 | 0 | 9.71 |
 
-The S1c evidence packet contains `matrix-summary.json` with full SHAs, exact commands, case IDs,
-wall times and missing seams. Each `matrix-NAME.receipt.json` binds its command, checkout HEAD,
-exit and process wall time; `matrix/NAME/` retains input JSONL, both tree results/logs, per-tree means,
-`summary.json` and `summary.md`. Expected culprit reds return CLI exit 1; they are successful negative
-probes, not execution errors. No required seams were missing on any historical row.
+Full SHAs, exact commands, case IDs, wall times, missing seams, checkout HEADs, exits, replay inputs,
+both tree results/logs and per-tree means are recorded in the PR. Expected culprit reds return CLI
+exit 1; they are successful negative probes, not execution errors. No required seams were missing
+on any historical row.
 
 - #1221: GA and #936's parent keep both sentinels; the culprit loses objective and newest (R2=2),
   then rc6/rc7/rc8 keep them. Parent / culprit / rc8 send 27,553 / 21,039 / 26,927 tokens.
@@ -88,50 +87,77 @@ probes, not execution errors. No required seams were missing on any historical r
 - #1227's actual introduction is also measured: n113/n128 are red at #917's merge and green at
   its parent. It was already present before #1226; rc6 versus rc7 alone would not prove culprit/parent.
 
-**O2 condition (a): 4 of 4 seed defects are red at their culprit and green at their parent**:
+**Historical acceptance condition (a): 4 of 4 seed defects are red at their culprit and green at their parent**:
 #1220 and #1227 at #917, #1221 at #936, and #1139 at #1129. Fix clearance is measured at rc6,
 rc7 and #1140 respectively. The open #1225 absolute limitation is tracked separately, outside the
 four historical regression seeds. Promotion remains report-only while open product findings remain.
 
-### rc8 current findings and acceptance
+### rc8 findings and original acceptance
 
 **rc8 g0: open product finding.** The exact generated case (seed 1227, 128,000 window,
 112,407 input tokens) still fails R2 twice: GA sends 112,689 and retains objective/newest;
 rc8 sends 112,193 with user mark `[0]`, losing both sentinels. The survival budget is 108,800,
 so marking the newest user did not reach it. The last-resort user pass is `survival_fit.py:427`
-at rc8. `rc8-g0/summary.json`, `rc8-g0.receipt.json` and `g0-proof.json` retain the reproduction.
-There is no delta, xfail, oracle change or production repair for this finding in S1c.
+at rc8. The reproduction is recorded in the PR.
+There is no delta, xfail, oracle change or production repair for this finding in the backtest.
 
-The 4,000-case rc8 projection triage has P_USER=951, all accepted by the exact D1233 subset
-predicate, with R1=P_INPUT=0 and zero unexplained events. D916 absorbs zero; it stays as a
-historical guard. Both #1123 deltas are also zero on this projection-only run. GA/candidate
+The original 4,000-case rc8 projection triage has P_USER=951, all accepted before D1233 was tightened,
+with R1=P_INPUT=0 and zero unexplained events. D916 absorbs zero; it stays as a historical guard. Both #1123 deltas are also zero on this projection-only run. GA/candidate
 wall times are 149.25/222.29 seconds, means 0.03692/0.05502 seconds per case; process wall
 374.91 seconds. No seams are missing. The supplied recheck's 238 P_USER cases used 1,000
 inputs, not 4,000 (confirmed from its original summary); these are different sample sizes.
-Receipts: `rc8-projection/summary.json` and `rc8-projection.receipt.json`.
+Detailed projection receipts are recorded in the PR.
 
-Default collection before/after is 7,712 tests (rc8 adds 14 versus S1b's rc7 count).
+Default collection before/after is 7,712 tests (rc8 adds 14 versus the corrected rc7 count).
 Opt-out: one module skip, expected exit 5, 0.09 seconds pytest / 1.90 seconds process wall.
 Collection after: 14.02 seconds pytest / 15.21 seconds process wall. Ruff and whitespace pass.
-The final opt-in run has **27 passed, 2 strict xfailed (#1225 and #1247), 1 failed** in
+The original final opt-in run has **27 passed, 2 strict xfailed (#1225 and #1247), 1 failed** in
 434.16 seconds pytest / 434.94 seconds process wall. The sole failed test is the generated sample,
 containing only g0's two R2 events. All 14 normal exact cases pass, including both new regression
 shapes. Unique public inputs: 15 exact plus 60 generated; raw R2=2, R3=2 (the existing exact #1123
 cells), all other differential oracles zero. The 1,000 projection cases have P_USER=238, all D1233,
 with zero unexplained. D916 absorbs zero on the complete current run and remains a historical guard.
-Receipts: `opt-in.receipt.json`, `opt-in.log`, `pytest-final/`, and `acceptance-summary.json`.
+Detailed opt-in receipts are recorded in the PR.
 The spec's green-except-xfails expectation conflicts with its requirement to leave g0 visible on rc8;
-this lane preserves the failing retention signal and reports that acceptance limit rather than
+the backtest preserves the failing retention signal and reports that acceptance limit rather than
 adding an unrequested exception. Production repair is outside this tests-only lane.
 
 All commands used the supplied interpreter and host stub, serial execution at nice 19, no xdist,
 no model/network calls, and no pytest cache. The explicitly required local offline matrix/affected
 suite used a 15-minute per-run budget because remote execution would require forbidden push/CI
-writes; the longest focused suite took 7m15s. Original failed input pilots are retained under
-`pilot/` and `pilot-v2/`; the final matrix supersedes them. Ruff/whitespace are clean. No full
+writes; the longest focused suite took 7m15s. Original failed input attempts are
+recorded in the PR; the final matrix supersedes them. Ruff/whitespace are clean. No full
 repository tests, remote CI, push, PR write, release or runtime action was performed.
 
-## S1b corrected public comparison
+### Tightened last-resort acceptance (2026-10-16)
+
+D1233 now requires equal, nonempty user-mark sets and rejects candidate overflow where GA fit.
+D916, all other deltas, oracles, thresholds and product files remain unchanged. The expanded
+predicate regression fails before this change and passes after it.
+
+| Projection probe, seed 1227 | Cases | Raw R1 | Raw P_USER | D916 | D1233 | Unexplained | Exit | Wall s |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Unchanged rc8 | 1,000 | 0 | 238 | 0 | 237 | 1 | 1 | 68.738 |
+| Unchanged rc8 | 4,000 | 0 | 951 | 0 | 946 | 5 | 1 | 189.328 |
+| User pass stops after first mark | 1,000 | 6 | 238 | 6 | 198 | 40 | 1 | 78.959 |
+| User-pass limit guards removed | 400 | 0 | 106 | 0 | 97 | 9 | 1 | 25.379 |
+
+The early-exit mutant's 6 overflowing cases now retain unexplained P_USER events; all 40
+unexplained events also have unequal mark sets. The guard-removal mutant remains red.
+The assumption that equality costs no accepted rc8 cases is false: p543 has GA marks `[2,3,5]`
+and candidate marks `[2,3]`, with outputs 495 and 537 under limit 679. The 4,000-case sample
+also rejects p1491, p3277, p3341 and p3629; all 5 are strict subsets and both trees fit.
+These remain visible rather than weakening the requested equality rule. No seams are missing.
+
+The deduplicated opt-in suite reports **25 passed, 2 strict xfailed, 2 failed** in 310.77 seconds
+pytest / 311.687 seconds process wall. Failures are the existing g0 R2 signal and p543's P_USER
+signal. The old 32K fit input is excluded by ID from `test_exact_shape`; its dedicated checks
+remain, and the separate historical 16K strict xfail is unchanged. Deduplication removes one
+passing test; the new projection failure removes another from the original pass count.
+Detailed commands, replay inputs and results are recorded in the PR. This does not meet the
+zero-unexplained rc8 acceptance expectation; it is advisory evidence, not readiness proof.
+
+## Corrected public comparison
 
 The newest-user objective rule replaces the static first-turn R2 probe. GA now defaults to the managed
 configuration; select `--baseline-config bare|managed` or `LCM_DIFFERENTIAL_BASELINE_CONFIG` (default `managed`).
@@ -187,7 +213,7 @@ Opt-out: one module skip (expected exit 5), 1.85 seconds wall. Full collection: 
 19.25 seconds pytest / 21.19 seconds wall. Enabled collection grows from 18 to 25 tests.
 Bare GA public replay: 184.85 seconds process wall; candidate records reused. No wall-time assertion decides an oracle.
 The initial development run (362.18 seconds) found the 40K run-count discrepancy and a missing-ID unit-fixture
-error in a new delta predicate; both are corrected in the final run. Original S1 receipts below remain historical.
+error in a new delta predicate; both are corrected in the final run. Original receipts below remain historical.
 
 ## Reproduce
 
@@ -228,7 +254,7 @@ All rows use the public layer, seed 1227, and only the named exact shapes. Count
 ## Projection triage
 
 4,000 instrumented p34 cases: 250 R1 events, all 250 absorbed by the sole `D916_GA_MARKED_USER` delta; zero unexplained, zero candidate user marks, zero input mutations. GA/candidate wall times were 51.52/74.08 seconds; mean case times 0.01085/0.01821 seconds. No missing seams.
-The original uninstrumented p34 output artifacts independently contain 253 fit failures, all with GA mark-only user rows. Their SHA-256 receipts and all case IDs are in `historical-253.json` in the lane evidence packet. The new corpus replaces text prefixes with row sentinels, grows very short rows, and uses a fresh store per case (changing store-id widths). It is intentionally reported as 250, not presented as a byte-identical 253-case reproduction.
+The original uninstrumented p34 output artifacts independently contain 253 fit failures, all with GA mark-only user rows. Their SHA-256 receipts and all case IDs for those 253 failures are recorded in the PR. The new corpus replaces text prefixes with row sentinels, grows very short rows, and uses a fresh store per case (changing store-id widths). It is intentionally reported as 250, not presented as a byte-identical 253-case reproduction.
 
 ## Historical public triage and unexplained results
 
@@ -241,7 +267,7 @@ The rc7 run contains 12 exact shapes plus 60 generated cases, seed 1227. It repo
 These are observed synthetic comparison failures, not newly confirmed product defects. In particular, R2 tracks the original tagged objective even after later scripted user turns. Every failure retains its full case JSON; no new delta suppresses it.
 Absolute over-window outputs also occurred in g4, g10, g13, g15, g41, g42, and g44; GA did not fit either, so these are not R1 regressions. #1225 is separate: this 22k-objective/8k-tool-tail input is projected to 22,579 tokens and fits. Its strict absolute xfail XPASSes; the supplied shape does not reproduce the issue's absolute failure.
 
-The rc6 enabled suite also reports 34 unexplained projection R1 cases among 1,000 samples (98 raw fit failures minus 64 D916 cases). These stay red; the rc7 projection sample clears them. The exact replay records live in `pytest-rc6/projection/summary.json`.
+The rc6 enabled suite also reports 34 unexplained projection R1 cases among 1,000 samples (98 raw fit failures minus 64 D916 cases). These stay red; the rc7 projection sample clears them. The exact replay records are recorded in the PR.
 
 | rc6 projection case | GA tokens | Candidate tokens | Limit |
 |---|---:|---:|---:|
@@ -284,25 +310,25 @@ The rc6 enabled suite also reports 34 unexplained projection R1 cases among 1,00
 
 - Default config construction disables only temporal rollups; fleet overrides are the seven settings in the prior public driver. #1107 declares a 4,000-token first-sight threshold because its stated 5,000-token result is below the product default 10,000 threshold; host overhead is 1,000 tokens.
 - Both trees use the deterministic character counter, no plugin registration, an offline provider, and a fresh engine/store per case. TCP connections are refused. Healthy replies are 80 tokens, or approximately 2,000 for #1139. The logical host advances 15 seconds per model call; a provider attempt advances one second. Product cooldown, circuit, and spend-guard logic still run.
-- All loaded tree modules with a time-module binding share the scripted clock. An early matrix patched only engine/escalation and was invalid after compaction moved to its own module; `backtest-v2` supersedes it. No timing assertion decides product correctness.
+- All loaded tree modules with a time-module binding share the scripted clock. An early matrix patched only engine/escalation and was invalid after compaction moved to its own module; the corrected run recorded in the PR supersedes it. No timing assertion decides product correctness.
 - Objective cases seed a real DAG leaf through the guarded seams used by the existing regression test. They then use public ingest/should_compress/compress/retry/update calls; the driver does not force private assembly results into the sent view.
 - A1 reads every stored message, follows externalized references found in stored content with that tree's `extract_externalized_refs` and `load_externalized_payload`, and includes retrieved payload content in the sentinel census. Unretrievable references are recorded. Sentinel coverage is not a byte-for-byte durability proof.
 - Every public call records token/row counts, compression runs, provider calls, overflow status, sentinel census, and tool-pair errors. The newest alias is derived from the latest produced user row's unique sentinel. Projection fixtures retain p34's synthetic externalized-placeholder and unstored-row cases.
 - Generated samples weight windows at or below 128k at 70% exactly for a 60-case run. Larger windows use larger rows to bound local row count; the sampler is not an exhaustive Cartesian matrix. A stopped initial 1M-window/8,311-row pilot is retained as incomplete evidence. The final generator pads any density-floor shortfall deterministically.
 - Private seam absence is recorded and unsupported essential paths become DRIVER failures. No tested tree lacked a required seam. Missing commits/host stubs skip locally and fail under CI.
-- The provided interpreter has no xdist: runs are serial under nice 19, cacheprovider disabled. This lane explicitly requires the local offline historical matrix; it does not run the full repository suite. A brief overlap during the pilot was suspended, then resumed serially.
+- The provided interpreter has no xdist: runs are serial under nice 19, cacheprovider disabled. The backtest explicitly requires the local offline historical matrix; it does not run the full repository suite. A brief overlap during the pilot was suspended, then resumed serially.
 
 ## Historical acceptance evidence
 
-Detailed command receipts and logs are in the S1 lane evidence packet. The default collection baseline is 7,698 tests. The disabled differential module reports one skip in 0.04 seconds (0.99 seconds process wall time); pytest exits 5 because the opt-out module collects no runnable tests.
+Detailed command receipts and logs are recorded in the PR. The default collection baseline is 7,698 tests. The disabled differential module reports one skip in 0.04 seconds (0.99 seconds process wall time); pytest exits 5 because the opt-out module collects no runnable tests.
 Full collection after the additions is still 7,698 tests (8.94 seconds), with the new module skipped. `ruff check tests/differential` passes.
 
 Enabled worktree pytest: 12 passed, 6 failed in 146.22 seconds. Enabled rc6 pytest: 9 passed, 9 failed in 164.54 seconds. Four small-window tests and the generated sample fail on the documented public reds; #1225 fails as strict XPASS. Rc6 additionally fails the two #1227 exact shapes and its projection test. Three cheap oracle checks pass. These are report-only failures; the opt-out suite remains unchanged.
 
-After the density-floor correction, the focused 60-case generated test still has only g51's R3 failure; all inputs measure 0.80022–1.46751 times their window. Its final GA/candidate wall times are 73.30/37.77 seconds and mean case times 1.208/0.488 seconds. The exact-shape receipts are unchanged; `generated-final` supersedes only the generated-sample receipt.
+After the density-floor correction, the focused 60-case generated test still has only g51's R3 failure; all inputs measure 0.80022–1.46751 times their window. Its final GA/candidate wall times are 73.30/37.77 seconds and mean case times 1.208/0.488 seconds. The exact-shape receipts are unchanged; the final result recorded in the PR supersedes only the generated-sample receipt.
 
 No production source, existing test, workflow, or root configuration changed. There was no push, PR, merge, release, or runtime action.
 
-## Historical remaining evidence gate (superseded by S1b)
+## Historical remaining evidence gate (superseded by the corrected public comparison)
 
 The orchestrator should retain these unexplained cases and choose a bounded follow-up using the original historical host inputs for #1221, #1139, and #1225. The acceptance condition is the original failure on its culprit SHA and clearance on the fix while keeping the oracles unchanged. Treating a green blind spot or strict XPASS as proof of a fix would be misleading.
