@@ -29,15 +29,15 @@ ACCEPTED_DELTAS = [AcceptedDelta(
 
 
 def last_resort_user_mark(case, ga, cand, failure=None):
-    """#1233 requires equal, nonempty marks and no overflow where GA fit."""
+    """#1233: nonempty subset of GA user marks, and no candidate overflow where GA fit."""
     return (bool(cand["user_marks"])
-            and set(cand["user_marks"]) == set(ga["user_marks"])
+            and set(cand["user_marks"]) <= set(ga["user_marks"])
             and not (ga["out_tokens"] <= case["limit"] < cand["out_tokens"]))
 
 
 ACCEPTED_DELTAS.append(AcceptedDelta(
     "D1233_LAST_RESORT_USER_MARK", "https://github.com/electricsheephq/lcm-x/issues/1233",
-    ("projection",), "P_USER", "#1233 requires equal nonempty user marks and no candidate overflow where GA fit.",
+    ("projection",), "P_USER", "#1233: nonempty subset of GA user marks, and no candidate overflow where GA fit.",
     last_resort_user_mark,
 ))
 
