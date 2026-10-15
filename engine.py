@@ -1287,7 +1287,7 @@ class LCMEngine(
         an LCM no-op (for example, when request pressure is high but all
         compactable raw backlog is protected by the fresh tail).
         """
-        return self._last_compression_status
+        return self._bypass_compress_state().get("_last_compression_status", "idle")
 
     @last_compression_status.setter
     def last_compression_status(self, value: str) -> None:
@@ -1297,17 +1297,17 @@ class LCMEngine(
         in ``conversation_compression.py`` raises ``AttributeError: property
         has no setter``, crashing context compression.
         """
-        self._last_compression_status = value
+        self._bypass_compress_state()["_last_compression_status"] = value
 
     @property
     def last_compression_noop_reason(self) -> str:
         """Human-readable reason for the latest no-op compression decision."""
-        return self._last_compression_noop_reason
+        return self._bypass_compress_state().get("_last_compression_noop_reason", "")
 
     @property
     def last_compression_was_noop(self) -> bool:
         """Whether the most recent compression/preflight decision was a no-op."""
-        return self._last_compression_status == "noop"
+        return self.last_compression_status == "noop"
 
     def _mark_preflight_compression_requested(
         self,
@@ -5009,8 +5009,8 @@ class LCMEngine(
             "effective_context_length_cap": self.effective_context_length_cap,
             "effective_context_length_reason": self.effective_context_length_reason,
             "threshold_tokens": self.threshold_tokens,
-            "last_compression_status": self._last_compression_status,
-            "last_compression_noop_reason": self._last_compression_noop_reason,
+            "last_compression_status": self.last_compression_status,
+            "last_compression_noop_reason": self.last_compression_noop_reason,
             "last_survival_fit": dict(self._last_survival_fit) if self._last_survival_fit else None,
             "threshold_full_sweep": dict(self._last_threshold_full_sweep),
             "last_stub_first_exit": dict(self._last_stub_first_exit) if self._last_stub_first_exit else None,

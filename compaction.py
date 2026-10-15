@@ -559,6 +559,8 @@ class CompactionMixin:
                  bypass_cooldown: bool = False) -> List[Dict[str, Any]]:
         """Run compaction and leave a terminal public status on every failure. ``bypass_cooldown`` is the
         host's mark of a recovery attempt (#608): the returned list fits under the compaction threshold."""
+        if self._bypasses_lcm_context_management():
+            return self._compress_bypassed(messages, current_tokens, focus_topic, force)
         self._last_compress_leaves = None
         self._last_hidden_backlog = None
         self._compress_forced_overflow = False
@@ -668,6 +670,44 @@ class CompactionMixin:
                 thread_context.foreground_budget = None
             self._finish_foreground_budget(budget, returned)
 
+    def _compress_bypassed(self, messages, current_tokens, focus_topic, force):
+        """A child owns its budget and status; it never enters foreground bookkeeping."""
+        context = self._thread_context
+        budget = context.foreground_budget = self._new_foreground_budget()
+        returned = None
+        context._last_compression_status = "running"
+        context._last_compression_noop_reason = ""
+        try:
+            if not messages:
+                context._last_compression_status = "noop"
+                context._last_compression_noop_reason = "empty message list"
+                result = messages
+            else:
+                if current_tokens is None or current_tokens <= 0:
+                    auxiliary_session_id = self._thread_context_session_id()
+                    if auxiliary_session_id:
+                        auxiliary_prompt_tokens = self._current_auxiliary_prompt_tokens(auxiliary_session_id)
+                        if auxiliary_prompt_tokens > 0:
+                            current_tokens = auxiliary_prompt_tokens
+                result = self._compress_lcm_bypassed_session(
+                    messages, current_tokens=current_tokens, focus_topic=focus_topic, force=force,
+                )
+                if (isinstance(result, list) and result is not messages and len(result) == len(messages)
+                        and all(self._public_compression_row(left) == self._public_compression_row(right)
+                                for left, right in zip(result, messages))):
+                    result = messages
+            self._host_uid_log_compaction_summary()
+            logger.debug("LCM compaction emission descriptor count=%d", 0)
+            returned = result
+            return result
+        except BaseException:
+            context._last_compression_status = "error"
+            context._last_compression_noop_reason = ""
+            raise
+        finally:
+            context.foreground_budget = None
+            self._finish_foreground_budget(budget, returned)
+
     def _new_foreground_budget(self) -> ForegroundBudget:
         soft, hard = self._foreground_budget_seconds()
         return ForegroundBudget(soft=soft, hard=hard, configured_timeout=self._config.summary_timeout_ms / 1000,
@@ -684,12 +724,13 @@ class CompactionMixin:
                 pre, calls = budget.first_call_started - budget.t0, budget.last_call_ended - budget.first_call_started
                 finalize = ended - budget.last_call_ended
                 budget.estimates.record_finalize(finalize)
-            reason = str(self._last_compression_status or "unknown")
+            reason = str(self.last_compression_status or "unknown")
             if budget.sweep_active and reason != "error":
                 reason = str(self._last_threshold_full_sweep.get("stop_reason") or reason)
             elif reason != "error" and budget.stop_reason:  # a time stop with the sweep off (#605)
                 reason = budget.stop_reason
-            exited = getattr(self, "_stub_first_exit_now", None) if reason != "error" else None
+            exited = (getattr(self, "_stub_first_exit_now", None)
+                      if reason != "error" and not self._bypasses_lcm_context_management() else None)
             if exited:  # #671: the free cuts reached the target before any model call
                 reason = "stub_first_exit"
             logger.info("LCM compaction stop: reason=%s leaves=%d progress=%s elapsed=%.1fs pre=%.1fs calls=%.1fs "
@@ -716,12 +757,13 @@ class CompactionMixin:
         and ``_ingest_cursor`` now indexes ``result``, so the session-end hook skips
         the re-ingest; it still finalizes the session with its own frontier (#483).
         """
+        if self._bypasses_lcm_context_management():
+            return
         try:
             self._compress_commit_proof = None
             if (
                 not self._session_id
                 or not isinstance(result, list)
-                or self._bypasses_lcm_context_management()
                 or self._ingest_cursor_needs_reconcile
                 or self._ingest_cursor != len(result)
             ):

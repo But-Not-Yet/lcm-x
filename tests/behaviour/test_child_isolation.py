@@ -25,7 +25,7 @@ _compress_commit_proof
 
 
 class ParentStateChanged(AssertionError):
-    """Only the final isolation assertion may satisfy the expected defect."""
+    """Identify changes to the parent state captured around the child call."""
 
 
 def _snapshot(engine):
@@ -50,15 +50,7 @@ def _history():
 
 
 @pytest.mark.parametrize("schedule", ["sequential", "interleaved"])
-@pytest.mark.parametrize("group", [
-    pytest.param("state", marks=pytest.mark.xfail(
-        strict=True, raises=ParentStateChanged, reason="#1222 item 3: child resets parent compress state")),
-    pytest.param("proof", marks=pytest.mark.xfail(
-        strict=True, raises=ParentStateChanged, reason="#1222 item 3: child clears parent commit proof")),
-    pytest.param("status", marks=pytest.mark.xfail(
-        strict=True, raises=ParentStateChanged, reason="#1157: child overwrites parent diagnostic status")),
-    "control",
-])
+@pytest.mark.parametrize("group", ["state", "proof", "status", "control"])
 def test_child_preserves_parent_compress_state(tmp_path, monkeypatch, schedule, group):
     pin_char_counter(monkeypatch)
     summaries = ScriptedSummarizer().install(monkeypatch)
@@ -128,3 +120,92 @@ def test_child_preserves_parent_compress_state(tmp_path, monkeypatch, schedule, 
         changed = {name: (before[name], after[name]) for name in names if before[name] != after[name]}
         if changed:
             raise ParentStateChanged(changed)
+
+
+@pytest.mark.parametrize("host_fails", [False, True])
+def test_interleaved_child_stop_reason_and_native_state(tmp_path, monkeypatch, caplog, host_fails):
+    """The native path uses a child cache and clock while a parent's proof is live."""
+    import logging
+    import sys
+    import threading
+    import time
+    from types import ModuleType
+
+    pin_char_counter(monkeypatch)
+    ScriptedSummarizer().install(monkeypatch)
+    clock = threading.local()
+    monkeypatch.setattr(time, "monotonic", lambda: 1000.0 + getattr(clock, "elapsed", 0.0))
+    created = []
+
+    class NativeCompressor:
+        compression_count = 0
+        _last_compress_aborted = False
+
+        def __init__(self, **kwargs):
+            created.append(self)
+
+        def compress(self, messages, **kwargs):
+            clock.elapsed = 7.5
+            if host_fails:
+                raise RuntimeError("scripted native failure")
+            self.compression_count += 1
+            return messages
+
+    native = ModuleType("agent.context_compressor")
+    native.ContextCompressor = NativeCompressor
+    monkeypatch.setitem(sys.modules, "agent.context_compressor", native)
+    with engine_context(tmp_path, window=200_000, session_id="parent", conversation_id="parent",
+                        fresh_tail_count=2, leaf_chunk_tokens=400, temporal_rollups_enabled=False,
+                        large_output_externalization_enabled=False) as engine:
+        engine.model = "test-model"
+        engine._last_compress_aborted = "parent sentinel"
+        ready, finished = Barrier(2, timeout=10), Barrier(2, timeout=10)
+        record_proof = engine._record_compress_commit_proof
+        snapshots, threads = [], {}
+
+        def pause_parent(messages, result):
+            record_proof(messages, result)
+            if engine._bypasses_lcm_context_management():
+                return
+            snapshots.append(_snapshot(engine))
+            ready.wait()
+            finished.wait()
+            snapshots.append(_snapshot(engine))
+
+        monkeypatch.setattr(engine, "_record_compress_commit_proof", pause_parent)
+
+        def parent():
+            threads["parent"] = threading.get_ident()
+            return engine.compress(_history(), force=True)
+
+        def child():
+            threads["child"] = threading.get_ident()
+            ready.wait()
+            engine._mark_thread_context_stateless("child")
+            try:
+                view = [user("child request"), assistant("child reply")]
+                result = engine.compress(view, force=True)
+                assert result is view
+                assert engine.last_compression_status == "host_fallback"
+                assert engine.get_status()["last_compression_noop_reason"] == "LCM bypassed: auxiliary thread context"
+                record_proof(view, result)  # Its own guard must not clear the parent's proof either.
+                engine.last_compression_status = ""  # The host's writable reset is child-local too.
+                assert engine.last_compression_status == ""
+                assert engine._thread_context.foreground_budget is None
+            finally:
+                engine._clear_thread_context_stateless("child")
+                finished.wait()
+
+        with caplog.at_level(logging.INFO, logger="hermes_lcm"), ThreadPoolExecutor(max_workers=2) as pool:
+            foreground, delegated = pool.submit(parent), pool.submit(child)
+            delegated.result(timeout=15)
+            assert foreground.result(timeout=15)
+        assert len(created) == 1
+        stops = {record.thread: record.getMessage() for record in caplog.records
+                 if record.getMessage().startswith("LCM compaction stop:")}
+        assert len(stops) == 2
+        assert "reason=host_fallback leaves=0" in stops[threads["child"]]
+        assert "host=7.5s" in stops[threads["child"]]
+        assert "reason=compacted" in stops[threads["parent"]]
+        assert " host=" not in stops[threads["parent"]]
+        assert snapshots[0] == snapshots[1]
