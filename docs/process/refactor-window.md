@@ -17,6 +17,10 @@ After the v0.27.0 GA the window is 5 working days, before v0.28 feature work.
    (cursor and reconciliation updates, carrier and emission registration).
 6. **No new mixins, no family splits before stage extraction**, and no re-export shims that let module monkeypatches pass while
    testing nothing.
+7. **Touched tests move onto the shared harness.** When a refactor PR edits an existing engine test, that test moves to the
+   `tests/harness` helpers in the same PR. There is no bulk migration (see `tests/harness/README.md`).
+8. **New modules are strictly typed.** A module created by an extraction passes `mypy --strict` on that file alone, and the PR
+   body records the command. Existing modules are not held to this.
 
 ## Order for the first window (v0.27.0 GA → v0.27.1 rc1 / v0.28)
 1. Bypassed-child parent-state proof and rebind equivalence (tests) — they gate every per-compress state-lifetime change.
