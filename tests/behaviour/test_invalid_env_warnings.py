@@ -49,6 +49,14 @@ def test_valid_env_warning_consumers(monkeypatch, tmp_path, caplog):
     monkeypatch.setenv("LCM_SURVIVAL_RESERVE", "0.15")
     monkeypatch.setenv("LCM_EMBEDDINGS_ENABLED", "false")
     monkeypatch.setenv("LCM_TEMPORAL_ROLLUPS_ENABLED", "false")
+    for key, value in {
+        "LCM_CONTEXT_THRESHOLD": "0.75", "LCM_LEAF_CHUNK_TOKENS": "24000",
+        "LCM_SUMMARY_TIMEOUT_MS": "120000", "LCM_EMBEDDING_PROVIDER": "voyage",
+        "LCM_PREANSWER_EVIDENCE_MODE": "off", "LCM_EMBEDDING_STORAGE_DTYPE": "float32",
+        "LCM_EMPTY_LIFECYCLE_GC_MAX_AGE_HOURS": "24",
+        "LCM_RECALL_ARM_WEIGHTS": "fts=.5", "LCM_MODEL_THRESHOLDS": "model:.75",
+    }.items():
+        monkeypatch.setenv(key, value)
     c = config.LCMConfig.from_env()
     c.database_path = str(tmp_path / "lcm.db")
     with caplog.at_level(logging.WARNING):
