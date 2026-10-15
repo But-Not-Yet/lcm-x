@@ -40,3 +40,11 @@ def test_proven_rows_name_a_receipt():
             headings = re.findall(r"^## (.+)$", receipt.read_text(encoding="utf-8"), re.MULTILINE)
             slugs = {re.sub(r"[^a-z0-9 _-]", "", heading.lower()).replace(" ", "-") for heading in headings}
             assert anchor in slugs, (row[0], target, anchor)
+
+
+def test_receipts_link_existing_inverse_patches():
+    receipts = DOC.parent / "invariants" / "receipts.md"
+    patches = re.findall(r"\]\((reverts/[^)]+\.patch)\)", receipts.read_text(encoding="utf-8"))
+    assert patches
+    for patch in patches:
+        assert (receipts.parent / patch).is_file(), patch
