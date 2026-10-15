@@ -194,6 +194,8 @@ def test_short_image_content_stays_structured_after_fit(tmp_path, monkeypatch):
         assert survival_fit.count_message_tokens(user) > 256
         engine.ingest([user])
         before = engine._store.get_session_messages("S")
+        limit = engine._survival_measure([user])
+        monkeypatch.setattr(engine, "_survival_fit_budget", lambda *args: limit)
         fitted = engine._survival_fit([user], [user], engine._survival_measure([user]), "issue_917")
         assert isinstance(fitted[-1]["content"], list)
         assert fitted[-1]["content"] is content
