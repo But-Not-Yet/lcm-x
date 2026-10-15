@@ -1,6 +1,12 @@
-"""Exact constructor traces captured before connection-recipe extraction."""
+"""Pin connection recipes, not the schema SQL that follows them.
+
+Regenerate with LCM_REGENERATE_CONNECTION_RECIPES=1 python -m pytest
+tests/test_connection_recipes.py -q (writes the golden and skips trace comparisons).
+Run the whole file so every success and error case is captured.
+"""
 
 import json
+import os
 from pathlib import Path
 import sqlite3
 import time
@@ -18,6 +24,48 @@ from hermes_lcm.trajectory_store import CorpusIdentity, TrajectoryStore
 
 CASES = ("trajectory", "trajectory_ro", "assertion", "assertion_ro", "rollup", "query_view")
 GOLDEN = Path(__file__).with_name("fixtures") / "connection_recipes.json"
+
+
+def recipe_trace(events):
+    end = next(i for i, event in enumerate(events) if event[:2] == ["set", "row_factory"])
+    boundary = events[end + 1]
+    assert boundary[0] in ("execute", "executescript")
+    return events[:end + 1] + [[boundary[0], boundary[1].split()[0].upper()]]
+
+
+@pytest.fixture(scope="session")
+def golden_traces():
+    regenerate = os.environ.get("LCM_REGENERATE_CONNECTION_RECIPES") == "1"
+    traces = {} if regenerate else json.loads(GOLDEN.read_text())
+    yield traces
+    if regenerate:
+        expected = set(CASES) | {
+            f"{prefix}_{kind}"
+            for prefix in ("future", "failure")
+            for kind in ("trajectory", "assertion", "rollup", "query_view")
+        }
+        assert set(traces) == expected, "Regenerate by running the entire test file"
+        lines = ["{"]
+        for name, events in traces.items():
+            lines.append(f"  {json.dumps(name)}: [")
+            lines.extend(f"    {json.dumps(event)}," for event in events)
+            lines[-1] = lines[-1].removesuffix(",")
+            lines.append("  ],")
+        lines[-1] = lines[-1].removesuffix(",")
+        GOLDEN.write_text("\n".join(lines + ["}", ""]))
+
+
+@pytest.fixture
+def check_trace(golden_traces):
+    def check(name, events, error=None):
+        trace = events if error is None else events + [
+            ["exception", type(error).__name__, str(error)],
+        ]
+        if os.environ.get("LCM_REGENERATE_CONNECTION_RECIPES") == "1":
+            golden_traces[name] = trace
+            pytest.skip("Regenerating connection recipe golden")
+        assert trace == golden_traces[name]
+    return check
 
 
 def prepare(kind, path):
@@ -99,20 +147,20 @@ def deterministic_recipe_environment(monkeypatch):
 
 
 @pytest.mark.parametrize("kind", CASES)
-def test_constructor_trace(kind, tmp_path, monkeypatch):
+def test_constructor_trace(kind, tmp_path, monkeypatch, check_trace):
     path = tmp_path / "recipe #?.db"
     prepare(kind, path)
     events, connections = trace_connections(monkeypatch, path)
     store = construct(kind, path)
     try:
-        assert events == json.loads(GOLDEN.read_text())[kind]
         assert len(connections) == 1
+        check_trace(kind, recipe_trace(events))
     finally:
         store.close()
 
 
 @pytest.mark.parametrize("kind", ("trajectory", "assertion", "rollup", "query_view"))
-def test_future_core_version_refused_before_writable_setup(kind, tmp_path, monkeypatch):
+def test_future_core_version_refused_before_writable_setup(kind, tmp_path, monkeypatch, check_trace):
     path = tmp_path / "future.db"
     conn = sqlite3.connect(path)
     conn.execute("CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT)")
@@ -134,6 +182,7 @@ def test_future_core_version_refused_before_writable_setup(kind, tmp_path, monke
         assert not any(event[0] == "executescript" for event in events)
         assert path.read_bytes() == before
         assert events.count(["close"]) == (1 if kind == "query_view" else 0)
+        check_trace(f"future_{kind}", events, caught.value)
     finally:
         for conn in connections:
             conn.close()
@@ -154,7 +203,7 @@ def test_read_only_open_preserves_database_bytes(kind, tmp_path):
 
 
 @pytest.mark.parametrize("kind", ("trajectory", "assertion", "rollup", "query_view"))
-def test_setup_failure_cleanup_and_exception(kind, tmp_path, monkeypatch):
+def test_setup_failure_cleanup_and_exception(kind, tmp_path, monkeypatch, check_trace):
     path = tmp_path / "failure.db"
     events, connections = trace_connections(
         monkeypatch, path, fail_statement="PRAGMA busy_timeout=30000",
@@ -166,6 +215,7 @@ def test_setup_failure_cleanup_and_exception(kind, tmp_path, monkeypatch):
         prefix = "query-view schema ensure failed: " if kind == "query_view" else ""
         assert str(caught.value) == prefix + "recipe failure"
         assert events.count(["close"]) == (1 if kind == "query_view" else 0)
+        check_trace(f"failure_{kind}", events, caught.value)
     finally:
         for conn in connections:
             conn.close()
