@@ -22,6 +22,40 @@ logger = logging.getLogger(__name__)
 
 
 class BypassMixin:
+    def _bypass_compress_state(self) -> dict:
+        """Keep bypass diagnostics and native-compressor ownership on the calling thread."""
+        context = getattr(self, "_thread_context", None)
+        if context is not None and self._bypasses_lcm_context_management():
+            return vars(context)
+        return self.__dict__
+
+    @property
+    def _host_fallback_compressor(self):
+        return self._bypass_compress_state().get("_host_fallback_compressor")
+
+    @_host_fallback_compressor.setter
+    def _host_fallback_compressor(self, value):
+        self._bypass_compress_state()["_host_fallback_compressor"] = value
+
+    @property
+    def _host_fallback_session_id(self):
+        return self._bypass_compress_state().get("_host_fallback_session_id", "")
+
+    @_host_fallback_session_id.setter
+    def _host_fallback_session_id(self, value):
+        self._bypass_compress_state()["_host_fallback_session_id"] = value
+
+    @property
+    def _last_compress_aborted(self):
+        state = self._bypass_compress_state()
+        if "_last_compress_aborted" not in state:
+            raise AttributeError("_last_compress_aborted")
+        return state["_last_compress_aborted"]
+
+    @_last_compress_aborted.setter
+    def _last_compress_aborted(self, value):
+        self._bypass_compress_state()["_last_compress_aborted"] = value
+
     def _bypasses_lcm_context_management(self) -> bool:
         """Return True when this binding must not write/manage LCM state.
 
@@ -469,13 +503,13 @@ class BypassMixin:
                 observed_tokens,
                 self.threshold_tokens,
             )
-            self._last_compression_status = "noop"
-            self._last_compression_noop_reason = f"LCM bypassed below threshold: {reason}"
+            self._thread_context._last_compression_status = "noop"
+            self._thread_context._last_compression_noop_reason = f"LCM bypassed below threshold: {reason}"
             return self._redact_active_replay_messages(messages)
 
         logger.debug("LCM delegating compaction for bypassed %s %s", reason, session_id)
-        self._last_compression_status = "host_fallback"
-        self._last_compression_noop_reason = f"LCM bypassed: {reason}"
+        self._thread_context._last_compression_status = "host_fallback"
+        self._thread_context._last_compression_noop_reason = f"LCM bypassed: {reason}"
         safe_messages = self._redact_active_replay_messages(messages)
         target_tokens = self._bypass_compaction_target_tokens(
             observed_tokens=observed_tokens,
