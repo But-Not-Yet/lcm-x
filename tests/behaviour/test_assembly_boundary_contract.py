@@ -186,14 +186,20 @@ def test_forced_overflow_flag_and_warning(engine, caplog, cap):
     assert stored_rows(engine) == raw
 
 
-@pytest.mark.xfail(strict=True, reason="#1225: explicit cap gives tail priority over the preserved objective")
+class ObjectiveDropped(AssertionError):
+    """Only the final objective check may satisfy the #1225 strict xfail."""
+
+
+@pytest.mark.xfail(strict=True, raises=ObjectiveDropped,
+                   reason="#1225: explicit cap gives tail priority over the preserved objective")
 def test_1225_objective_over_remaining_room(engine):
     objective = user("OBJECTIVE_SENTINEL " + "plan" * 500)
     tail = [assistant("TAIL_SENTINEL " + "data" * 700)]
     engine.ingest([SYSTEM, objective, *tail])
     engine._pending_context_anchor_messages = [objective, *tail]
     result = assemble(engine, SYSTEM, tail, assembly_cap_override=1000)
-    assert any(objective["content"] in row["content"] for row in result)
+    if not any(objective["content"] in row["content"] for row in result):
+        raise ObjectiveDropped("objective missing from the capped assembly")
 
 
 def test_last_resort_warning_after_unbudgeted_sanitizer_addition(engine, monkeypatch, caplog):
