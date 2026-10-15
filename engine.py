@@ -1213,9 +1213,7 @@ class LCMEngine(
         except (TypeError, ValueError):
             absolute_threshold_tokens = 0
         if absolute_threshold_tokens > 0:
-            self.threshold_tokens = threshold_tokens(
-                self.threshold_tokens, None, absolute_threshold_tokens
-            )
+            self.threshold_tokens = absolute_threshold_tokens
             # Keep route-specific ratio auto-raise from re-climbing the
             # intermediate ratio on later recomputes; absolute still wins
             # above, but disabling auto-raise keeps status/percent honest.
