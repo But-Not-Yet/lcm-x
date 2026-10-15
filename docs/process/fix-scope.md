@@ -1,0 +1,37 @@
+# Fix scope: what a fix is compared with, and how far it must reach
+
+Six v0.27.0 release candidates were respun. Per-PR review caught none of the causes, and four were cases the previous GA handled
+and the candidate did not. Four of those were side effects of an earlier fix. These rules address that pattern.
+
+## Baselines
+- **Regression baseline = the previous GA, never the previous rc.** A fix is judged by whether the candidate handles every input
+  the previous GA handled. A comparison against the previous rc only shows the fix's own delta, and that is how a narrowed fix
+  shipped in v0.27.0-rc6 and needed rc7.
+- **Refactor baseline = the immediate pre-refactor commit, byte-identical.** See [refactor-window.md](refactor-window.md).
+- **Absolute regression cases are kept across GA rotations.** When the GA baseline moves, archive the deltas that were accepted
+  against the old GA. Keep absolute cases such as the #1225 residual, so a known gap never becomes "parity with the GA" by rotation.
+- The tool is `tests/differential` (`LCM_DIFFERENTIAL=1`). A fix PR on the turn path cites its differential row.
+
+## Sibling sweep
+After any Phase B finding, sweep the whole sibling shape family before the next rc, not only the reported shape: role × tool
+topology (parallel batch, sequential pairs, mixed) × row size (around 256 tokens and the 1,200/2,400-character projection
+edges) × window (16K to 1M) × summarizer (healthy, outage) × configuration (defaults, fleet overlay). #1220 (tool rows, parallel)
+and #1227 (assistant rows, sequential) were one family found one respin apart.
+
+## Spec amendments that narrow a fix
+A spec may name the existing tests it changes and justify each change. An amendment that narrows a fix so that old tests "pass
+unchanged" must show the same reachability evidence as the fix itself, for every shape it drops. The rc6 → rc7 respin came from
+such an amendment.
+
+## Default flips
+- v0.28: no product-default flips.
+- From v0.29: at most 2 default flips per release. Each one carries a differential row and a pinned row in
+  `tests/test_issue_1013_product_defaults.py`, and lands in its own PR.
+- Rationale: v0.27.0 changed 11 defaults across 5 PRs, and the fallout (#1139, #1221) appeared only at shipped defaults on
+  particular windows.
+
+## Checklist for a fix PR
+- [ ] The previous-GA differential row for the fixed shape (red before, green after).
+- [ ] The sibling family swept, with the cells listed.
+- [ ] The invariant IDs touched ([docs/invariants.md](../invariants.md)).
+- [ ] Every changed existing test named and justified in the PR body.
