@@ -553,6 +553,12 @@ _ENV_CHOICES = {
     "embedding_storage_dtype": (("float32", "int8"), str.lower, "ignored; using 'float32'"),
 }
 
+# Deprecation/removal versions shared by the loader and generated reference.
+ENV_FIELD_DEPRECATIONS: dict[str, tuple[str, str]] = {
+    "cache_friendly_condensation_enabled": ("v0.27.1", "v0.28.0"),
+    "large_output_transcript_gc_enabled": ("v0.27.1", "v0.28.0"),
+}
+
 
 def _warn_env_choice(name: str, raw: str, warnings: list[str]) -> None:
     if name not in _ENV_CHOICES or not raw.strip():
@@ -1302,11 +1308,10 @@ class LCMConfig:
                 if os.environ.get(spec.env_key, "").strip() and len(config_source_warnings) == warning_count:
                     _warn_env_range(spec.name, value, config_source_warnings)
             setattr(c, spec.name, value)
-            if value is True and spec.name in (
-                "cache_friendly_condensation_enabled", "large_output_transcript_gc_enabled",
-            ):
+            if value is True and spec.name in ENV_FIELD_DEPRECATIONS:
+                _since, removal = ENV_FIELD_DEPRECATIONS[spec.name]
                 config_source_warnings.append(
-                    f"deprecated: {spec.env_key} is set; this experiment is removed in v0.28.0 (#1246). "
+                    f"deprecated: {spec.env_key} is set; this experiment is removed in {removal} (#1246). "
                     "Until then it behaves as before."
                 )
 
