@@ -444,9 +444,12 @@ def accounting(d: Path, events: list[dict]) -> dict:
     ``/models`` catalog read, or unexpected (an unrouted path/method or an unknown role: the cell ERRORs). Each main
     request is exactly one scripted step (a reply, a tool-call step, a crash hold or an unexpected main request)."""
     reqs = read_jsonl(d / "provider-requests.jsonl")
-    by_role, by_route, unexpected = {}, {}, []
+    by_role, by_route, unexpected, truncated = {}, {}, [], []
     for r in {r["rid"]: r for r in reqs}.values():
         route = FP.route_of(r.get("method"), r.get("path"))  # re-derived, not trusted from the log
+        if route == "completion" and r.get("truncated"):  # its client was SIGKILLed mid-send: no body, never served
+            truncated.append(r["rid"])
+            continue
         by_route[route] = by_route.get(route, 0) + 1
         if route == "completion":
             by_role[r["role"]] = by_role.get(r["role"], 0) + 1
@@ -456,7 +459,10 @@ def accounting(d: Path, events: list[dict]) -> dict:
                "tool_steps": len({(e["phase"], e["id"].rsplit("_", 1)[0]) for e in events if e["event"] == "tool_issue"}),
                "crash_holds": sum(1 for e in events if e.get("fault") == "crash_after_compaction_before_reply"),
                "unexpected": len({r["rid"] for r in reqs if r.get("unexpected")})}
+    kills = sum(1 for e in events if e.get("event") == "crash")  # every R2 crash is a SIGKILL of the host group
+    unexpected += [{"rid": rid, "route": "truncated"} for rid in truncated[kills:]]  # at most one per kill
     return {"requests_by_role": by_role, "requests_by_route": by_route, "unexpected_requests": unexpected[:20],
+            "truncated_requests": truncated,
             "main_implied": implied, "faults": sorted({(r["rid"], r["fault"]) for r in reqs if r.get("fault")}),
             "ok": by_role.get("main", 0) == sum(implied.values()) and not unexpected}
 
