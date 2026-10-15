@@ -1,6 +1,8 @@
 """#1221: the default prefix bound budgets summaries without dropping the objective."""
 
+import hashlib
 import json
+import re
 
 import pytest
 
@@ -88,3 +90,75 @@ def test_128k_assembly_is_byte_identical_to_unbounded_rc5_path(engine):
     engine.context_length = 0  # rc5 has no default bound on an unknown window.
     uncapped = engine._assemble_context(system, tail, include_lcm_note=False, persist=False)
     assert json.dumps(fitted, ensure_ascii=False).encode() == json.dumps(uncapped, ensure_ascii=False).encode()
+
+
+def bounded_objective_scenario(engine, window, objective_tokens, pairs, node_count, node_tokens):
+    """A fitting inline objective competes with multiple nodes for the default bound."""
+    engine.context_length = window
+    system = {"role": "system", "content": "Synthetic system prompt."}
+    objective = {"role": "user", "content": "plan" * objective_tokens, "timestamp": 1.0}
+    history = [objective, {"role": "assistant", "content": "Starting work.", "timestamp": 2.0}]
+    tail = [row for i in range(pairs) for row in (
+        {"role": "assistant", "content": "Reading.", "timestamp": 3.0 + 2 * i, "tool_calls": [
+            {"id": f"call-{i}", "type": "function", "function": {"name": "probe", "arguments": "{}"}}]},
+        {"role": "tool", "content": "data" * 1875, "tool_call_id": f"call-{i}",
+         "name": "probe", "tool_name": "probe", "timestamp": 4.0 + 2 * i},
+    )]
+    source = [system, *history, *tail]
+    engine.ingest(source)
+    rows = engine._store.get_session_messages(engine.current_session_id)
+    history_ids = [row["store_id"] for row in rows if row["role"] != "system"][:len(history)]
+    for i in range(node_count):
+        engine._dag.add_node(SummaryNode(
+            session_id=engine.current_session_id, depth=0,
+            summary=f"Node {i}: " + "abcd" * (node_tokens - 10), token_count=node_tokens,
+            source_token_count=tokens.count_messages_tokens(history), source_ids=history_ids,
+            source_type="messages", expand_hint="synthetic history", created_at=100.0 + i,
+        ))
+    engine._last_compacted_store_id = history_ids[-1]
+    engine._pending_context_anchor_messages = source[1:]
+    return system, tail, source, objective
+
+
+def context_digest(messages):
+    """Pin byte-for-byte rc5 output without storing the large synthetic payload."""
+    return hashlib.sha256(json.dumps(messages, ensure_ascii=False).encode()).hexdigest()
+
+
+@pytest.mark.parametrize("window,objective_tokens,pairs,node_count,node_tokens,kept_nodes,total,digest", [
+    (32_768, 18_000, 2, 8, 3_000, 2, 27_839,
+     "16ca530d97f1ed547eb1af0f5b53f62abad0d9ff3c97f50986b867f61501dd55"),
+    (131_072, 8_000, 42, 12, 2_500, 9, 110_139,
+     "1dd0c96c844df000749fec1160361be1acd900722a6cbe17977552231978db0d"),
+])
+def test_fitting_objective_shares_default_bound_like_rc5(
+    engine, window, objective_tokens, pairs, node_count, node_tokens, kept_nodes, total, digest,
+):
+    system, tail, source, objective = bounded_objective_scenario(
+        engine, window, objective_tokens, pairs, node_count, node_tokens,
+    )
+    assembled = engine._assemble_context(system, tail, include_lcm_note=False, persist=False)
+    fitted = engine._survival_fit(source, assembled, tokens.count_messages_tokens(source), "issue-1221-a3")
+    assert sum(objective["content"] in row.get("content", "") for row in fitted) == 1
+    assert sum(len(re.findall(r"Summary \(d0, node \d+\)", row["content"])) for row in assembled) == kept_nodes
+    assert engine._survival_measure(fitted) <= engine._survival_fit_budget(source, tokens.count_messages_tokens(source))
+    assert not any(survival_fit._PROJECTED_PREFIX in row.get("content", "") for row in fitted)
+    assert tokens.count_messages_tokens(assembled) == tokens.count_messages_tokens(fitted) == total
+    assert context_digest(assembled) == context_digest(fitted) == digest
+
+
+def test_over_bound_objective_without_survival_fit_matches_rc5(engine):
+    engine._config.survival_fit = False
+    system, tail, source, _ = objective_scenario(engine)
+    assembled = engine._assemble_context(system, tail, include_lcm_note=False, persist=False)
+    fitted = engine._survival_fit(source, assembled, tokens.count_messages_tokens(source), "issue-1221-a3-disabled")
+    assert context_digest(assembled) == context_digest(fitted) == (
+        "66ff945b818c7b7d10c80d35f884d04f75bc8a99d3d4c5bca66edff1b5de172a"
+    )
+
+
+def test_exempt_objective_gets_no_summary_nodes(engine):
+    system, tail, _, objective = objective_scenario(engine)
+    assembled = engine._assemble_context(system, tail, include_lcm_note=False, persist=False)
+    assert sum(objective["content"] in row.get("content", "") for row in assembled) == 1
+    assert not any(re.search(r"Summary \(d\d+, node \d+\)", row["content"]) for row in assembled)
