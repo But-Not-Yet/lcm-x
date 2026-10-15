@@ -107,6 +107,29 @@ def test_objective_immediately_around_default_bound(engine, delta):
     assert stored_rows(engine) == raw
 
 
+@pytest.mark.parametrize("prefix_delta", [0, 1], ids=["node-at-floor", "node-one-over-floor"])
+def test_objective_and_node_at_quarter_floor(engine, prefix_delta):
+    bound = engine._survival_ceiling() // 4
+    tail = [assistant("", [call("c")]), tool("c", "data" * 24000)]
+    objective = user("plan" * bound)
+    ids = add_nodes(engine, 0, 1, token_count=200)
+    node_part = engine_module._summary_part_text(engine._dag.get_node(ids[0]))
+    part = engine._build_preserved_objective_summary_part(objective)
+    cost = count_message_tokens(user(part + "\n\n---\n\n" + node_part))
+    # Leave exactly enough room for the node, then move one token past the floor.
+    objective["content"] = objective["content"][:len(objective["content"]) + 4 * (bound + prefix_delta - cost)]
+    part = engine._build_preserved_objective_summary_part(objective)
+    assert count_message_tokens(user(part + "\n\n---\n\n" + node_part)) == bound + prefix_delta
+    engine._pending_context_anchor_messages = [objective, *tail]
+    engine.ingest([SYSTEM, objective, *tail])
+    raw = stored_rows(engine)
+    result = assemble(engine, SYSTEM, tail)
+    assert visible_node_ids(result) == (ids if prefix_delta == 0 else [])
+    assert objective["content"] in result[1]["content"]
+    assert result[-len(tail):] == tail
+    assert stored_rows(engine) == raw
+
+
 @pytest.mark.parametrize("window", [32_768, 131_072, 0])
 @pytest.mark.parametrize("enabled", [False, True])
 @pytest.mark.parametrize("cap", [0, 12_000])
