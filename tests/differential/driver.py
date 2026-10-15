@@ -1,0 +1,222 @@
+"""One tree per process; synthetic providers and a scripted host clock only."""
+import argparse
+from copy import deepcopy
+import importlib
+import importlib.util
+import json
+import logging
+import os
+from pathlib import Path
+import re
+import socket
+import sys
+import tempfile
+import time
+from types import SimpleNamespace
+
+SENTINEL = re.compile(r"⟦(?:r[^⟧]+|objective|newest)⟧")
+
+
+def census(rows):
+    return sorted(set(SENTINEL.findall(json.dumps(rows, ensure_ascii=False))))
+
+
+def pair_errors(rows):
+    calls, results, errors = set(), set(), []
+    for row in rows:
+        for call in row.get("tool_calls") or []:
+            calls.add(call["id"])
+        if row.get("role") == "tool":
+            cid = row.get("tool_call_id")
+            if cid not in calls:
+                errors.append(f"result-before-call:{cid}")
+            results.add(cid)
+    return errors + [f"missing-result:{cid}" for cid in sorted(calls - results)]
+
+
+def load_tree(tree):
+    spec = importlib.util.spec_from_file_location("hermes_lcm", tree / "__init__.py", submodule_search_locations=[str(tree)])
+    sys.modules["hermes_lcm"] = importlib.util.module_from_spec(spec)
+    tokens = importlib.import_module("hermes_lcm.tokens")
+    missing = []
+    for name, value in (("_encoder_ready", True), ("_encoder", None)):
+        if hasattr(tokens, name):
+            setattr(tokens, name, value)
+        else:
+            missing.append(f"tokens.{name}")
+    modules = {name: importlib.import_module(f"hermes_lcm.{name}") for name in
+               ("engine", "config", "escalation", "survival_fit", "externalize", "message_content", "dag")}
+    if hasattr(modules["survival_fit"], "_host_estimate"):
+        modules["survival_fit"]._host_estimate = lambda messages: None
+    else:
+        missing.append("survival_fit._host_estimate")
+    modules["tokens"] = tokens
+    return modules, missing
+
+
+def run_case(case, modules, directory, initial_missing):
+    missing = list(initial_missing)
+    now = [100000.0]
+    # Replace module bindings, not the interpreter's time module or thread clocks.
+    clock = SimpleNamespace(**{name: getattr(time, name) for name in dir(time) if not name.startswith("__")})
+    clock.time = clock.monotonic = lambda: now[0]
+    for module_name, module in list(sys.modules.items()):
+        if module_name.startswith("hermes_lcm.") and hasattr(module, "time"):
+            if hasattr(module.time, "monotonic"):
+                module.time = clock
+    calls = [0]
+
+    def provider(*args, **kwargs):
+        calls[0] += 1
+        now[0] += 1
+        if case["summarizer"] == "outage":
+            raise RuntimeError("synthetic summary route outage")
+        return "Earlier work. " + "fact " * max(1, (case.get("summary_tokens", 80) * 4 - 80) // 5) + "\nExpand for details about: records"
+
+    if hasattr(modules["escalation"], "_call_llm_for_summary"):
+        modules["escalation"]._call_llm_for_summary = provider
+    else:
+        missing.append("escalation._call_llm_for_summary")
+    config = modules["config"].LCMConfig(database_path=str(directory / "lcm.db"), temporal_rollups_enabled=False)
+    for key, value in case["overrides"].items():
+        if hasattr(config, key):
+            setattr(config, key, value)
+        else:
+            missing.append(f"config.{key}")
+    home = str(directory / "home")
+    engine = modules["engine"].LCMEngine(config=config, hermes_home=home)
+    engine.on_session_start("S", platform="cli", conversation_id="conv", context_length=case["window"])
+    tokens = modules["tokens"]
+    sf = modules["survival_fit"]
+    mark_re = getattr(sf, "_PROJECTED_RE", None)
+    if mark_re is None:
+        missing.append("survival_fit._PROJECTED_RE")
+    normalize = modules["message_content"].normalize_content_value
+
+    def marks(view):
+        return [i for i, row in enumerate(view) if row.get("role") == "user" and mark_re is not None
+                and mark_re.fullmatch(normalize(row.get("content")) or "")]
+
+    try:
+        if case["layer"] == "projection":
+            needed = ("_store", "_survival_projection", "_survival_measure")
+            absent = [name for name in needed if not hasattr(engine, name)]
+            if absent:
+                return dict(id=case["id"], missing_seams=missing + absent, error="projection unavailable")
+            turn, ids = [], {}
+            for entry in case["rows"]:
+                message = deepcopy(entry["message"])
+                turn.append(message)
+                if entry["is_stored"]:
+                    ids[id(message)] = engine._store.append("S", entry["stored"], conversation_id="conv")
+            before = deepcopy(turn)
+            out = engine._survival_projection(turn, ids, case["limit"])
+            mutated = turn != before
+            return dict(id=case["id"], out=out, out_tokens=engine._survival_measure(out),
+                        in_tokens=engine._survival_measure(before), limit=case["limit"], user_marks=marks(out),
+                        user_changed=[i for i, (a, b) in enumerate(zip(turn, out)) if a["role"] == "user" and a is not b],
+                        ext=[i for i, row in enumerate(case["rows"]) if row["ext"]],
+                        unstored=[i for i, row in enumerate(case["rows"]) if not row["is_stored"]],
+                        input_mutated=mutated, missing_seams=missing)
+        view, produced, sent_calls = [], [], []
+        for index, new_rows in enumerate(case["steps"]):
+            now[0] += case["call_seconds"]
+            view.extend(deepcopy(new_rows))
+            produced.extend(deepcopy(new_rows))
+            engine.ingest(view)
+            if index == 0 and case.get("leaf_history"):
+                needed = ("_store", "_dag", "_last_compacted_store_id", "_pending_context_anchor_messages")
+                absent = [name for name in needed if not hasattr(engine, name)]
+                if absent:
+                    missing.extend(absent)
+                    raise RuntimeError("objective setup leaf seam unavailable")
+                history = [row for row in engine._store.get_session_messages("S") if row["role"] != "system"][:case["leaf_history"]]
+                engine._dag.add_node(modules["dag"].SummaryNode(
+                    session_id="S", depth=0, summary="Earlier work. " + "abcd" * 1990, token_count=2000,
+                    source_token_count=tokens.count_messages_tokens(history), source_ids=[row["store_id"] for row in history],
+                    source_type="messages", expand_hint="synthetic history", created_at=30.0))
+                engine._last_compacted_store_id = history[-1]["store_id"]
+                engine._pending_context_anchor_messages = view[1:]
+            start_calls, runs = calls[0], 0
+            overhead = case.get("host_overhead", 0)
+            prompt = tokens.count_messages_tokens(view) + overhead
+            if engine.should_compress(prompt):
+                view = engine.compress(view, current_tokens=prompt)
+                runs += 1
+            if tokens.count_messages_tokens(view) + overhead > case["window"]:
+                view = engine.compress(view, current_tokens=tokens.count_messages_tokens(view) + overhead, bypass_cooldown=True)
+                runs += 1
+            sent = tokens.count_messages_tokens(view) + overhead
+            failed = getattr(engine, "_last_overflow_recovery_failed", None)
+            if not hasattr(engine, "_last_overflow_recovery_failed"):
+                missing.append("_last_overflow_recovery_failed")
+            visible = set(census(view))
+            visible.discard("⟦newest⟧")
+            newest = next((row for row in reversed(produced) if row["role"] == "user"), None)
+            if newest is not None:
+                row_tag = next(tag for tag in census(newest) if tag.startswith("⟦r"))
+                if row_tag in visible:
+                    visible.add("⟦newest⟧")
+            sent_calls.append(dict(input_tokens=prompt, tokens=sent, rows=len(view), compress_runs=runs, summarizer_calls=calls[0] - start_calls,
+                                   overflow_recovery_failed=failed, sentinels=sorted(visible), user_marks=marks(view),
+                                   pair_errors=pair_errors(view)))
+            if hasattr(engine, "update_from_response"):
+                engine.update_from_response({"prompt_tokens": sent, "completion_tokens": 50})
+            else:
+                missing.append("update_from_response")
+        if not hasattr(engine, "_store"):
+            raise RuntimeError("store census unavailable")
+        stored = engine._store.get_session_messages("S", limit=1000000)
+        durable = set(census(stored))
+        external = modules["externalize"]
+        retrieved, unavailable = [], []
+        if hasattr(external, "extract_externalized_refs") and hasattr(external, "load_externalized_payload"):
+            refs = {ref for row in stored for ref in external.extract_externalized_refs(row.get("content") or "")}
+            for ref in sorted(refs):
+                payload = external.load_externalized_payload(ref, config=config, hermes_home=home)
+                if payload is None:
+                    unavailable.append(ref)
+                else:
+                    durable.update(census(payload.get("content", "")))
+                    retrieved.append(ref)
+        else:
+            missing.append("externalize.payload_retrieval")
+        return dict(id=case["id"], calls=sent_calls, produced=census(produced), stored=sorted(durable),
+                    retrieved_payloads=len(retrieved), unavailable_payloads=unavailable, missing_seams=sorted(set(missing)))
+    finally:
+        engine.shutdown()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--tree", required=True, type=Path)
+    parser.add_argument("--layer", choices=["public", "projection"], required=True)
+    parser.add_argument("--cases", required=True, type=Path)
+    parser.add_argument("--out", required=True, type=Path)
+    args = parser.parse_args()
+    if os.environ.get("LCM_DIFFERENTIAL") != "1":
+        parser.error("set LCM_DIFFERENTIAL=1 to opt in")
+    logging.basicConfig(level=logging.ERROR)
+
+    def no_network(*args, **kwargs):
+        raise RuntimeError("network forbidden in differential driver")
+
+    socket.socket.connect = no_network
+    modules, missing = load_tree(args.tree)
+    with args.cases.open() as source, args.out.open("w") as output:
+        for line in source:
+            case = json.loads(line)
+            assert case["layer"] == args.layer
+            started = time.perf_counter()
+            with tempfile.TemporaryDirectory(prefix="case-", dir=args.out.parent) as directory:
+                try:
+                    result = run_case(case, modules, Path(directory), missing)
+                except Exception as exc:
+                    result = dict(id=case["id"], error=f"{type(exc).__name__}: {exc}", missing_seams=missing)
+            result["seconds"] = time.perf_counter() - started
+            output.write(json.dumps(result, ensure_ascii=False) + "\n")
+            output.flush()
+
+
+if __name__ == "__main__":
+    main()
