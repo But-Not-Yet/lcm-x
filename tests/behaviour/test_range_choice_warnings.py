@@ -198,3 +198,18 @@ def test_range_raw_repr_is_bounded(monkeypatch, key, raw):
     warning, = config.LCMConfig.from_env().config_source_warnings
     assert f"LCM_{key}={repr(raw)[:40]}" in warning
     assert repr(raw) not in warning
+
+
+@pytest.mark.parametrize("raw", ["", " \t", ",", "fts=0.5,", "fts=0.5,,summary=1.0"])
+def test_arm_empty_segments_preserve_values(raw):
+    defaults = {"fts": .5, "summary": 1., "chunk": 1.}
+    assert config._parse_arm_weights(raw, defaults) == defaults
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("", {}), (" \t", {}), (",", {}),
+    ("glm-5.2:0.70,", {"glm-5.2": .7}),
+    ("glm-5.2:0.70,,other:.5", {"glm-5.2": .7, "other": .5}),
+])
+def test_model_empty_segments_preserve_values(raw, expected):
+    assert config._parse_model_thresholds_env(raw) == expected
