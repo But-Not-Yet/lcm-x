@@ -186,7 +186,11 @@ def test_cold_start_same_profile_matches_resolved_output(
     expected = resolved(raw_args)
     fallback, _ = _handler(plugin, monkeypatch, prototype, context)
 
-    assert fallback(raw_args).encode() == expected.encode()
+    # Background WAL checkpoints may change allocated size between reads.
+    def stable_status(text):
+        return "\n".join(line for line in text.splitlines() if not line.startswith("database_size:"))
+
+    assert stable_status(fallback(raw_args)) == stable_status(expected)
     if raw_args == "embed warmup":
         assert _snapshot(prototype)["lcm_embedding_profile"] == 2
 

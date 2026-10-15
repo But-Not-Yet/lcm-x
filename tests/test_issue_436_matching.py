@@ -7,6 +7,8 @@ import logging
 import random
 import time
 
+import pytest
+
 from hermes_lcm import identity_anchor
 from hermes_lcm.identity_anchor import _match_occurrences, _reserve_shown
 
@@ -64,12 +66,14 @@ def _untripped(caplog, rows, keys_of, occurrences, bound):
     return result
 
 
+@pytest.mark.latency
 def test_scale_identical_rows_and_occurrences(caplog):
     rows = [{"store_id": i} for i in range(100_000)]
     for n in (100_000, 10):
         assert len(_untripped(caplog, rows, lambda _row: {"k"}, [(j, "k") for j in range(n)], BOUND)) == n
 
 
+@pytest.mark.latency
 def test_scale_adversarial_chain(caplog):
     """Row i holds k_i; the extra row on k0 shifts the whole chain; each row on the top key then searches the chain
     down to k0 and fails (dead keys make every search after the first O(1))."""
@@ -79,6 +83,7 @@ def test_scale_adversarial_chain(caplog):
     assert len(_untripped(caplog, rows, lambda row: row["keys"], [(j, key(j)) for j in range(n + 1)], BOUND)) == n + 1
 
 
+@pytest.mark.latency
 def test_scale_hub_of_distinct_types(caplog):
     """Codex R3c probe: n rows {a, b_i} fill hub a, rows {b_i} (i < n/2) fill b_i, then n/2 rows {a} each shift one."""
     n = 50_000
@@ -89,6 +94,7 @@ def test_scale_hub_of_distinct_types(caplog):
     assert len(_untripped(caplog, rows, lambda row: row["keys"], occurrences, BOUND)) == 2 * n
 
 
+@pytest.mark.latency
 def test_scale_hub_of_one_type(caplog):
     n = 50_000
     rows = [{"store_id": i, "keys": {"a", "c"}} for i in range(n)] + [{"store_id": n + i, "keys": {"a"}} for i in range(n)]
@@ -133,6 +139,7 @@ def _reserve(caplog, pool, occurrences, bound=BOUND):
     return result
 
 
+@pytest.mark.latency
 def test_null_rows_answer_a_leftover_stamped_occurrence_of_their_form_in_store_order(caplog):
     pool = [{"store_id": 1, "observed_at": 1.0, "forms": {"foo"}}, _null(2, "foo"), _null(3, "foo"), _null(4, "bar")]
     assert _reserve(caplog, pool, [(0, (1.0, "foo"))]) == {1}  # the stamped pass keeps its occurrence
@@ -142,6 +149,7 @@ def test_null_rows_answer_a_leftover_stamped_occurrence_of_their_form_in_store_o
     assert _reserve(caplog, pool[1:], []) == set()
 
 
+@pytest.mark.latency
 def test_scale_null_rows_and_occurrences_at_distinct_stamps(caplog):
     """100k NULL rows x 100k occurrences of one form, each at its own stamp (r3f's rows x stamps keys: 1e10)."""
     rows = [_null(i, "f") for i in range(100_000)]
@@ -149,6 +157,7 @@ def test_scale_null_rows_and_occurrences_at_distinct_stamps(caplog):
         assert len(_reserve(caplog, rows, [(j, (float(j), "f")) for j in range(n)])) == n
 
 
+@pytest.mark.latency
 def test_scale_null_hub_of_many_forms(caplog):
     """NULL rows answer {a, b_i} (exact + override) and {b_i}; hub a and each b_i shown at distinct stamps."""
     n = 50_000
@@ -158,6 +167,7 @@ def test_scale_null_hub_of_many_forms(caplog):
     assert len(_reserve(caplog, rows, occurrences)) == 2 * n
 
 
+@pytest.mark.latency
 def test_a_recorded_alias_stamp_reserves_only_its_own_row(caplog):
     """B-ID-3: a stamped row answers its own stamp and its recorded alias stamps; another row of the same form
     never answers that alias."""
@@ -169,6 +179,7 @@ def test_a_recorded_alias_stamp_reserves_only_its_own_row(caplog):
     assert _reserve_shown(pool, lambda row: row["forms"], [(0, (10.0, "u")), (1, (20.0, "u"))], {1: {10.0}}) == {1}
 
 
+@pytest.mark.latency
 def test_a_null_row_takes_an_occurrence_a_stamped_row_can_move_off(caplog):
     """PR #590 bot P1: S answers {a, b} at t, N (NULL) only a; the view shows a@t and b@t. Pass one gives S a@t;
     S moves to b@t (another of its OWN keys) so N takes a@t. A stamped row that cannot move is never unmatched."""
@@ -179,6 +190,7 @@ def test_a_null_row_takes_an_occurrence_a_stamped_row_can_move_off(caplog):
     assert _reserve(caplog, [s, s2, n], [(0, (1.0, "a")), (1, (1.0, "b"))]) == {1, 3}
 
 
+@pytest.mark.latency
 def test_scale_null_rows_rerouting_stamped_rows(caplog):
     """50k stamped rows {a, b} at their own stamps hold a (pass one), 50k NULL rows {a}: each moves one stamped
     row to its b; then 50k stuck stamped rows {a} and 50k NULL rows {a} (every holder dead after one look)."""

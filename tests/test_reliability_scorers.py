@@ -978,6 +978,7 @@ def test_b2_composite_cover_respects_licence_capacity_while_searching():
     assert multiset.licensed_parts(a + "\n\n" + b, {("user", multiset.h(a)): {"licensed": 1}}, 1) is None
 
 
+@pytest.mark.latency
 def test_b2_composite_cover_is_fail_closed_on_a_pathological_input():
     """70 paragraphs, every single and adjacent pair licensed, and an unlicensed tail: the budget ends the search
     quickly and the composite stays a deficit."""

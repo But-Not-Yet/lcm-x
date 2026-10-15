@@ -10,6 +10,8 @@ import pytest
 
 import hermes_lcm.command as command_mod
 import hermes_lcm.embedding_provider as provider_mod
+from tests.timing_helpers import returns_while_blocked
+
 from hermes_lcm.command import handle_lcm_command
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.embedding_provider import (
@@ -909,6 +911,7 @@ def test_query_path_rate_limit_surfaces_typed_reason(monkeypatch):
     assert len(transport.calls) == 1
 
 
+@pytest.mark.latency
 def test_voyage_document_splits_share_one_absolute_deadline(monkeypatch):
     monkeypatch.setenv("VOYAGE_API_KEY", "test-key")
     monkeypatch.setattr(provider_mod, "count_tokens", lambda _text: 1)
@@ -941,6 +944,7 @@ def test_voyage_document_splits_share_one_absolute_deadline(monkeypatch):
     assert elapsed < 0.06
 
 
+@pytest.mark.latency
 def test_voyage_token_preprocessing_is_inside_absolute_deadline(monkeypatch):
     monkeypatch.setenv("VOYAGE_API_KEY", "test-key")
 
@@ -1086,6 +1090,7 @@ def test_http_provider_does_not_decode_response_after_deadline(
     assert decode_calls == 0
 
 
+@pytest.mark.latency
 def test_voyage_slow_response_decode_is_inside_absolute_deadline(monkeypatch):
     monkeypatch.setenv("VOYAGE_API_KEY", "test-key")
     decode_started = threading.Event()
@@ -1112,6 +1117,7 @@ def test_voyage_slow_response_decode_is_inside_absolute_deadline(monkeypatch):
     time.sleep(0.06)
 
 
+@pytest.mark.latency
 def test_voyage_slow_error_body_scrub_is_bounded_and_never_resent(monkeypatch):
     monkeypatch.setenv("VOYAGE_API_KEY", "test-key")
     scrub_started = threading.Event()
@@ -1170,6 +1176,7 @@ def test_ollama_timeout_after_possible_acceptance_is_not_resent():
     assert len(transport.calls) == 1
 
 
+@pytest.mark.latency
 def test_fastembed_normal_operation_is_deadline_bounded(monkeypatch, tmp_path):
     class SlowFastembedModel:
         def __init__(self, **_kwargs):
@@ -1204,7 +1211,7 @@ def test_fastembed_timeout_capacity_is_bounded_until_worker_exits(monkeypatch, t
             nonlocal calls
             calls += 1
             worker_started.set()
-            assert release_worker.wait(timeout=1.0)
+            release_worker.wait()
             return ([1.0, 0.0] for _ in texts)
 
     monkeypatch.setattr(provider_mod, "_load_fastembed", lambda: SlowFastembedModel)
@@ -1218,11 +1225,11 @@ def test_fastembed_timeout_capacity_is_bounded_until_worker_exits(monkeypatch, t
         with pytest.raises(EmbeddingProviderError, match="deadline exceeded"):
             first.embed_query("slow")
         assert worker_started.is_set()
-        started = time.monotonic()
-        with pytest.raises(EmbeddingProviderError, match="worker capacity exhausted"):
-            second.embed_query("must-not-start")
+        def rejected_call():
+            with pytest.raises(EmbeddingProviderError, match="worker capacity exhausted"):
+                second.embed_query("must-not-start")
 
-        assert time.monotonic() - started < 0.03
+        returns_while_blocked(rejected_call, release_worker)
         assert calls == 1
     finally:
         release_worker.set()

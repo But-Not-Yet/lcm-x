@@ -13,6 +13,8 @@ import time
 
 import pytest
 
+from tests.timing_helpers import returns_while_blocked
+
 from hermes_lcm import tokens as tokens_mod
 
 
@@ -42,17 +44,15 @@ def test_count_tokens_does_not_block_on_hung_loader(monkeypatch):
     def hung_loader():
         # Simulates the blocked-egress BPE download: never completes within
         # the test window.
-        release.wait(timeout=30)
+        release.wait()
         raise RuntimeError("loader released without an encoder")
 
     monkeypatch.setattr(tokens_mod, "_load_encoder", hung_loader)
     monkeypatch.setattr(tokens_mod, "_ENCODER_FIRST_WAIT_S", 0.05)
 
-    start = time.monotonic()
-    count = tokens_mod.count_tokens("hello world " * 1000)
-    elapsed = time.monotonic() - start
-
-    assert elapsed < 2.0, f"count_tokens blocked for {elapsed:.1f}s on the loader"
+    count = returns_while_blocked(
+        lambda: tokens_mod.count_tokens("hello world " * 1000), release
+    )
     assert count > 0  # estimator result
     release.set()
 
@@ -104,7 +104,7 @@ def test_adoption_race_stale_estimate_not_served(monkeypatch):
     release_fallback = threading.Event()
 
     def gated_loader():
-        release_load.wait(timeout=10)
+        release_load.wait()
         return FakeEncoder()
 
     real_fallback = tokens_mod._fallback_token_estimate
@@ -167,42 +167,31 @@ def test_concurrent_callers_single_loader_prompt_returns(monkeypatch):
 
     def gated_loader():
         load_calls.append(threading.get_ident())
-        release_load.wait(timeout=10)
+        release_load.wait()
         return FakeEncoder()
 
     monkeypatch.setattr(tokens_mod, "_load_encoder", gated_loader)
     monkeypatch.setattr(tokens_mod, "_ENCODER_FIRST_WAIT_S", 0.05)
 
     probe = "z" * 400
-    start = time.monotonic()
-    first = tokens_mod.count_tokens(probe)  # starts the loader, bounded wait
-    first_elapsed = time.monotonic() - start
-    assert first_elapsed < 2.0, f"first caller waited {first_elapsed:.1f}s"
-    assert first == 400 // 4 + 1
+    def count_all():
+        first = tokens_mod.count_tokens(probe)
+        assert first == 400 // 4 + 1
+        results = []
 
-    results = []
-    lock = threading.Lock()
+        def worker(i):
+            results.append(tokens_mod.count_tokens(f"{'w' * 396}{i:04d}"))
 
-    def worker(i):
-        t0 = time.monotonic()
-        value = tokens_mod.count_tokens(f"{'w' * 396}{i:04d}")
-        with lock:
-            results.append((value, time.monotonic() - t0))
+        workers = [threading.Thread(target=worker, args=(i,), daemon=True) for i in range(4)]
+        for worker_thread in workers:
+            worker_thread.start()
+        for worker_thread in workers:
+            worker_thread.join(timeout=5)
+            assert not worker_thread.is_alive()
+        assert results == [400 // 4 + 1] * 4
+        assert len(load_calls) == 1, "loader must be started exactly once"
 
-    workers = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
-    for t in workers:
-        t.start()
-    for t in workers:
-        t.join(timeout=5.0)
-        assert not t.is_alive()
-
-    assert len(load_calls) == 1, "loader must be started exactly once"
-    assert [v for v, _ in results] == [400 // 4 + 1] * 4  # estimator values
-    assert all(elapsed < 1.0 for _, elapsed in results), (
-        "non-first callers must not wait on the hung loader"
-    )
-
-    release_load.set()
+    returns_while_blocked(count_all, release_load)
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline and tokens_mod.count_tokens(probe) != 7:
         time.sleep(0.02)

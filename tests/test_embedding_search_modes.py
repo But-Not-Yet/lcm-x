@@ -13,6 +13,8 @@ import pytest
 
 import hermes_lcm.embedding_provider as embedding_provider
 import hermes_lcm.tools as lcm_tools
+from tests.timing_helpers import returns_while_blocked
+
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.dag import SummaryDAG, SummaryNode
 from hermes_lcm.embedding_provider import VoyageError
@@ -143,6 +145,7 @@ def test_semantic_happy_path_orders_by_cosine_and_surfaces_confidence_coverage(
     assert provider.queries == ["meaning-preserving query"]
 
 
+@pytest.mark.latency
 def test_semantic_timeout_returns_explicit_deadline_without_starting_fallback(
     semantic_engine, monkeypatch
 ):
@@ -172,6 +175,7 @@ def test_semantic_timeout_returns_explicit_deadline_without_starting_fallback(
     assert payload["timeout_stage"] == "full_text"
 
 
+@pytest.mark.latency
 def test_semantic_budget_bounds_knn_and_does_not_start_fallback_after_expiry(
     semantic_engine, monkeypatch
 ):
@@ -713,6 +717,7 @@ def test_semantic_conversation_filter_degrades_to_raw_full_text(semantic_engine,
     assert all(hit.get("type") != "summary" for hit in payload.get("results", []))
 
 
+@pytest.mark.latency
 def test_slow_knn_degrades_within_total_budget(semantic_engine, monkeypatch):
     semantic_engine._config.embedding_query_timeout_s = 0.05
     semantic_engine._store.append(
@@ -745,6 +750,7 @@ def test_slow_knn_degrades_within_total_budget(semantic_engine, monkeypatch):
     assert payload["timeout"] is True
 
 
+@pytest.mark.latency
 def test_provider_resolution_is_bounded_and_does_not_start_query_or_fallback(
     semantic_engine, monkeypatch
 ):
@@ -783,6 +789,7 @@ def test_provider_resolution_is_bounded_and_does_not_start_query_or_fallback(
     assert fallback_calls == 0
 
 
+@pytest.mark.latency
 def test_hybrid_does_not_start_semantic_arm_after_fts_exhausts_deadline(
     semantic_engine, monkeypatch
 ):
@@ -872,20 +879,18 @@ def test_result_hydration_is_inside_request_deadline(semantic_engine, monkeypatc
     release = threading.Event()
 
     def blocking_get_node(_node_id):
-        release.wait(1.0)
+        release.wait()
         return None
 
     monkeypatch.setattr(lcm_tools, "VectorStore", OneResultStore)
     monkeypatch.setattr(lcm_tools, "resolve_provider", lambda _config: MockProvider())
     monkeypatch.setattr(semantic_engine._dag, "get_node", blocking_get_node)
     try:
-        started = time.monotonic()
-        payload = json.loads(
-            lcm_tools.lcm_grep(
+        payload = returns_while_blocked(
+            lambda: json.loads(lcm_tools.lcm_grep(
                 {"query": "deadline", "mode": "semantic"}, engine=semantic_engine
-            )
+            )), release,
         )
-        assert time.monotonic() - started < 0.08
         assert payload["timeout"] is True
         assert payload["timeout_stage"] == "result_resolution"
     finally:

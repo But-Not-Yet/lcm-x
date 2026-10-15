@@ -4914,6 +4914,7 @@ def test_readme_documents_storage_boundary_payload_guard():
     assert "backup-first cleanup or migration" in readme
 
 
+@pytest.mark.latency
 def test_sensitive_private_key_redaction_is_redos_safe_on_pathological_input(tmp_path):
     import time as _time
 

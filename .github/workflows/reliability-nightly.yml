@@ -77,3 +77,53 @@ jobs:
         run: |
           gh issue list -R "$GITHUB_REPOSITORY" --state open --limit 1000 --json number --jq '.[].number' > "$RUNNER_TEMP/open-issues.txt"
           python -m bench.instruments.reliability.ci gate "$OUT/r1/results.jsonl" "$OUT/r2/results.jsonl" --open-issues "$RUNNER_TEMP/open-issues.txt"
+
+  latency:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Install test dependencies
+        run: pip install pytest==9.1.1 numpy
+
+      - name: Stub hermes-agent ABC
+        run: |
+          mkdir -p agent
+          cat > agent/__init__.py <<'STUB'
+          STUB
+          cat > agent/context_engine.py <<'STUB'
+          """Minimal stub of hermes-agent ContextEngine ABC for CI."""
+          class ContextEngine:
+              """Base class stub — just enough for LCMEngine to import."""
+              def __init__(self, **kwargs):
+                  self.compression_count = 0
+                  self.last_prompt_tokens = 0
+              def compress(self, messages, current_tokens=None, **kwargs):
+                  raise NotImplementedError
+              def on_session_start(self, session_id, **kwargs):
+                  pass
+              def on_session_end(self, **kwargs):
+                  pass
+              def on_session_reset(self):
+                  self.compression_count = 0
+                  self.last_prompt_tokens = 0
+              def get_tool_schemas(self):
+                  return []
+              def handle_tool_call(self, name, args, **kwargs):
+                  raise NotImplementedError
+              def get_status(self):
+                  return {}
+          STUB
+
+      - name: Run latency budgets under low file descriptor limit
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          ulimit -n 1024
+          python -m pytest tests/ -q -m latency

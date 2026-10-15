@@ -467,6 +467,7 @@ def test_t6_a_rescue_prefix_of_rehydrated_rows_alone_consumes_no_unread_raw_row(
         engine.shutdown()
 
 
+@pytest.mark.latency
 @pytest.mark.parametrize("shape", ["1000-paragraphs", "overlapping-dead-ends"])
 def test_t3_decomposition_search_is_bounded_and_ambiguous_on_exhaustion(shape):
     """#572 T3: a composite of ~1000 short held paragraphs (recursion depth) or of overlapping held

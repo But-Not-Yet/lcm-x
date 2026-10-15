@@ -2322,6 +2322,7 @@ def test_recall_event_time_read_is_skipped_once_the_deadline_is_spent(
     assert payload == expected
 
 
+@pytest.mark.latency
 def test_recall_event_time_read_cannot_outlive_the_deadline(recall_engine, monkeypatch):
     _seed_event_time_rows(recall_engine)
     recall_engine._config.recall_query_timeout_s = 1.0
