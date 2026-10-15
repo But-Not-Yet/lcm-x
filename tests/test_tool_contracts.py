@@ -171,3 +171,9 @@ def test_public_tools_are_documented_in_readme_and_retrieval_reference():
     assert "lcm_inspect" in retrieval_reference
     assert "metadata only" in retrieval_reference
     assert "use `lcm_load_session`/`lcm_expand` when you need content" in retrieval_reference
+
+
+def test_manifest_tool_order_matches_registry():
+    from hermes_lcm.tool_registry import TOOL_REGISTRY
+
+    assert _manifest_tool_names() == [spec.name for spec in TOOL_REGISTRY]
