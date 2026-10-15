@@ -125,14 +125,18 @@ default, without reading the environment, credentials, or host configuration.
 `""` is an empty string; `null` means unset (automatic provider-dependent protection
 for `LCM_EMBEDDING_PRIVACY_ENABLED`). Empty model/path defaults resolve at runtime;
 `LCM_CONTEXT_THRESHOLD` and `LCM_SUMMARY_TIMEOUT_MS` can inherit host settings as
-described above. The type is the environment parser type, so the privacy boolean
+described above. Some defaults are sentinels: `LCM_FOREGROUND_HARD_SECONDS` `0` means 120 s,
+`LCM_PREANSWER_EVIDENCE_MODE` `""` means `legacy_selective` when pre-answer evidence is on,
+`LCM_EMBEDDING_STORE_DIM` `0` means the provider's full dimension, and `LCM_MAX_ASSEMBLY_TOKENS`
+and `LCM_RESERVE_TOKENS_FLOOR` `0` mean no cap. The type is the environment parser type, so the privacy boolean
 can still have an unset default.
 
 Ranges and nonempty choices are the loader's diagnostic metadata; consumers keep
 their existing clamping, fallback, and normalization rules. `—` means no metadata
 in that column, not that every input is valid or that a removed option is active.
+`LCM_NATIVE_RECOVERY` was removed in v0.25.0; it is parsed and ignored.
 The operator guide and the prose above explain behavior and coupled settings.
-Deprecation dates describe the two retiring experiments; enabling either still
+Deprecation releases describe the two retiring experiments; enabling either still
 warns without changing its behavior until removal.
 
 <!-- BEGIN GENERATED CONFIG REFERENCE -->
