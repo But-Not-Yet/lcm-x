@@ -1,0 +1,2044 @@
+{
+  "trajectory": [
+    [
+      "connect",
+      [
+        "<database>"
+      ],
+      {
+        "timeout": 5.0,
+        "check_same_thread": false,
+        "isolation_level": null
+      }
+    ],
+    [
+      "initial",
+      null,
+      null
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT value FROM metadata WHERE key = 'schema_version'",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA busy_timeout=30000",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA journal_mode=WAL",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA synchronous=FULL",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA wal_autocheckpoint=500",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA journal_size_limit=67108864",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA mmap_size=268435456",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA foreign_keys=ON",
+      []
+    ],
+    [
+      "set",
+      "row_factory",
+      "Row"
+    ],
+    [
+      "execute",
+      "SELECT schema_version FROM lcm_trajectory_corpora WHERE singleton = 1",
+      []
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT value FROM metadata WHERE key = 'schema_version'",
+      []
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS metadata (\n            key TEXT PRIMARY KEY,\n            value TEXT\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS lcm_migration_state (\n            step_name TEXT PRIMARY KEY,\n            completed_at REAL NOT NULL\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT value FROM metadata WHERE key = 'schema_version'",
+      []
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS metadata (\n            key TEXT PRIMARY KEY,\n            value TEXT\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "SELECT value FROM metadata WHERE key = 'schema_version'",
+      []
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS lcm_lifecycle_state (\n            conversation_id TEXT PRIMARY KEY,\n            current_session_id TEXT,\n            last_finalized_session_id TEXT,\n            current_frontier_store_id INTEGER NOT NULL DEFAULT 0,\n            last_finalized_frontier_store_id INTEGER NOT NULL DEFAULT 0,\n            debt_kind TEXT,\n            debt_size_estimate INTEGER NOT NULL DEFAULT 0,\n            current_bound_at REAL,\n            last_finalized_at REAL,\n            debt_updated_at REAL,\n            last_maintenance_attempt_at REAL,\n            last_rollover_at REAL,\n            last_reset_at REAL,\n            updated_at REAL NOT NULL DEFAULT (strftime('%s','now'))\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "CREATE INDEX IF NOT EXISTS idx_lcm_lifecycle_current_session ON lcm_lifecycle_state(current_session_id)",
+      []
+    ],
+    [
+      "execute",
+      "CREATE INDEX IF NOT EXISTS idx_lcm_lifecycle_last_finalized_session ON lcm_lifecycle_state(last_finalized_session_id)",
+      []
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS lcm_lifecycle_state (\n            conversation_id TEXT PRIMARY KEY,\n            current_session_id TEXT,\n            last_finalized_session_id TEXT,\n            current_frontier_store_id INTEGER NOT NULL DEFAULT 0,\n            last_finalized_frontier_store_id INTEGER NOT NULL DEFAULT 0,\n            debt_kind TEXT,\n            debt_size_estimate INTEGER NOT NULL DEFAULT 0,\n            current_bound_at REAL,\n            last_finalized_at REAL,\n            debt_updated_at REAL,\n            last_maintenance_attempt_at REAL,\n            last_rollover_at REAL,\n            last_reset_at REAL,\n            updated_at REAL NOT NULL DEFAULT (strftime('%s','now'))\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "CREATE INDEX IF NOT EXISTS idx_lcm_lifecycle_current_session ON lcm_lifecycle_state(current_session_id)",
+      []
+    ],
+    [
+      "execute",
+      "CREATE INDEX IF NOT EXISTS idx_lcm_lifecycle_last_finalized_session ON lcm_lifecycle_state(last_finalized_session_id)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_lifecycle_state)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(messages)",
+      []
+    ],
+    [
+      "execute",
+      "CREATE INDEX IF NOT EXISTS idx_msg_conversation_session ON messages(conversation_id, session_id, store_id)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE name = 'lcm_trajectory_states_fts'",
+      []
+    ],
+    [
+      "executescript",
+      "\n            CREATE TABLE IF NOT EXISTS lcm_trajectory_corpora (\n                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),\n                identity_digest TEXT NOT NULL UNIQUE,\n                identity_json TEXT NOT NULL,\n                schema_version INTEGER NOT NULL,\n                corpus_uid TEXT,\n                haystack_digest TEXT,\n                source_manifest_digest TEXT,\n                trajectory_count INTEGER,\n                ingest_cursor INTEGER NOT NULL DEFAULT 0 CHECK(ingest_cursor >= 0),\n                status TEXT NOT NULL CHECK(status IN ('building', 'complete', 'invalid')),\n                created_at REAL NOT NULL,\n                completed_at REAL\n            );\n\n            CREATE TABLE IF NOT EXISTS lcm_trajectory_sources (\n                source_id INTEGER PRIMARY KEY AUTOINCREMENT,\n                trajectory_id TEXT NOT NULL UNIQUE,\n                ordinal INTEGER NOT NULL UNIQUE,\n                source_json TEXT NOT NULL,\n                source_sha256 TEXT NOT NULL,\n                goal TEXT NOT NULL,\n                start_url TEXT NOT NULL,\n                outcome TEXT,\n                state_count INTEGER NOT NULL CHECK(state_count > 0),\n                inserted_at REAL NOT NULL\n            );\n\n            CREATE TABLE IF NOT EXISTS lcm_trajectory_states (\n                state_id INTEGER PRIMARY KEY AUTOINCREMENT,\n                source_id INTEGER NOT NULL REFERENCES lcm_trajectory_sources(source_id) ON DELETE CASCADE,\n                state_index INTEGER NOT NULL CHECK(state_index >= 0),\n                sequence_ordinal INTEGER NOT NULL CHECK(sequence_ordinal >= 0),\n                step INTEGER NOT NULL CHECK(step >= 0),\n                url TEXT NOT NULL,\n                incoming_action TEXT,\n                thoughts TEXT,\n                text TEXT NOT NULL,\n                search_text TEXT NOT NULL,\n                observed_at REAL,\n                observed_at_source TEXT,\n                occurred_at REAL,\n                occurred_at_source TEXT,\n                ingested_at REAL NOT NULL,\n                UNIQUE(source_id, state_index),\n                UNIQUE(source_id, sequence_ordinal)\n            );\n\n            CREATE TABLE IF NOT EXISTS lcm_trajectory_assets (\n                asset_id INTEGER PRIMARY KEY AUTOINCREMENT,\n                state_id INTEGER NOT NULL UNIQUE REFERENCES lcm_trajectory_states(state_id) ON DELETE CASCADE,\n                relative_path TEXT NOT NULL,\n                sha256 TEXT NOT NULL,\n                byte_size INTEGER NOT NULL CHECK(byte_size >= 0)\n            );\n\n            CREATE TABLE IF NOT EXISTS lcm_trajectory_ingest_receipts (\n                ordinal INTEGER PRIMARY KEY CHECK(ordinal >= 0),\n                trajectory_id TEXT NOT NULL UNIQUE,\n                source_sha256 TEXT NOT NULL,\n                committed_at REAL NOT NULL\n            );\n\n            CREATE TABLE IF NOT EXISTS lcm_trajectory_transitions (\n                transition_id INTEGER PRIMARY KEY AUTOINCREMENT,\n                source_id INTEGER NOT NULL REFERENCES lcm_trajectory_sources(source_id) ON DELETE CASCADE,\n                sequence_ordinal INTEGER NOT NULL CHECK(sequence_ordinal >= 1),\n                pre_state_id INTEGER NOT NULL REFERENCES lcm_trajectory_states(state_id) ON DELETE CASCADE,\n                post_state_id INTEGER NOT NULL REFERENCES lcm_trajectory_states(state_id) ON DELETE CASCADE,\n                incoming_action TEXT,\n                UNIQUE(source_id, sequence_ordinal),\n                UNIQUE(source_id, post_state_id)\n            );\n\n            CREATE VIRTUAL TABLE IF NOT EXISTS lcm_trajectory_states_fts\n            USING fts5(search_text, content='lcm_trajectory_states', content_rowid='state_id');\n\n            CREATE TRIGGER IF NOT EXISTS lcm_trajectory_fts_insert\n            AFTER INSERT ON lcm_trajectory_states BEGIN\n                INSERT INTO lcm_trajectory_states_fts(rowid, search_text)\n                VALUES (new.state_id, new.search_text);\n            END;\n\n            CREATE TRIGGER IF NOT EXISTS lcm_trajectory_fts_delete\n            AFTER DELETE ON lcm_trajectory_states BEGIN\n                INSERT INTO lcm_trajectory_states_fts(lcm_trajectory_states_fts, rowid, search_text)\n                VALUES ('delete', old.state_id, old.search_text);\n            END;\n\n            CREATE TRIGGER IF NOT EXISTS lcm_trajectory_fts_update\n            AFTER UPDATE OF search_text ON lcm_trajectory_states BEGIN\n                INSERT INTO lcm_trajectory_states_fts(lcm_trajectory_states_fts, rowid, search_text)\n                VALUES ('delete', old.state_id, old.search_text);\n                INSERT INTO lcm_trajectory_states_fts(rowid, search_text)\n                VALUES (new.state_id, new.search_text);\n            END;\n\n            CREATE INDEX IF NOT EXISTS lcm_trajectory_states_source_sequence\n            ON lcm_trajectory_states(source_id, sequence_ordinal);\n            "
+    ],
+    [
+      "execute",
+      "SELECT COUNT(*) FROM lcm_trajectory_states",
+      []
+    ],
+    [
+      "execute",
+      "SELECT COUNT(*) FROM lcm_trajectory_states_fts",
+      []
+    ],
+    [
+      "execute",
+      "INSERT INTO lcm_trajectory_states_fts(lcm_trajectory_states_fts) VALUES ('rebuild')",
+      []
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM lcm_migration_state WHERE step_name = ?",
+      [
+        "trajectory_store_v1"
+      ]
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS lcm_migration_state (\n            step_name TEXT PRIMARY KEY,\n            completed_at REAL NOT NULL\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "\n        INSERT INTO lcm_migration_state(step_name, completed_at)\n        VALUES(?, strftime('%s','now'))\n        ON CONFLICT(step_name) DO UPDATE SET completed_at = excluded.completed_at\n        ",
+      [
+        "trajectory_store_v1"
+      ]
+    ],
+    [
+      "commit"
+    ],
+    [
+      "execute",
+      "SELECT * FROM lcm_trajectory_corpora WHERE singleton = 1",
+      []
+    ],
+    [
+      "execute",
+      "\n                INSERT INTO lcm_trajectory_corpora(\n                    singleton, identity_digest, identity_json, schema_version,\n                    status, created_at\n                ) VALUES (1, ?, ?, ?, 'building', ?)\n                ",
+      [
+        "896337b1d80c62887cdbd7f570e27ecf8a8cf5f500770a8a5bce41a8ead73d1e",
+        "{\"dataset_name\":\"example/recipes\",\"dataset_revision\":\"revision-1\",\"domain\":\"example\",\"harness_commit\":\"harness-1\",\"ingest_config_digest\":\"ingest-1\",\"tier\":\"small\"}",
+        1,
+        1700000000.0
+      ]
+    ],
+    [
+      "commit"
+    ],
+    [
+      "execute",
+      "SELECT * FROM lcm_trajectory_corpora WHERE singleton = 1",
+      []
+    ]
+  ],
+  "trajectory_ro": [
+    [
+      "connect",
+      [
+        "file:<database>?mode=ro"
+      ],
+      {
+        "uri": true,
+        "timeout": 5.0,
+        "check_same_thread": false,
+        "isolation_level": null
+      }
+    ],
+    [
+      "initial",
+      null,
+      null
+    ],
+    [
+      "execute",
+      "PRAGMA query_only=ON",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA busy_timeout=30000",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA foreign_keys=ON",
+      []
+    ],
+    [
+      "set",
+      "row_factory",
+      "Row"
+    ],
+    [
+      "execute",
+      "SELECT schema_version FROM lcm_trajectory_corpora WHERE singleton = 1",
+      []
+    ],
+    [
+      "execute",
+      "SELECT name FROM sqlite_master WHERE name LIKE 'lcm_trajectory%'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'lcm_trajectory%'",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_trajectory_corpora)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_trajectory_sources)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_trajectory_states)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_trajectory_assets)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_trajectory_ingest_receipts)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_trajectory_transitions)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT name FROM sqlite_master WHERE type = ? AND name LIKE 'lcm_trajectory%'",
+      [
+        "index"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT name FROM sqlite_master WHERE type = ? AND name LIKE 'lcm_trajectory%'",
+      [
+        "trigger"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT * FROM lcm_trajectory_corpora WHERE singleton = 1",
+      []
+    ]
+  ],
+  "assertion": [
+    [
+      "connect",
+      [
+        "<database>"
+      ],
+      {
+        "timeout": 5.0,
+        "check_same_thread": false,
+        "isolation_level": null
+      }
+    ],
+    [
+      "initial",
+      null,
+      null
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT value FROM metadata WHERE key = 'schema_version'",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA busy_timeout=30000",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA journal_mode=WAL",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA synchronous=FULL",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA wal_autocheckpoint=500",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA journal_size_limit=67108864",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA mmap_size=268435456",
+      []
+    ],
+    [
+      "set",
+      "row_factory",
+      "Row"
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT value FROM metadata WHERE key = 'schema_version'",
+      []
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS metadata (\n            key TEXT PRIMARY KEY,\n            value TEXT\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS lcm_migration_state (\n            step_name TEXT PRIMARY KEY,\n            completed_at REAL NOT NULL\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT value FROM metadata WHERE key = 'schema_version'",
+      []
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS metadata (\n            key TEXT PRIMARY KEY,\n            value TEXT\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "SELECT value FROM metadata WHERE key = 'schema_version'",
+      []
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS lcm_lifecycle_state (\n            conversation_id TEXT PRIMARY KEY,\n            current_session_id TEXT,\n            last_finalized_session_id TEXT,\n            current_frontier_store_id INTEGER NOT NULL DEFAULT 0,\n            last_finalized_frontier_store_id INTEGER NOT NULL DEFAULT 0,\n            debt_kind TEXT,\n            debt_size_estimate INTEGER NOT NULL DEFAULT 0,\n            current_bound_at REAL,\n            last_finalized_at REAL,\n            debt_updated_at REAL,\n            last_maintenance_attempt_at REAL,\n            last_rollover_at REAL,\n            last_reset_at REAL,\n            updated_at REAL NOT NULL DEFAULT (strftime('%s','now'))\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "CREATE INDEX IF NOT EXISTS idx_lcm_lifecycle_current_session ON lcm_lifecycle_state(current_session_id)",
+      []
+    ],
+    [
+      "execute",
+      "CREATE INDEX IF NOT EXISTS idx_lcm_lifecycle_last_finalized_session ON lcm_lifecycle_state(last_finalized_session_id)",
+      []
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS lcm_lifecycle_state (\n            conversation_id TEXT PRIMARY KEY,\n            current_session_id TEXT,\n            last_finalized_session_id TEXT,\n            current_frontier_store_id INTEGER NOT NULL DEFAULT 0,\n            last_finalized_frontier_store_id INTEGER NOT NULL DEFAULT 0,\n            debt_kind TEXT,\n            debt_size_estimate INTEGER NOT NULL DEFAULT 0,\n            current_bound_at REAL,\n            last_finalized_at REAL,\n            debt_updated_at REAL,\n            last_maintenance_attempt_at REAL,\n            last_rollover_at REAL,\n            last_reset_at REAL,\n            updated_at REAL NOT NULL DEFAULT (strftime('%s','now'))\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "CREATE INDEX IF NOT EXISTS idx_lcm_lifecycle_current_session ON lcm_lifecycle_state(current_session_id)",
+      []
+    ],
+    [
+      "execute",
+      "CREATE INDEX IF NOT EXISTS idx_lcm_lifecycle_last_finalized_session ON lcm_lifecycle_state(last_finalized_session_id)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_lifecycle_state)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(messages)",
+      []
+    ],
+    [
+      "execute",
+      "CREATE INDEX IF NOT EXISTS idx_msg_conversation_session ON messages(conversation_id, session_id, store_id)",
+      []
+    ],
+    [
+      "execute",
+      "DROP TRIGGER IF EXISTS lcm_assertion_source_insert_guard",
+      []
+    ],
+    [
+      "executescript",
+      "\n        CREATE TABLE IF NOT EXISTS lcm_assertion_sources (\n            source_store_id INTEGER NOT NULL,\n            extraction_version TEXT NOT NULL\n                CHECK(length(trim(extraction_version)) BETWEEN 1 AND 128),\n            source_content_sha256 TEXT NOT NULL\n                CHECK(length(source_content_sha256) = 64),\n            source_session_id TEXT NOT NULL,\n            source_role TEXT NOT NULL,\n            source_name TEXT NOT NULL DEFAULT '',\n            source_timestamp REAL NOT NULL,\n            candidate_digest TEXT NOT NULL CHECK(length(candidate_digest) = 64),\n            assertion_count INTEGER NOT NULL DEFAULT 0 CHECK(assertion_count >= 0),\n            relation_count INTEGER NOT NULL DEFAULT 0 CHECK(relation_count >= 0),\n            processed_at REAL NOT NULL DEFAULT (strftime('%s','now')),\n            invalidated_at REAL,\n            invalidation_reason TEXT,\n            PRIMARY KEY(source_store_id, extraction_version, source_content_sha256),\n            CHECK(\n                (invalidated_at IS NULL AND invalidation_reason IS NULL)\n                OR (invalidated_at IS NOT NULL AND length(trim(invalidation_reason)) > 0)\n            )\n        );\n\n        CREATE UNIQUE INDEX IF NOT EXISTS idx_lcm_assertion_sources_current\n            ON lcm_assertion_sources(source_store_id, extraction_version)\n            WHERE invalidated_at IS NULL;\n\n        CREATE TABLE IF NOT EXISTS lcm_assertions (\n            assertion_id TEXT PRIMARY KEY CHECK(length(assertion_id) = 64),\n            source_store_id INTEGER NOT NULL,\n            extraction_version TEXT NOT NULL,\n            source_content_sha256 TEXT NOT NULL CHECK(length(source_content_sha256) = 64),\n            subject_key TEXT NOT NULL CHECK(length(trim(subject_key)) > 0),\n            predicate_key TEXT NOT NULL CHECK(length(trim(predicate_key)) > 0),\n            object_json TEXT NOT NULL,\n            value_text TEXT NOT NULL DEFAULT '',\n            kind TEXT NOT NULL CHECK(kind IN (\n                'fact', 'event', 'preference', 'recommendation', 'commitment',\n                'action', 'status', 'quotation'\n            )),\n            polarity TEXT NOT NULL CHECK(polarity IN ('positive', 'negative', 'unknown')),\n            strength REAL CHECK(strength IS NULL OR (strength >= 0.0 AND strength <= 1.0)),\n            scope_key TEXT NOT NULL DEFAULT '',\n            speaker_role TEXT NOT NULL DEFAULT '',\n            observed_at REAL NOT NULL,\n            event_at REAL,\n            valid_from REAL,\n            valid_to REAL,\n            source_span_start INTEGER NOT NULL CHECK(source_span_start >= 0),\n            source_span_end INTEGER NOT NULL CHECK(source_span_end > source_span_start),\n            source_quote TEXT NOT NULL,\n            confidence REAL NOT NULL CHECK(confidence >= 0.0 AND confidence <= 1.0),\n            created_at REAL NOT NULL DEFAULT (strftime('%s','now')),\n            CHECK(valid_from IS NULL OR valid_to IS NULL OR valid_to > valid_from)\n        );\n\n        CREATE INDEX IF NOT EXISTS idx_lcm_assertions_source\n            ON lcm_assertions(source_store_id, extraction_version, source_content_sha256);\n        CREATE INDEX IF NOT EXISTS idx_lcm_assertions_state\n            ON lcm_assertions(subject_key, predicate_key, kind, scope_key, observed_at DESC);\n\n        CREATE TABLE IF NOT EXISTS lcm_assertion_relations (\n            relation_id TEXT PRIMARY KEY CHECK(length(relation_id) = 64),\n            source_store_id INTEGER NOT NULL,\n            extraction_version TEXT NOT NULL,\n            source_content_sha256 TEXT NOT NULL CHECK(length(source_content_sha256) = 64),\n            from_assertion_id TEXT NOT NULL,\n            relation_type TEXT NOT NULL CHECK(relation_type IN (\n                'confirms', 'supersedes', 'contradicts', 'narrows', 'weakens',\n                'reverses', 'cancels', 'fulfills', 'quotes'\n            )),\n            to_assertion_id TEXT NOT NULL,\n            source_span_start INTEGER NOT NULL CHECK(source_span_start >= 0),\n            source_span_end INTEGER NOT NULL CHECK(source_span_end > source_span_start),\n            source_quote TEXT NOT NULL,\n            confidence REAL NOT NULL CHECK(confidence >= 0.0 AND confidence <= 1.0),\n            created_at REAL NOT NULL DEFAULT (strftime('%s','now')),\n            CHECK(from_assertion_id <> to_assertion_id)\n        );\n\n        CREATE INDEX IF NOT EXISTS idx_lcm_assertion_relations_source\n            ON lcm_assertion_relations(source_store_id, extraction_version, source_content_sha256);\n        CREATE INDEX IF NOT EXISTS idx_lcm_assertion_relations_from\n            ON lcm_assertion_relations(from_assertion_id, relation_type);\n        CREATE INDEX IF NOT EXISTS idx_lcm_assertion_relations_to\n            ON lcm_assertion_relations(to_assertion_id, relation_type);\n\n        CREATE TRIGGER IF NOT EXISTS lcm_assertion_source_insert_guard\n        BEFORE INSERT ON lcm_assertion_sources\n        WHEN NOT EXISTS (\n            SELECT 1 FROM messages AS m\n            WHERE m.store_id = NEW.source_store_id\n              AND m.session_id = NEW.source_session_id\n              AND m.role = NEW.source_role\n              AND m.source = NEW.source_name\n              AND COALESCE(m.observed_at, m.timestamp) = NEW.source_timestamp\n        )\n        BEGIN\n            SELECT RAISE(ABORT, 'assertion source row is missing or metadata changed');\n        END;\n\n        CREATE TRIGGER IF NOT EXISTS lcm_assertion_row_insert_guard\n        BEFORE INSERT ON lcm_assertions\n        WHEN NOT EXISTS (\n            SELECT 1\n            FROM messages AS m\n            JOIN lcm_assertion_sources AS s\n              ON s.source_store_id = NEW.source_store_id\n             AND s.extraction_version = NEW.extraction_version\n             AND s.source_content_sha256 = NEW.source_content_sha256\n             AND s.invalidated_at IS NULL\n            WHERE m.store_id = NEW.source_store_id\n              AND NEW.source_span_end <= length(coalesce(m.content, ''))\n              AND substr(\n                    coalesce(m.content, ''),\n                    NEW.source_span_start + 1,\n                    NEW.source_span_end - NEW.source_span_start\n                  ) = NEW.source_quote\n        )\n        BEGIN\n            SELECT RAISE(ABORT, 'assertion source provenance mismatch');\n        END;\n\n        CREATE TRIGGER IF NOT EXISTS lcm_assertion_relation_insert_guard\n        BEFORE INSERT ON lcm_assertion_relations\n        WHEN NOT EXISTS (\n            SELECT 1\n            FROM messages AS m\n            JOIN lcm_assertion_sources AS s\n              ON s.source_store_id = NEW.source_store_id\n             AND s.extraction_version = NEW.extraction_version\n             AND s.source_content_sha256 = NEW.source_content_sha256\n             AND s.invalidated_at IS NULL\n            WHERE m.store_id = NEW.source_store_id\n              AND NEW.source_span_end <= length(coalesce(m.content, ''))\n              AND substr(\n                    coalesce(m.content, ''),\n                    NEW.source_span_start + 1,\n                    NEW.source_span_end - NEW.source_span_start\n                  ) = NEW.source_quote\n              AND EXISTS (\n                    SELECT 1\n                    FROM lcm_assertions AS endpoint\n                    JOIN lcm_assertion_sources AS endpoint_source\n                      ON endpoint_source.source_store_id = endpoint.source_store_id\n                     AND endpoint_source.extraction_version = endpoint.extraction_version\n                     AND endpoint_source.source_content_sha256 = endpoint.source_content_sha256\n                     AND endpoint_source.invalidated_at IS NULL\n                    WHERE endpoint.assertion_id = NEW.from_assertion_id\n                  )\n              AND EXISTS (\n                    SELECT 1\n                    FROM lcm_assertions AS endpoint\n                    JOIN lcm_assertion_sources AS endpoint_source\n                      ON endpoint_source.source_store_id = endpoint.source_store_id\n                     AND endpoint_source.extraction_version = endpoint.extraction_version\n                     AND endpoint_source.source_content_sha256 = endpoint.source_content_sha256\n                     AND endpoint_source.invalidated_at IS NULL\n                    WHERE endpoint.assertion_id = NEW.to_assertion_id\n                  )\n        )\n        BEGIN\n            SELECT RAISE(ABORT, 'assertion relation provenance mismatch');\n        END;\n\n        CREATE TRIGGER IF NOT EXISTS lcm_assertion_message_update\n        AFTER UPDATE OF content ON messages\n        WHEN OLD.content IS NOT NEW.content\n        BEGIN\n            UPDATE lcm_assertion_sources\n               SET invalidated_at = CAST(strftime('%s','now') AS REAL),\n                   invalidation_reason = 'source_updated'\n             WHERE source_store_id = OLD.store_id\n               AND invalidated_at IS NULL;\n        END;\n\n        CREATE TRIGGER IF NOT EXISTS lcm_assertion_message_delete\n        AFTER DELETE ON messages\n        BEGIN\n            UPDATE lcm_assertion_sources\n               SET invalidated_at = CAST(strftime('%s','now') AS REAL),\n                   invalidation_reason = 'source_deleted'\n             WHERE source_store_id = OLD.store_id\n               AND invalidated_at IS NULL;\n        END;\n\n        CREATE TRIGGER IF NOT EXISTS lcm_assertion_source_delete\n        AFTER DELETE ON lcm_assertion_sources\n        BEGIN\n            DELETE FROM lcm_assertion_relations\n             WHERE (\n                    source_store_id = OLD.source_store_id\n                AND extraction_version = OLD.extraction_version\n                AND source_content_sha256 = OLD.source_content_sha256\n             )\n                OR from_assertion_id IN (\n                    SELECT assertion_id FROM lcm_assertions\n                     WHERE source_store_id = OLD.source_store_id\n                       AND extraction_version = OLD.extraction_version\n                       AND source_content_sha256 = OLD.source_content_sha256\n                )\n                OR to_assertion_id IN (\n                    SELECT assertion_id FROM lcm_assertions\n                     WHERE source_store_id = OLD.source_store_id\n                       AND extraction_version = OLD.extraction_version\n                       AND source_content_sha256 = OLD.source_content_sha256\n                );\n            DELETE FROM lcm_assertions\n             WHERE source_store_id = OLD.source_store_id\n               AND extraction_version = OLD.extraction_version\n               AND source_content_sha256 = OLD.source_content_sha256;\n        END;\n        "
+    ],
+    [
+      "execute",
+      "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'lcm_assertion%'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_lcm_assertion%'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'lcm_assertion%'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+      [
+        "lcm_assertion_sources"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_assertion_sources)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_assertion_sources)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+      [
+        "lcm_assertion_sources"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+      [
+        "lcm_assertions"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_assertions)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_assertions)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+      [
+        "lcm_assertions"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+      [
+        "lcm_assertion_relations"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_assertion_relations)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_assertion_relations)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+      [
+        "lcm_assertion_relations"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertion_sources_current"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_assertion_sources_current)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_assertion_sources)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertion_sources_current"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertions_source"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_assertions_source)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_assertions)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertions_source"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertions_state"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_assertions_state)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_assertions)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertions_state"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertion_relations_source"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_assertion_relations_source)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_assertion_relations)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertion_relations_source"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertion_relations_from"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_assertion_relations_from)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_assertion_relations)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertion_relations_from"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertion_relations_to"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_assertion_relations_to)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_assertion_relations)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertion_relations_to"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name = ?",
+      [
+        "lcm_assertion_source_insert_guard"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name = ?",
+      [
+        "lcm_assertion_row_insert_guard"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name = ?",
+      [
+        "lcm_assertion_relation_insert_guard"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name = ?",
+      [
+        "lcm_assertion_message_update"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name = ?",
+      [
+        "lcm_assertion_message_delete"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name = ?",
+      [
+        "lcm_assertion_source_delete"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM lcm_migration_state WHERE step_name = ?",
+      [
+        "assertion_store_v1"
+      ]
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS lcm_migration_state (\n            step_name TEXT PRIMARY KEY,\n            completed_at REAL NOT NULL\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "\n        INSERT INTO lcm_migration_state(step_name, completed_at)\n        VALUES(?, strftime('%s','now'))\n        ON CONFLICT(step_name) DO UPDATE SET completed_at = excluded.completed_at\n        ",
+      [
+        "assertion_store_v1"
+      ]
+    ],
+    [
+      "commit"
+    ]
+  ],
+  "assertion_ro": [
+    [
+      "connect",
+      [
+        "file:<database>?mode=ro"
+      ],
+      {
+        "uri": true,
+        "timeout": 5.0,
+        "check_same_thread": false,
+        "isolation_level": null
+      }
+    ],
+    [
+      "initial",
+      null,
+      null
+    ],
+    [
+      "execute",
+      "PRAGMA query_only=ON",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA busy_timeout=30000",
+      []
+    ],
+    [
+      "set",
+      "row_factory",
+      "Row"
+    ],
+    [
+      "execute",
+      "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'lcm_assertion%'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_lcm_assertion%'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'lcm_assertion%'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+      [
+        "lcm_assertion_sources"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_assertion_sources)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_assertion_sources)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+      [
+        "lcm_assertion_sources"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+      [
+        "lcm_assertions"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_assertions)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_assertions)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+      [
+        "lcm_assertions"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+      [
+        "lcm_assertion_relations"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_assertion_relations)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_assertion_relations)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+      [
+        "lcm_assertion_relations"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertion_sources_current"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_assertion_sources_current)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_assertion_sources)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertion_sources_current"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertions_source"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_assertions_source)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_assertions)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertions_source"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertions_state"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_assertions_state)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_assertions)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertions_state"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertion_relations_source"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_assertion_relations_source)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_assertion_relations)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertion_relations_source"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertion_relations_from"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_assertion_relations_from)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_assertion_relations)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertion_relations_from"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertion_relations_to"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_assertion_relations_to)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_assertion_relations)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_assertion_relations_to"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name = ?",
+      [
+        "lcm_assertion_source_insert_guard"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name = ?",
+      [
+        "lcm_assertion_row_insert_guard"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name = ?",
+      [
+        "lcm_assertion_relation_insert_guard"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name = ?",
+      [
+        "lcm_assertion_message_update"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name = ?",
+      [
+        "lcm_assertion_message_delete"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name = ?",
+      [
+        "lcm_assertion_source_delete"
+      ]
+    ]
+  ],
+  "rollup": [
+    [
+      "connect",
+      [
+        "<database>"
+      ],
+      {
+        "timeout": 5.0,
+        "check_same_thread": false
+      }
+    ],
+    [
+      "initial",
+      "",
+      null
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT value FROM metadata WHERE key = 'schema_version'",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA busy_timeout=30000",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA journal_mode=WAL",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA synchronous=FULL",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA wal_autocheckpoint=500",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA journal_size_limit=67108864",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA mmap_size=268435456",
+      []
+    ],
+    [
+      "set",
+      "row_factory",
+      "Row"
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT value FROM metadata WHERE key = 'schema_version'",
+      []
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS metadata (\n            key TEXT PRIMARY KEY,\n            value TEXT\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS lcm_migration_state (\n            step_name TEXT PRIMARY KEY,\n            completed_at REAL NOT NULL\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT value FROM metadata WHERE key = 'schema_version'",
+      []
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS metadata (\n            key TEXT PRIMARY KEY,\n            value TEXT\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "SELECT value FROM metadata WHERE key = 'schema_version'",
+      []
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS lcm_lifecycle_state (\n            conversation_id TEXT PRIMARY KEY,\n            current_session_id TEXT,\n            last_finalized_session_id TEXT,\n            current_frontier_store_id INTEGER NOT NULL DEFAULT 0,\n            last_finalized_frontier_store_id INTEGER NOT NULL DEFAULT 0,\n            debt_kind TEXT,\n            debt_size_estimate INTEGER NOT NULL DEFAULT 0,\n            current_bound_at REAL,\n            last_finalized_at REAL,\n            debt_updated_at REAL,\n            last_maintenance_attempt_at REAL,\n            last_rollover_at REAL,\n            last_reset_at REAL,\n            updated_at REAL NOT NULL DEFAULT (strftime('%s','now'))\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "CREATE INDEX IF NOT EXISTS idx_lcm_lifecycle_current_session ON lcm_lifecycle_state(current_session_id)",
+      []
+    ],
+    [
+      "execute",
+      "CREATE INDEX IF NOT EXISTS idx_lcm_lifecycle_last_finalized_session ON lcm_lifecycle_state(last_finalized_session_id)",
+      []
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS lcm_lifecycle_state (\n            conversation_id TEXT PRIMARY KEY,\n            current_session_id TEXT,\n            last_finalized_session_id TEXT,\n            current_frontier_store_id INTEGER NOT NULL DEFAULT 0,\n            last_finalized_frontier_store_id INTEGER NOT NULL DEFAULT 0,\n            debt_kind TEXT,\n            debt_size_estimate INTEGER NOT NULL DEFAULT 0,\n            current_bound_at REAL,\n            last_finalized_at REAL,\n            debt_updated_at REAL,\n            last_maintenance_attempt_at REAL,\n            last_rollover_at REAL,\n            last_reset_at REAL,\n            updated_at REAL NOT NULL DEFAULT (strftime('%s','now'))\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "CREATE INDEX IF NOT EXISTS idx_lcm_lifecycle_current_session ON lcm_lifecycle_state(current_session_id)",
+      []
+    ],
+    [
+      "execute",
+      "CREATE INDEX IF NOT EXISTS idx_lcm_lifecycle_last_finalized_session ON lcm_lifecycle_state(last_finalized_session_id)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_lifecycle_state)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(messages)",
+      []
+    ],
+    [
+      "execute",
+      "CREATE INDEX IF NOT EXISTS idx_msg_conversation_session ON messages(conversation_id, session_id, store_id)",
+      []
+    ],
+    [
+      "executescript",
+      "\n        CREATE TABLE IF NOT EXISTS lcm_rollups (\n            rollup_id INTEGER PRIMARY KEY AUTOINCREMENT,\n            period_kind TEXT NOT NULL CHECK (period_kind IN ('day', 'week', 'month')),\n            period_start TEXT NOT NULL,\n            scope TEXT NOT NULL,\n            summary TEXT,\n            token_count INTEGER,\n            status TEXT NOT NULL DEFAULT 'building'\n                CHECK (status IN ('building', 'ready', 'stale', 'failed')),\n            built_at TEXT,\n            source_fingerprint TEXT,\n            error TEXT,\n            generation INTEGER NOT NULL DEFAULT 0,\n            lease_expires_at TEXT,\n            lease_nonce TEXT NOT NULL DEFAULT '',\n            failed_at TEXT,\n            UNIQUE(period_kind, period_start, scope)\n        );\n\n        CREATE TABLE IF NOT EXISTS lcm_rollup_sources (\n            rollup_id INTEGER NOT NULL,\n            node_id INTEGER NOT NULL,\n            PRIMARY KEY(rollup_id, node_id)\n        );\n\n        -- The (rollup_id, node_id) PK cannot serve purge's node_id lookup; add a\n        -- dedicated index so purging by deleted source node is not a full scan.\n        CREATE INDEX IF NOT EXISTS idx_lcm_rollup_sources_node\n            ON lcm_rollup_sources(node_id);\n\n        CREATE TABLE IF NOT EXISTS lcm_rollup_invalidations (\n            event_id INTEGER PRIMARY KEY AUTOINCREMENT,\n            node_id INTEGER,\n            scope TEXT NOT NULL,\n            covered_start REAL NOT NULL,\n            covered_end REAL NOT NULL,\n            next_day TEXT,\n            operation TEXT NOT NULL CHECK(operation IN ('insert', 'delete', 'update')),\n            created_at REAL NOT NULL DEFAULT (strftime('%s','now'))\n        );\n\n        CREATE INDEX IF NOT EXISTS idx_lcm_rollup_invalidations_pending\n            ON lcm_rollup_invalidations(event_id);\n\n        CREATE INDEX IF NOT EXISTS idx_lcm_rollup_invalidations_scope_event\n            ON lcm_rollup_invalidations(scope, event_id);\n\n        CREATE INDEX IF NOT EXISTS idx_lcm_rollup_invalidations_scope_coverage\n            ON lcm_rollup_invalidations(scope, covered_start, covered_end, event_id);\n        "
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_rollups)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_rollup_invalidations)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM lcm_rollup_invalidations WHERE covered_start > covered_end LIMIT 1",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+      [
+        "idx_lcm_rollups_ready_period"
+      ]
+    ],
+    [
+      "execute",
+      "CREATE INDEX idx_lcm_rollups_ready_period ON lcm_rollups(scope, period_kind, period_start DESC) WHERE status = 'ready'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+      [
+        "idx_lcm_rollups_pending"
+      ]
+    ],
+    [
+      "execute",
+      "CREATE INDEX idx_lcm_rollups_pending ON lcm_rollups(scope, status, failed_at, period_start) WHERE status IN ('stale', 'failed')",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+      [
+        "idx_lcm_rollups_expired_lease"
+      ]
+    ],
+    [
+      "execute",
+      "CREATE INDEX idx_lcm_rollups_expired_lease ON lcm_rollups(lease_expires_at, rollup_id) WHERE status = 'building'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+      [
+        "idx_lcm_rollups_stale_day"
+      ]
+    ],
+    [
+      "execute",
+      "CREATE INDEX idx_lcm_rollups_stale_day ON lcm_rollups(scope, period_start) WHERE status = 'stale' AND period_kind = 'day'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+      [
+        "idx_lcm_rollups_stale_aggregate"
+      ]
+    ],
+    [
+      "execute",
+      "CREATE INDEX idx_lcm_rollups_stale_aggregate ON lcm_rollups(scope, period_start, period_kind) WHERE status = 'stale' AND period_kind IN ('week', 'month')",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+      [
+        "idx_lcm_rollups_failed_day"
+      ]
+    ],
+    [
+      "execute",
+      "CREATE INDEX idx_lcm_rollups_failed_day ON lcm_rollups(scope, failed_at, period_start) WHERE status = 'failed' AND period_kind = 'day'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+      [
+        "idx_lcm_rollups_failed_aggregate"
+      ]
+    ],
+    [
+      "execute",
+      "CREATE INDEX idx_lcm_rollups_failed_aggregate ON lcm_rollups(scope, failed_at, period_start, period_kind) WHERE status = 'failed' AND period_kind IN ('week', 'month')",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+      [
+        "idx_lcm_rollup_invalidations_pending"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+      [
+        "idx_lcm_rollup_invalidations_scope_event"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+      [
+        "idx_lcm_rollup_invalidations_scope_coverage"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='lcm_rollup_state'",
+      []
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS lcm_rollup_state (\n            period_kind TEXT NOT NULL,\n            scope TEXT NOT NULL DEFAULT '',\n            last_build_cursor TEXT,\n            last_built_at TEXT,\n            PRIMARY KEY(period_kind, scope)\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='summary_nodes'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+      [
+        "lcm_rollup_node_insert"
+      ]
+    ],
+    [
+      "execute",
+      "\n            CREATE TRIGGER lcm_rollup_node_insert\n            AFTER INSERT ON summary_nodes BEGIN\n                INSERT INTO lcm_rollup_invalidations(\n                    node_id, scope, covered_start, covered_end, operation\n                ) VALUES(\n                    new.node_id, new.session_id,\n                    MIN(COALESCE(new.earliest_at, new.created_at),\n                        COALESCE(new.latest_at, new.created_at)),\n                    MAX(COALESCE(new.earliest_at, new.created_at),\n                        COALESCE(new.latest_at, new.created_at)), 'insert'\n                );\n            END\n        ",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+      [
+        "lcm_rollup_node_delete"
+      ]
+    ],
+    [
+      "execute",
+      "\n            CREATE TRIGGER lcm_rollup_node_delete\n            BEFORE DELETE ON summary_nodes BEGIN\n                INSERT INTO lcm_rollup_invalidations(\n                    node_id, scope, covered_start, covered_end, operation\n                ) VALUES(\n                    old.node_id, old.session_id,\n                    MIN(COALESCE(old.earliest_at, old.created_at),\n                        COALESCE(old.latest_at, old.created_at)),\n                    MAX(COALESCE(old.earliest_at, old.created_at),\n                        COALESCE(old.latest_at, old.created_at)), 'delete'\n                );\n            END\n        ",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+      [
+        "lcm_rollup_node_update"
+      ]
+    ],
+    [
+      "execute",
+      "\n            CREATE TRIGGER lcm_rollup_node_update\n            AFTER UPDATE OF session_id, depth, summary, token_count,\n                            source_token_count, source_ids, source_type, created_at,\n                            earliest_at, latest_at, expand_hint ON summary_nodes BEGIN\n                INSERT INTO lcm_rollup_invalidations(\n                    node_id, scope, covered_start, covered_end, operation\n                ) VALUES(\n                    old.node_id, old.session_id,\n                    MIN(COALESCE(old.earliest_at, old.created_at),\n                        COALESCE(old.latest_at, old.created_at)),\n                    MAX(COALESCE(old.earliest_at, old.created_at),\n                        COALESCE(old.latest_at, old.created_at)), 'update'\n                );\n                INSERT INTO lcm_rollup_invalidations(\n                    node_id, scope, covered_start, covered_end, operation\n                ) VALUES(\n                    new.node_id, new.session_id,\n                    MIN(COALESCE(new.earliest_at, new.created_at),\n                        COALESCE(new.latest_at, new.created_at)),\n                    MAX(COALESCE(new.earliest_at, new.created_at),\n                        COALESCE(new.latest_at, new.created_at)), 'update'\n                );\n            END\n        ",
+      []
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+      [
+        "lcm_rollups"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+      [
+        "lcm_rollup_sources"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+      [
+        "lcm_rollup_state"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+      [
+        "lcm_rollup_invalidations"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_rollups_ready_period"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_rollups_pending"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_rollups_expired_lease"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_rollups_stale_day"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_rollups_stale_aggregate"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_rollups_failed_day"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_rollups_failed_aggregate"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_rollup_sources_node"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_rollup_invalidations_pending"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_rollup_invalidations_scope_event"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?",
+      [
+        "idx_lcm_rollup_invalidations_scope_coverage"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_rollups)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_rollup_sources)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_rollup_state)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_rollup_invalidations)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_rollup_sources)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_rollup_state)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_rollups)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_info(sqlite_autoindex_lcm_rollups_1)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+      [
+        "lcm_rollups"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+      [
+        "lcm_rollup_invalidations"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT tbl_name, sql FROM sqlite_master WHERE type='index' AND name=?",
+      [
+        "idx_lcm_rollups_ready_period"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_rollups)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_rollups_ready_period)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT tbl_name, sql FROM sqlite_master WHERE type='index' AND name=?",
+      [
+        "idx_lcm_rollups_pending"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_rollups)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_rollups_pending)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT tbl_name, sql FROM sqlite_master WHERE type='index' AND name=?",
+      [
+        "idx_lcm_rollups_expired_lease"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_rollups)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_rollups_expired_lease)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT tbl_name, sql FROM sqlite_master WHERE type='index' AND name=?",
+      [
+        "idx_lcm_rollups_stale_day"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_rollups)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_rollups_stale_day)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT tbl_name, sql FROM sqlite_master WHERE type='index' AND name=?",
+      [
+        "idx_lcm_rollups_stale_aggregate"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_rollups)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_rollups_stale_aggregate)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT tbl_name, sql FROM sqlite_master WHERE type='index' AND name=?",
+      [
+        "idx_lcm_rollups_failed_day"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_rollups)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_rollups_failed_day)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT tbl_name, sql FROM sqlite_master WHERE type='index' AND name=?",
+      [
+        "idx_lcm_rollups_failed_aggregate"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_rollups)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_rollups_failed_aggregate)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT tbl_name, sql FROM sqlite_master WHERE type='index' AND name=?",
+      [
+        "idx_lcm_rollup_sources_node"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_rollup_sources)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_rollup_sources_node)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT tbl_name, sql FROM sqlite_master WHERE type='index' AND name=?",
+      [
+        "idx_lcm_rollup_invalidations_pending"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_rollup_invalidations)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_rollup_invalidations_pending)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT tbl_name, sql FROM sqlite_master WHERE type='index' AND name=?",
+      [
+        "idx_lcm_rollup_invalidations_scope_event"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_rollup_invalidations)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_rollup_invalidations_scope_event)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT tbl_name, sql FROM sqlite_master WHERE type='index' AND name=?",
+      [
+        "idx_lcm_rollup_invalidations_scope_coverage"
+      ]
+    ],
+    [
+      "execute",
+      "PRAGMA index_list(lcm_rollup_invalidations)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA index_xinfo(idx_lcm_rollup_invalidations_scope_coverage)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='summary_nodes'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+      [
+        "lcm_rollup_node_insert"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+      [
+        "lcm_rollup_node_delete"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+      [
+        "lcm_rollup_node_update"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM lcm_migration_state WHERE step_name = ?",
+      [
+        "temporal_rollups_v1"
+      ]
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS lcm_migration_state (\n            step_name TEXT PRIMARY KEY,\n            completed_at REAL NOT NULL\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "\n        INSERT INTO lcm_migration_state(step_name, completed_at)\n        VALUES(?, strftime('%s','now'))\n        ON CONFLICT(step_name) DO UPDATE SET completed_at = excluded.completed_at\n        ",
+      [
+        "temporal_rollups_v1"
+      ]
+    ],
+    [
+      "commit"
+    ]
+  ],
+  "query_view": [
+    [
+      "connect",
+      [
+        "<database>"
+      ],
+      {
+        "timeout": 5.0,
+        "check_same_thread": false
+      }
+    ],
+    [
+      "initial",
+      "",
+      null
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT value FROM metadata WHERE key = 'schema_version'",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA busy_timeout=30000",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA journal_mode=WAL",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA synchronous=FULL",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA wal_autocheckpoint=500",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA journal_size_limit=67108864",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA mmap_size=268435456",
+      []
+    ],
+    [
+      "set",
+      "row_factory",
+      "Row"
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT value FROM metadata WHERE key = 'schema_version'",
+      []
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS metadata (\n            key TEXT PRIMARY KEY,\n            value TEXT\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS lcm_migration_state (\n            step_name TEXT PRIMARY KEY,\n            completed_at REAL NOT NULL\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'",
+      []
+    ],
+    [
+      "execute",
+      "SELECT value FROM metadata WHERE key = 'schema_version'",
+      []
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS metadata (\n            key TEXT PRIMARY KEY,\n            value TEXT\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "SELECT value FROM metadata WHERE key = 'schema_version'",
+      []
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS lcm_lifecycle_state (\n            conversation_id TEXT PRIMARY KEY,\n            current_session_id TEXT,\n            last_finalized_session_id TEXT,\n            current_frontier_store_id INTEGER NOT NULL DEFAULT 0,\n            last_finalized_frontier_store_id INTEGER NOT NULL DEFAULT 0,\n            debt_kind TEXT,\n            debt_size_estimate INTEGER NOT NULL DEFAULT 0,\n            current_bound_at REAL,\n            last_finalized_at REAL,\n            debt_updated_at REAL,\n            last_maintenance_attempt_at REAL,\n            last_rollover_at REAL,\n            last_reset_at REAL,\n            updated_at REAL NOT NULL DEFAULT (strftime('%s','now'))\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "CREATE INDEX IF NOT EXISTS idx_lcm_lifecycle_current_session ON lcm_lifecycle_state(current_session_id)",
+      []
+    ],
+    [
+      "execute",
+      "CREATE INDEX IF NOT EXISTS idx_lcm_lifecycle_last_finalized_session ON lcm_lifecycle_state(last_finalized_session_id)",
+      []
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS lcm_lifecycle_state (\n            conversation_id TEXT PRIMARY KEY,\n            current_session_id TEXT,\n            last_finalized_session_id TEXT,\n            current_frontier_store_id INTEGER NOT NULL DEFAULT 0,\n            last_finalized_frontier_store_id INTEGER NOT NULL DEFAULT 0,\n            debt_kind TEXT,\n            debt_size_estimate INTEGER NOT NULL DEFAULT 0,\n            current_bound_at REAL,\n            last_finalized_at REAL,\n            debt_updated_at REAL,\n            last_maintenance_attempt_at REAL,\n            last_rollover_at REAL,\n            last_reset_at REAL,\n            updated_at REAL NOT NULL DEFAULT (strftime('%s','now'))\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "CREATE INDEX IF NOT EXISTS idx_lcm_lifecycle_current_session ON lcm_lifecycle_state(current_session_id)",
+      []
+    ],
+    [
+      "execute",
+      "CREATE INDEX IF NOT EXISTS idx_lcm_lifecycle_last_finalized_session ON lcm_lifecycle_state(last_finalized_session_id)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_lifecycle_state)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(messages)",
+      []
+    ],
+    [
+      "execute",
+      "CREATE INDEX IF NOT EXISTS idx_msg_conversation_session ON messages(conversation_id, session_id, store_id)",
+      []
+    ],
+    [
+      "executescript",
+      "\n        CREATE TABLE IF NOT EXISTS lcm_query_corpus_state (\n            singleton INTEGER PRIMARY KEY CHECK(singleton = 1),\n            generation INTEGER NOT NULL DEFAULT 0 CHECK(generation >= 0),\n            max_store_id INTEGER NOT NULL DEFAULT 0 CHECK(max_store_id >= 0),\n            row_count INTEGER NOT NULL DEFAULT 0 CHECK(row_count >= 0),\n            changed_at REAL NOT NULL\n        );\n\n        CREATE TABLE IF NOT EXISTS lcm_query_corpus_events (\n            generation INTEGER PRIMARY KEY CHECK(generation > 0),\n            store_id INTEGER NOT NULL CHECK(store_id > 0),\n            mutation TEXT NOT NULL CHECK(mutation IN ('insert', 'update', 'delete')),\n            session_id TEXT NOT NULL DEFAULT '',\n            conversation_id TEXT NOT NULL DEFAULT '',\n            source TEXT NOT NULL DEFAULT '',\n            role TEXT NOT NULL DEFAULT '',\n            source_timestamp REAL,\n            changed_at REAL NOT NULL\n        );\n\n        CREATE TABLE IF NOT EXISTS lcm_query_views (\n            view_id TEXT PRIMARY KEY CHECK(length(view_id) = 64),\n            identity_json TEXT NOT NULL,\n            status TEXT NOT NULL CHECK(status IN (\n                'ready', 'stale', 'building', 'failed', 'expired'\n            )),\n            generation INTEGER NOT NULL DEFAULT 0 CHECK(generation >= 0),\n            current_version INTEGER NOT NULL DEFAULT 0 CHECK(current_version >= 0),\n            build_nonce TEXT NOT NULL DEFAULT '',\n            lease_expires_at REAL,\n            stale_reason TEXT NOT NULL DEFAULT '',\n            hit_count INTEGER NOT NULL DEFAULT 0 CHECK(hit_count >= 0),\n            promotion_status TEXT NOT NULL DEFAULT 'probationary'\n                CHECK(promotion_status IN ('probationary', 'promoted')),\n            created_at REAL NOT NULL,\n            updated_at REAL NOT NULL,\n            expires_at REAL\n        );\n\n        CREATE TABLE IF NOT EXISTS lcm_query_view_versions (\n            view_id TEXT NOT NULL,\n            version INTEGER NOT NULL CHECK(version > 0),\n            manifest_json TEXT NOT NULL,\n            trace_json TEXT NOT NULL DEFAULT '',\n            completeness TEXT NOT NULL CHECK(completeness IN ('complete', 'partial')),\n            search_policy_version TEXT NOT NULL,\n            corpus_generation INTEGER NOT NULL CHECK(corpus_generation >= 0),\n            coverage_store_id INTEGER NOT NULL CHECK(coverage_store_id >= 0),\n            published_at REAL NOT NULL,\n            expires_at REAL,\n            supersedes_version INTEGER,\n            PRIMARY KEY(view_id, version)\n        );\n\n        CREATE TABLE IF NOT EXISTS lcm_query_view_sources (\n            view_id TEXT NOT NULL,\n            version INTEGER NOT NULL,\n            source_store_id INTEGER NOT NULL CHECK(source_store_id > 0),\n            source_content_sha256 TEXT NOT NULL CHECK(length(source_content_sha256) = 64),\n            source_session_id TEXT NOT NULL,\n            source_conversation_id TEXT NOT NULL DEFAULT '',\n            source_name TEXT NOT NULL DEFAULT '',\n            source_role TEXT NOT NULL,\n            source_timestamp REAL NOT NULL,\n            span_start INTEGER NOT NULL CHECK(span_start >= 0),\n            span_end INTEGER NOT NULL CHECK(span_end > span_start),\n            quote TEXT NOT NULL,\n            assertion_id TEXT NOT NULL DEFAULT '',\n            PRIMARY KEY(view_id, version, source_store_id, span_start, span_end)\n        );\n\n        CREATE INDEX IF NOT EXISTS idx_lcm_query_view_sources_store\n            ON lcm_query_view_sources(source_store_id, view_id, version);\n        CREATE INDEX IF NOT EXISTS idx_lcm_query_view_versions_coverage\n            ON lcm_query_view_versions(corpus_generation, view_id, version);\n        CREATE INDEX IF NOT EXISTS idx_lcm_query_views_lifecycle\n            ON lcm_query_views(status, expires_at, updated_at);\n\n        CREATE TRIGGER IF NOT EXISTS lcm_query_corpus_message_insert\n        AFTER INSERT ON messages\n        BEGIN\n            UPDATE lcm_query_corpus_state\n               SET generation = generation + 1,\n                   max_store_id = max(max_store_id, NEW.store_id),\n                   row_count = row_count + 1,\n                   changed_at = CAST(strftime('%s','now') AS REAL)\n             WHERE singleton = 1;\n            INSERT INTO lcm_query_corpus_events(\n                generation, store_id, mutation, session_id, conversation_id,\n                source, role, source_timestamp, changed_at\n            ) SELECT generation, NEW.store_id, 'insert', NEW.session_id,\n                     NEW.conversation_id, NEW.source, NEW.role, NEW.timestamp,\n                     changed_at\n                FROM lcm_query_corpus_state WHERE singleton = 1;\n        END;\n\n        CREATE TRIGGER IF NOT EXISTS lcm_query_corpus_message_update\n        AFTER UPDATE OF content, session_id, conversation_id, source, role, timestamp\n        ON messages\n        BEGIN\n            UPDATE lcm_query_corpus_state\n               SET generation = generation + 1,\n                   max_store_id = max(max_store_id, NEW.store_id),\n                   changed_at = CAST(strftime('%s','now') AS REAL)\n             WHERE singleton = 1;\n            INSERT INTO lcm_query_corpus_events(\n                generation, store_id, mutation, session_id, conversation_id,\n                source, role, source_timestamp, changed_at\n            ) SELECT generation, NEW.store_id, 'update', NEW.session_id,\n                     NEW.conversation_id, NEW.source, NEW.role, NEW.timestamp,\n                     changed_at\n                FROM lcm_query_corpus_state WHERE singleton = 1;\n            UPDATE lcm_query_views\n               SET status = 'stale', generation = generation + 1,\n                   stale_reason = 'positive_source_updated',\n                   build_nonce = '', lease_expires_at = NULL,\n                   updated_at = CAST(strftime('%s','now') AS REAL)\n             WHERE status IN ('ready', 'building')\n               AND view_id IN (\n                   SELECT dependency.view_id\n                     FROM lcm_query_view_sources AS dependency\n                    WHERE dependency.source_store_id = OLD.store_id\n                      AND dependency.version = lcm_query_views.current_version\n               );\n        END;\n\n        CREATE TRIGGER IF NOT EXISTS lcm_query_corpus_message_delete\n        AFTER DELETE ON messages\n        BEGIN\n            UPDATE lcm_query_corpus_state\n               SET generation = generation + 1,\n                   row_count = max(0, row_count - 1),\n                   changed_at = CAST(strftime('%s','now') AS REAL)\n             WHERE singleton = 1;\n            INSERT INTO lcm_query_corpus_events(\n                generation, store_id, mutation, session_id, conversation_id,\n                source, role, source_timestamp, changed_at\n            ) SELECT generation, OLD.store_id, 'delete', OLD.session_id,\n                     OLD.conversation_id, OLD.source, OLD.role, OLD.timestamp,\n                     changed_at\n                FROM lcm_query_corpus_state WHERE singleton = 1;\n            UPDATE lcm_query_views\n               SET status = 'stale', generation = generation + 1,\n                   stale_reason = 'positive_source_deleted',\n                   build_nonce = '', lease_expires_at = NULL,\n                   updated_at = CAST(strftime('%s','now') AS REAL)\n             WHERE status IN ('ready', 'building')\n               AND view_id IN (\n                   SELECT dependency.view_id\n                     FROM lcm_query_view_sources AS dependency\n                    WHERE dependency.source_store_id = OLD.store_id\n                      AND dependency.version = lcm_query_views.current_version\n               );\n        END;\n        "
+    ],
+    [
+      "execute",
+      "\n        INSERT OR IGNORE INTO lcm_query_corpus_state(\n            singleton, generation, max_store_id, row_count, changed_at\n        )\n        SELECT 1, 0, coalesce(max(store_id), 0), count(*), ? FROM messages\n        ",
+      [
+        1700000000.0
+      ]
+    ],
+    [
+      "execute",
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'lcm_query%'",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_query_corpus_state)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_query_corpus_events)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_query_views)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_query_view_versions)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(lcm_query_view_sources)",
+      []
+    ],
+    [
+      "execute",
+      "SELECT name FROM sqlite_master WHERE type = ?",
+      [
+        "index"
+      ]
+    ],
+    [
+      "execute",
+      "SELECT name FROM sqlite_master WHERE type = ?",
+      [
+        "trigger"
+      ]
+    ],
+    [
+      "execute",
+      "\n        CREATE TABLE IF NOT EXISTS lcm_migration_state (\n            step_name TEXT PRIMARY KEY,\n            completed_at REAL NOT NULL\n        )\n        ",
+      []
+    ],
+    [
+      "execute",
+      "\n        INSERT INTO lcm_migration_state(step_name, completed_at)\n        VALUES(?, strftime('%s','now'))\n        ON CONFLICT(step_name) DO UPDATE SET completed_at = excluded.completed_at\n        ",
+      [
+        "query_views_v1"
+      ]
+    ],
+    [
+      "commit"
+    ]
+  ]
+}
