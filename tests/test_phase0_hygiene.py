@@ -86,17 +86,26 @@ def test_ambient_product_env_is_removed_but_harness_controls_and_test_overrides_
 import os
 from pathlib import Path
 
-def test_first(monkeypatch, tmp_path):
+HOMES = []
+
+def _home(tmp_path_factory):
+    home = Path(os.environ['HERMES_HOME'])
+    assert home.parent == tmp_path_factory.getbasetemp() / 'hermes-home'
+    HOMES.append(home)
+    return home
+
+def test_first(monkeypatch, tmp_path_factory):
     assert not set({keys!r}) & os.environ.keys()
     assert all(os.environ[k] == 'harness-sentinel' for k in {HARNESS_KEYS!r})
-    assert Path(os.environ['HERMES_HOME']) == tmp_path / 'hermes-home'
+    _home(tmp_path_factory)
     monkeypatch.setenv('LCM_LEAF_CHUNK_TOKENS', '1234')
     from hermes_lcm.config import LCMConfig
     assert LCMConfig.from_env().leaf_chunk_tokens == 1234
 
-def test_second(tmp_path):
+def test_second(tmp_path_factory):
     assert not set({keys!r}) & os.environ.keys()
-    assert Path(os.environ['HERMES_HOME']) == tmp_path / 'hermes-home'
+    _home(tmp_path_factory)
+    assert HOMES[0] != HOMES[1]  # each test gets its own home
 """, env=env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "2 passed" in result.stdout
