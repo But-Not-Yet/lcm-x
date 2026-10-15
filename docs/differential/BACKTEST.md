@@ -15,9 +15,9 @@ This is advisory synthetic evidence. It is not a release gate or proof of runtim
 The branch merged rc8 `4e603ed65f137a909606afccfc735c691e363d25` with merge commit
 `cd2a17f0c7dcaa5a3df5cd564023b5149aec6703`. All new authored changes are tests/docs only.
 Every oracle, threshold and pre-existing delta is unchanged. The sole added delta is the explicitly
-requested `D1233_LAST_RESORT_USER_MARK`: projection / P_USER only, candidate marks nonempty and equal to GA marks, and
+requested `D1233_LAST_RESORT_USER_MARK`: projection / P_USER only, candidate marks a nonempty subset of GA marks, and
 `not (ga["out_tokens"] <= case["limit"] < cand["out_tokens"])`, linked to [#1233](https://github.com/electricsheephq/lcm-x/issues/1233).
-This does not accept R2, different user-mark sets, public-layer marks, or candidate overflow where GA fit.
+This does not accept R2, user marks absent from GA, public-layer marks, or candidate overflow where GA fit.
 
 ### Inputs and seams
 
@@ -129,33 +129,36 @@ writes; the longest focused suite took 7m15s. Original failed input attempts are
 recorded in the PR; the final matrix supersedes them. Ruff/whitespace are clean. No full
 repository tests, remote CI, push, PR write, release or runtime action was performed.
 
-### Tightened last-resort acceptance (2026-10-16)
+### Final last-resort acceptance (2026-10-16)
 
-D1233 now requires equal, nonempty user-mark sets and rejects candidate overflow where GA fit.
+D1233 requires a nonempty subset of GA user marks, and no candidate overflow where GA fit:
+`bool(cand["user_marks"]) and set(cand["user_marks"]) <= set(ga["user_marks"]) and not (ga["out_tokens"] <= case["limit"] < cand["out_tokens"])`.
 D916, all other deltas, oracles, thresholds and product files remain unchanged. The expanded
-predicate regression fails before this change and passes after it.
+predicate regression fails with the preceding equality rule and passes with this subset rule.
 
 | Projection probe, seed 1227 | Cases | Raw R1 | Raw P_USER | D916 | D1233 | Unexplained | Exit | Wall s |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Unchanged rc8 | 1,000 | 0 | 238 | 0 | 237 | 1 | 1 | 68.738 |
-| Unchanged rc8 | 4,000 | 0 | 951 | 0 | 946 | 5 | 1 | 189.328 |
-| User pass stops after first mark | 1,000 | 6 | 238 | 6 | 198 | 40 | 1 | 78.959 |
-| User-pass limit guards removed | 400 | 0 | 106 | 0 | 97 | 9 | 1 | 25.379 |
+| Unchanged rc8 | 1,000 | 0 | 238 | 0 | 238 | 0 | 0 | 39.665 |
+| Unchanged rc8 | 4,000 | 0 | 951 | 0 | 951 | 0 | 0 | 154.774 |
+| User pass stops after first mark | 1,000 | 6 | 238 | 6 | 232 | 6 | 1 | 40.433 |
+| User-pass limit guards removed | 400 | 0 | 106 | 0 | 97 | 9 | 1 | 7.092 |
 
-The early-exit mutant's 6 overflowing cases now retain unexplained P_USER events; all 40
-unexplained events also have unequal mark sets. The guard-removal mutant remains red.
-The assumption that equality costs no accepted rc8 cases is false: p543 has GA marks `[2,3,5]`
-and candidate marks `[2,3]`, with outputs 495 and 537 under limit 679. The 4,000-case sample
-also rejects p1491, p3277, p3341 and p3629; all 5 are strict subsets and both trees fit.
-These remain visible rather than weakening the requested equality rule. No seams are missing.
+The early-exit mutant retains exactly 6 unexplained P_USER events: p66, p295, p347, p543, p551
+and p922; each candidate overflows where GA fit, while D916 still absorbs its R1 event.
+The guard-removal mutant remains red with 9 unexplained events. Both unchanged rc8 samples
+have zero unexplained events, every P_USER event is accepted by D1233, and no seams are missing.
 
-The deduplicated opt-in suite reports **25 passed, 2 strict xfailed, 2 failed** in 310.77 seconds
-pytest / 311.687 seconds process wall. Failures are the existing g0 R2 signal and p543's P_USER
-signal. The old 32K fit input is excluded by ID from `test_exact_shape`; its dedicated checks
-remain, and the separate historical 16K strict xfail is unchanged. Deduplication removes one
-passing test; the new projection failure removes another from the original pass count.
-Detailed commands, replay inputs and results are recorded in the PR. This does not meet the
-zero-unexplained rc8 acceptance expectation; it is advisory evidence, not readiness proof.
+Subset is needed because unchanged rc8 drops a GA mark while both outputs fit in p543, p1491,
+p3277, p3341 and p3629; equality would reject all 5. In p543, GA marks `[2,3,5]` produce 495 tokens
+versus candidate marks `[2,3]` at 537 tokens, under limit 679.
+
+The deduplicated opt-in suite reports **26 passed, 2 strict xfailed, 1 failed** in 115.77 seconds
+pytest / 116.644 seconds process wall. Its sole failure is the existing g0 R2 signal, with two
+unexplained events; the projection sample is green. The old 32K fit input remains excluded by ID
+from `test_exact_shape`; its dedicated checks and the separate historical 16K strict xfail remain.
+Default collection stays at 7,712 tests (7.959 seconds process wall); opt-out reports one skipped
+module, expected exit 5 (0.786 seconds). Detailed commands, replay inputs and results are recorded
+in the PR. This is advisory synthetic evidence, not readiness proof.
 
 ## Corrected public comparison
 
