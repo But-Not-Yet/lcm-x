@@ -87,16 +87,26 @@ def _parse_float_env(key: str, default: float) -> float:
         return default
 
 
-def _parse_bool_env(key: str, default: bool) -> bool:
+def _parse_bool_env(
+    key: str, default: bool, *, unknown: bool | None = None,
+    true_values: tuple[str, ...] = ("1", "true", "yes", "on"),
+    false_values: tuple[str, ...] = ("0", "false", "no", "off"),
+) -> bool:
+    """Read on every call; unknown (including blank) keeps default unless specified."""
     raw = os.environ.get(key)
     if raw is None:
         return default
     normalized = raw.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
+    if normalized in true_values:
         return True
-    if normalized in {"0", "false", "no", "off"}:
+    if normalized in false_values:
         return False
-    return default
+    return default if unknown is None else unknown
+
+
+def _disabled_tool_names() -> set[str]:
+    """Tools disabled via LCM_DISABLED_TOOLS (comma-separated lcm_* names)."""
+    return set(_parse_pattern_list(os.environ.get("LCM_DISABLED_TOOLS", "")))
 
 
 def _parse_str_env(key: str, default):
