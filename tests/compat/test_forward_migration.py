@@ -6,6 +6,7 @@ import sqlite3
 
 import pytest
 
+from tests.compat import codec_adapter
 from tests.compat.helpers import config_for, run_old
 
 WRITE_AND_READ = r'''
@@ -54,8 +55,10 @@ try:
         view = [{"role": "user", "content": "retain " * 2000, "timestamp": 200.0},
                 {"role": "assistant", "content": "answer " * 2000, "timestamp": 201.0}]
         engine.ingest(view)
-        fitted = engine._survival_fit(view, view, engine._survival_measure(view), "compat_fixture")
+''' + codec_adapter.OLD_FIT + r'''
         assert fitted != view
+        first_id = engine._store.get_session_messages("session-0")[0]["store_id"]
+        assert engine._store.add_message_relations([[(first_id, "alt_stamp", None, None, 777.0)]]) == 1
     sessions = [f"session-{index}" for index in range(3)] + ["survival"]
     rows = {session: engine._store.get_session_messages(session) for session in sessions}
     assert all(rows.values())
@@ -69,29 +72,37 @@ finally:
 '''
 
 
-def snapshot(directory):
+def snapshot(directory, before_columns=None):
     with sqlite3.connect(directory / "lcm.db") as conn:
-        tables = [row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+        # FTS shadow storage is derived; retain the virtual tables themselves.
+        shadows = {row[1] for row in conn.execute("PRAGMA table_list") if row[2] == "shadow"}
+        tables = [row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                  if row[0] not in shadows]
         schema = {table: [row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')] for table in tables}
-        rows = conn.execute("SELECT session_id, conversation_id, store_id, role, content, tool_calls, tool_call_id "
-                            "FROM messages ORDER BY store_id").fetchall()
-        conversations = {}
-        for session, conversation, *row in rows:
-            conversations.setdefault((session, conversation), []).append(row)
-        hashes = {key: (len(value), hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest())
-                  for key, value in conversations.items()}
-        nodes = conn.execute("SELECT * FROM summary_nodes ORDER BY node_id").fetchall()
-        provenance = conn.execute("SELECT * FROM summary_node_provenance ORDER BY node_id").fetchall()
-        assert nodes and provenance
-        ids = {row[2] for row in rows}
+        hashes = {}
+        for table, columns in (before_columns or schema).items():
+            assert set(columns) <= set(schema[table]), table
+            names = ", ".join(f'"{column}"' for column in columns)
+            rows = conn.execute(f'SELECT {names} FROM "{table}" ORDER BY rowid').fetchall()
+            if table == "metadata" and before_columns is not None:
+                # The upgrade adds this derived-index marker; every old key/value
+                # must still hash identically, and no other addition is allowed.
+                assert rows.count(("fts_stem_state", "backfilling")) == 1
+                rows.remove(("fts_stem_state", "backfilling"))
+            # SQLite BLOBs need an explicit lossless JSON representation.
+            encoded = json.dumps(rows, default=lambda value: {"blob_hex": value.hex()}).encode()
+            hashes[table] = (len(rows), hashlib.sha256(encoded).hexdigest())
+        nodes = conn.execute("SELECT node_id, source_type, source_ids FROM summary_nodes ORDER BY rowid").fetchall()
+        ids = {row[0] for row in conn.execute("SELECT store_id FROM messages")}
         node_ids = {row[0] for row in nodes}
-        for node in nodes:
-            source_ids = json.loads(node[schema["summary_nodes"].index("source_ids")])
-            source_type = node[schema["summary_nodes"].index("source_type")]
+        assert nodes and hashes["summary_node_provenance"][0]
+        assert conn.execute("SELECT count(*) FROM message_relations WHERE kind='alt_stamp'").fetchone()[0] >= 1
+        for _, source_type, source_ids in nodes:
+            source_ids = json.loads(source_ids)
             assert source_ids and set(source_ids) <= (ids if source_type == "messages" else node_ids)
         payloads = {str(path.relative_to(directory)): hashlib.sha256(path.read_bytes()).hexdigest()
                     for path in (directory / "payloads").rglob("*") if path.is_file()}
-        return schema, hashes, nodes, provenance, payloads
+        return schema, hashes, payloads
 
 
 @pytest.mark.parametrize("overlay", ["default", "fleet"])
@@ -102,7 +113,7 @@ def test_previous_ga_forward_migration(tmp_path, old_tree, host_root, monkeypatc
     old = old_tree("v0.26.2")
     original = run_old(old, tmp_path, host_root, WRITE_AND_READ, mode="write", data=overlay)
     before = snapshot(tmp_path)
-    assert len(before[1]) == 4 and before[-1]
+    assert before[1]["messages"][0] == sum(original["counts"].values()) and before[-1]
     # Keep the asynchronous derived-index backfill out of the reopen comparison.
     monkeypatch.setattr(db_bootstrap, "dispatch_background_stem_backfill", lambda *args: None)
     first_open = None
@@ -116,8 +127,10 @@ def test_previous_ga_forward_migration(tmp_path, old_tree, host_root, monkeypatc
             assert engine._store.connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         finally:
             engine.shutdown()
-        after = snapshot(tmp_path)
-        assert after[1:] == before[1:], "upgrade must preserve every conversation, DAG and payload"
+        after = snapshot(tmp_path, before[0])
+        for table, digest in before[1].items():
+            assert after[1][table] == digest, f"upgrade changed old columns/rows in {table}"
+        assert after[2] == before[2], "upgrade changed externalized payloads"
         assert all(set(columns) <= set(after[0][table]) for table, columns in before[0].items())
         if opening:
             assert after == first_open, "second open must not change the persisted shape or data"
@@ -125,4 +138,4 @@ def test_previous_ga_forward_migration(tmp_path, old_tree, host_root, monkeypatc
     # #919's floor concerns replay of NEW short projections, not opening a store:
     # this candidate has emitted none. test_rollback_v0262_store defines this path.
     assert run_old(old, tmp_path, host_root, WRITE_AND_READ) == original
-    assert snapshot(tmp_path)[1:] == before[1:]
+    assert snapshot(tmp_path, before[0])[1:] == before[1:]
