@@ -1,8 +1,72 @@
 # Previous-GA differential backtest
 
 Measured 2026-10-15 against GA `6800cf45ad05280e6cf6fa9e1ad96c62b7132646`.
-Candidate checkout: `3c9b34bc1165905869369c7d93f914aec95fdf5c`; rc7: `432bc4567c7b6201f83421bb9e5402eee7980302`.
+Product candidate: rc7 `432bc4567c7b6201f83421bb9e5402eee7980302`.
+S1b starts at harness head `d0a27b259cd5d1d04b974aeb7dee70ceadb810e0`, whose production files match rc7.
+The original historical receipts used checkout `3c9b34bc1165905869369c7d93f914aec95fdf5c`.
+S1b corrects R2's stale objective probe, compares managed GA defaults by default, and adds C1 summary coverage.
+The 32K #1247 shape has 734 uncovered rows on both managed GA and rc7; the bare-GA comparison exposes the gap.
+The absolute zero-gap expectation is retained as a dedicated strict xfail. Two exact #1123 R3 cells are accepted
+separately: 40K compress runs and 64K provider calls. No production code changed.
 This is advisory synthetic evidence. It is not a release gate or proof of runtime readiness.
+
+## S1b corrected public comparison
+
+The newest-user objective rule replaces the static first-turn R2 probe. GA now defaults to the managed
+configuration; select `--baseline-config bare|managed` or `LCM_DIFFERENTIAL_BASELINE_CONFIG` (default `managed`).
+Only GA receives this selection; candidate defaults and explicit per-case overrides remain in force.
+Managed values are `context_threshold=0.75`, `fresh_tail_count=24`, `fresh_tail_max_tokens=24000`,
+`leaf_chunk_tokens=8000`, `threshold_full_sweep_enabled=True`, `large_output_externalization_enabled=True`,
+and `large_output_active_replay_stubbing_enabled=True`. Explicit case overrides take precedence.
+
+C1 counts non-system stored rows absent from the final live view and from all DAG message-source coverage.
+Unique synthetic row sentinels identify live rows; summary-source IDs are not message IDs.
+C1 is red only when candidate exceeds GA by more than two rows. This measures summary coverage, not store loss.
+The absolute `i1247_*` strict xfail requires zero uncovered rows on the 32K i1139 shape and catches only
+`SummaryCoverageGap`; a driver error or unrelated assertion cannot satisfy it.
+
+Corrected receipts and the table below supersede the original public triage and acceptance results retained
+under the historical sections. Historical rows used the bare GA defaults and the old static objective probe.
+
+### rc7 public-layer results after correction
+
+All 72 public cases (12 exact plus 60 generated), seed 1227. Counts are raw oracle events.
+Managed receipts come from the final enabled pytest run; bare GA replays the identical saved inputs and
+reuses those validated candidate records. No candidate result is regenerated or edited for the bare arm.
+
+| GA config | Cases | R1 | R2 | R3 | C1 | A1 | A2 | Accepted | Unabsorbed |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| managed | 72 | 0 | 0 | 2 | 0 | 0 | 0 | 2 | 0 |
+| bare | 72 | 0 | 0 | 3 | 15 | 0 | 0 | 0 | 18 |
+
+The managed gate has zero unexplained reds. Both R3 events have separate exact-cell deltas:
+`D1123_64K_LEAF_TRADE` names #1123 / PR #1129 and accepts only provider calls 65 versus 46 at 64K;
+`D1123_40K_COMPRESS_TRADE` accepts only compress runs 113 versus 93 at 40K (provider calls fall 166 to 165).
+The latter is an interpretation correction: the supplied triage numbers already exceed R3's 10% + 2 run
+threshold despite its prose saying 40K passes. Neither exception absorbs another metric, case, or count pair.
+
+| i1139 window | Bare GA / rc7 uncovered | Managed GA / rc7 uncovered | Managed GA / rc7 provider calls |
+|---|---:|---:|---:|
+| 32K | 0 / 734 | 734 / 734 | 3 / 3 |
+| 40K | 8 / 29 | 206 / 29 | 166 / 165 |
+| 48K | 0 / 0 | 0 / 0 | 246 / 198 |
+| 64K | 0 / 0 | 26 / 0 | 46 / 65 |
+| 128K | 130 / 25 | 125 / 25 | 12 / 7 |
+
+Bare remains a diagnostic arm: its three R3 reds are provider calls at 40K (165/53), 48K (198/85),
+and g51 (4/1), candidate/GA. C1 is red at 32K, 40K, and g9, g17, g23, g27, g28, g29, g30, g37,
+g38, g54, g55, g57, g58. These events stay visible and unabsorbed; no broad default-change delta hides them.
+They are comparison signals against bare settings, not evidence of regression against managed GA.
+At 32K, C1 reproduces #1247 exactly: 734 versus bare GA's 0, and 734 versus managed GA's 734.
+A1 has no missing produced sentinels; C1 does not claim stored context was deleted.
+
+Final enabled acceptance: 24 passed, 1 strict xfailed (#1247), 630.78 seconds pytest / 632.21 seconds process wall.
+The 1,000-case managed projection sample has 54 R1 reds, all accepted by D916; zero unexplained.
+Opt-out: one module skip (expected exit 5), 1.85 seconds wall. Full collection: 7,698 tests, unchanged,
+19.25 seconds pytest / 21.19 seconds wall. Enabled collection grows from 18 to 25 tests.
+Bare GA public replay: 184.85 seconds process wall; candidate records reused. No wall-time assertion decides an oracle.
+The initial development run (362.18 seconds) found the 40K run-count discrepancy and a missing-ID unit-fixture
+error in a new delta predicate; both are corrected in the final run. Original S1 receipts below remain historical.
 
 ## Reproduce
 
@@ -10,12 +74,13 @@ With an interpreter providing pytest and the CI `agent.context_engine` host stub
 
 ```sh
 HERMES_DISABLE_LAZY_INSTALLS=1 LCM_DIFFERENTIAL=1 nice -n 19 python -m tests.differential.run --baseline v0.26.2 --candidate 432bc4567c7b6201f83421bb9e5402eee7980302 --layers projection --cases 4000 --seed 1227 --out differential-results/projection
-HERMES_DISABLE_LAZY_INSTALLS=1 LCM_DIFFERENTIAL=1 nice -n 19 python -m tests.differential.run --baseline v0.26.2 --candidate 432bc4567c7b6201f83421bb9e5402eee7980302 --layers public --cases 60 --seed 1227 --out differential-results/public
+HERMES_DISABLE_LAZY_INSTALLS=1 LCM_DIFFERENTIAL=1 nice -n 19 python -m tests.differential.run --baseline v0.26.2 --candidate 432bc4567c7b6201f83421bb9e5402eee7980302 --baseline-config managed --layers public --cases 60 --seed 1227 --out differential-results/public-managed
+HERMES_DISABLE_LAZY_INSTALLS=1 LCM_DIFFERENTIAL=1 nice -n 19 python -m tests.differential.run --baseline v0.26.2 --candidate 432bc4567c7b6201f83421bb9e5402eee7980302 --baseline-config bare --layers public --cases 60 --seed 1227 --out differential-results/public-bare
 LCM_DIFFERENTIAL=1 nice -n 19 python -m pytest tests/differential -q -p no:randomly -p no:cacheprovider
 ```
 
 For a historical row, substitute its full SHA and use `--layers public --cases 0 --only CASE_ID` (comma-separated IDs are accepted). Resolve merge parents with `git rev-parse SHA^1`. All required objects were already present; no fetch was needed.
-`LCM_DIFFERENTIAL_BASELINE`, `LCM_DIFFERENTIAL_CANDIDATE`, `LCM_DIFFERENTIAL_CASES`, `LCM_DIFFERENTIAL_SEED`, `LCM_DIFFERENTIAL_PROJECTION_CASES`, and `LCM_DIFFERENTIAL_OUT` control pytest. Defaults are GA, worktree, 60, 1227, and 1000. The last variable selects the evidence directory.
+`LCM_DIFFERENTIAL_BASELINE_CONFIG`, `LCM_DIFFERENTIAL_BASELINE`, `LCM_DIFFERENTIAL_CANDIDATE`, `LCM_DIFFERENTIAL_CASES`, `LCM_DIFFERENTIAL_SEED`, `LCM_DIFFERENTIAL_PROJECTION_CASES`, and `LCM_DIFFERENTIAL_OUT` control pytest. Defaults are managed, GA, worktree, 60, 1227, and 1000. The last variable selects the evidence directory.
 Each run retains replayable `*-cases.jsonl`, per-tree `*.jsonl` and logs, `summary.json`, and `summary.md`. Replay a case file with `nice -n 19 python tests/differential/driver.py --tree TREE --layer public --cases CASES --out RESULTS` under the same opt-in environment.
 
 ## Historical matrix
@@ -44,7 +109,7 @@ All rows use the public layer, seed 1227, and only the named exact shapes. Count
 4,000 instrumented p34 cases: 250 R1 events, all 250 absorbed by the sole `D916_GA_MARKED_USER` delta; zero unexplained, zero candidate user marks, zero input mutations. GA/candidate wall times were 51.52/74.08 seconds; mean case times 0.01085/0.01821 seconds. No missing seams.
 The original uninstrumented p34 output artifacts independently contain 253 fit failures, all with GA mark-only user rows. Their SHA-256 receipts and all case IDs are in `historical-253.json` in the lane evidence packet. The new corpus replaces text prefixes with row sentinels, grows very short rows, and uses a fresh store per case (changing store-id widths). It is intentionally reported as 250, not presented as a byte-identical 253-case reproduction.
 
-## Public triage and unexplained results
+## Historical public triage and unexplained results
 
 The rc7 run contains 12 exact shapes plus 60 generated cases, seed 1227. It reports 34 unexplained events in five cases: R2=31 and R3=3; R1=A1=A2=0. No delta absorbed a public case; D916 is zero-absorption on this layer but active in the full projection run.
 - `i1139_small_window_32k`: objective missing versus GA at calls 10–11 (zero based).
@@ -106,7 +171,7 @@ The rc6 enabled suite also reports 34 unexplained projection R1 cases among 1,00
 - Private seam absence is recorded and unsupported essential paths become DRIVER failures. No tested tree lacked a required seam. Missing commits/host stubs skip locally and fail under CI.
 - The provided interpreter has no xdist: runs are serial under nice 19, cacheprovider disabled. This lane explicitly requires the local offline historical matrix; it does not run the full repository suite. A brief overlap during the pilot was suspended, then resumed serially.
 
-## Acceptance evidence
+## Historical acceptance evidence
 
 Detailed command receipts and logs are in the S1 lane evidence packet. The default collection baseline is 7,698 tests. The disabled differential module reports one skip in 0.04 seconds (0.99 seconds process wall time); pytest exits 5 because the opt-out module collects no runnable tests.
 Full collection after the additions is still 7,698 tests (8.94 seconds), with the new module skipped. `ruff check tests/differential` passes.
@@ -117,6 +182,6 @@ After the density-floor correction, the focused 60-case generated test still has
 
 No production source, existing test, workflow, or root configuration changed. There was no push, PR, merge, release, or runtime action.
 
-## Remaining evidence gate
+## Historical remaining evidence gate (superseded by S1b)
 
 The orchestrator should retain these unexplained cases and choose a bounded follow-up using the original historical host inputs for #1221, #1139, and #1225. The acceptance condition is the original failure on its culprit SHA and clearance on the fix while keeping the oracles unchanged. Treating a green blind spot or strict XPASS as proof of a fix would be misleading.

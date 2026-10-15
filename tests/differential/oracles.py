@@ -28,11 +28,13 @@ def compare(case, ga, cand):
             a = sum(call[metric] for call in ga["calls"])
             b = sum(call[metric] for call in cand["calls"])
             check("R3", b <= a * 1.10 + 2, dict(metric=metric, ga=a, candidate=b))
+        check("C1", cand["uncovered_rows"] <= ga["uncovered_rows"] + 2,
+              dict(ga=ga["uncovered_rows"], candidate=cand["uncovered_rows"]))
         lost = sorted(set(cand["produced"]) - set(cand["stored"]))
         check("A1", not lost, lost)
     for failure in failures:
         for delta in ACCEPTED_DELTAS:
-            if case["layer"] in delta.layer and failure["oracle"] == delta.oracle and delta.predicate(case, ga, cand):
+            if case["layer"] in delta.layer and failure["oracle"] == delta.oracle and delta.predicate(case, ga, cand, failure):
                 failure["delta"] = delta.id
                 break
     return failures

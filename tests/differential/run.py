@@ -14,9 +14,12 @@ from .oracles import compare
 from .trees import ROOT, PrerequisiteUnavailable, check_host, materialize, resolve
 
 
-def run(cases, out, baseline="v0.26.2", candidate="worktree", seed=1227):
+def run(cases, out, baseline="v0.26.2", candidate="worktree", seed=1227, baseline_config=None):
     if os.environ.get("LCM_DIFFERENTIAL") != "1":
         raise RuntimeError("set LCM_DIFFERENTIAL=1 to opt in")
+    baseline_config = baseline_config or os.environ.get("LCM_DIFFERENTIAL_BASELINE_CONFIG", "managed")
+    if baseline_config not in {"bare", "managed"}:
+        raise ValueError("baseline_config must be bare or managed")
     check_host()
     out = Path(out).resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -24,8 +27,8 @@ def run(cases, out, baseline="v0.26.2", candidate="worktree", seed=1227):
     trees = {"ga": materialize(baseline, cache),
              "candidate": ROOT if candidate == "worktree" else materialize(candidate, cache)}
     summary = dict(baseline=resolve(baseline), candidate=resolve("HEAD" if candidate == "worktree" else candidate),
-                   seed=seed, cases=len(cases), counts={}, delta_absorption={}, stale_deltas=[], unexplained=[],
-                   accepted=[], timings={}, missing_seams={}, absolute_over_window=[])
+                   baseline_config=baseline_config, seed=seed, cases=len(cases), counts={}, delta_absorption={}, stale_deltas=[], unexplained=[],
+                   accepted=[], coverage={}, timings={}, missing_seams={}, absolute_over_window=[])
     counts, absorbed = Counter(), {delta.id: set() for delta in ACCEPTED_DELTAS}
     for layer in sorted({case["layer"] for case in cases}):
         sample = [case for case in cases if case["layer"] == layer]
@@ -37,7 +40,7 @@ def run(cases, out, baseline="v0.26.2", candidate="worktree", seed=1227):
             started = time.perf_counter()
             with (out / f"{layer}-{label}.log").open("w") as log:
                 subprocess.run(["nice", "-n", "19", sys.executable, str(Path(__file__).with_name("driver.py")),
-                                "--tree", str(tree), "--layer", layer, "--cases", str(case_path), "--out", str(result_path)],
+                                "--tree", str(tree), "--baseline-config", baseline_config if label == "ga" else "bare", "--layer", layer, "--cases", str(case_path), "--out", str(result_path)],
                                check=True, stdout=log, stderr=log, cwd=ROOT)
             records = [json.loads(line) for line in result_path.read_text().splitlines()]
             assert [record["id"] for record in records] == [case["id"] for case in sample], "incomplete driver output"
@@ -46,6 +49,8 @@ def run(cases, out, baseline="v0.26.2", candidate="worktree", seed=1227):
                                                           mean_case_seconds=sum(r["seconds"] for r in records) / len(records))
             summary["missing_seams"][f"{layer}/{label}"] = sorted({seam for record in records for seam in record["missing_seams"]})
         for case, ga, cand in zip(sample, results["ga"], results["candidate"]):
+            if layer == "public" and "error" not in ga and "error" not in cand:
+                summary["coverage"][case["id"]] = dict(ga=ga["uncovered_rows"], candidate=cand["uncovered_rows"])
             for failure in compare(case, ga, cand):
                 key = f"{layer}/{case['family']}/{failure['oracle']}"
                 counts[key] += 1
@@ -64,7 +69,7 @@ def run(cases, out, baseline="v0.26.2", candidate="worktree", seed=1227):
     summary["stale_deltas"] = [key for key, value in absorbed.items() if not value]
     (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
     lines = ["# Differential report", f"Baseline: `{summary['baseline']}`; candidate: `{summary['candidate']}`.",
-             f"Cases: {len(cases)}; seed: {seed}; unexplained events: {len(summary['unexplained'])}.",
+             f"Baseline config: {baseline_config}.", f"Cases: {len(cases)}; seed: {seed}; unexplained events: {len(summary['unexplained'])}.",
              "", "## Counts (layer / family / oracle)", "", "```json", json.dumps(summary["counts"], indent=2), "```",
              "", f"Delta absorption (cases): {summary['delta_absorption']}",
              f"Zero-absorption deltas (stale on a full run): {summary['stale_deltas']}",
@@ -79,6 +84,8 @@ def run(cases, out, baseline="v0.26.2", candidate="worktree", seed=1227):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", default=os.environ.get("LCM_DIFFERENTIAL_BASELINE", "v0.26.2"))
+    parser.add_argument("--baseline-config", choices=["bare", "managed"],
+                        default=os.environ.get("LCM_DIFFERENTIAL_BASELINE_CONFIG", "managed"))
     parser.add_argument("--candidate", default=os.environ.get("LCM_DIFFERENTIAL_CANDIDATE", "worktree"))
     parser.add_argument("--layers", default="public,projection")
     parser.add_argument("--cases", type=int, default=60)
@@ -101,7 +108,7 @@ def main():
         if {case["id"] for case in sample} != set(args.only.split(",")):
             parser.error("unknown case ID")
     try:
-        summary = run(sample, args.out, args.baseline, args.candidate, args.seed)
+        summary = run(sample, args.out, args.baseline, args.candidate, args.seed, args.baseline_config)
     except PrerequisiteUnavailable as exc:
         print(f"{'FAIL' if os.environ.get('CI') else 'SKIP'}: {exc}", file=sys.stderr)
         return 1 if os.environ.get("CI") else 0
