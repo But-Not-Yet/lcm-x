@@ -9,8 +9,6 @@ import pytest
 from tests.harness import assistant, engine_context, pin_char_counter, user
 
 
-pytestmark = pytest.mark.xfail(strict=True, reason="R-B5r2: reviewed child isolation lifecycle regressions")
-
 def _view():
     return [user("request"), assistant("reply")]
 
