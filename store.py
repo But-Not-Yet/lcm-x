@@ -374,9 +374,9 @@ class MessageStore:
             self._conn,
             build_message_fts_spec(),
         )
+        # Also ensures conversation_id and its index on current-schema opens.
         run_versioned_migrations(self._conn)
         self._ensure_source_column()
-        self._ensure_conversation_id_column()
         self._ensure_time_contract_columns()
         self._conn.commit()
         # False: a busy writer deferred stem init, so this handle reads only the plain index.
@@ -392,18 +392,6 @@ class MessageStore:
         )
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_msg_source_session ON messages(source, session_id, store_id)"
-        )
-
-    def _ensure_conversation_id_column(self) -> None:
-        columns = {
-            row[1] for row in self._conn.execute("PRAGMA table_info(messages)").fetchall()
-        }
-        add_column_if_missing(
-            self._conn, columns, "conversation_id",
-            "ALTER TABLE messages ADD COLUMN conversation_id TEXT DEFAULT ''",
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_msg_conversation_session ON messages(conversation_id, session_id, store_id)"
         )
 
     def _ensure_time_contract_columns(self) -> None:
