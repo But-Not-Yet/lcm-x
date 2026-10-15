@@ -67,23 +67,30 @@ def _parse_arm_weights(raw: str, defaults: dict[str, float]) -> dict[str, float]
     return weights
 
 
-def _parse_int_env(key: str, default: int) -> int:
+def _warn_invalid_env(warnings: list[str] | None, key: str, raw: str, value: Any) -> None:
+    if warnings is not None and raw.strip():
+        warnings.append(f"invalid env {key}={repr(raw)[:40]} ignored; using {value!r}")
+
+
+def _parse_int_env(key: str, default: int, *, warnings: list[str] | None = None) -> int:
     raw = os.environ.get(key)
     if raw is None:
         return default
     try:
         return int(raw)
     except (TypeError, ValueError):
+        _warn_invalid_env(warnings, key, raw, default)
         return default
 
 
-def _parse_float_env(key: str, default: float) -> float:
+def _parse_float_env(key: str, default: float, *, warnings: list[str] | None = None) -> float:
     raw = os.environ.get(key)
     if raw is None:
         return default
     try:
         return float(raw)
     except (TypeError, ValueError):
+        _warn_invalid_env(warnings, key, raw, default)
         return default
 
 
@@ -91,6 +98,7 @@ def _parse_bool_env(
     key: str, default: bool, *, unknown: bool | None = None,
     true_values: tuple[str, ...] = ("1", "true", "yes", "on"),
     false_values: tuple[str, ...] = ("0", "false", "no", "off"),
+    warnings: list[str] | None = None,
 ) -> bool:
     """Read on every call; unknown (including blank) keeps default unless specified."""
     raw = os.environ.get(key)
@@ -101,7 +109,10 @@ def _parse_bool_env(
         return True
     if normalized in false_values:
         return False
-    return default if unknown is None else unknown
+    value = default if unknown is None else unknown
+    if warnings is not None:
+        _warn_invalid_env(warnings, key, raw, value)
+    return value
 
 
 def _disabled_tool_names() -> set[str]:
@@ -1194,7 +1205,12 @@ class LCMConfig:
             if spec.name in _SOURCE_TRACKED_ENV_FIELDS:
                 continue
             parser = _PARSER_BY_TYPE[spec.py_type]
-            setattr(c, spec.name, parser(spec.env_key, getattr(c, spec.name)))
+            default = getattr(c, spec.name)
+            if spec.py_type is str:
+                value = parser(spec.env_key, default)
+            else:
+                value = parser(spec.env_key, default, warnings=config_source_warnings)
+            setattr(c, spec.name, value)
 
         # Pattern-list overrides carry a source sidecar and stay explicit.
         raw_sensitive_patterns = os.environ.get("LCM_SENSITIVE_PATTERNS")
