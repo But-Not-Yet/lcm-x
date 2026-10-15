@@ -43,7 +43,15 @@ def test_fallback_values_unchanged(monkeypatch, key, field, raw, value):
 
 
 @pytest.mark.usefixtures("isolated_env")
-def test_valid_env_warning_consumers(monkeypatch, tmp_path, caplog):
+@pytest.mark.parametrize("extra", [
+    {},
+    *[{"LCM_RECALL_ARM_WEIGHTS": raw} for raw in
+      ("fts=0.5,", "fts=0.5,,summary=1.0", ",", "", " \t")],
+    *[{"LCM_MODEL_THRESHOLDS": raw} for raw in
+      ("glm-5.2:0.70,", ",", "", " \t")],
+    *[{"LCM_EMPTY_LIFECYCLE_GC_MAX_AGE_HOURS": raw} for raw in ("", " \t")],
+])
+def test_valid_env_warning_consumers(monkeypatch, tmp_path, caplog, extra):
     monkeypatch.setenv("LCM_SURVIVAL_FIT", "true")
     monkeypatch.setenv("LCM_MAX_ASSEMBLY_TOKENS", "100000")
     monkeypatch.setenv("LCM_SURVIVAL_RESERVE", "0.15")
@@ -56,6 +64,8 @@ def test_valid_env_warning_consumers(monkeypatch, tmp_path, caplog):
         "LCM_EMPTY_LIFECYCLE_GC_MAX_AGE_HOURS": "24",
         "LCM_RECALL_ARM_WEIGHTS": "fts=.5", "LCM_MODEL_THRESHOLDS": "model:.75",
     }.items():
+        monkeypatch.setenv(key, value)
+    for key, value in extra.items():
         monkeypatch.setenv(key, value)
     c = config.LCMConfig.from_env()
     c.database_path = str(tmp_path / "lcm.db")
