@@ -1,5 +1,6 @@
 """Deterministic occurrence seeds and an unsuppressed machine probe for #1179."""
 from copy import deepcopy
+import re
 import sys
 import types
 
@@ -9,7 +10,9 @@ pytest.importorskip("hypothesis")
 from hypothesis import settings, strategies as st
 from hypothesis.stateful import invariant, rule, run_state_machine_as_test
 
-from tests.invariants.test_exactly_once_machine import ExactlyOnceMachine, assert_occurrences, identity
+from tests.invariants.test_exactly_once_machine import (
+    KNOWN_OPEN, PROFILE, ExactlyOnceMachine, assert_occurrences, identity,
+)
 
 
 class RetryCollapse(AssertionError):
@@ -40,7 +43,7 @@ class RetryDiscoveryMachine(ExactlyOnceMachine):
 
 @pytest.mark.xfail(strict=True, reason="#1179: retry loses a new equal-text user occurrence", raises=RetryCollapse)
 def test_machine_discovers_retry_1179():
-    run_state_machine_as_test(RetryDiscoveryMachine)
+    run_state_machine_as_test(RetryDiscoveryMachine, settings=PROFILE)
 
 
 @pytest.mark.xfail(strict=True, reason="#1179: retry loses a new equal-text user occurrence", raises=RetryCollapse)
@@ -163,4 +166,15 @@ class HistoricalSteerMachine(ExactlyOnceMachine):
 
 
 def test_historical_633_machine():
-    run_state_machine_as_test(HistoricalSteerMachine, settings=settings(stateful_step_count=1))
+    run_state_machine_as_test(HistoricalSteerMachine, settings=settings(PROFILE, stateful_step_count=1))
+
+
+def test_known_open_exclusions_track_their_strict_xfails():
+    """The main machine may skip an open issue's input shape only while that issue's strict xfail is still here.
+    When the fix lands and its xfail is removed, this fails until the KNOWN_OPEN entry goes too."""
+    xfailed = {int(found.group(1))
+               for value in list(globals().values()) if callable(value)
+               for mark in getattr(value, "pytestmark", [])
+               if mark.name == "xfail" and mark.kwargs.get("strict")
+               and (found := re.match(r"#(\d+)", str(mark.kwargs.get("reason", ""))))}
+    assert set(KNOWN_OPEN) <= xfailed, (set(KNOWN_OPEN) - xfailed)
