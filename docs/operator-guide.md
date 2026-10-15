@@ -354,6 +354,15 @@ run `lcm_status` or `/lcm status` again for live per-session fields.
 
 Most installs only need `plugins.enabled` and `context.engine: lcm-x`.
 
+Malformed boolean, integer, or float values in the uniform `LCM_*` field loader
+keep the default and appear in `config_source_warnings` in `lcm_status` JSON,
+`/lcm status`, and the `lcm_doctor` configuration check. For example,
+`LCM_SURVIVAL_FIT=flase` keeps `true` and reports the key, a representation of the
+raw value limited to 40 characters, and the value used. Empty or whitespace-only
+values in that loader keep the default without a warning. This checks parsing,
+not numeric ranges or string choices; separately source-tracked fields retain
+their existing validation.
+
 `compression.target_ratio` and the host's other built-in-compressor ratios belong
 to the host's built-in compressor and are not read by LCM-X. How much one LCM-X
 compaction summarises is set by `LCM_LEAF_CHUNK_TOKENS`, and how long it may take by
