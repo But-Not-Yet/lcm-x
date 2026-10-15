@@ -81,7 +81,7 @@ from .rollup_periods import (
 from .retrieval_core import (
     _hit_identity,
     _lcm_recall_excerpt_expand_hint,
-    _lcm_recall_recency_boost as _lcm_recall_recency_boost,
+    _lcm_recall_recency_boost as _lcm_recall_recency_boost,  # re-export for direct imports; the prior runs it in retrieval_core
     apply_prior,
     fuse_candidates,
     place_fts_anchor,
@@ -5793,7 +5793,7 @@ def _lcm_recall_rerank(
     return reordered, "applied", rerank_scores
 
 
-# Compatibility for existing direct anchor consumers.
+# Re-export for existing direct callers only. lcm_recall runs retrieval_core.place_fts_anchor, so patch that, not this name.
 _lcm_recall_fts_anchor = place_fts_anchor
 
 
