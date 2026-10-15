@@ -263,7 +263,10 @@ def test_short_structured_content_with_bounded_calls_is_recognised(tmp_path):
     try:
         engine.ingest([user, assistant])
         before = engine._store.get_session_messages("S")
-        projected = engine._survival_projection([assistant], {id(assistant): before[-1]["store_id"]}, 0)[0]
+        expected = {**assistant, "tool_calls": engine._survival_projected_fields(
+            before[-1], survival_fit.count_message_tokens(assistant), 1200, 600)["tool_calls"]}
+        projected = engine._survival_projection(
+            [assistant], {id(assistant): before[-1]["store_id"]}, engine._survival_measure([expected]))[0]
         assert projected["content"] is assistant["content"]
         assert projected["tool_calls"] != assistant["tool_calls"]
         assert assistant == original
@@ -284,7 +287,8 @@ def test_externalized_assistant_projects_to_its_stored_placeholder(tmp_path):
     try:
         store_id = engine._store.append("S", {"role": "assistant", "content": placeholder}, conversation_id="conv")
         assert len(placeholder) <= survival_fit._HEAD
-        projected = engine._survival_projection([live], {id(live): store_id}, 0)[0]
+        expected = {**live, "content": placeholder}
+        projected = engine._survival_projection([live], {id(live): store_id}, engine._survival_measure([expected]))[0]
         assert projected["content"] == placeholder
         assert survival_fit.count_message_tokens(projected) < survival_fit.count_message_tokens(live)
     finally:
@@ -301,7 +305,10 @@ def test_bounded_call_marker_is_found_after_four_pasted_marks(tmp_path):
     try:
         engine.ingest([user, assistant])
         before = engine._store.get_session_messages("S")
-        projected = engine._survival_projection([assistant], {id(assistant): before[-1]["store_id"]}, 0)[0]
+        expected = {**assistant, "tool_calls": engine._survival_projected_fields(
+            before[-1], survival_fit.count_message_tokens(assistant), 1200, 600)["tool_calls"]}
+        projected = engine._survival_projection(
+            [assistant], {id(assistant): before[-1]["store_id"]}, engine._survival_measure([expected]))[0]
         assert projected["tool_calls"] != assistant["tool_calls"]
         content = normalize_content_value(projected["content"])
         assert len(list(survival_fit._PROJECTED_RE.finditer(content))) == 4

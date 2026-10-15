@@ -47,7 +47,10 @@ def test_bounded_call_mark_after_four_preserved_argument_marks_survives_cold_ing
         engine.ingest(view)
         before = engine._store.get_session_messages("S")
         source_id = before[1]["store_id"]
-        projected = engine._survival_projection([assistant], {id(assistant): source_id}, 0)[0]
+        expected = {**assistant, **engine._survival_projected_fields(
+            before[1], survival_fit.count_message_tokens(assistant), 1200, 600)}
+        projected = engine._survival_projection(
+            [assistant], {id(assistant): source_id}, engine._survival_measure([expected]))[0]
         assert projected["tool_calls"][0] == assistant["tool_calls"][0]
         assert len(list(survival_fit._PROJECTED_RE.finditer(
             projected["tool_calls"][0]["function"]["arguments"]))) == 4
@@ -130,8 +133,9 @@ def test_projection_with_unchanged_calls_keeps_main_bytes(tmp_path, content):
         fields = engine._survival_projected_fields(row, tokens, 1200, 600)
         assert json.dumps(fields).encode() == json.dumps({"content": expected_text,
                                                         "tool_calls": assistant["tool_calls"]}).encode()
-        projected = engine._survival_projection([assistant], {id(assistant): row["store_id"]}, 0)[0]
         expected = {**assistant, "content": expected_text} if len(content) > 1200 else assistant
+        projected = engine._survival_projection(
+            [assistant], {id(assistant): row["store_id"]}, 0 if tokens < 256 else engine._survival_measure([expected]))[0]
         assert json.dumps(projected).encode() == json.dumps(expected).encode()
         assert assistant == original
     finally:
@@ -182,10 +186,14 @@ def test_second_projection_of_a_storage_only_projection_keeps_a_mark(tmp_path, m
     try:
         engine.ingest(view)
         row = engine._store.get_session_messages("S")[1]
-        first = engine._survival_projection([assistant], {id(assistant): row["store_id"]}, 0)[0]
+        expected = {**assistant, **engine._survival_projected_fields(
+            row, survival_fit.count_message_tokens(assistant), 1200, 600, mark_calls=True)}
+        first = engine._survival_projection(
+            [assistant], {id(assistant): row["store_id"]}, engine._survival_measure([expected]))[0]
         assert survival_fit._PROJECTED_PREFIX in first["content"]
         assert survival_fit.count_message_tokens(first) >= 256
-        second = engine._survival_projection([first], {id(first): row["store_id"]}, 0)[0]
+        second = engine._survival_projection(
+            [first], {id(first): row["store_id"]}, engine._survival_measure([first]) - 1)[0]
         source = engine._survival_projection_source(second, "assistant", normalize_content_value(second["content"]) or "")
         assert source is not None and source["store_id"] == row["store_id"]
     finally:

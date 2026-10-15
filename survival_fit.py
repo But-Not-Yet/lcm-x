@@ -429,7 +429,7 @@ class SurvivalFitMixin:
                     break
                 source = turn[index]
                 tokens = count_message_tokens(source)
-                if source.get("role") != "tool" or id(source) not in store_ids or tokens < 256:
+                if source.get("role") not in ("tool", "assistant") or id(source) not in store_ids or tokens < 256:
                     continue
                 row = self._store.get(store_ids[id(source)])
                 if (not row or row.get("role") != source.get("role")
