@@ -175,7 +175,7 @@ from .sqlite_util import (
 )
 from .store import MessageStore
 from .tokens import count_message_tokens, count_messages_tokens, count_tokens
-from .assembly_plan import PrefixBudgetFacts, default_prefix_budget, select_prefix
+from .assembly_plan import PrefixBudgetFacts, default_prefix_budget, select_prefix, select_tail
 from . import tools as lcm_tools
 
 logger = logging.getLogger(__name__)
@@ -7960,101 +7960,81 @@ class LCMEngine(
                 # it. The final assembled result is merged downstream.
                 merge_adjacent_assistants=False,
             )
-            skipped_tail_gap = False
-            # #636 (forced recovery only): newest-first tool rows since the last kept
-            # row, over-cap ones replaced by a bounded stub, kept only with their call.
-            pending_results: list[Dict[str, Any]] = []
-            result_names = _tool_result_names(tail_for_selection) if stub_over_cap_tool_results else {}
-            for index in range(len(tail_for_selection) - 1, -1, -1):
-                msg = tail_for_selection[index]
-                msg_tokens = count_message_tokens(msg)
-                pending_tokens = count_messages_tokens(pending_results) if pending_results else 0
-                if stub_over_cap_tool_results and msg.get("role") == "assistant":
-                    call_ids = [_tool_call_id(tc) for tc in (msg.get("tool_calls") or [])]
-                    result_ids = {str(r.get("tool_call_id") or "").strip() for r in pending_results}
-                    # Reserve precisely the plain stubs inserted by the final sanitizer.
-                    msg_tokens += count_messages_tokens([
-                        self._missing_tool_result_stub(call_id)
-                        for call_id in call_ids if call_id and call_id not in result_ids
-                    ])
-                    if (
-                        used + tail_token_total + pending_tokens + msg_tokens > assembly_cap
-                        and pending_results
-                        and result_ids <= set(call_ids)
-                    ):
-                        # A rich ref is useful only if its call survives the budget.
-                        pending_results = [
-                            carry_identity(r, self._missing_tool_result_stub(str(r.get("tool_call_id") or "").strip()),
-                                           ("message_uid", "_tool_call_uid"))
-                            if is_externalized_placeholder(normalize_content_value(r.get("content")) or "")
-                            else r
-                            for r in pending_results
-                        ]
-                        pending_tokens = count_messages_tokens(pending_results)
-                own_results_start: Optional[int] = None
-                if not stub_over_cap_tool_results and msg.get("role") == "assistant" and msg.get("tool_calls"):
-                    # The final sanitizer inserts a plain stub for each call whose result is not
-                    # in this turn's own result group (the tool rows right after it). Reserve them
-                    # too, or a full summary budget overflows after sanitizing and the over-cap
-                    # pass drops the preserved objective first (#1048).
-                    own_results_start = len(kept_tail_reversed)
-                    while own_results_start and kept_tail_reversed[own_results_start - 1].get("role") == "tool":
-                        own_results_start -= 1
-                    # Count, don't collapse: the sanitizer pairs each call occurrence separately.
-                    unmatched_results = Counter(
-                        str(r.get("tool_call_id") or "").strip()
-                        for r in kept_tail_reversed[own_results_start:]
-                    )
-                    missing_ids = []
-                    for call_id in (_tool_call_id(tc) for tc in msg["tool_calls"]):
-                        if not call_id:
+            if not stub_over_cap_tool_results:
+                selection = select_tail(
+                    tail_for_selection, assembly_cap, used, count_message_tokens,
+                    count_messages_tokens=count_messages_tokens,
+                    missing_tool_result_stub=self._missing_tool_result_stub,
+                    is_budget_droppable_tail_message=self._is_budget_droppable_tail_message,
+                )
+                tail_selected = [tail_for_selection[i] for i in selection.indexes]
+                tail_token_total = selection.charged_tokens
+            else:
+                skipped_tail_gap = False
+                # #636 (forced recovery only): newest-first tool rows since the last kept
+                # row, over-cap ones replaced by a bounded stub, kept only with their call.
+                pending_results: list[Dict[str, Any]] = []
+                result_names = _tool_result_names(tail_for_selection) if stub_over_cap_tool_results else {}
+                for index in range(len(tail_for_selection) - 1, -1, -1):
+                    msg = tail_for_selection[index]
+                    msg_tokens = count_message_tokens(msg)
+                    pending_tokens = count_messages_tokens(pending_results) if pending_results else 0
+                    if stub_over_cap_tool_results and msg.get("role") == "assistant":
+                        call_ids = [_tool_call_id(tc) for tc in (msg.get("tool_calls") or [])]
+                        result_ids = {str(r.get("tool_call_id") or "").strip() for r in pending_results}
+                        # Reserve precisely the plain stubs inserted by the final sanitizer.
+                        msg_tokens += count_messages_tokens([
+                            self._missing_tool_result_stub(call_id)
+                            for call_id in call_ids if call_id and call_id not in result_ids
+                        ])
+                        if (
+                            used + tail_token_total + pending_tokens + msg_tokens > assembly_cap
+                            and pending_results
+                            and result_ids <= set(call_ids)
+                        ):
+                            # A rich ref is useful only if its call survives the budget.
+                            pending_results = [
+                                carry_identity(r, self._missing_tool_result_stub(str(r.get("tool_call_id") or "").strip()),
+                                               ("message_uid", "_tool_call_uid"))
+                                if is_externalized_placeholder(normalize_content_value(r.get("content")) or "")
+                                else r
+                                for r in pending_results
+                            ]
+                            pending_tokens = count_messages_tokens(pending_results)
+                    if used + tail_token_total + pending_tokens + msg_tokens > assembly_cap:
+                        if (
+                            stub_over_cap_tool_results
+                            and msg.get("role") == "tool"
+                            and not skipped_tail_gap
+                            and self._is_budget_droppable_tail_message(msg)
+                        ):
+                            pending_results.append(self._over_cap_tool_result_stub(msg, result_names.get(index, "")))
                             continue
-                        if unmatched_results[call_id]:
-                            unmatched_results[call_id] -= 1
-                        else:
-                            missing_ids.append(call_id)
-                    if missing_ids:
-                        msg_tokens += count_messages_tokens(
-                            [self._missing_tool_result_stub(call_id) for call_id in missing_ids])
-                if used + tail_token_total + pending_tokens + msg_tokens > assembly_cap:
-                    if own_results_start is not None and own_results_start < len(kept_tail_reversed):
-                        # The turn is rejected: its kept results would be orphans the final
-                        # sanitizer drops, so stop charging them to the tail budget.
-                        tail_token_total -= sum(count_message_tokens(r) for r in kept_tail_reversed[own_results_start:])
-                        del kept_tail_reversed[own_results_start:]
-                    if (
-                        stub_over_cap_tool_results
-                        and msg.get("role") == "tool"
-                        and not skipped_tail_gap
-                        and self._is_budget_droppable_tail_message(msg)
-                    ):
-                        pending_results.append(self._over_cap_tool_result_stub(msg, result_names.get(index, "")))
-                        continue
-                    if self._is_budget_droppable_tail_message(msg):
-                        skipped_tail_gap = True
-                        continue
-                    break
-                if skipped_tail_gap:
-                    break
-                if stub_over_cap_tool_results and msg.get("role") == "tool":
-                    # Queue even fitting results so the call sees its whole result set.
-                    pending_results.append(msg)
-                    continue
-                if pending_results:
-                    call_ids = {_tool_call_id(tc) for tc in (msg.get("tool_calls") or [])}
-                    if msg.get("role") == "tool":
+                        if self._is_budget_droppable_tail_message(msg):
+                            skipped_tail_gap = True
+                            continue
+                        break
+                    if skipped_tail_gap:
+                        break
+                    if stub_over_cap_tool_results and msg.get("role") == "tool":
+                        # Queue even fitting results so the call sees its whole result set.
                         pending_results.append(msg)
                         continue
-                    if msg.get("role") != "assistant" or not {
-                        str(r.get("tool_call_id") or "").strip() for r in pending_results
-                    } <= call_ids:
-                        break
-                    kept_tail_reversed.extend(pending_results)
-                    tail_token_total += pending_tokens
-                    pending_results = []
-                kept_tail_reversed.append(msg)
-                tail_token_total += msg_tokens
-            tail_selected = list(reversed(kept_tail_reversed))
+                    if pending_results:
+                        call_ids = {_tool_call_id(tc) for tc in (msg.get("tool_calls") or [])}
+                        if msg.get("role") == "tool":
+                            pending_results.append(msg)
+                            continue
+                        if msg.get("role") != "assistant" or not {
+                            str(r.get("tool_call_id") or "").strip() for r in pending_results
+                        } <= call_ids:
+                            break
+                        kept_tail_reversed.extend(pending_results)
+                        tail_token_total += pending_tokens
+                        pending_results = []
+                    kept_tail_reversed.append(msg)
+                    tail_token_total += msg_tokens
+                tail_selected = list(reversed(kept_tail_reversed))
             summary_budget = max(0, assembly_cap - used - tail_token_total)
         if anchor_source is not None:
             anchor_candidates = self._latest_user_context_anchor_candidates(anchor_source, tail_selected)
