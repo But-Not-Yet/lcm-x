@@ -429,11 +429,13 @@ class SurvivalFitMixin:
                 break
             # #1220: exhaust head forms before short-row marks; user rows last, and only to fit.
             for index in order:
+                source = turn[index]
+                if source.get("role") not in roles:  # skip before measuring: the user pass passes every other row
+                    continue
                 if self._survival_measure(out) <= limit:
                     break
-                source = turn[index]
                 tokens = count_message_tokens(source)
-                if source.get("role") not in roles or id(source) not in store_ids or tokens < 256:
+                if id(source) not in store_ids or tokens < 256:
                     continue
                 row = self._store.get(store_ids[id(source)])
                 if (not row or row.get("role") != source.get("role")
