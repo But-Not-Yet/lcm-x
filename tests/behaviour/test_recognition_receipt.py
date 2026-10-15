@@ -176,12 +176,16 @@ def fitted(tmp_path, monkeypatch):
         engine.shutdown()
 
 
+class DuplicateRetained(AssertionError):
+    """Only the final copy count may satisfy the #923 strict xfail."""
+
+
 @pytest.mark.parametrize("when", ["same-pass", "next-turn"])
 @pytest.mark.parametrize("stamp", ["original-stamp", "unstamped"])
 @pytest.mark.parametrize("rewrite", [False, True], ids=["as-returned", "turn-end-rewrite"])
 def test_1000_carrier_replay_receipt(fitted, when, stamp, rewrite, request):
     if when == "same-pass" and stamp == "unstamped":
-        request.applymarker(pytest.mark.xfail(strict=True, reason=(
+        request.applymarker(pytest.mark.xfail(strict=True, raises=DuplicateRetained, reason=(
             "#923: unstamped U beside the carrier is retained as a duplicate rather than lost"
         )))
     engine, view, rest = fitted
@@ -200,9 +204,11 @@ def test_1000_carrier_replay_receipt(fitted, when, stamp, rewrite, request):
         assert observed.appended_rows == ()
     else:
         observed = receipt(engine, [view[0], replayed, *view[1:], reply])
-    assert sum(row["content"] == rest for row in stored_rows(engine)) == 1
     assert all("Summary (d" not in row[2][:40] for row in observed.appended_rows)
     assert observed.coverage
+    copies = sum(row["content"] == rest for row in stored_rows(engine))
+    if copies != 1:
+        raise DuplicateRetained(copies)
 
 
 @pytest.mark.parametrize("when", ["same-pass", "next-turn"])
