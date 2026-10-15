@@ -189,17 +189,33 @@ def test_short_image_content_stays_structured_after_fit(tmp_path, monkeypatch):
                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}]
     original_bytes = json.dumps(content).encode()
     user = {"role": "user", "content": content, "timestamp": 9.0}
+    # #1233: an eligible assistant/tool pair whose marks fit, so the projection runs and user rows stay last.
+    call = {"id": "call", "type": "function", "function": {"name": "probe", "arguments": "{}"}}
+    assistant = {"role": "assistant", "content": "s" * 1199, "timestamp": 10.0, "tool_calls": [call]}
+    tool = {"role": "tool", "content": "t" * 1199, "tool_call_id": "call", "name": "probe", "tool_name": "probe",
+            "timestamp": 11.0}
+    rows = [user, assistant, tool]
     try:
         assert len(normalize_content_value(content)) <= survival_fit._HEAD
         assert survival_fit.count_message_tokens(user) > 256
-        engine.ingest([user])
+        engine.ingest(rows)
         before = engine._store.get_session_messages("S")
-        limit = engine._survival_measure([user])
+        ids = engine._get_store_id_map_for_messages(rows)
+        expected = [user]
+        for message in rows[1:]:
+            fields = engine._survival_projected_fields(
+                engine._store.get(ids[id(message)]), survival_fit.count_message_tokens(message),
+                survival_fit._HEAD, survival_fit._TAIL, legacy=True)
+            expected.append({k: v for k, v in {**message, **fields}.items() if k != "tool_calls" or v})
+        limit = engine._survival_measure(expected)
+        assert limit < engine._survival_measure(rows)
         monkeypatch.setattr(engine, "_survival_fit_budget", lambda *args: limit)
-        fitted = engine._survival_fit([user], [user], engine._survival_measure([user]), "issue_917")
-        assert isinstance(fitted[-1]["content"], list)
-        assert fitted[-1]["content"] is content
-        assert json.dumps(fitted[-1]["content"]).encode() == original_bytes
+        fitted = engine._survival_fit(rows, rows, engine._survival_measure(rows), "issue_917")
+        users = [message for message in fitted if message.get("role") == "user"]
+        assert isinstance(users[-1]["content"], list)
+        assert users[-1]["content"] is content
+        assert json.dumps(users[-1]["content"]).encode() == original_bytes
+        assert engine._survival_measure(fitted) <= limit
         assert engine._store.get_session_messages("S") == before
     finally:
         engine.shutdown()
