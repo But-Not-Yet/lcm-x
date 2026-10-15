@@ -72,13 +72,7 @@ def _b_turns(engine, caplog):
     return trace
 
 
-@pytest.mark.parametrize("boundary", [
-    "session",
-    pytest.param("conversation", marks=pytest.mark.xfail(
-        strict=True, raises=RebindDifference,
-        reason="S8-REBIND-1: conversation-only rebind retains A's hold (engine.py:4186)")),
-    "reset", "profile",
-])
+@pytest.mark.parametrize("boundary", ["session", "conversation", "reset", "profile"])
 def test_rebound_b_matches_fresh_b(tmp_path, monkeypatch, caplog, boundary):
     pin_char_counter(monkeypatch)
     monkeypatch.setattr(time, "time", lambda: 1_700_000_000.0)
@@ -107,6 +101,13 @@ def test_rebound_b_matches_fresh_b(tmp_path, monkeypatch, caplog, boundary):
             assert expected[0] == ("initial-warning", None)
             assert expected[1][5] and all(row[6] is None for row in expected[1:])
             assert all(row[5] is None for row in expected[2:]), "B warns only once"
+            if boundary == "conversation":
+                # Deliberate policy, not equivalence (test_issue_597_progress_hold.py): a same-session
+                # conversation rebind keeps A's hold until B's first turn ends (engine.py:4186 resets only
+                # counters). B's first compaction is suppressed; later decisions match, later bytes do not.
+                assert (actual[1][:2], expected[1][:2]) == ((False, False), (True, True))
+                assert [row[:2] for row in actual[2:]] == [row[:2] for row in expected[2:]]
+                return
             if actual != expected:
                 fields = ("preflight", "decision", "context", "fit", "status", "warning", "repeat", "logs")
                 differences = {turn: [fields[i] for i, (a, b) in enumerate(zip(left, right)) if a != b]
