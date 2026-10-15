@@ -422,6 +422,24 @@ class SurvivalFitMixin:
                          if key != "tool_calls" or value}
             if count_message_tokens(projected) < tokens:
                 out[index] = projected
+        if self._survival_measure(out) > limit:
+            # #1220: exhaust head forms before using rollback-compatible short-row marks.
+            for index in order:
+                if self._survival_measure(out) <= limit:
+                    break
+                source = turn[index]
+                tokens = count_message_tokens(source)
+                if source.get("role") != "tool" or id(source) not in store_ids or tokens < 256:
+                    continue
+                row = self._store.get(store_ids[id(source)])
+                if (not row or row.get("role") != source.get("role")
+                        or len(normalize_content_value(row.get("content")) or "") > 2 * _HEAD):
+                    continue
+                fields = self._survival_projected_fields(row, tokens, _HEAD, _TAIL, legacy=True)
+                projected = {key: value for key, value in {**out[index], **fields}.items()
+                             if key != "tool_calls" or value}
+                if count_message_tokens(projected) < count_message_tokens(out[index]):
+                    out[index] = projected
         return out
 
     @staticmethod
