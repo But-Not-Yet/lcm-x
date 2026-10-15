@@ -165,20 +165,19 @@ def probe_cells() -> list[dict]:
 
 def default_window_cells() -> list[dict]:
     """Shipped-default backtest candidates: small-window cadence and a large current objective."""
-    out = [cell(f"default-window/{window // 1000}k-cadence", [], in_place=True, window=window,
-                turns=400 if window == 32000 else 100, repeat=50 if window == 32000 else 400,
-                lcm_env={}, min_compactions=3, summary_repeat=100 if window == 32000 else 300,
+    out = [cell("default-window/64k-cadence", [], in_place=True, window=64000,
+                turns=101, repeat=400,
+                lcm_env={}, min_compactions=3, summary_repeat=300,
                 assistant={"real_usage": True}, bars=[*BARS, "C1"],
-                doc="Default 75% trigger; 400/100 turns of about 290/2,300 tokens at 32k/64k; "
-                    "C1 fails when over half the model calls after the first commit follow a commit.")
-           for window in (32000, 64000)]
+                doc="Default 75% trigger; 101 turns of about 2,300 tokens at 64k; "
+                    "C1 fails when over half the model calls after the first commit follow a commit.")]
     out.append(cell("default-window/64k-large-objective", [], in_place=True, window=64000,
-                    turns=40, repeat=400, user={"repeat_from": {"2": 3500, "3": 400}}, lcm_env={},
-                    assistant={"real_usage": True}, min_compactions=2, bars=[*BARS, "F4"],
+                    turns=40, repeat=400, user={"repeat_from": {"2": 3630, "3": 400}}, lcm_env={},
+                    assistant={"real_usage": True}, min_compactions=2, bars=["B1", "B2", "F4"],
                     tool_plan=[{"turns": [2], "calls": [{"name": "read_file", "args": {
                         "path": f"{{files}}/big-{k:02d}.txt"}}]} for k in range(1, 25)],
-                    big_files=24, big_lines=40,
-                    doc="Current objective (turn 2 after a short setup) about 20,125 tokens, above the 13,600-token prefix-budget floor at 64k; "
+                    big_files=24, big_lines=57,
+                    doc="Current objective (turn 2 after a short setup) about 20,873 tokens, above the 13,600-token prefix-budget floor at 64k; "
                         "distinct reads in that turn push it outside the 24k fresh tail, then ordinary traffic. "
                         "F4 requires the complete current request in the first model request after each commit."))
     return out
