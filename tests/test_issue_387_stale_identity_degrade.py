@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_lcm.embedding_provider as providers
+import hermes_lcm.command as command_mod
 import hermes_lcm.ingest_protection as privacy
 import hermes_lcm.tools as tools
 from hermes_lcm.command import handle_lcm_command
@@ -50,7 +51,11 @@ def diagnostic_engine(tmp_path):
 
 @pytest.mark.parametrize(
     ("stale_tasks", "remedy"),
-    [(["summary"], "/lcm embed warmup, then /lcm embed backfill --apply")],
+    [
+        (["summary"], "/lcm embed warmup, then /lcm embed backfill --apply"),
+        (["chunk"], "/lcm embed warmup, then /lcm embed backfill --corpus chunks --apply"),
+        (["summary", "chunk"], "/lcm embed warmup, then /lcm embed backfill --corpus both --apply"),
+    ],
 )
 def test_doctor_stale_corpus_remedy_on_every_surface(diagnostic_engine, monkeypatch, stale_tasks, remedy):
     engine = diagnostic_engine
@@ -76,6 +81,59 @@ def test_doctor_stale_corpus_remedy_on_every_surface(diagnostic_engine, monkeypa
     assert emitted["detail"]["reason"] == reason
     text = handle_lcm_command("doctor", engine)
     assert f"embedding_provider_health: warn ({reason})" in text
+
+
+@pytest.mark.parametrize("stale_tasks", [["chunk"], ["summary", "chunk"]])
+def test_named_doctor_backfill_rebuilds_stale_chunks(engine, monkeypatch, stale_tasks):
+    from tests.test_chunk_backfill import FakeProvider
+    import hermes_lcm.chunking as chunking
+
+    monkeypatch.setattr(chunking, "count_tokens", lambda text: len(str(text)))
+    monkeypatch.setattr(command_mod, "count_tokens", lambda text: len(str(text)))
+
+    _seed(engine, "old" if "summary" in stale_tasks else "matching")
+    _seed(engine, "old", task="chunk")
+    monkeypatch.setenv("VOYAGE_API_KEY", "synthetic-test-key")
+    instances = {}
+
+    def resolve(config, **kwargs):
+        if config.embedding_model not in instances:
+            provider = FakeProvider()
+            provider.provider_id = "voyage"
+            provider.model_id = config.embedding_model
+            provider.embed_query = lambda _text: [1.0, 0.0]
+            instances[config.embedding_model] = provider
+        return instances[config.embedding_model]
+
+    monkeypatch.setattr(command_mod, "resolve_provider", resolve)
+    detail = tools._embedding_provider_health_check(engine)["detail"]
+    warmup, backfill = detail["remedy"].split(", then ")
+    assert "status: ready" in handle_lcm_command(warmup.removeprefix("/lcm "), engine)
+    # Cloud chunk backfill still requires the operator's separate raw-text consent.
+    if "--corpus" in backfill:
+        backfill += " --confirm-raw-text"
+    result = handle_lcm_command(backfill.removeprefix("/lcm "), engine)
+    assert "status: complete" in result
+    conn = sqlite3.connect(engine._store.db_path)
+    try:
+        current_chunks = conn.execute(
+            "SELECT v.chunk_id FROM lcm_chunk_vectors v "
+            "JOIN lcm_embedding_profile p ON p.identity_hash = v.identity_hash "
+            "WHERE p.active = 1 AND p.task = 'chunk' AND p.revision = ?",
+            (privacy.embedding_privacy_revision(engine._config),),
+        ).fetchall()
+        assert current_chunks == [(f"{engine.store_id}:0",)]
+        assert conn.execute("SELECT content FROM messages WHERE store_id = ?", (engine.store_id,)).fetchone() == (TEXT,)
+        if "summary" in stale_tasks:
+            assert conn.execute(
+                "SELECT v.embedded_id FROM lcm_embedding_vectors v "
+                "JOIN lcm_embedding_profile p ON p.identity_hash = v.identity_hash "
+                "WHERE p.active = 1 AND p.task = 'summary' AND p.revision = ?",
+                (privacy.embedding_privacy_revision(engine._config),),
+            ).fetchall() == [(str(engine.node_id),)]
+    finally:
+        conn.close()
+    assert instances["voyage-context-4"].calls == [[TEXT]]
 
 
 class CloudProvider:
@@ -557,7 +615,8 @@ def test_doctor_reports_a_stale_chunk_identity_when_chunk_vectors_exist(engine, 
     else:
         assert check["status"] == "warn"
         assert check["detail"]["stale_tasks"] == expected
-        assert check["detail"]["reason"] == REASON
+        corpus = "both" if "summary" in expected else "chunks"
+        assert check["detail"]["reason"] == REASON.replace("backfill --apply", f"backfill --corpus {corpus} --apply")
 
 
 @pytest.mark.parametrize("orphan", ["vector", "source"])

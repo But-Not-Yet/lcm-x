@@ -7979,12 +7979,19 @@ def _embedding_provider_health_check(engine: "LCMEngine") -> dict[str, Any]:
         finally:
             conn.close()
         if stale_tasks:
+            corpus_option = ""
+            if "chunk" in stale_tasks:
+                corpus_option = " --corpus both" if "summary" in stale_tasks else " --corpus chunks"
+            remedy = f"/lcm embed warmup, then /lcm embed backfill{corpus_option} --apply"
             detail.update({
                 "embedding_identity_stale": True,
                 "stale_tasks": stale_tasks,
-                "reason": _EMBEDDING_IDENTITY_STALE_REASON,
+                "reason": (
+                    "embedding_identity_stale: stored vectors use an older embedding privacy "
+                    f"revision; run {remedy}"
+                ),
                 "impact": "lcm_recall skips the stale semantic arm until the profile is re-registered",
-                "remedy": "/lcm embed warmup, then /lcm embed backfill --apply",
+                "remedy": remedy,
             })
             return {
                 "check": "embedding_provider_health",
