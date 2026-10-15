@@ -356,3 +356,88 @@ def test_same_child_registry_barrier_interleavings(tmp_path, monkeypatch, native
             assert sorted(ended_indices) == list(range(len(created))), "lost end"
         with engine._auxiliary_session_lock:
             assert engine._child_host_fallback_states == {}
+
+
+@pytest.mark.parametrize("marker_held", [False, True])
+@pytest.mark.xfail(strict=True, reason="R3-1: child registry hides the bound MAIN compressor")
+def test_retained_child_promoted_to_bypassed_main_ends_native(tmp_path, monkeypatch, native, marker_held):
+    """Retained child state must not hide the same ID's foreground compressor."""
+    pin_char_counter(monkeypatch)
+    created, ended, resets = native
+    sid = "cron_child"
+    with engine_context(tmp_path, window=200_000, session_id="parent", **_config("ignore")) as engine:
+        engine.model = "test-model"
+        with ThreadPoolExecutor(1) as pool:
+            if marker_held:
+                pool.submit(engine._mark_thread_context_stateless, sid).result()
+                pool.submit(engine.compress, _view(), force=True).result()
+            else:
+                pool.submit(_compress_child, engine, sid).result()
+            engine.on_session_start(sid, platform="cli", context_length=200_000)
+            engine.compress(_view(), force=True)
+            main = engine.__dict__["_host_fallback_compressor"]
+            start = len(main.events)
+            engine.on_session_end(sid, [])
+            assert (sid, main) in ended
+            assert main in resets
+            engine.compress(_view(), force=True)
+            fresh = engine.__dict__["_host_fallback_compressor"]
+            assert fresh is not main
+            # Compare MAIN's sequence with the shared-slot base, excluding child callbacks.
+            main_events = [event for event in main.events[start:] if event[-1] in (main.index, fresh.index)]
+            assert main_events == [("end", sid, main.index), ("reset", main.index),
+                                   ("create", fresh.index), ("compress", fresh.index)]
+            if marker_held:
+                pool.submit(engine._clear_thread_context_stateless, sid).result()
+        assert created[-1] is fresh
+
+
+@pytest.mark.parametrize("kind", ["ignore", "stateless"])
+@pytest.mark.xfail(strict=True, reason="R3-1: child registry hides the bound MAIN compressor")
+def test_child_collides_with_bypassed_main_end(tmp_path, monkeypatch, native, kind):
+    pin_char_counter(monkeypatch)
+    created, ended, resets = native
+    sid = "cron_main"
+    with engine_context(tmp_path, window=200_000, session_id=sid, **_config(kind)) as engine:
+        engine.model = "test-model"
+        engine.compress(_view(), force=True)
+        main = created[0]
+        with ThreadPoolExecutor(1) as pool:
+            pool.submit(_compress_child, engine, sid).result()
+            active = list(created)
+            engine.on_session_end(sid, [])
+        assert ended == [(sid, compressor) for compressor in active]
+        assert resets == active
+        for compressor in active:
+            lifecycle = [event for event in main.events if event[0] in ("end", "reset")
+                         and event[-1] == compressor.index]
+            assert lifecycle == [("end", sid, compressor.index), ("reset", compressor.index)]
+        engine.compress(_view(), force=True)
+        assert created[-1] not in active
+
+
+@pytest.mark.parametrize("bound", [
+    pytest.param("child", marks=pytest.mark.xfail(strict=True, reason="R3-1: child registry hides MAIN")),
+    "other", "",
+])
+def test_auxiliary_handoff_respects_main_native_binding(tmp_path, monkeypatch, native, bound):
+    """The usage handoff's equality guard applies separately to every native state."""
+    pin_char_counter(monkeypatch)
+    created, ended, resets = native
+    with engine_context(tmp_path, window=200_000, session_id="cron_main", **_config("ignore")) as engine:
+        engine.model = "test-model"
+        engine.compress(_view(), force=True)
+        main = created[0]
+        with ThreadPoolExecutor(1) as pool:
+            pool.submit(engine._mark_thread_context_stateless, "child").result()
+            pool.submit(engine.compress, _view(), force=True).result()
+            # Model the three pre-existing shared-slot bindings at generation handoff.
+            engine.__dict__["_host_fallback_session_id"] = bound
+            monkeypatch.setattr(engine, "_in_process_auxiliary_caller_generation", lambda *args, **kwargs: 7)
+            pool.submit(engine.update_from_response, {"prompt_tokens": 123}).result()
+            pool.submit(engine._clear_thread_context_stateless, "child").result()
+        main_events = [event for event in main.events if event[0] in ("end", "reset") and event[-1] == main.index]
+        assert main_events == ([("end", "child", main.index), ("reset", main.index)] if bound == "child" else [])
+        assert (main in resets) == (bound == "child")
+        assert (engine.__dict__["_host_fallback_compressor"] is main) == (bound != "child")
+        assert ("child", created[1]) in ended
