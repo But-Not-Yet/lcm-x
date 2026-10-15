@@ -43,10 +43,9 @@ if pkg_name not in sys.modules:
             continue
         sub_name = f"{pkg_name}.{py_file.stem}"
         if sub_name not in sys.modules:
-            sub_spec = importlib.util.spec_from_file_location(
-                sub_name, str(py_file),
-                submodule_search_locations=[],
-            )
+            # A plain module spec: its parent is the package, matching __package__ below (a
+            # submodule_search_locations spec made each module a package and warned on every relative import).
+            sub_spec = importlib.util.spec_from_file_location(sub_name, str(py_file))
             sub_mod = importlib.util.module_from_spec(sub_spec)
             sub_mod.__package__ = pkg_name
             sys.modules[sub_name] = sub_mod
