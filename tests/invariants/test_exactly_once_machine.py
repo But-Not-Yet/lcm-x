@@ -1,8 +1,9 @@
-"""Ordered occurrence checks for append, replay and cold resume.
+"""Ordered occurrence checks for append, compress, replay and cold resume.
 
 The ledger records deliveries, not distinct text. The host view can archive its
-last exchange on retry; the ledger must retain both exchanges. No compaction,
-rotation, host sanitization or arbitrary prefix rewrite is generated here.
+last exchange on retry; the ledger must retain both exchanges. Compression
+changes only the host view. No rotation, host sanitization or arbitrary prefix
+rewrite is generated here.
 """
 from __future__ import annotations
 
@@ -65,7 +66,20 @@ def retry_resend_1179(host, replacement):
 
 # Each entry excludes an input shape only while its issue's strict xfail stands in test_identity_seeds.py
 # (enforced there by test_known_open_exclusions_track_their_strict_xfails).
-KNOWN_OPEN = {1179: retry_resend_1179}
+def cold_condensed_carrier(host, operation):
+    """Cold replay of a condensed carrier can store the generated row as source.
+
+    Ordinary leaf carriers remain in the machine's cold-resume domain. The
+    strict UNFILED seed preserves the two-compress counterexample separately.
+    """
+    return (operation == "cold_resume" and bool(host)
+            and isinstance(host[0].get("content"), str)
+            and any(part.startswith(("[Session Arc Summary (", "[Durable Summary ("))
+                    for part in host[0]["content"].split("\n\n---\n\n")))
+
+
+CONDENSED_COLD_OPEN = "UNFILED: cold resume stores a condensed summary as a source row"
+KNOWN_OPEN = {1179: retry_resend_1179, CONDENSED_COLD_OPEN: cold_condensed_carrier}
 
 
 def ambiguous_unstamped_tool_window_259(host, ledger):
@@ -84,7 +98,8 @@ def unstamped_user_beside_carrier_923(host, ledger):
     """#923 strict-xfail shape: unstamped U immediately beside its carrier.
 
     Requires the exact emitted carrier/U supplied by a survival-fit fixture;
-    this machine never emits carriers. See test_issue_650_survival_fit_keeps_summary.
+    ordinary compression keeps stamped source rows, outside this domain.
+    See test_issue_650_survival_fit_keeps_summary.
     """
     if len(host) < 2 or "timestamp" in host[1] or "message_uid" in host[1]:
         return False
@@ -120,7 +135,8 @@ class ExactlyOnceMachine(RuleBasedStateMachine):
         self.engine = self.start_engine()
 
     def start_engine(self):
-        engine = LCMEngine(config=LCMConfig(database_path=str(self.home / "lcm.db")),
+        engine = LCMEngine(config=LCMConfig(database_path=str(self.home / "lcm.db"),
+                                          fresh_tail_count=2, leaf_chunk_tokens=16),
                            hermes_home=str(self.home / "home"))
         engine.on_session_start("identity-session", platform="cli", conversation_id="identity-conversation",
                                 context_length=200_000)
@@ -170,7 +186,15 @@ class ExactlyOnceMachine(RuleBasedStateMachine):
         self.engine.ingest(self.host)
 
     @rule()
+    def compress(self):
+        # Always force: sample actual compaction, without adding cooldown policy
+        # to the occurrence model. Compression delivers no new occurrences.
+        self.host = self.engine.compress(self.host, current_tokens=self.engine.threshold_tokens + 1, force=True)
+
+    @rule()
     def cold_resume(self):
+        if KNOWN_OPEN[CONDENSED_COLD_OPEN](self.host, "cold_resume"):
+            return  # exclude the input shape, never an observed oracle failure
         self.engine.shutdown()
         self.engine = self.start_engine()
         self.host = deepcopy(self.host)

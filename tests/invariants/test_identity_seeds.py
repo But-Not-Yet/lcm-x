@@ -1,4 +1,4 @@
-"""Deterministic occurrence seeds and an unsuppressed machine probe for #1179."""
+"""Deterministic occurrence seeds, including compress and a #1179 probe."""
 from copy import deepcopy
 import re
 import sys
@@ -11,7 +11,7 @@ from hypothesis import settings, strategies as st
 from hypothesis.stateful import invariant, rule, run_state_machine_as_test
 
 from tests.invariants.test_exactly_once_machine import (
-    KNOWN_OPEN, PROFILE, ExactlyOnceMachine, assert_occurrences, identity,
+    CONDENSED_COLD_OPEN, KNOWN_OPEN, PROFILE, ExactlyOnceMachine, assert_occurrences, identity,
 )
 
 
@@ -104,6 +104,62 @@ def test_oracle_checks_order_and_assistant_tool_metadata():
             assert_occurrences([expected], [dict(assistant, tool_calls=[changed])])
 
 
+def test_compress_replay_resume_append():
+    machine = ExactlyOnceMachine()
+    try:
+        for text in ("alpha", "same text"):
+            machine.new_turn(text, False, 0, False, "lookup")
+        before = machine.engine._dag.get_session_node_count("identity-session")
+        machine.compress()
+        assert machine.engine._dag.get_session_node_count("identity-session") > before
+        assert machine.host[0]["content"].startswith("[Recent Summary (")
+        machine.exactly_once()
+        machine.replay()
+        machine.exactly_once()
+        machine.cold_resume()
+        machine.exactly_once()
+        machine.new_turn("same text", True, 0, False, "inspect")
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+class CondensedCarrierStored(AssertionError):
+    """Only an extra condensed carrier after an otherwise exact source ledger."""
+
+
+@pytest.mark.xfail(strict=True, reason=CONDENSED_COLD_OPEN, raises=CondensedCarrierStored)
+@pytest.mark.parametrize(("counts", "compress_after"), [
+    ((1, 1, 0), (0, 0, 2)),
+    ((0, 1, 1), (0, 1, 2)),
+    ((0, 1, 0), (0, 2, 2)),
+], ids=["arc", "objective", "durable"])
+def test_cold_condensed_carrier_is_not_source(counts, compress_after):
+    machine = ExactlyOnceMachine()
+    try:
+        for tool_count, compressions in zip(counts, compress_after):
+            machine.new_turn("alpha", False, tool_count, False, "lookup")
+            machine.exactly_once()
+            for _ in range(compressions):
+                machine.compress()
+                machine.exactly_once()
+        assert KNOWN_OPEN[CONDENSED_COLD_OPEN](machine.host, "cold_resume")
+        carrier = deepcopy(machine.host[0])
+        # Exercise the excluded transition without going through its rule guard.
+        machine.engine.shutdown()
+        machine.engine = machine.start_engine()
+        machine.host = deepcopy(machine.host)
+        machine.engine.ingest(machine.host)
+        try:
+            machine.exactly_once()
+        except AssertionError as error:
+            if list(map(identity, machine.rows())) == list(map(identity, [*machine.occurrences, carrier])):
+                raise CondensedCarrierStored(str(error)) from error
+            raise
+    finally:
+        machine.teardown()
+
+
 def test_survival_carrier_1000_is_already_fixed(tmp_path, monkeypatch):
     """#1000 remains open for GA, but #1001 already fixed this rc's carrier.
 
@@ -172,9 +228,10 @@ def test_historical_633_machine():
 def test_known_open_exclusions_track_their_strict_xfails():
     """The main machine may skip an open issue's input shape only while that issue's strict xfail is still here.
     When the fix lands and its xfail is removed, this fails until the KNOWN_OPEN entry goes too."""
-    xfailed = {int(found.group(1))
+    reasons = {str(mark.kwargs.get("reason", ""))
                for value in list(globals().values()) if callable(value)
                for mark in getattr(value, "pytestmark", [])
-               if mark.name == "xfail" and mark.kwargs.get("strict")
-               and (found := re.match(r"#(\d+)", str(mark.kwargs.get("reason", ""))))}
+               if mark.name == "xfail" and mark.kwargs.get("strict")}
+    xfailed = {int(found.group(1)) for reason in reasons if (found := re.match(r"#(\d+)", reason))}
+    xfailed.update(reason for reason in reasons if reason.startswith("UNFILED: "))
     assert set(KNOWN_OPEN) <= xfailed, (set(KNOWN_OPEN) - xfailed)
