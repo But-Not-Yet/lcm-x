@@ -885,15 +885,27 @@ def test_result_hydration_is_inside_request_deadline(semantic_engine, monkeypatc
     monkeypatch.setattr(lcm_tools, "VectorStore", OneResultStore)
     monkeypatch.setattr(lcm_tools, "resolve_provider", lambda _config: MockProvider())
     monkeypatch.setattr(semantic_engine._dag, "get_node", blocking_get_node)
+    original_join = threading.Thread.join
+    hydration_timeouts = []
+
+    def bounded_join(thread, timeout=None):
+        if thread.name == "lcm-result-hydration":
+            hydration_timeouts.append(timeout)
+            assert timeout is not None and 0 < timeout <= 0.02, "hydration must join within the request budget"
+        return original_join(thread, timeout=timeout)
+
+    monkeypatch.setattr(threading.Thread, "join", bounded_join)
     try:
         payload = returns_while_blocked(
             lambda: json.loads(lcm_tools.lcm_grep(
                 {"query": "deadline", "mode": "semantic"}, engine=semantic_engine
             )), release,
         )
+        assert len(hydration_timeouts) == 1
         assert payload["timeout"] is True
         assert payload["timeout_stage"] == "result_resolution"
     finally:
+        monkeypatch.setattr(threading.Thread, "join", original_join)
         release.set()
         for thread in threading.enumerate():
             if thread.name == "lcm-result-hydration":
