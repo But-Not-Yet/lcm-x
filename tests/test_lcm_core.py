@@ -2468,6 +2468,40 @@ class TestMessageStore:
         finally:
             store.close()
 
+
+    @pytest.mark.latency
+    def test_store_waits_out_long_write_lock_with_extended_busy_timeout_latency(self, tmp_path):
+        db_path = tmp_path / "busy-timeout.db"
+        store = MessageStore(db_path)
+
+        lock_conn = sqlite3.connect(db_path, timeout=1.0, check_same_thread=False)
+        lock_conn.execute("PRAGMA journal_mode=WAL")
+        lock_conn.execute("BEGIN IMMEDIATE")
+        lock_conn.execute(
+            "INSERT INTO messages(session_id, role, content, timestamp, token_estimate, pinned) VALUES (?, ?, ?, ?, ?, ?)",
+            ("hold", "user", "holding write lock", 1.0, 1, 0),
+        )
+
+        def release_lock():
+            time.sleep(6.2)
+            lock_conn.commit()
+            lock_conn.close()
+
+        releaser = threading.Thread(target=release_lock, daemon=True)
+        releaser.start()
+
+        start = time.monotonic()
+        store.append("sess1", {"role": "user", "content": "writer survives lock"})
+        elapsed = time.monotonic() - start
+        releaser.join(timeout=1.0)
+
+        assert elapsed >= 6.0
+        assert store.get_session_count("sess1") == 1
+        assert store._conn.execute("PRAGMA busy_timeout").fetchone()[0] >= 30000
+
+        store.close()
+
+
     def test_search_sort_modes_apply_before_limit(self, store):
         older_strong = store.append(
             "sess1",

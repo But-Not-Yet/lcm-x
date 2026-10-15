@@ -32,14 +32,23 @@ class ContentionProbe:
     def __init__(self, lock):
         self.lock = lock
         self.contended = threading.Event()
+        self.attempts = []
+        self.acquired = threading.Event()
+        self.release_guard = None
+        self.returned_before_release = False
 
     def acquire(self, blocking=True, timeout=-1):
         if self.lock.acquire(blocking=False):
             return True
+        self.attempts.append((blocking, timeout))
         self.contended.set()
         if not blocking:
             return False
-        return self.lock.acquire(timeout=timeout)
+        acquired = self.lock.acquire(timeout=timeout)
+        if self.release_guard is not None and not self.release_guard.is_set():
+            self.returned_before_release = True
+        self.acquired.set()
+        return acquired
 
     def release(self):
         self.lock.release()

@@ -261,7 +261,7 @@ def test_stable_active_use_blocks_rebind_and_keeps_ingest_in_original_session(tm
         assert use_started.wait(timeout=2)
         rebind_thread.start()
         assert rebind_started.wait(timeout=2)
-        assert probe.contended.wait(timeout=10)
+        assert probe.contended.wait(timeout=10), "competing lifecycle call never attempted the held lock"
         assert not rebind_finished.is_set()
         assert engine.bound_session_id == "session-a"
 
@@ -333,12 +333,14 @@ def test_shutdown_waits_for_stable_use_and_is_terminal_and_idempotent(tmp_path):
     operation_started = threading.Event()
     release_operation = threading.Event()
     shutdown_finished = threading.Event()
+    probe.release_guard = release_operation
+    use_thread = shutdown_thread = None
     try:
         engine.on_session_start("session-a", conversation_id="conversation-a")
 
         def hold_engine(selected):
             operation_started.set()
-            assert release_operation.wait(timeout=2)
+            assert release_operation.wait(timeout=20), "test did not release the active operation"
 
         use_thread = threading.Thread(
             target=lambda: use_active_lcm_engine(
@@ -353,12 +355,16 @@ def test_shutdown_waits_for_stable_use_and_is_terminal_and_idempotent(tmp_path):
         use_thread.start()
         assert operation_started.wait(timeout=2)
         shutdown_thread.start()
-        assert probe.contended.wait(timeout=10)
+        assert probe.contended.wait(timeout=10), "competing lifecycle call never attempted the held lock"
+        assert probe.attempts == [(True, -1)], "shutdown must acquire with blocking=True and no timeout"
+        assert not probe.acquired.is_set(), "shutdown acquired before the active operation was released"
         assert not shutdown_finished.is_set()
 
         release_operation.set()
         use_thread.join(timeout=2)
         shutdown_thread.join(timeout=2)
+        assert probe.acquired.is_set(), "shutdown never completed its blocking acquire"
+        assert not probe.returned_before_release
         assert shutdown_finished.is_set()
         engine.shutdown()
 
@@ -366,6 +372,10 @@ def test_shutdown_waits_for_stable_use_and_is_terminal_and_idempotent(tmp_path):
         assert closed.status is ActiveEngineUseStatus.CLOSED_ENGINE
     finally:
         release_operation.set()
+        if use_thread is not None and use_thread.ident is not None:
+            use_thread.join(timeout=10)
+        if shutdown_thread is not None and shutdown_thread.ident is not None:
+            shutdown_thread.join(timeout=10)
         engine.shutdown()
 
 

@@ -900,6 +900,46 @@ def test_result_hydration_is_inside_request_deadline(semantic_engine, monkeypatc
                 thread.join(timeout=0.2)
 
 
+@pytest.mark.latency
+def test_result_hydration_is_inside_request_deadline_latency(semantic_engine, monkeypatch):
+    semantic_engine._config.embedding_query_timeout_s = 0.02
+
+    class OneResultStore:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def knn(self, *_args, **_kwargs):
+            return KNNResult([("1", 1.0, "summary")], coverage="full")
+
+        def close(self):
+            pass
+
+    release = threading.Event()
+
+    def blocking_get_node(_node_id):
+        release.wait(1.0)
+        return None
+
+    monkeypatch.setattr(lcm_tools, "VectorStore", OneResultStore)
+    monkeypatch.setattr(lcm_tools, "resolve_provider", lambda _config: MockProvider())
+    monkeypatch.setattr(semantic_engine._dag, "get_node", blocking_get_node)
+    try:
+        started = time.monotonic()
+        payload = json.loads(
+            lcm_tools.lcm_grep(
+                {"query": "deadline", "mode": "semantic"}, engine=semantic_engine
+            )
+        )
+        assert time.monotonic() - started < 0.08
+        assert payload["timeout"] is True
+        assert payload["timeout_stage"] == "result_resolution"
+    finally:
+        release.set()
+        for thread in threading.enumerate():
+            if thread.name == "lcm-result-hydration":
+                thread.join(timeout=0.2)
+
+
 def test_result_hydration_path_expiry_never_starts_database_connection(
     semantic_engine, monkeypatch
 ):

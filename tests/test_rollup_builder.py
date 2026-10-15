@@ -4,6 +4,7 @@ import asyncio
 import json
 import sqlite3
 import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -468,6 +469,12 @@ def test_session_start_does_not_wait_for_slow_rollup_provider(tmp_path, monkeypa
             raise AssertionError("test did not release slow rollup provider")
         return "completed in background", 1
 
+    original_drain = engine.drain_rollup_maintenance
+
+    def no_drain(timeout=None):
+        pytest.fail(f"lifecycle path unexpectedly drained maintenance with timeout={timeout!r}")
+
+    monkeypatch.setattr(engine, "drain_rollup_maintenance", no_drain)
     try:
         _add_node(engine._dag, scope, target_day, "source for slow rollup")
         store = RollupStore(db_path)
@@ -483,6 +490,54 @@ def test_session_start_does_not_wait_for_slow_rollup_provider(tmp_path, monkeypa
                 lambda: engine.on_session_start(scope, conversation_id="slow-rollup-conversation"),
                 release_provider,
             )
+            assert provider_started.wait(timeout=1)
+            release_provider.set()
+            assert original_drain(timeout=2)
+            assert store.get_rollup("day", target_day.isoformat(), scope)["status"] == "ready"
+        finally:
+            store.close()
+    finally:
+        monkeypatch.setattr(engine, "drain_rollup_maintenance", original_drain)
+        release_provider.set()
+        engine.shutdown()
+
+
+@pytest.mark.latency
+def test_session_start_does_not_wait_for_slow_rollup_provider_latency(tmp_path, monkeypatch):
+    db_path = tmp_path / "async-session-start.db"
+    config = LCMConfig(
+        database_path=str(db_path),
+        temporal_rollups_enabled=True,
+        rollup_builds_per_pass=1,
+    )
+    engine = LCMEngine(config=config)
+    scope = "slow-rollup-session"
+    target_day = date(2026, 7, 15)
+    provider_started = threading.Event()
+    release_provider = threading.Event()
+
+    def slow_summarizer(_text, **_kwargs):
+        provider_started.set()
+        if not release_provider.wait(timeout=2):
+            raise AssertionError("test did not release slow rollup provider")
+        return "completed in background", 1
+
+    try:
+        _add_node(engine._dag, scope, target_day, "source for slow rollup")
+        store = RollupStore(db_path)
+        try:
+            store.mark_stale_for_day(target_day, scope)
+            monkeypatch.setattr(
+                builder_module,
+                "summarize_with_escalation",
+                slow_summarizer,
+            )
+
+            started_at = time.monotonic()
+            engine.on_session_start(scope, conversation_id="slow-rollup-conversation")
+            bind_elapsed = time.monotonic() - started_at
+
+            assert bind_elapsed < 0.15
             assert provider_started.wait(timeout=1)
             release_provider.set()
             assert engine.drain_rollup_maintenance(timeout=2)
@@ -823,6 +878,12 @@ def test_engine_shutdown_does_not_wait_for_background_rollup_provider(
         "run_rollup_maintenance",
         blocking_maintenance,
     )
+    original_drain = engine.drain_rollup_maintenance
+
+    def no_drain(timeout=None):
+        pytest.fail(f"lifecycle path unexpectedly drained maintenance with timeout={timeout!r}")
+
+    monkeypatch.setattr(engine, "drain_rollup_maintenance", no_drain)
     try:
         engine.on_session_start(
             "shutdown-maintenance-scope",
@@ -831,6 +892,48 @@ def test_engine_shutdown_does_not_wait_for_background_rollup_provider(
         assert maintenance_started.wait(timeout=1)
 
         returns_while_blocked(engine.shutdown, release_maintenance)
+    finally:
+        monkeypatch.setattr(engine, "drain_rollup_maintenance", original_drain)
+        release_maintenance.set()
+        assert original_drain(timeout=2)
+
+
+@pytest.mark.latency
+def test_engine_shutdown_does_not_wait_for_background_rollup_provider_latency(
+    tmp_path,
+    monkeypatch,
+):
+    config = LCMConfig(
+        database_path=str(tmp_path / "shutdown-background-maintenance.db"),
+        temporal_rollups_enabled=True,
+    )
+    engine = LCMEngine(config=config)
+    maintenance_started = threading.Event()
+    release_maintenance = threading.Event()
+
+    def blocking_maintenance(*_args, **_kwargs):
+        maintenance_started.set()
+        if not release_maintenance.wait(timeout=2):
+            raise AssertionError("test did not release background maintenance")
+        return 0
+
+    monkeypatch.setattr(
+        engine_module,
+        "run_rollup_maintenance",
+        blocking_maintenance,
+    )
+    try:
+        engine.on_session_start(
+            "shutdown-maintenance-scope",
+            conversation_id="shutdown-maintenance-conversation",
+        )
+        assert maintenance_started.wait(timeout=1)
+
+        started_at = time.monotonic()
+        engine.shutdown()
+        shutdown_elapsed = time.monotonic() - started_at
+
+        assert shutdown_elapsed < 0.15
     finally:
         release_maintenance.set()
         assert engine.drain_rollup_maintenance(timeout=2)

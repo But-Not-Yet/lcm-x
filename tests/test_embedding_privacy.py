@@ -753,7 +753,6 @@ def test_residual_allows_prose_with_bare_end_marker(tmp_path):
     assert "-----END PRIVATE KEY-----" in protected  # left intact, no false redaction
 
 
-@pytest.mark.latency
 def test_residual_private_key_detector_is_linear_on_long_single_line(tmp_path):
     cfg = _config(tmp_path)
     revision = embedding_privacy_revision(cfg)
@@ -815,52 +814,21 @@ def test_truncated_key_never_consumes_prose_before_a_complete_key(tmp_path):
         assert "-----END PRIVATE KEY-----" not in redacted
 
 
-def test_many_unmatched_begin_markers_scan_linearly_both_paths(tmp_path, monkeypatch):
-    """Count Python scan steps and regex search spans, independent of CPU load."""
-    import sys
-
-    from hermes_lcm import ingest_protection as protection
-
+def test_many_unmatched_begin_markers_scan_linearly_both_paths(tmp_path):
+    # Round-3 finding 3: per-BEGIN END searches to EOF were quadratic (CI
+    # measured 13.9s on the pathological ingest input); the single-pass
+    # scanner must stay far under the CI 3s bound on both paths.
     cfg = _config(tmp_path)
     revision = embedding_privacy_revision(cfg)
-    work = [0]
-    original_end = protection._PRIVATE_KEY_END_RE
-
-    class CountedEndPattern:
-        def __getattr__(self, name):
-            return getattr(original_end, name)
-
-        def search(self, text, pos=0, endpos=None):
-            endpos = len(text) if endpos is None else endpos
-            # A per-BEGIN search to EOF charges the whole remaining span and
-            # grows quadratically even though regex execution happens in C.
-            work[0] += max(0, endpos - pos)
-            return original_end.search(text, pos, endpos)
-
-    monkeypatch.setattr(protection, "_PRIVATE_KEY_END_RE", CountedEndPattern())
-
-    def trace(frame, event, arg):
-        if frame.f_code.co_filename == protection.__file__ and event == "line":
-            work[0] += 1
-        return trace
-
-    counts = []
-    for size in (200, 400):
-        pathological = ("-----BEGIN PRIVATE KEY-----\n" + "A" * 64 + "\n") * size
-        work[0] = 0
-        previous_trace = sys.gettrace()
-        sys.settrace(trace)
-        try:
-            redacted = redact_sensitive_text(pathological, cfg)
-            protected, _r, _c = protect_embedding_text(pathological, cfg)
-            validate_embedding_privacy_dispatch([protected], cfg, expected_revision=revision)
-        finally:
-            sys.settrace(previous_trace)
-        assert "AAAA" not in redacted
-        assert "AAAA" not in protected
-        counts.append(work[0])
-    assert counts[0] > 0
-    assert counts[1] <= 2.2 * counts[0], counts
+    pathological = ("-----BEGIN PRIVATE KEY-----\n" + "A" * 64 + "\n") * 20000
+    started = time.perf_counter()
+    redacted = redact_sensitive_text(pathological, cfg)
+    protected, _r, _c = protect_embedding_text(pathological, cfg)
+    validate_embedding_privacy_dispatch([protected], cfg, expected_revision=revision)
+    elapsed = time.perf_counter() - started
+    assert "AAAA" not in redacted
+    assert "AAAA" not in protected
+    assert elapsed < 3.0
 
 
 def test_inline_single_line_private_key_still_redacted(tmp_path):
@@ -1076,7 +1044,6 @@ def test_round7_realistic_shapes_encrypted_json_logs(tmp_path):
         validate_embedding_privacy_dispatch([pair], cfg, expected_revision=revision)
 
 
-@pytest.mark.latency
 def test_round8_serialized_and_prefixed_compositions(tmp_path):
     # Round-8: virtual-line splitting makes serialized keys first-class model
     # input (json.dumps at any nesting depth), and BEGIN-anchored scans
@@ -1178,7 +1145,6 @@ def test_round9_escape_artifact_normalization(tmp_path):
         assert body not in redacted
 
 
-@pytest.mark.latency
 def test_round11_thread_sweep_shapes(tmp_path):
     # Round-11 (PR-thread sweep): CodeQL ReDoS on the trim regexes (now
     # linear hand-rolled scans + linear segment splitter), missing escaped
@@ -1700,7 +1666,6 @@ def test_truncated_key_body_split_by_long_line_blocks_fail_closed(tmp_path):
             )
 
 
-@pytest.mark.latency
 def test_full_width_base64_backstop_stays_linear(tmp_path):
     # The orphan-run + placeholder-proximity backstops must not reintroduce the
     # quadratic scan the round-3 linearity test guards (20000 placeholders with

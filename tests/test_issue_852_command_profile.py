@@ -186,7 +186,7 @@ def test_cold_start_same_profile_matches_resolved_output(
     expected = resolved(raw_args)
     fallback, _ = _handler(plugin, monkeypatch, prototype, context)
 
-    # Background WAL checkpoints may change allocated size between reads.
+    # database_size is the main file's st_size, raced by background maintenance.
     def stable_status(text):
         return "\n".join(line for line in text.splitlines() if not line.startswith("database_size:"))
 

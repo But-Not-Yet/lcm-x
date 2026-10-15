@@ -38,6 +38,20 @@ def _reset_encoder_state(monkeypatch):
     tokens_mod._count_tokens_cached.cache_clear()
 
 
+def _probe_loader_join(monkeypatch, expected_timeout):
+    original_join = threading.Thread.join
+    joins = []
+
+    def join(thread, timeout=None):
+        if thread is tokens_mod._encoder_thread:
+            joins.append(timeout)
+            assert joins == [expected_timeout], "only the first caller may join the loader, with its bounded wait"
+        return original_join(thread, timeout=timeout)
+
+    monkeypatch.setattr(threading.Thread, "join", join)
+    return joins, original_join
+
+
 def test_count_tokens_does_not_block_on_hung_loader(monkeypatch):
     release = threading.Event()
 
@@ -49,12 +63,41 @@ def test_count_tokens_does_not_block_on_hung_loader(monkeypatch):
 
     monkeypatch.setattr(tokens_mod, "_load_encoder", hung_loader)
     monkeypatch.setattr(tokens_mod, "_ENCODER_FIRST_WAIT_S", 0.05)
+    joins, original_join = _probe_loader_join(monkeypatch, 0.05)
 
-    count = returns_while_blocked(
-        lambda: tokens_mod.count_tokens("hello world " * 1000), release
-    )
-    assert count > 0  # estimator result
-    release.set()
+    try:
+        count = returns_while_blocked(
+            lambda: tokens_mod.count_tokens("hello world " * 1000), release
+        )
+        assert count > 0  # estimator result
+        assert joins == [0.05]
+    finally:
+        release.set()
+        monkeypatch.setattr(threading.Thread, "join", original_join)
+
+
+@pytest.mark.latency
+def test_count_tokens_does_not_block_on_hung_loader_latency(monkeypatch):
+    release = threading.Event()
+
+    def hung_loader():
+        # Simulates the blocked-egress BPE download: never completes within
+        # the test window.
+        release.wait(timeout=30)
+        raise RuntimeError("loader released without an encoder")
+
+    monkeypatch.setattr(tokens_mod, "_load_encoder", hung_loader)
+    monkeypatch.setattr(tokens_mod, "_ENCODER_FIRST_WAIT_S", 0.05)
+
+    try:
+        start = time.monotonic()
+        count = tokens_mod.count_tokens("hello world " * 1000)
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 2.0, f"count_tokens blocked for {elapsed:.1f}s on the loader"
+        assert count > 0  # estimator result
+    finally:
+        release.set()
 
 
 def test_encoder_adopted_after_background_load(monkeypatch):
@@ -104,7 +147,7 @@ def test_adoption_race_stale_estimate_not_served(monkeypatch):
     release_fallback = threading.Event()
 
     def gated_loader():
-        release_load.wait()
+        assert release_load.wait(timeout=30), "test did not release the encoder loader"
         return FakeEncoder()
 
     real_fallback = tokens_mod._fallback_token_estimate
@@ -126,27 +169,31 @@ def test_adoption_race_stale_estimate_not_served(monkeypatch):
         daemon=True,
     )
     caller.start()
+    try:
+        # 1. The caller is inside the estimator (pre-adoption LRU miss in flight).
+        assert fallback_entered.wait(timeout=5.0)
 
-    # 1. The caller is inside the estimator (pre-adoption LRU miss in flight).
-    assert fallback_entered.wait(timeout=5.0)
+        # 2. The loader adopts the real encoder while that miss is still pending.
+        release_load.set()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and tokens_mod._encoder_generation == 0:
+            time.sleep(0.01)
+        assert tokens_mod._encoder_generation == 1, "encoder was never adopted"
 
-    # 2. The loader adopts the real encoder while that miss is still pending.
-    release_load.set()
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline and tokens_mod._encoder_generation == 0:
-        time.sleep(0.01)
-    assert tokens_mod._encoder_generation == 1, "encoder was never adopted"
+        # 3. The stale estimate lands in the cache *after* adoption's clear.
+        release_fallback.set()
+        caller.join(timeout=5.0)
+        assert not caller.is_alive()
+        assert results == [400 // 4 + 1]  # the in-flight call used the estimator
 
-    # 3. The stale estimate lands in the cache *after* adoption's clear.
-    release_fallback.set()
-    caller.join(timeout=5.0)
-    assert not caller.is_alive()
-    assert results == [400 // 4 + 1]  # the in-flight call used the estimator
-
-    # 4. Post-adoption counts for the identical text must be exact -- both the
-    #    first lookup and a repeat (i.e. the cached value is the encoder's).
-    assert tokens_mod.count_tokens(probe) == 7
-    assert tokens_mod.count_tokens(probe) == 7
+        # 4. Post-adoption counts for the identical text must be exact -- both the
+        #    first lookup and a repeat (i.e. the cached value is the encoder's).
+        assert tokens_mod.count_tokens(probe) == 7
+        assert tokens_mod.count_tokens(probe) == 7
+    finally:
+        release_load.set()
+        release_fallback.set()
+        caller.join(timeout=10)
 
 
 def test_concurrent_callers_single_loader_prompt_returns(monkeypatch):
@@ -167,11 +214,12 @@ def test_concurrent_callers_single_loader_prompt_returns(monkeypatch):
 
     def gated_loader():
         load_calls.append(threading.get_ident())
-        release_load.wait()
+        assert release_load.wait(timeout=30), "test did not release the encoder loader"
         return FakeEncoder()
 
     monkeypatch.setattr(tokens_mod, "_load_encoder", gated_loader)
     monkeypatch.setattr(tokens_mod, "_ENCODER_FIRST_WAIT_S", 0.05)
+    joins, original_join = _probe_loader_join(monkeypatch, 0.05)
 
     probe = "z" * 400
     def count_all():
@@ -191,7 +239,76 @@ def test_concurrent_callers_single_loader_prompt_returns(monkeypatch):
         assert results == [400 // 4 + 1] * 4
         assert len(load_calls) == 1, "loader must be started exactly once"
 
-    returns_while_blocked(count_all, release_load)
+    try:
+        returns_while_blocked(count_all, release_load)
+        assert joins == [0.05]
+    finally:
+        release_load.set()
+        monkeypatch.setattr(threading.Thread, "join", original_join)
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and tokens_mod.count_tokens(probe) != 7:
+        time.sleep(0.02)
+    assert tokens_mod.count_tokens(probe) == 7, "exact counts after adoption"
+    assert len(load_calls) == 1
+
+
+@pytest.mark.latency
+def test_concurrent_callers_single_loader_prompt_returns_latency(monkeypatch):
+    """One loader thread total; non-first callers never wait on the load.
+
+    Pins the concurrency contract: concurrent count_tokens() callers against
+    a hung loader trigger exactly one _load_encoder() invocation, the first
+    caller's wait is bounded, later callers return promptly with estimates,
+    and counts after adoption are exact.
+    """
+
+    class FakeEncoder:
+        def encode(self, text):
+            return list(range(7))
+
+    release_load = threading.Event()
+    load_calls = []
+
+    def gated_loader():
+        load_calls.append(threading.get_ident())
+        release_load.wait(timeout=10)
+        return FakeEncoder()
+
+    monkeypatch.setattr(tokens_mod, "_load_encoder", gated_loader)
+    monkeypatch.setattr(tokens_mod, "_ENCODER_FIRST_WAIT_S", 0.05)
+
+    probe = "z" * 400
+    try:
+        start = time.monotonic()
+        first = tokens_mod.count_tokens(probe)  # starts the loader, bounded wait
+        first_elapsed = time.monotonic() - start
+        assert first_elapsed < 2.0, f"first caller waited {first_elapsed:.1f}s"
+        assert first == 400 // 4 + 1
+
+        results = []
+        lock = threading.Lock()
+
+        def worker(i):
+            t0 = time.monotonic()
+            value = tokens_mod.count_tokens(f"{'w' * 396}{i:04d}")
+            with lock:
+                results.append((value, time.monotonic() - t0))
+
+        workers = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+        for t in workers:
+            t.start()
+        for t in workers:
+            t.join(timeout=5.0)
+            assert not t.is_alive()
+
+        assert len(load_calls) == 1, "loader must be started exactly once"
+        assert [v for v, _ in results] == [400 // 4 + 1] * 4  # estimator values
+        assert all(elapsed < 1.0 for _, elapsed in results), (
+            "non-first callers must not wait on the hung loader"
+        )
+
+    finally:
+        release_load.set()
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline and tokens_mod.count_tokens(probe) != 7:
         time.sleep(0.02)
