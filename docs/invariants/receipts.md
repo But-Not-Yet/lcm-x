@@ -72,6 +72,8 @@ The patches are **forward-applying inverses** of the identified fix behavior. Ap
 one at a time and restore before starting another. They retain all tests and later
 unrelated behavior. Historical `git show FIX -- FILE | git apply -R --check` conflicts
 on rc8 for most fixes; each receipt identifies the exact equivalent inverse used.
+For a merge-commit fix (#1000's `bba59649`, #5's `9c8dbc9f`) `git show` prints an empty
+combined diff; read the fix with `git diff FIX^1 FIX -- FILE` instead.
 For #959 and #671 the full file inverse still applies, but the supplied patch selects
 only the binding fix hunk, leaving other fixed behavior intact. No helper was removed
 to manufacture an import or fixture failure. Reverted exit 1 below is an assertion
@@ -98,7 +100,7 @@ failure for the seed, not collection failure. Restored exit 0 means no skips or 
 ## I1 633
 
 Seed [#633](https://github.com/electricsheephq/lcm-x/issues/633); fix [`285bad2ea9c8a1c2110654e00967ceb0d8b1a111`](https://github.com/electricsheephq/lcm-x/commit/285bad2ea9c8a1c2110654e00967ceb0d8b1a111).
-Inverse: [I1-633.patch](reverts/I1-633.patch). Remove the deferred insertion occurrence reservation in `identity_anchor.py`, preserving later host-UID bookkeeping. This reruns S7's resolved production inverse against the existing deterministic lead; its test-deletion hunk is excluded.
+Inverse: [I1-633.patch](reverts/I1-633.patch). Remove the deferred insertion occurrence reservation in `identity_anchor.py`, preserving later host-UID bookkeeping. It reverts the fix's production change and runs the existing deterministic lead test; the fix's test-deletion hunk is excluded.
 
 ```sh
 seed I1-633 tests/test_issue_633_steer_row_before_cursor.py::test_t6_a_repeated_steer_is_stored_again
@@ -254,12 +256,12 @@ Reverted: **1 failed** (exit 1). Restored: **1 passed** (exit 0).
 ## Gaps retained
 
 - **I4:** #1221 has the pair above, but objective retention still has open residual [#1225](https://github.com/electricsheephq/lcm-x/issues/1225).
-- **I5:** [#601](https://github.com/electricsheephq/lcm-x/issues/601) shipped operator recovery guidance for unsupported readers, not a fix to those readers. Removing only its older-reader backup advice with [I5-601.patch](reverts/I5-601.patch), while retaining later rollback-floor wording, leaves all three listed lead files green: **31 passed reverted, 31 passed restored**, no skips. No seed proof is claimed. The older-reader tests used the three pinned reader commits from CI and `GIT_DIR` pointing to the source checkout's object database (read-only `cat-file`/`archive` access).
-- **I6:** no named historical seed has been selected. Schema and S6 migration nets are leads, not a named fix-reversion pair; the row stays `gap`.
-- **I11:** [#1139](https://github.com/electricsheephq/lcm-x/issues/1139) fix [`c4b18f9b`](https://github.com/electricsheephq/lcm-x/commit/c4b18f9b) is merged. Removing just the default quarter-threshold cap with [I11-1139.patch](reverts/I11-1139.patch) leaves S1b's exact `i1139_small_window_32k` R3 comparison green: **1 passed reverted, 1 passed restored**. Managed v0.26.2 and both candidate variants each run **49 compactions, 3 summary calls**. That case has 40 user turns (122.5 compactions per 100 turns); it does not establish the absolute 25/100 bound or the 1M window. No seed sensitivity is claimed.
-- **I12:** [#1157](https://github.com/electricsheephq/lcm-x/issues/1157) and [#1222](https://github.com/electricsheephq/lcm-x/issues/1222) are open. S8's unchanged child-isolation file and shared harness were overlaid only in the scratch archive and rerun: **2 passed, 6 strict xfailed**. No merged fix exists to revert.
+- **I5:** [#601](https://github.com/electricsheephq/lcm-x/issues/601) shipped operator recovery guidance for unsupported readers, not a fix to those readers. Removing only its older-reader backup advice with [I5-601.patch](reverts/I5-601.patch), while retaining later rollback-floor wording, leaves all three listed lead files green: **31 passed reverted, 31 passed restored**, no skips. The fix's own guidance tests do go red under the same inverse (the doctor survival-fit guidance tests in `tests/test_lcm_command.py` and `tests/test_issue_620_rollback_advice.py`: **5 failed reverted, 5 passed restored**), but they bind the operator advice, not the rollback readers I5 describes, so no seed proof is claimed for I5. The older-reader tests used the three pinned reader commits from CI and `GIT_DIR` pointing to the source checkout's object database (read-only `cat-file`/`archive` access).
+- **I6:** no named historical seed has been selected. Schema and migration-compatibility tests are leads, not a named fix-reversion pair; the row stays `gap`.
+- **I11:** [#1139](https://github.com/electricsheephq/lcm-x/issues/1139) fix [`c4b18f9b`](https://github.com/electricsheephq/lcm-x/commit/c4b18f9b) is merged. Removing just the default quarter-threshold cap with [I11-1139.patch](reverts/I11-1139.patch) leaves the exact small-window (32K) progress comparison against the previous GA green: **1 passed reverted, 1 passed restored**. The previous GA (v0.26.2, managed configuration) and both candidate variants each run **49 compactions, 3 summary calls**. That case has 40 user turns (122.5 compactions per 100 turns); it does not establish the absolute 25/100 bound or the 1M window. The fix's own unit test, `tests/test_p0_leaf_chunk_default.py`, does go red under the same inverse (**2 failed reverted, 6 passed restored**), but it pins the sweep target, not the progress bound, so no seed proof is claimed for I11.
+- **I12:** [#1157](https://github.com/electricsheephq/lcm-x/issues/1157) and [#1222](https://github.com/electricsheephq/lcm-x/issues/1222) are open. The unchanged child-isolation behaviour file and the shared test harness were run on a scratch copy of rc8: **2 passed, 6 strict xfailed**. No merged fix exists to revert.
 
-S1/S1b's original historical comparisons and S2a/S6's characterization/compatibility
+The differential backtest's historical comparisons and the characterization/compatibility
 runs did not themselves hold a fix-reverted/fix-restored pair. They were not copied
 into proven receipts. Where rc8 already had a deterministic regression, it supplied
 the binding test above. No runtime, release, or universal invariant enforcement is claimed.
