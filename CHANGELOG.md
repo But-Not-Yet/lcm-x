@@ -6,6 +6,8 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
+- Fix: when chunk vectors carry a stale embedding identity, `lcm_doctor` now advises `/lcm embed backfill --corpus chunks --apply` (or `--corpus both` when summaries are stale too), so following its advice rebuilds the chunk vectors. The summary-only advice is unchanged. (#896)
+
 ## v0.27.0 (summary quality)
 
 - Fix: survival fit can mark short stored tool rows when head projections cannot fit, and the default summary-prefix bound preserves the user objective for survival fitting. (#1220, #1221; rc6)
