@@ -71,7 +71,6 @@ def _real_call_shapes(signature, target_signature):
     """Every positional/keyword split and optional omission, plus variadic probes."""
     parameters = list(signature.parameters.values())
     positional = [p for p in parameters if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
-    sentinel = object()
     has_args = any(p.kind == p.VAR_POSITIONAL for p in parameters)
     has_kwargs = any(p.kind == p.VAR_KEYWORD for p in parameters)
     for count in range(len(positional) + 1):
@@ -80,11 +79,11 @@ def _real_call_shapes(signature, target_signature):
         optional = [p for p in remaining if p.default is not p.empty]
         for included in product((False, True), repeat=len(optional)):
             omitted = {p.name for p, present in zip(optional, included) if not present}
-            kwargs = {p.name: sentinel for p in remaining if p.name not in omitted}
+            kwargs = {p.name: object() for p in remaining if p.name not in omitted}
             # A method receiver is positional, never a host-supplied keyword.
             if "self" in kwargs:
                 continue
-            args = [sentinel] * count
+            args = [object() for _ in range(count)]
             for extra_args, extra_kwargs in product((False, True), repeat=2):
                 if extra_args and not (has_args and count == len(positional)):
                     continue
@@ -93,13 +92,13 @@ def _real_call_shapes(signature, target_signature):
                 # Exceed the override's finite arity so optional parameters
                 # cannot accidentally absorb the entire *args probe.
                 extra_count = len(target_signature.parameters) + 1 if extra_args else 0
-                call_args = args + [sentinel] * extra_count
+                call_args = args + [object() for _ in range(extra_count)]
                 call_kwargs = dict(kwargs)
                 if extra_kwargs:
                     key = "_parity_extra"
                     while key in signature.parameters or key in target_signature.parameters:
                         key += "_"
-                    call_kwargs[key] = sentinel
+                    call_kwargs[key] = object()
                 try:
                     signature.bind(*call_args, **call_kwargs)
                 except TypeError:
@@ -130,9 +129,12 @@ def _override_problem(real_signature, plugin_signature, *, filtered_compress=Fal
         if filtered_compress and len(args) != 2:
             continue
         try:
-            plugin_signature.bind(*args, **kwargs)
+            bound = plugin_signature.bind(*args, **kwargs)
         except TypeError as exc:
             return f"{len(args)} positional, keywords {sorted(kwargs)}: {exc}"
+        if filtered_compress and bound.arguments.get("messages") is not args[1]:
+            name = next((name for name, value in bound.arguments.items() if value is args[1]), "*args")
+            return f"{len(args)} positional, keywords {sorted(kwargs)}: positional messages binds to {name}"
     return None
 
 
@@ -193,6 +195,9 @@ def _differences(real, stub, plugin, plugin_base):
     ('self, messages, **kwargs', 'self, messages', True, False),
     ('self, messages, *args', 'self, messages', True, False),
     ('self, messages, memory_context=""', 'self, messages', False, False),
+    ('self, messages', 'self, extra, messages=None', True, False),
+    ('self, messages, bypass_cooldown=False', 'self, bypass_cooldown, messages=None', True, False),
+    ('self, messages', 'self, messages=None', True, True),
 ])
 def test_override_check_keeps_required_contract(real, plugin, filtered, compatible):
     signatures = []
