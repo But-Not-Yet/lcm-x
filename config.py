@@ -46,7 +46,9 @@ def _parse_arm_weights(
     dropped = []
     for part in raw.split(","):
         part = part.strip()
-        if not part or "=" not in part:
+        if not part:
+            continue
+        if "=" not in part:
             dropped.append(part)
             continue
         name, _, value = part.partition("=")
@@ -358,6 +360,8 @@ def _parse_model_thresholds_env(raw: str, *, warnings: list[str] | None = None) 
     dropped = []
     for pair in raw.split(","):
         pair = pair.strip()
+        if not pair:
+            continue
         if ":" not in pair:
             dropped.append(pair)
             continue
@@ -532,9 +536,9 @@ def _warn_env_range(name: str, value: Any, warnings: list[str]) -> None:
     if name == "survival_reserve":
         effect += f"; survival reserve clamped to {min(maximum, max(minimum, value))!r}"
     elif name == "leaf_chunk_tokens":
-        effect += f"; leaf sizing clamped to {minimum}"
+        effect += f"; treated as {minimum} for leaf sizing"
     elif name == "summary_timeout_ms":
-        effect += "; foreground timeout clamped to at least 0.001 seconds"
+        effect += "; summary calls receive a timeout of <=0 s; only pre-compaction extraction is floored at 0.001 s"
     warnings.append(f"out-of-range env {key}={repr(raw)[:40]} (must be {bounds}); {effect}")
 
 
@@ -1313,9 +1317,9 @@ class LCMConfig:
             try:
                 c.empty_lifecycle_gc_max_age_hours = float(raw_max_age)
             except (TypeError, ValueError):
-                config_source_warnings.append(
-                    f"invalid env LCM_EMPTY_LIFECYCLE_GC_MAX_AGE_HOURS={repr(raw_max_age)[:40]} "
-                    f"ignored; using {c.empty_lifecycle_gc_max_age_hours!r}"
+                _warn_invalid_env(
+                    config_source_warnings, "LCM_EMPTY_LIFECYCLE_GC_MAX_AGE_HOURS",
+                    raw_max_age, c.empty_lifecycle_gc_max_age_hours,
                 )
 
         raw_arm_weights = os.environ.get("LCM_RECALL_ARM_WEIGHTS")

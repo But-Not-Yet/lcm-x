@@ -72,7 +72,7 @@ ROWS = [
     for raw, value, warns in [
         (None, 24., False), ("24", 24., False), ("0", 0., False),
         ("-1", -1., False), ("inf", float("inf"), False),
-        ("bad", 24., True), ("", 24., True),
+        ("bad", 24., True), ("", 24., False), (" \t", 24., False),
     ]
 ] + [
     ("RECALL_ARM_WEIGHTS", "recall_arm_weights", raw, value, False, warns)
@@ -85,7 +85,13 @@ ROWS = [
         ("fts=inf", {"fts": .5, "summary": 1., "chunk": 1.}, True),
         ("fts=-1", {"fts": .5, "summary": 1., "chunk": 1.}, True),
         ("broken,fts=bad,chunk=.2", {"fts": .5, "summary": 1., "chunk": .2}, True),
-        ("", {"fts": .5, "summary": 1., "chunk": 1.}, True),
+        ("", {"fts": .5, "summary": 1., "chunk": 1.}, False),
+        (" \t", {"fts": .5, "summary": 1., "chunk": 1.}, False),
+        (",", {"fts": .5, "summary": 1., "chunk": 1.}, False),
+        ("fts=0.5,", {"fts": .5, "summary": 1., "chunk": 1.}, False),
+        ("fts=0.5,,summary=1.0", {"fts": .5, "summary": 1., "chunk": 1.}, False),
+        ("fts", {"fts": .5, "summary": 1., "chunk": 1.}, True),
+        ("bogus=1", {"fts": .5, "summary": 1., "chunk": 1.}, True),
     ]
 ] + [
     ("MODEL_THRESHOLDS", "model_thresholds", raw, value, False, warns)
@@ -94,7 +100,10 @@ ROWS = [
         (" model :1", {"model": 1.}, False), ("ns:model:.2", {"ns:model": .2}, False),
         ("model:0", {}, True), ("model:1.1", {}, True), ("model:nan", {}, True),
         ("model:inf", {}, True), ("broken,:.5,model:bad,ok:.3", {"ok": .3}, True),
-        ("", {}, True),
+        ("", {}, False), (" \t", {}, False), (",", {}, False),
+        ("glm-5.2:0.70,", {"glm-5.2": .7}, False),
+        ("glm-5.2:0.70,,other:.5", {"glm-5.2": .7, "other": .5}, False),
+        ("glm-5.2:abc", {}, True),
     ]
 ]
 
@@ -136,8 +145,9 @@ def test_parsers_keep_dictionary_contract(caplog):
     ("SURVIVAL_RESERVE", "-1", "clamped to 0.0"),
     ("SURVIVAL_RESERVE", "1", "clamped to 0.9"),
     ("SURVIVAL_RESERVE", "nan", "clamped to 0.0"),
-    ("LEAF_CHUNK_TOKENS", "0", "leaf sizing clamped to 1"),
-    ("SUMMARY_TIMEOUT_MS", "0", "using 0 unchanged"),
+    ("LEAF_CHUNK_TOKENS", "0", "treated as 1 for leaf sizing"),
+    ("SUMMARY_TIMEOUT_MS", "0", "summary calls receive a timeout of <=0 s"),
+    ("SUMMARY_TIMEOUT_MS", "-5000", "only pre-compaction extraction is floored at 0.001 s"),
     ("EMBEDDING_PROVIDER", "voyge", "ProviderUnavailable"),
     ("PREANSWER_EVIDENCE_MODE", "bogus", "ignored; using 'off'"),
     ("EMBEDDING_STORAGE_DTYPE", "float8", "ignored; using 'float32'"),
@@ -170,12 +180,15 @@ def test_choice_warning_lists_accepted_set_and_bounds_raw(monkeypatch, key, acce
      ["bad", "unknown=1", "fts=oops", "summary=nan", "chunk=-1"]),
     ("MODEL_THRESHOLDS", "bad,:.5,model:bad,zero:0,high:1.1,nan:nan,ok:.5",
      ["bad", ":.5", "model:bad", "zero:0", "high:1.1", "nan:nan"]),
+    ("RECALL_ARM_WEIGHTS", ",fts,,bogus=1,", ["fts", "bogus=1"]),
+    ("MODEL_THRESHOLDS", ",glm-5.2:abc,,", ["glm-5.2:abc"]),
 ])
 def test_dropped_items_are_listed_once_per_key(monkeypatch, key, raw, dropped):
     monkeypatch.setenv("LCM_" + key, raw)
     warning, = config.LCMConfig.from_env().config_source_warnings
     assert "LCM_" + key in warning
     assert "using" in warning
+    assert "''" not in warning
     for item in dropped:
         assert repr(item) in warning
 
