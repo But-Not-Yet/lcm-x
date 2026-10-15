@@ -273,24 +273,31 @@ comma-separated values. Keep their existing source tracking and parsing rules.
 
 ## Hand-written reference: side-channel environment readers
 
-These 11 keys are read outside `config.py`, with their existing call-time or
-registration-time lifetimes. They are not loaded into `LCMConfig`; listing them
-does not consolidate or change their readers. Reader filenames are relative to
-the checkout root. Credential entries list only variable names, never values.
+These 11 keys are read outside `config.py`, directly or through helper
+wrappers. They are not loaded into `LCMConfig`; listing them does not
+consolidate or change their readers. Reader filenames are relative to the
+checkout root. Credential entries list only variable names, never values.
 
-| Environment key | Reader file(s) | Purpose |
-| --- | --- | --- |
-| `LCM_ABSOLUTE_THRESHOLD_TOKENS` | `engine.py` | Absolute compaction threshold override |
-| `LCM_ENABLE_SLASH_COMMAND` | `__init__.py` | Optional slash-command registration |
-| `LCM_HERMES_BASE_DIR` | `engine.py`, `externalize.py`, `diagnostics.py` | Storage containment boundary |
-| `LCM_IDENTITY_ANCHOR` | `identity_anchor.py` | Identity-anchor switch |
-| `LCM_FTS_INTEGRITY_CHECK_INTERVAL_HOURS` | `db_bootstrap.py` | Startup integrity-check interval |
-| `LCM_FTS_INTEGRITY_BACKGROUND` | `db_bootstrap.py` | Background integrity-check switch |
-| `LCM_EMBEDDING_BACKFILL_LEASE_TTL_S` | `command.py` | Backfill claim lifetime |
-| `LCM_EMBEDDING_BACKFILL_HEARTBEAT_S` | `command.py` | Backfill claim renewal cadence |
-| `LCM_EMBEDDING_BACKFILL_BUDGET_S` | `command.py` | Operation-wide backfill time budget |
-| `LCM_EMBEDDING_BACKFILL_BATCH_SIZE` | `command.py` | Backfill claim batch size |
-| `LCM_EMBEDDING_API_KEY` | `embedding_provider.py` | Default credential variable for the compatible endpoint; name selectable via `LCM_EMBEDDING_API_KEY_ENV` |
+| Environment key | Reader file(s) | Purpose | Read when |
+| --- | --- | --- | --- |
+| `LCM_ABSOLUTE_THRESHOLD_TOKENS` | `engine.py` | Absolute compaction threshold override | each call — `_set_context_length()` with a positive context length, through model updates, session-start metadata, or cloning |
+| `LCM_ENABLE_SLASH_COMMAND` | `__init__.py` | Optional slash-command registration | plugin registration |
+| `LCM_HERMES_BASE_DIR` | `engine.py`, `externalize.py`, `diagnostics.py` | Storage containment boundary | each call — storage-directory resolution or state-database containment validation; `_get_allowed_hermes_base()` also reads it when called (currently no callers) |
+| `LCM_IDENTITY_ANCHOR` | `identity_anchor.py` | Identity-anchor switch | each call — `identity_anchor_enabled()` checks during ingest, replay identity handling, and compaction |
+| `LCM_FTS_INTEGRITY_CHECK_INTERVAL_HOURS` | `db_bootstrap.py` | Startup integrity-check interval | database open — startup FTS validation, after structural checks pass |
+| `LCM_FTS_INTEGRITY_BACKGROUND` | `db_bootstrap.py` | Background integrity-check switch | database open — startup FTS validation, when a deep check is due |
+| `LCM_EMBEDDING_BACKFILL_LEASE_TTL_S` | `command.py` | Backfill claim lifetime | each call — each summary or chunk backfill apply run, before lease acquisition |
+| `LCM_EMBEDDING_BACKFILL_HEARTBEAT_S` | `command.py` | Backfill claim renewal cadence | each call — each summary or chunk backfill apply run, before lease acquisition |
+| `LCM_EMBEDDING_BACKFILL_BUDGET_S` | `command.py` | Operation-wide backfill time budget | each call — each summary or chunk backfill apply run, before lease acquisition |
+| `LCM_EMBEDDING_BACKFILL_BATCH_SIZE` | `command.py` | Backfill claim batch size | each call — backfill batch estimates, apply-run batch sizing, and automatic embedding-maintenance pass sizing |
+| `LCM_EMBEDDING_API_KEY` | `embedding_provider.py` | Default credential variable for the compatible endpoint; name selectable via `LCM_EMBEDDING_API_KEY_ENV` | plugin registration — availability probe when compatible embeddings are enabled; also re-read at each compatible-provider `_request()` and availability probe (doctor and automatic maintenance) |
+
+Restart the host for `LCM_ENABLE_SLASH_COMMAND`; the other keys take effect on
+the next named operation (FTS controls on the next database open, and
+`LCM_EMBEDDING_API_KEY` on the next request or probe despite its initial
+registration-time check), provided the running process's environment has been
+updated; changing a parent shell's environment alone requires restarting the
+host to pass it the new values.
 
 Three additional standalone helpers in `config.py` are also outside the scalar
 registry and `LCMConfig.from_env()`:
