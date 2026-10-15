@@ -5,6 +5,7 @@ from collections import Counter
 
 import pytest
 
+from hermes_lcm.dag import SummaryNode
 from hermes_lcm.tokens import count_messages_tokens
 from tests.harness import (
     ScriptedSummarizer, assistant, call, engine_context, host_call,
@@ -28,10 +29,7 @@ def _cells():
     for mode in ("healthy", "outage"):
         for control in CONTROLS:
             for window_k in WINDOWS:
-                repeats = (
-                    mode == "outage" and control in {"defaults", "full-sweep-off", "externalization-off"}
-                    or (mode, control, window_k) == ("healthy", "full-sweep-off", 127)
-                )
+                repeats = (mode, control, window_k) == ("healthy", "full-sweep-off", 127)
                 marks = [pytest.mark.xfail(
                     strict=True, raises=ImmediateRecompaction,
                     reason="#1123: emitted view remains over the threshold; next host call compacts again",
@@ -54,8 +52,9 @@ def _check_sent(engine, result, caplog, objective):
 def _check_stub_reservations(engine):
     """An implicit result and an explicit identical stub must cost exactly once.
 
-    At the exact boundary, double reservation evicts a call or prefix. Missing
-    reservation overflows after repair. Compare both paths including summaries.
+    At the exact boundary, double reservation evicts a call or prefix.
+    Compare both paths including summaries; the isolated node cell below checks
+    under-reservation with a summary that must be excluded.
     """
     system = {"role": "system", "content": "Inspect the records."}
     tail = [assistant("Checking the final records.", calls=[call("missing-0"), call("missing-1")])]
@@ -73,6 +72,34 @@ def _check_stub_reservations(engine):
         assert results == {"missing-0": 1, "missing-1": 1}
 
 
+def test_stub_reservation_excludes_summary_at_exact_cap(tmp_path, monkeypatch):
+    pin_char_counter(monkeypatch)
+    with engine_context(tmp_path, window=16 * 1024) as engine:
+        _check_stub_reservations(engine)
+        system = {"role": "system", "content": "Inspect the records."}
+        tail = [assistant("Checking the final records.", calls=[call("missing-0"), call("missing-1")])]
+        complete = [*tail, *(engine._missing_tool_result_stub(f"missing-{i}") for i in range(2))]
+        expected = engine._assemble_context(system, complete, include_lcm_note=False, persist=False)
+        cap = count_messages_tokens(expected)
+        # This small node fits only if the selector forgets the implicit stubs.
+        node = SummaryNode(session_id=engine.current_session_id, summary="STUB_BUDGET_SENTINEL",
+                           token_count=5, created_at=1.0)
+        engine._dag.add_node(node)
+        for source in (tail, complete):
+            actual = engine._assemble_context(
+                system, source, assembly_cap_override=cap, include_lcm_note=False, persist=False,
+            )
+            assert actual == expected, "a summary consumed the missing-result stub reservation"
+        # Raising the cap by the measured summary cost admits exactly this node.
+        with_node = engine._assemble_context(system, complete, include_lcm_note=False, persist=False)
+        assert any(node.summary in row.get("content", "") for row in with_node)
+        admitted = engine._assemble_context(
+            system, tail, assembly_cap_override=count_messages_tokens(with_node),
+            include_lcm_note=False, persist=False,
+        )
+        assert admitted == with_node
+
+
 @pytest.mark.parametrize("window_k,control,mode", _cells())
 def test_default_window_matrix(tmp_path, monkeypatch, caplog, window_k, control, mode):
     pin_char_counter(monkeypatch)
@@ -86,6 +113,9 @@ def test_default_window_matrix(tmp_path, monkeypatch, caplog, window_k, control,
         "assembly-cap": {"max_assembly_tokens": window * 3 // 4},
     }[control]
     view = [{"role": "system", "content": "Keep the objective and inspect the records."}]
+    known_recompaction = (mode, control, window_k) == ("healthy", "full-sweep-off", 127)
+    # Extra input pressure leaves a substantial margin after the single sweep.
+    pressure_target = window * (23 if known_recompaction else 21) // 20
     compressed_rounds = 0
     repeated_rounds = []
     with engine_context(tmp_path, window=window, **overrides) as engine:
@@ -96,7 +126,7 @@ def test_default_window_matrix(tmp_path, monkeypatch, caplog, window_k, control,
             # one larger tool payload to exercise default externalization too.
             index = 0
             current_tokens = count_messages_tokens(view)
-            while current_tokens <= window * 21 // 20:
+            while current_tokens <= pressure_target:
                 call_id = f"round-{turn}-call-{index}"
                 pair = [
                     assistant(prose(1100, seed=index), calls=[call(call_id)]),
@@ -111,17 +141,32 @@ def test_default_window_matrix(tmp_path, monkeypatch, caplog, window_k, control,
             assert result.compressed, "pressured host call did not attempt compaction"
             compressed_rounds += 1
             _check_sent(engine, result, caplog, objective)
+            calls_before_followup = len(provider.calls)
+            if known_recompaction and turn == 0:
+                assert result.sent_tokens >= engine.threshold_tokens + 1000
             # Feed the emitted view back just as the host does. This is a new
             # call without new pressure, rather than a second compress() call.
             caplog.clear()
             following = host_call(engine, result.view)
             _check_sent(engine, following, caplog, objective)
+            if mode == "outage" and turn == 0:
+                assert len(provider.calls) == calls_before_followup
+            if known_recompaction and turn == 0:
+                assert len(provider.calls) > calls_before_followup, "#1123 must call the summary provider again"
             if following.compressed:
                 repeated_rounds.append(turn)
             view = following.view
         assert compressed_rounds == 3
         assert provider.calls, "session never exercised the summary provider"
         _check_stub_reservations(engine)
+        if mode == "outage" and control in {"defaults", "full-sweep-off", "externalization-off"}:
+            # The rejected first summary arms no hold. The round-0 follow-up
+            # sees the open circuit without calling the provider and arms #608.
+            assert repeated_rounds == [0]
+            # Check the held gate itself too: a fitted view can fall below the
+            # threshold and hide a missing hold in an individual window cell.
+            assert not engine.should_compress(engine.threshold_tokens)
+            return
         # Defer this assertion until every round and the accounting check have
         # run, including in the exact cells carrying the #1123 expectation.
         if repeated_rounds:
