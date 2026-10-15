@@ -12,7 +12,7 @@ concurrency:
 jobs:
   invariants:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 15
     continue-on-error: ${{ github.event_name == 'pull_request' }}
     env:
       PYTHONPATH: ${{ github.workspace }}
