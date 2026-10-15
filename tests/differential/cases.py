@@ -93,8 +93,49 @@ def exact_cases():
         {"role": "system", "content": "Synthetic system prompt."},
         {"role": "user", "content": "plan" * 22000},
         {"role": "assistant", "content": "Starting work."},
-        *pairs(1, 40, 32000)], leaf_history=2, absolute_xfail=True))
-    return cases
+        *pairs(1, 40, 32000)], leaf_history=2))
+    return cases + historical_cases()
+
+
+def historical_cases():
+    """Regression inputs whose assembly/provider seams the host loop cannot select."""
+    history = [{"role": "system", "content": "Synthetic system prompt."},
+               {"role": "user", "content": "Earlier request."},
+               {"role": "assistant", "content": "Earlier answer."},
+               {"role": "user", "content": "Keep this objective verbatim. " + "plan " * 9600},
+               {"role": "assistant", "content": "Starting the requested work."}]
+    tail = [row for i in range(10) for row in (
+        {"role": "assistant", "content": "Reading.", "tool_calls": [call(f"call-{i}")]},
+        {"role": "tool", "content": f"result {i}: " + "data " * 1500,
+         "tool_call_id": f"call-{i}", "name": "probe", "tool_name": "probe"},
+    )]
+    objective = public_case("i1221_historical_assembly_32k", history + tail,
+                            leaf_history=4, assembly_tail=20)
+    objective["steps"][0][1]["content"] = objective["steps"][0][1]["content"].replace("⟦objective⟧", "")
+    objective["steps"][0][3]["content"] = objective["steps"][0][3]["content"].replace("⟦newest⟧", "⟦objective⟧⟦newest⟧")
+    # #1225 gives ranges rather than a serialized transcript: 12K at a 16K
+    # window with a 4K host system prefix leaves insufficient room even after
+    # fitting. The issue specifies ranges, not an exact host transcript.
+    oversized = public_case("i1225_historical_assembly_16k", [
+        {"role": "system", "content": "rule" * 4000},
+        {"role": "user", "content": "plan" * 12000},
+        {"role": "assistant", "content": "Starting work."},
+        *pairs(1, 40, 32000)], window=16000, leaf_history=2, assembly_tail=2,
+        absolute_xfail=True)
+    # Same 48-row backlog and 24-row tail as the #1140 regression fixture,
+    # followed by the issue's 40 x 9 logical model-call cadence.
+    rows = [{"role": "user" if i % 2 == 0 else "assistant",
+             "content": (f"FACT-{i} " + "alpha beta gamma delta " * 44) * 2} for i in range(48)]
+    rows += [{"role": "user" if i % 2 == 0 else "assistant", "content": f"tail {i}" * 2} for i in range(24)]
+    steps = [rows]
+    for index in range(1, 360):
+        new = pairs(1, 400, 1600, f"historical-{index}-")
+        if index % 9 == 0:
+            new.insert(0, {"role": "user", "content": f"Continue record {index // 9}."})
+        steps.append(new)
+    progress = public_case("i1139_historical_sweep_32k", [], steps=steps, window=32000,
+                           summary_tokens=2000, fixture_summarizer=True, seed_frontier=4)
+    return [objective, oversized, progress]
 
 
 def generated_cases(n, seed):

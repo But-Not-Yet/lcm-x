@@ -1,7 +1,7 @@
 # Previous-GA differential backtest
 
 Measured 2026-10-15 against GA `6800cf45ad05280e6cf6fa9e1ad96c62b7132646`.
-Product candidate: rc7 `432bc4567c7b6201f83421bb9e5402eee7980302`.
+S1/S1b product candidate: rc7 `432bc4567c7b6201f83421bb9e5402eee7980302`; S1c candidate: rc8 `4e603ed65f137a909606afccfc735c691e363d25`.
 S1b starts at harness head `d0a27b259cd5d1d04b974aeb7dee70ceadb810e0`, whose production files match rc7.
 The original historical receipts used checkout `3c9b34bc1165905869369c7d93f914aec95fdf5c`.
 S1b corrects R2's stale objective probe, compares managed GA defaults by default, and adds C1 summary coverage.
@@ -9,6 +9,127 @@ The 32K #1247 shape has 734 uncovered rows on both managed GA and rc7; the bare-
 The absolute zero-gap expectation is retained as a dedicated strict xfail. Two exact #1123 R3 cells are accepted
 separately: 40K compress runs and 64K provider calls. No production code changed.
 This is advisory synthetic evidence. It is not a release gate or proof of runtime readiness.
+
+## S1c historical inputs and rc8 (2026-10-16)
+
+The branch merged rc8 `4e603ed65f137a909606afccfc735c691e363d25` with merge commit
+`cd2a17f0c7dcaa5a3df5cd564023b5149aec6703`. All new authored changes are tests/docs only.
+Every oracle, threshold and pre-existing delta is unchanged. The sole added delta is the explicitly
+requested `D1233_LAST_RESORT_USER_MARK`: projection / P_USER only, candidate marks nonempty and a
+subset of GA marks, linked to [#1233](https://github.com/electricsheephq/lcm-x/issues/1233).
+This does not accept R2, a new user index, public-layer marks, or any absolute overflow.
+
+### Inputs and seams
+
+- `i1221_historical_assembly_32k` ports `objective_scenario` from
+  `tests/test_issue_1221_objective_default_bound.py`: four history rows including the 12K objective,
+  one 2K leaf covering those rows, 20 tool-only tail rows, and a 32,768 window. Row sentinels replace
+  text prefixes and timestamps retain ordering. The normal host loop chooses a 24-row fresh tail and
+  keeps the objective; it cannot select this input. A case-scoped `assembly_tail` seam instead calls
+  the regression's `_assemble_context(system, tail, include_lcm_note=False)` then `_survival_fit`.
+  It records the same sent-view schema and runs unchanged R1/R2/R3/C1/A1/A2 oracles. No extra host
+  retry or summarizer call is inserted on this assembly path.
+- `i1139_historical_sweep_32k` starts with #1140's doubled 48-row backlog and 24-row tail, at 32,000,
+  and seeds its four depth-zero nodes (2K token metadata each). It continues for 360 logical calls,
+  15 seconds apart, with one assistant/tool pair (400/1,600 characters) per call and a user every ninth
+  call. The issue supplies a cadence rather than the original transcript. The existing 8K tool-result
+  workload filled the fresh tail and entered survival holding before prefix pressure was observable.
+  This reconstruction keeps the tail smaller, so the summary frontier can drive the threshold.
+  The fixture's `_summarize_leaf_chunk_with_rescue` and module-bound `summarize_with_escalation`
+  seams return healthy 2K summaries, counted as provider calls. They bypass provider admission/rescue,
+  as the regression fixture does; real ingest, threshold sweep, condensation and host gating still run.
+  Module replacements are restored after each case, including the extracted compaction module.
+- `i1225_historical_assembly_16k` uses the issue's 12K-objective / 16K-window boundary and declares
+  a 4K system prefix plus an 8K tool result, with a seeded history leaf and two-row assembly tail.
+  [#1225](https://github.com/electricsheephq/lcm-x/issues/1225) gives size ranges, not a serialized
+  host input. The prefix makes room genuinely insufficient: the matrix records GA at 18,135 tokens and rc8 at 16,122
+  into a 16,000 window. This is parity in overflow, not an R1 regression. The dedicated strict xfail
+  raises only `ObjectiveOverflow`, after successful differential evaluation and a GA overflow check;
+  driver errors and unrelated failures cannot satisfy it. The old 22K/32K input still has its fit check.
+
+### Re-measured historical matrix
+
+All rows compare managed GA `6800cf45ad05280e6cf6fa9e1ad96c62b7132646`, seed 1227,
+public result schema (including the documented assembly seam). Counts are raw oracle events;
+all omitted oracles are zero. `917-*` uses the parallel #1220 input, `917-seq-*` the three #1227 inputs,
+`936-*` the new #1221 input, and `1129-*` / `1140-*` the new #1139 input. Each seven-case row uses all
+three new historical inputs, parallel #1220, and sequential #1227 n90/n113/n128.
+
+| Probe / receipt | Candidate SHA | Cases | Raw oracle reds | Unabsorbed | Wall s |
+|---|---|---:|---|---:|---:|
+| 917-parent | `bbcbf2d706706ddbb0f7a6aba63fdcebaf81447b` | 1 | 0 | 0 | 3.14 |
+| 917-merge | `286e731800b95eb9bbf11d240c4ca6e2d7f3e8d4` | 1 | i1220:R1=1 | 1 | 2.11 |
+| 917-seq-parent | `bbcbf2d706706ddbb0f7a6aba63fdcebaf81447b` | 3 | 0 | 0 | 2.16 |
+| 917-seq-merge | `286e731800b95eb9bbf11d240c4ca6e2d7f3e8d4` | 3 | i1227:R1=2 | 2 | 2.13 |
+| 936-parent | `7defa0b0fac8a4906d5e054302f6ef6d630544f4` | 1 | 0 | 0 | 2.25 |
+| 936-merge | `112388f7f07665ec21a74a7b114c8ed2d07d6577` | 1 | i1221:R2=2 | 2 | 2.98 |
+| 1129-parent | `86fc834ef0e995bc8e187b002db43268d033346a` | 1 | 0 | 0 | 10.78 |
+| 1129-merge | `2c6dfef9c6425aca765113e769c0df7dd389d35e` | 1 | i1139:R3=2 | 2 | 18.98 |
+| 1140-merge | `09e32580fdf95885474dbeb5ec4794e30136bb6a` | 1 | 0 | 0 | 13.98 |
+| 1226-parent | `7676991390911e83ab725be313c8db2fec4cbaa0` | 7 | i1220:R1=1, i1221:R2=2, i1225:R2=2, i1227:R1=2 | 7 | 6.58 |
+| rc6 | `bd46fd9fed63bc95f81c464065400deff143f667` | 7 | i1227:R1=2 | 2 | 23.19 |
+| rc7 | `432bc4567c7b6201f83421bb9e5402eee7980302` | 7 | 0 | 0 | 7.24 |
+| rc8 | `4e603ed65f137a909606afccfc735c691e363d25` | 7 | 0 | 0 | 9.71 |
+
+The S1c evidence packet contains `matrix-summary.json` with full SHAs, exact commands, case IDs,
+wall times and missing seams. Each `matrix-NAME.receipt.json` binds its command, checkout HEAD,
+exit and process wall time; `matrix/NAME/` retains input JSONL, both tree results/logs, per-tree means,
+`summary.json` and `summary.md`. Expected culprit reds return CLI exit 1; they are successful negative
+probes, not execution errors. No required seams were missing on any historical row.
+
+- #1221: GA and #936's parent keep both sentinels; the culprit loses objective and newest (R2=2),
+  then rc6/rc7/rc8 keep them. Parent / culprit / rc8 send 27,553 / 21,039 / 26,927 tokens.
+- #1139: GA and #1129's parent use 16 compress runs / 54 provider calls; culprit 249 / 331
+  (both R3 metrics red); #1140 uses 15 / 28 (green). This is a causal backtest, not a claim to match
+  the original simulator's absolute counts.
+- #1226 parent now has seven events in four cases; rc6 has two events in two cases. #1220's
+  fit and #1221's retention clear; #1227 n113/n128 remain red until rc7. #1225 retention clears but
+  the absolute overflow remains, so this is not a claim that #1226 fixes #1225.
+- #1227's actual introduction is also measured: n113/n128 are red at #917's merge and green at
+  its parent. It was already present before #1226; rc6 versus rc7 alone would not prove culprit/parent.
+
+**O2 condition (a): 4 of 4 seed defects are red at their culprit and green at their parent**:
+#1220 and #1227 at #917, #1221 at #936, and #1139 at #1129. Fix clearance is measured at rc6,
+rc7 and #1140 respectively. The open #1225 absolute limitation is tracked separately, outside the
+four historical regression seeds. Promotion remains report-only while open product findings remain.
+
+### rc8 current findings and acceptance
+
+**rc8 g0: open product finding.** The exact generated case (seed 1227, 128,000 window,
+112,407 input tokens) still fails R2 twice: GA sends 112,689 and retains objective/newest;
+rc8 sends 112,193 with user mark `[0]`, losing both sentinels. The survival budget is 108,800,
+so marking the newest user did not reach it. The last-resort user pass is `survival_fit.py:427`
+at rc8. `rc8-g0/summary.json`, `rc8-g0.receipt.json` and `g0-proof.json` retain the reproduction.
+There is no delta, xfail, oracle change or production repair for this finding in S1c.
+
+The 4,000-case rc8 projection triage has P_USER=951, all accepted by the exact D1233 subset
+predicate, with R1=P_INPUT=0 and zero unexplained events. D916 absorbs zero; it stays as a
+historical guard. Both #1123 deltas are also zero on this projection-only run. GA/candidate
+wall times are 149.25/222.29 seconds, means 0.03692/0.05502 seconds per case; process wall
+374.91 seconds. No seams are missing. The supplied recheck's 238 P_USER cases used 1,000
+inputs, not 4,000 (confirmed from its original summary); these are different sample sizes.
+Receipts: `rc8-projection/summary.json` and `rc8-projection.receipt.json`.
+
+Default collection before/after is 7,712 tests (rc8 adds 14 versus S1b's rc7 count).
+Opt-out: one module skip, expected exit 5, 0.09 seconds pytest / 1.90 seconds process wall.
+Collection after: 14.02 seconds pytest / 15.21 seconds process wall. Ruff and whitespace pass.
+The final opt-in run has **27 passed, 2 strict xfailed (#1225 and #1247), 1 failed** in
+434.16 seconds pytest / 434.94 seconds process wall. The sole failed test is the generated sample,
+containing only g0's two R2 events. All 14 normal exact cases pass, including both new regression
+shapes. Unique public inputs: 15 exact plus 60 generated; raw R2=2, R3=2 (the existing exact #1123
+cells), all other differential oracles zero. The 1,000 projection cases have P_USER=238, all D1233,
+with zero unexplained. D916 absorbs zero on the complete current run and remains a historical guard.
+Receipts: `opt-in.receipt.json`, `opt-in.log`, `pytest-final/`, and `acceptance-summary.json`.
+The spec's green-except-xfails expectation conflicts with its requirement to leave g0 visible on rc8;
+this lane preserves the failing retention signal and reports that acceptance limit rather than
+adding an unrequested exception. Production repair is outside this tests-only lane.
+
+All commands used the supplied interpreter and host stub, serial execution at nice 19, no xdist,
+no model/network calls, and no pytest cache. The explicitly required local offline matrix/affected
+suite used a 15-minute per-run budget because remote execution would require forbidden push/CI
+writes; the longest focused suite took 7m15s. Original failed input pilots are retained under
+`pilot/` and `pilot-v2/`; the final matrix supersedes them. Ruff/whitespace are clean. No full
+repository tests, remote CI, push, PR write, release or runtime action was performed.
 
 ## S1b corrected public comparison
 

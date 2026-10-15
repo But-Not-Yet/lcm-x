@@ -45,7 +45,7 @@ def test_projection(outputs):
 
 
 def test_i1225_objective_exceeds_room_32k(outputs):
-    case = next(case for case in exact_cases() if case.get("absolute_xfail"))
+    case = next(case for case in exact_cases() if case["id"] == "i1225_objective_exceeds_room_32k")
     evaluate([case], outputs / case["id"])
 
 
@@ -55,13 +55,28 @@ def test_i1225_shape_fits(outputs):
     import json
     path = outputs / "i1225_objective_exceeds_room_32k" / "summary.json"
     if not path.exists():
-        case = next(case for case in exact_cases() if case.get("absolute_xfail"))
+        case = next(case for case in exact_cases() if case["id"] == "i1225_objective_exceeds_room_32k")
         evaluate([case], path.parent)
     absolute_fit(json.loads(path.read_text()))
 
 
 def absolute_fit(result):
     assert not result["absolute_over_window"], result["absolute_over_window"]
+
+
+class ObjectiveOverflow(AssertionError):
+    """The preserved objective leaves insufficient room for the newest turn."""
+
+
+@pytest.mark.xfail(strict=True, raises=ObjectiveOverflow, reason="#1225: objective exceeds available window room")
+def test_i1225_historical_objective_overflow(outputs):
+    import json
+    case = next(case for case in exact_cases() if case.get("absolute_xfail"))
+    result = evaluate([case], outputs / case["id"])
+    if result["absolute_over_window"]:
+        ga = [json.loads(line) for line in (outputs / case["id"] / "public-ga.jsonl").read_text().splitlines()]
+        assert ga[0]["calls"][0]["tokens"] > case["window"], "#1225 must also overflow on GA"
+        raise ObjectiveOverflow(str(result["absolute_over_window"]))
 
 
 from copy import deepcopy
@@ -184,3 +199,14 @@ def test_i1123_40k_delta_is_a_separate_exact_cell():
     for detail in (dict(metric="summarizer_calls", ga=93, candidate=113),
                    dict(metric="compress_runs", ga=92, candidate=113)):
         assert not i1123_40k_compress_trade(case, {}, {}, dict(detail=detail))
+
+
+def test_i1233_delta_is_only_projection_user_marks_already_in_ga():
+    case = dict(layer="projection", limit=100)
+    ga = dict(out_tokens=90, user_marks=[0, 2], input_mutated=False)
+    cand = dict(out_tokens=90, user_marks=[2], input_mutated=False)
+    assert compare(case, ga, cand) == [dict(oracle="P_USER", detail=[2], delta="D1233_LAST_RESORT_USER_MARK")]
+    cand["user_marks"] = [1]
+    assert compare(case, ga, cand)[0]["delta"] is None
+    cand["user_marks"] = []
+    assert compare(case, ga, cand) == []

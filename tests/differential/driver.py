@@ -78,6 +78,9 @@ def load_tree(tree):
             missing.append(f"tokens.{name}")
     modules = {name: importlib.import_module(f"hermes_lcm.{name}") for name in
                ("engine", "config", "escalation", "survival_fit", "externalize", "message_content", "dag")}
+    # Newer trees moved compress() out of engine.py; both bind this provider.
+    if (tree / "compaction.py").exists():
+        modules["compaction"] = importlib.import_module("hermes_lcm.compaction")
     if hasattr(modules["survival_fit"], "_host_estimate"):
         modules["survival_fit"]._host_estimate = lambda messages: None
     else:
@@ -124,6 +127,28 @@ def run_case(case, modules, directory, initial_missing, baseline_config="bare"):
     if mark_re is None:
         missing.append("survival_fit._PROJECTED_RE")
     normalize = modules["message_content"].normalize_content_value
+    restored = []
+
+    def require(names):
+        absent = [name for name in names if not hasattr(engine, name)]
+        if absent:
+            missing.extend(absent)
+            raise RuntimeError(f"historical seam unavailable: {absent}")
+
+    if case.get("fixture_summarizer"):
+        require(("_summarize_leaf_chunk_with_rescue",))
+
+        def fake_summary(**kwargs):
+            return provider(), 1
+
+        def fake_leaf(chunk, focus_topic=None, deadline=None):
+            return chunk, tokens.count_messages_tokens(chunk), provider(), 1, 0
+
+        engine._summarize_leaf_chunk_with_rescue = fake_leaf
+        for module in modules.values():
+            if hasattr(module, "summarize_with_escalation"):
+                restored.append((module, module.summarize_with_escalation))
+                module.summarize_with_escalation = fake_summary
 
     def marks(view):
         return [i for i, row in enumerate(view) if row.get("role") == "user" and mark_re is not None
@@ -156,6 +181,13 @@ def run_case(case, modules, directory, initial_missing, baseline_config="bare"):
             view.extend(deepcopy(new_rows))
             produced.extend(deepcopy(new_rows))
             engine.ingest(view)
+            if index == 0 and case.get("seed_frontier"):
+                require(("_dag",))
+                for number in range(case["seed_frontier"]):
+                    engine._dag.add_node(modules["dag"].SummaryNode(
+                        session_id="S", depth=0, summary=f"Earlier fact group {number}",
+                        token_count=2000, source_token_count=24000, source_ids=[],
+                        source_type="messages", created_at=number))
             if index == 0 and case.get("leaf_history"):
                 needed = ("_store", "_dag", "_last_compacted_store_id", "_pending_context_anchor_messages")
                 absent = [name for name in needed if not hasattr(engine, name)]
@@ -172,10 +204,14 @@ def run_case(case, modules, directory, initial_missing, baseline_config="bare"):
             start_calls, runs = calls[0], 0
             overhead = case.get("host_overhead", 0)
             prompt = tokens.count_messages_tokens(view) + overhead
-            if engine.should_compress(prompt):
+            if "assembly_tail" in case:
+                require(("_assemble_context", "_survival_fit"))
+                assembled = engine._assemble_context(view[0], view[-case["assembly_tail"]:], include_lcm_note=False)
+                view = engine._survival_fit(view, assembled, prompt, case["id"])
+            elif engine.should_compress(prompt):
                 view = engine.compress(view, current_tokens=prompt)
                 runs += 1
-            if tokens.count_messages_tokens(view) + overhead > case["window"]:
+            if "assembly_tail" not in case and tokens.count_messages_tokens(view) + overhead > case["window"]:
                 view = engine.compress(view, current_tokens=tokens.count_messages_tokens(view) + overhead, bypass_cooldown=True)
                 runs += 1
             sent = tokens.count_messages_tokens(view) + overhead
@@ -211,6 +247,8 @@ def run_case(case, modules, directory, initial_missing, baseline_config="bare"):
                     uncovered_rows=uncovered_rows(stored, view, engine._dag.get_session_nodes("S")),
                     retrieved_payloads=len(retrieved), unavailable_payloads=unavailable, missing_seams=sorted(set(missing)))
     finally:
+        for module, function in restored:
+            module.summarize_with_escalation = function
         engine.shutdown()
 
 

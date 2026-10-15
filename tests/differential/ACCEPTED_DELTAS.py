@@ -28,6 +28,18 @@ ACCEPTED_DELTAS = [AcceptedDelta(
 )]
 
 
+def last_resort_user_mark(case, ga, cand, failure=None):
+    """#1233 allows only marks already present in GA, never a new user index."""
+    return bool(cand["user_marks"]) and set(cand["user_marks"]) <= set(ga["user_marks"])
+
+
+ACCEPTED_DELTAS.append(AcceptedDelta(
+    "D1233_LAST_RESORT_USER_MARK", "https://github.com/electricsheephq/lcm-x/issues/1233",
+    ("projection",), "P_USER", "#1233 last-resort marks must be a nonempty subset of GA user marks.",
+    last_resort_user_mark,
+))
+
+
 def i1123_leaf_trade(case, ga, cand, failure):
     """#1123 / PR #1129: only the observed 64K managed provider-call cell."""
     return (case.get("id") == "i1139_small_window_64k"
