@@ -157,13 +157,23 @@ Subset is needed because unchanged rc8 drops a GA mark while both outputs fit in
 p3277, p3341 and p3629; equality would reject all 5. In p543, GA marks `[2,3,5]` produce 495 tokens
 versus candidate marks `[2,3]` at 537 tokens, under limit 679.
 
-The deduplicated opt-in suite reports **26 passed, 2 strict xfailed, 1 failed** in 115.77 seconds
-pytest / 116.644 seconds process wall. Its sole failure is the existing g0 R2 signal, with two
-unexplained events; the projection sample is green. The old 32K fit input remains excluded by ID
+With the #1281 pin, the opt-in suite reports **27 passed, 3 strict xfailed (#1225, #1247 and #1281),
+0 failed** in 117.80 seconds pytest / 118.505 seconds process wall. The generated sample passes
+with only seed-1227 g0 excluded; its dedicated pin retains the two unexplained R2 events.
+The F3 probe flips only the #1281 pin to XPASS(strict): **27 passed, 2 strict xfailed, 1 failed**,
+119.71 seconds pytest / 120.401 seconds process wall. Replaying all 60 generated cases, including
+g0, through the same evaluator on F3 gives zero unexplained events (34.221 seconds process wall).
+Before the pin, the deduplicated suite reported **26 passed, 2 strict xfailed, 1 failed** in 115.77
+seconds pytest / 116.644 seconds process wall. Its sole failure was g0; the projection sample was
+green. The old 32K fit input remains excluded by ID
 from `test_exact_shape`; its dedicated checks and the separate historical 16K strict xfail remain.
 Default collection stays at 7,712 tests (7.959 seconds process wall); opt-out reports one skipped
 module, expected exit 5 (0.786 seconds). Detailed commands, replay inputs and results are recorded
 in the PR. This is advisory synthetic evidence, not readiness proof.
+After the #1281 pin, enabled collection is 30 tests (previously 29), while disabled collection
+remains 7,712 (7.211 seconds process wall). Opt-out still skips one module, expected exit 5
+(0.656 seconds). A fresh unchanged-rc8 1,000-case projection run at seed 1227 has zero unexplained
+events, all 238 P_USER events D1233, in 16.107 seconds process wall.
 
 ## Corrected public comparison
 
