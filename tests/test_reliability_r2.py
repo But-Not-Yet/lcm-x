@@ -519,8 +519,7 @@ def test_ci_gate_requires_a_complete_result_set():
         assert len(problems) == 1 and problems[0].startswith("INCOMPLETE h"), problems
 
 
-@pytest.mark.latency
-def test_process_phase_deadline_is_an_error_with_its_cause(tmp_path):
+def test_process_phase_deadline_is_an_error_with_its_cause(tmp_path, monkeypatch, latency_check):
     """R2a.3 item 7: run_matrix --timeout was unused for process cells; a host that never answers a prompt now
     ERRORs at the phase deadline instead of waiting out the per-request timeout."""
     silent = PEER.replace('if m["method"] == "session/prompt":', 'if m["method"] == "session/prompt":\n        continue')
@@ -528,13 +527,29 @@ def test_process_phase_deadline_is_an_error_with_its_cause(tmp_path):
     run = PC.ProcessCell(cell, tmp_path, {"src": str(tmp_path)}, "acp-process", 300.0, phase_timeout=1.5)
     run.work.mkdir(parents=True)
     run.argv, run.env = lambda: [sys.executable, "-c", silent], lambda: {"PATH": "/usr/bin:/bin"}  # no observer: tmp_path may be /tmp
-    started = time.monotonic()
+    timeouts = []
+    if not latency_check:
+        now = [0.0]
+        monkeypatch.setattr(PC, "time", types.SimpleNamespace(monotonic=lambda: now[0]))
+
+        def timed_out_prompt(_proc, _sid, _text, timeout):
+            timeouts.append(timeout)
+            assert timeout == 1.5  # phase budget, never the 300 s request timeout
+            now[0] += timeout
+            raise AD.DriverError("ACP response timeout")
+
+        monkeypatch.setattr(AD.AcpProcess, "prompt", timed_out_prompt)
+    started = time.monotonic() if latency_check else None
     try:
         last = run.run_phase(1)
     finally:
         run.proxy.stop()
         run.provider.server.server_close()
-    assert time.monotonic() - started < 15
+    if latency_check:
+        assert time.monotonic() - started < 15
+    else:
+        assert timeouts == [1.5]
+        assert "ACP response timeout" in last["reason"]
     assert last["exit"] == "error" and "PhaseDeadline" in last["reason"] and "1.5s deadline" in last["reason"], last
 
 

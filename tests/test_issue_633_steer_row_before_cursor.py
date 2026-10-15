@@ -246,8 +246,7 @@ def test_t6_a_repeated_steer_inserted_ahead_of_the_first_is_stored(tmp_path):
         engine.shutdown()
 
 
-@pytest.mark.latency
-def test_t7_the_insertion_diff_is_bounded_on_a_long_repetitive_list(tmp_path):
+def test_t7_the_insertion_diff_is_bounded_on_a_long_repetitive_list(tmp_path, latency_check):
     """A long list of equal identities: the diff is skipped (nothing counts as inserted) instead of
     running quadratic work on the ingest path."""
     import time
@@ -257,9 +256,10 @@ def test_t7_the_insertion_diff_is_bounded_on_a_long_repetitive_list(tmp_path):
         messages = [{"role": "user", "content": "ok"} for _ in range(8000)]
         engine._last_active_replay_source_identities = [
             engine._message_replay_identity(message, strip_carrier=False) for message in messages[1:]]
-        started = time.monotonic()
+        started = time.monotonic() if latency_check else None
         assert engine._identity_anchor_inserted(messages, 0, len(messages)) == set()
-        assert time.monotonic() - started < 1.0
+        if latency_check:
+            assert time.monotonic() - started < 1.0
     finally:
         engine.shutdown()
 
