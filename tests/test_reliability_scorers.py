@@ -1087,3 +1087,66 @@ def test_b9_only_cell_without_the_audit_is_unsupported_never_pass(tmp_path):
     out = make(tmp_path, rows=clean_rows(), events=clean_events(), bars=["B9"])
     assert out["verdict"] == "UNSUPPORTED" and out["applicable_bars"] == [], out
     assert out["reason"].startswith("B9: ")
+
+
+@pytest.mark.parametrize("committed,expected", [(2, "PASS"), (3, "FAIL")])
+def test_default_window_cadence_half_boundary(tmp_path, committed, expected):
+    events = clean_events(4)
+    for i in range(4):
+        if i < committed:
+            events.append({"event": "compaction", "compression_status": "compacted", "turn": i + 1})
+        events.append({"event": "provider_request", "turn": i + 1})
+    out = make(tmp_path, rows=clean_rows(4), events=events, passes=0, bars=["C1"])
+    assert out["verdict"] == expected
+    assert out["numbers"]["C1"] == {"model_calls": 4, "preceded_by_compaction": committed}
+
+
+@pytest.mark.parametrize("present,expected", [(True, "PASS"), (False, "FAIL"), (None, "INCONCLUSIVE")])
+def test_default_window_objective_requires_request_bytes(tmp_path, present, expected):
+    events = clean_events()
+    events += [{"event": "compaction", "compression_status": "compacted"},
+               {"event": "provider_request", "continuity": {"F4": True, "current_request_present": present}}]
+    out = make(tmp_path, rows=clean_rows(), events=events, passes=0, bars=["F4"])
+    assert out["verdict"] == expected
+    assert out["numbers"]["F4"] == {"observed": 1, "present": int(present is True),
+                                      "absent": int(present is False), "unknown": int(present is None)}
+
+
+@pytest.mark.parametrize("bar", ["C1", "F4"])
+def test_default_window_missing_scenario_never_passes(tmp_path, bar):
+    out = make(tmp_path, rows=clean_rows(), events=clean_events(), passes=0, bars=[bar])
+    assert out["verdict"] == "INCONCLUSIVE"
+
+
+def test_default_window_counts_requests_once_and_ignores_noops_final_and_cron(tmp_path):
+    events = clean_events()
+    events += [{"event": "compaction", "compression_status": "noop"},
+               {"event": "provider_request"},
+               {"event": "compaction", "compression_status": "compacted"},
+               {"event": "compaction", "compression_status": "compacted"},
+               {"event": "provider_request", "continuity": {"current_request_present": True}},
+               {"event": "compaction", "compression_status": "noop"},
+               {"event": "provider_request"},
+               {"event": "compaction", "compression_status": "compacted", "final": True},
+               {"event": "compaction", "compression_status": "compacted", "session_prefix": "K"}]
+    out = make(tmp_path, rows=clean_rows(), events=events, passes=0, bars=["C1", "F4"])
+    assert out["verdict"] == "PASS"
+    assert out["numbers"]["C1"] == {"model_calls": 2, "preceded_by_compaction": 1}
+    assert out["numbers"]["F4"]["observed"] == 2
+
+
+def test_default_window_cell_contract():
+    selected = cells.select("default-window/*")
+    assert len(selected) == 3
+    assert not any(c["id"].startswith("default-window/") for c in cells.select("all"))
+    from bench.instruments.reliability import process_cell
+    for c in selected:
+        assert "R1" in process_cell.unsupported(c, "acp-process")
+        assert c["lcm_env"] == {} and c["in_place"] is True
+        assert ("C1" in c["bars"]) is c["id"].endswith("cadence")
+        assert ("F4" in c["bars"]) is c["id"].endswith("large-objective")
+    c = cells.select("default-window/64k-large-objective")[0]
+    assert len(probe.user_text(c, "T", 2)) // 4 > 13600
+    assert len(probe.user_text(c, "T", 3)) < len(probe.user_text(c, "T", 2))
+    assert len(c["tool_plan"]) > 1
+    assert "threshold:" not in run_matrix.config_yaml(c, {"engine": "fixture", "enabled": "fixture"})

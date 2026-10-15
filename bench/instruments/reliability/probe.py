@@ -602,7 +602,11 @@ def main():
               session_prefix=cur.get("prefix", "T"),
               compression_status=status, noop_reason=getattr(self, "_last_compression_noop_reason", None),
               depth0_nodes=depth0() if status == "compacted" else None,
-              rejection=rejection(self), native_attempts=cur["native"], **recovery)
+              rejection=rejection(self), native_attempts=cur["native"], **recovery,
+              **({"input_tokens": recovery_module.count_messages_tokens(messages),
+                  "output_tokens": recovery_module.count_messages_tokens(result),
+                  "threshold_tokens": self.threshold_tokens, "config_threshold": self._config.context_threshold}
+                 if set(cell.get("bars", [])) & {"C1", "F4"} else {}))
         p8_pin(result)
         return result
     etype.compress = traced_compress
@@ -759,6 +763,14 @@ def main():
                     body = m.get("content") if isinstance(m.get("content"), str) else json.dumps(m.get("content"))
                     event(turn=t, event="tool_seen", id=cid, sha=hashlib.sha256(body.encode()).hexdigest(), chars=len(body),
                           **({"host_wire_notice": True} if body in wire_notices else {}))  # tool_calls.bind
+            if set(cell.get("bars", [])) & {"C1", "F4"}:
+                # Opt-in R1 continuity: only synthetic tags and a literal-presence boolean escape.
+                current = user_text(cell, prefix, t).strip()
+                messages = kw.get("messages") or []
+                event(turn=t, event="provider_request", session_prefix=prefix, final=cur["final"],
+                      continuity={"F4": any(f"[{prefix}{t:02d}]" in str(m.get("content") or "") for m in messages),
+                                  "current_request_present": any(current in str(m.get("content") or "")
+                                                                 for m in messages)})
             sent = sum(len(str(m.get("content") or "")) for m in kw.get("messages") or []) // 4 + 800
             usage = int((sent if asst.get("real_usage") else est) * float(asst.get("usage_scale", 1.0)))
             if cancel and step == 0:  # the ACP cancel lands while the provider call is in flight
