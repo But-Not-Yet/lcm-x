@@ -52,7 +52,7 @@ def test_i1281_g0_marks_newest_user_without_budget(outputs):
     assert case["id"] == "g0"
     try:
         result = run([case], outputs / "i1281_g0", os.environ.get("LCM_DIFFERENTIAL_BASELINE", "v0.26.2"),
-                     os.environ.get("LCM_DIFFERENTIAL_CANDIDATE", "worktree"), int(os.environ.get("LCM_DIFFERENTIAL_SEED", "1227")))
+                     os.environ.get("LCM_DIFFERENTIAL_CANDIDATE", "worktree"), 1227)
     except PrerequisiteUnavailable as exc:
         skip_or_fail(str(exc))
     events = [(event["oracle"], event["detail"]) for event in result["unexplained"]]
