@@ -94,12 +94,18 @@ four historical regression seeds. Promotion remains report-only while open produ
 
 ### rc8 findings and original acceptance
 
-**rc8 g0: open product finding.** The exact generated case (seed 1227, 128,000 window,
+**rc8 g0: documented #1281 case (P3, v0.27.1, not GA-blocking).** The exact generated case (seed 1227, 128,000 window,
 112,407 input tokens) still fails R2 twice: GA sends 112,689 and retains objective/newest;
 rc8 sends 112,193 with user mark `[0]`, losing both sentinels. The survival budget is 108,800,
-so marking the newest user did not reach it. The last-resort user pass is `survival_fit.py:427`
-at rc8. The reproduction is recorded in the PR.
-There is no delta, xfail, oracle change or production repair for this finding in the backtest.
+so marking the newest user did not reach it. This regime marks the newest user even though the
+marks cannot reach the survival budget and the unmarked list already fits the window.
+The tool rows carry `name` without `tool_name` (#1232), which leaves them unmarked; host-form rows
+need about 2,240+ distinct parallel calls in one assistant row at 128K (580+ at 32K).
+The last-resort user pass is `survival_fit.py:427` at rc8. The reproduction is recorded in the PR.
+Only g0 at seed 1227 is excluded from the general generated sample; a dedicated strict xfail pins
+exactly the two R2 events at call 0 for objective/newest. It flips to a failing strict XPASS when the
+#1281 fix lands. Other unexplained events fail normally. No delta, oracle change or production repair
+was added for this finding in the backtest.
 
 The original 4,000-case rc8 projection triage has P_USER=951, all accepted before D1233 was tightened,
 with R1=P_INPUT=0 and zero unexplained events. D916 absorbs zero; it stays as a historical guard. Both #1123 deltas are also zero on this projection-only run. GA/candidate
@@ -118,9 +124,8 @@ shapes. Unique public inputs: 15 exact plus 60 generated; raw R2=2, R3=2 (the ex
 cells), all other differential oracles zero. The 1,000 projection cases have P_USER=238, all D1233,
 with zero unexplained. D916 absorbs zero on the complete current run and remains a historical guard.
 Detailed opt-in receipts are recorded in the PR.
-The spec's green-except-xfails expectation conflicts with its requirement to leave g0 visible on rc8;
-the backtest preserves the failing retention signal and reports that acceptance limit rather than
-adding an unrequested exception. Production repair is outside this tests-only lane.
+That original run preserved g0 as a failure; the documented #1281 case now has the dedicated strict
+xfail described above. Production repair is outside this tests-only change.
 
 All commands used the supplied interpreter and host stub, serial execution at nice 19, no xdist,
 no model/network calls, and no pytest cache. The explicitly required local offline matrix/affected
