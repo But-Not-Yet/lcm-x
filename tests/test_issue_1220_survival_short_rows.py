@@ -3,6 +3,7 @@
 import pytest
 
 import hermes_lcm.engine as engine_module
+import hermes_lcm.escalation as escalation
 import hermes_lcm.survival_fit as survival_fit
 import hermes_lcm.tokens as tokens
 from hermes_lcm.config import LCMConfig
@@ -80,15 +81,25 @@ def test_parallel_short_results_fit_and_remain_stored(engine, reingest):
     ("tool", "s" * 2400, True),  # Pass 2 must use the original count after pass 1 shrinks it.
     ("user", "s" * 1199, False),
     ("tool", "s" * 2401, False),
+    ("assistant", "s" * 1100, True),
+    ("assistant", "s" * 2400, True),
+    ("assistant", "s" * 2401, False),
+    ("assistant", "short", False),
 ])
-def test_limit_zero_uses_legacy_marks_only_for_eligible_tool_rows(engine, role, content, mark_only):
+def test_limit_zero_uses_legacy_marks_only_for_eligible_tool_and_assistant_rows(engine, role, content, mark_only):
     message = {"role": role, "content": content, "timestamp": 5.0}
     if role == "tool":
         message.update(tool_call_id="call", name="probe", tool_name="probe")
+    elif role == "assistant":
+        message["tool_calls"] = [{"id": "call", "type": "function",
+                                  "function": {"name": "probe", "arguments": "{}"}}]
     store_id = engine._store.append(engine.current_session_id, message)
     row = engine._store.get(store_id)
     source_tokens = tokens.count_message_tokens(message)
-    assert source_tokens >= 256
+    if role == "assistant" and content == "short":
+        assert source_tokens < 256
+    else:
+        assert source_tokens >= 256
     head = engine._survival_projected_fields(row, source_tokens, survival_fit._HEAD, survival_fit._TAIL)
     if content == "界" * 1201:
         assert tokens.count_message_tokens({**message, **head}) > source_tokens
@@ -98,9 +109,66 @@ def test_limit_zero_uses_legacy_marks_only_for_eligible_tool_rows(engine, role, 
                                                    survival_fit._TAIL, legacy=True)
         assert projected["content"] == legacy["content"]
         assert survival_fit._PROJECTED_RE.fullmatch(projected["content"])
+        if role == "assistant":
+            assert projected["tool_calls"] == message["tool_calls"]
+            assert tokens.count_message_tokens(projected) < tokens.count_message_tokens({**message, **head})
         source = engine._survival_projection_source(projected, role, projected["content"])
         assert source is not None and source["store_id"] == store_id
-    elif role == "user":
+    elif role == "user" or source_tokens < 256:
         assert projected is message
     else:
         assert projected["content"] == head["content"]
+
+
+def test_sequential_short_assistants_fit_during_summary_outage(tmp_path, monkeypatch):
+    monkeypatch.setattr(tokens, "_encoder_ready", True)
+    monkeypatch.setattr(tokens, "_encoder", None)
+    monkeypatch.setattr(survival_fit, "_host_estimate", lambda messages: None)
+    calls = []
+
+    def provider(prompt, max_tokens, model="", timeout=None, reasoning_effort=""):
+        calls.append(model)
+        raise RuntimeError("synthetic summary route outage")
+
+    monkeypatch.setattr(escalation, "_call_llm_for_summary", provider)
+    config = LCMConfig(
+        database_path=str(tmp_path / "lcm.db"), temporal_rollups_enabled=False,
+        reserve_tokens_floor=0, leaf_chunk_tokens=8000, threshold_full_sweep_enabled=True,
+        large_output_externalization_enabled=True, large_output_active_replay_stubbing_enabled=True,
+        large_output_externalization_threshold_chars=12000,
+        large_output_active_replay_stub_threshold_tokens=10000,
+        large_output_active_replay_stub_aged_threshold_tokens=2000)
+    instance = LCMEngine(config=config, hermes_home=str(tmp_path / "home"))
+    instance.on_session_start("synthetic-probe", platform="cli", context_length=32_768)
+    prose = ("I will inspect the next record and compare its details with the earlier evidence. "
+             "The result should tell us which step to take next and which facts still need checking. "
+             "I will keep the source intact and report what the check actually shows. ")
+    text = (prose * (1100 // len(prose) + 1))[:1100]
+    messages = [{"role": "user", "content": "Please check these records.", "timestamp": 1.0}]
+    for i in range(113):
+        messages.extend([
+            {"role": "assistant", "content": text, "timestamp": 2.0 + 2 * i,
+             "tool_calls": [{"id": f"c{i}", "type": "function",
+                             "function": {"name": "probe", "arguments": "{}"}}]},
+            {"role": "tool", "content": "ok", "tool_call_id": f"c{i}",
+             "name": "probe", "tool_name": "probe", "timestamp": 3.0 + 2 * i},
+        ])
+    try:
+        instance.ingest(messages)
+        before = instance._store.get_session_messages(instance.current_session_id)
+        assert [(row["role"], row["content"]) for row in before] == [
+            (row["role"], row["content"]) for row in messages]
+        current = tokens.count_messages_tokens(messages)
+        assert current > instance.context_length
+        fitted = instance.compress(messages, current_tokens=current)
+        assert len(calls) == 2 and not instance._summary_route_available()
+        budget = instance._survival_fit_budget(messages, current)
+        assert instance._survival_measure(fitted) <= budget
+        assert any(row["role"] == "assistant" and survival_fit._PROJECTED_RE.fullmatch(row.get("content", ""))
+                   for row in fitted)
+        assert any(row["role"] == "user" and row["content"] == before[0]["content"] for row in fitted)
+        assert instance._store.get_session_messages(instance.current_session_id) == before
+        instance.ingest(fitted)
+        assert instance._store.get_session_messages(instance.current_session_id) == before
+    finally:
+        instance.shutdown()
