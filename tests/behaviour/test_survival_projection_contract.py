@@ -60,7 +60,7 @@ def test_length_role_content_cells(engine, length, kind, structured):
     expected = {**source, "content": head}
     if tokens < 256 or count(expected) >= tokens:
         expected = source
-    if (kind != "user" and tokens >= 256 and 0 < len(text) <= 2400
+    if (tokens >= 256 and 0 < len(text) <= 2400
             and count({**expected, "content": mark}) < count(expected)):
         expected = {**expected, "content": mark}
     result = engine._survival_projection([source], {id(source): store_id}, 0)
@@ -69,8 +69,7 @@ def test_length_role_content_cells(engine, length, kind, structured):
     assert engine._store.get(store_id) == stored
     if result[0] is not source:
         assert count(result[0]) < tokens
-    if kind == "user":
-        assert result[0]["content"] != mark
+    # rc8 permits user marks as the last resort when the zero budget remains unmet.
 
 
 @pytest.mark.parametrize("tokens", [255, 256, 257])
