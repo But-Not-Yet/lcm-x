@@ -21,6 +21,38 @@ def census(rows):
     return sorted(set(SENTINEL.findall(json.dumps(rows, ensure_ascii=False))))
 
 
+MANAGED_BASELINE = dict(
+    context_threshold=0.75, fresh_tail_count=24, fresh_tail_max_tokens=24000,
+    leaf_chunk_tokens=8000, threshold_full_sweep_enabled=True,
+    large_output_externalization_enabled=True, large_output_active_replay_stubbing_enabled=True,
+)
+
+
+def visible_sentinels(view, produced):
+    visible = set(census(view))
+    visible.discard("⟦newest⟧")
+    newest = next((row for row in reversed(produced) if row["role"] == "user"), None)
+    if newest is not None:
+        if "⟦objective⟧" not in census(newest):
+            visible.discard("⟦objective⟧")
+        row_tag = next(tag for tag in census(newest) if tag.startswith("⟦r"))
+        if row_tag in visible:
+            visible.add("⟦newest⟧")
+    return sorted(visible)
+
+
+def uncovered_rows(stored, view, nodes):
+    """Synthetic row IDs identify live rows; all DAG message sources count."""
+    live = set(census(view))
+    covered = {sid for node in nodes if node.source_type == "messages" for sid in node.source_ids}
+    return sum(1 for row in stored if row.get("role") != "system" and row["store_id"] not in covered
+               and not {tag for tag in census(row) if tag.startswith("⟦r")} & live)
+
+
+def config_overrides(case, baseline_config):
+    return {**(MANAGED_BASELINE if baseline_config == "managed" else {}), **case["overrides"]}
+
+
 def pair_errors(rows):
     calls, results, errors = set(), set(), []
     for row in rows:
@@ -54,7 +86,7 @@ def load_tree(tree):
     return modules, missing
 
 
-def run_case(case, modules, directory, initial_missing):
+def run_case(case, modules, directory, initial_missing, baseline_config="bare"):
     missing = list(initial_missing)
     now = [100000.0]
     # Replace module bindings, not the interpreter's time module or thread clocks.
@@ -78,7 +110,7 @@ def run_case(case, modules, directory, initial_missing):
     else:
         missing.append("escalation._call_llm_for_summary")
     config = modules["config"].LCMConfig(database_path=str(directory / "lcm.db"), temporal_rollups_enabled=False)
-    for key, value in case["overrides"].items():
+    for key, value in config_overrides(case, baseline_config).items():
         if hasattr(config, key):
             setattr(config, key, value)
         else:
@@ -150,13 +182,7 @@ def run_case(case, modules, directory, initial_missing):
             failed = getattr(engine, "_last_overflow_recovery_failed", None)
             if not hasattr(engine, "_last_overflow_recovery_failed"):
                 missing.append("_last_overflow_recovery_failed")
-            visible = set(census(view))
-            visible.discard("⟦newest⟧")
-            newest = next((row for row in reversed(produced) if row["role"] == "user"), None)
-            if newest is not None:
-                row_tag = next(tag for tag in census(newest) if tag.startswith("⟦r"))
-                if row_tag in visible:
-                    visible.add("⟦newest⟧")
+            visible = visible_sentinels(view, produced)
             sent_calls.append(dict(input_tokens=prompt, tokens=sent, rows=len(view), compress_runs=runs, summarizer_calls=calls[0] - start_calls,
                                    overflow_recovery_failed=failed, sentinels=sorted(visible), user_marks=marks(view),
                                    pair_errors=pair_errors(view)))
@@ -182,6 +208,7 @@ def run_case(case, modules, directory, initial_missing):
         else:
             missing.append("externalize.payload_retrieval")
         return dict(id=case["id"], calls=sent_calls, produced=census(produced), stored=sorted(durable),
+                    uncovered_rows=uncovered_rows(stored, view, engine._dag.get_session_nodes("S")),
                     retrieved_payloads=len(retrieved), unavailable_payloads=unavailable, missing_seams=sorted(set(missing)))
     finally:
         engine.shutdown()
@@ -193,6 +220,7 @@ def main():
     parser.add_argument("--layer", choices=["public", "projection"], required=True)
     parser.add_argument("--cases", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--baseline-config", choices=["bare", "managed"], default="bare")
     args = parser.parse_args()
     if os.environ.get("LCM_DIFFERENTIAL") != "1":
         parser.error("set LCM_DIFFERENTIAL=1 to opt in")
@@ -210,7 +238,7 @@ def main():
             started = time.perf_counter()
             with tempfile.TemporaryDirectory(prefix="case-", dir=args.out.parent) as directory:
                 try:
-                    result = run_case(case, modules, Path(directory), missing)
+                    result = run_case(case, modules, Path(directory), missing, args.baseline_config)
                 except Exception as exc:
                     result = dict(id=case["id"], error=f"{type(exc).__name__}: {exc}", missing_seams=missing)
             result["seconds"] = time.perf_counter() - started
