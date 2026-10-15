@@ -4098,7 +4098,6 @@ class LCMEngine(
                         old_session_id == self._session_id
                         or preserve_ambiguous_no_frame_old_session
                     ),
-                    preserve_old_foreground_marker=old_session_is_suppressed_foreground,
                 )
                 logger.info(
                     "LCM auxiliary session %s compressed to %s — keeping boundary stateless",
