@@ -41,7 +41,7 @@ def _run_pytest(tmp_path, source, *, injection="", env=None):
     )
     return subprocess.run(
         ["nice", "-n", "19", sys.executable, "-c", code],
-        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=20,
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120,  # correctness, not latency: loaded hosts are slow
     )
 
 
