@@ -563,6 +563,8 @@ known-good rolling backup.
 
 ## Configuration
 
+The [generated scalar environment reference](skills/hermes-lcm/references/configuration.md#generated-scalar-environment-reference) lists every scalar registry key, type, declared default, diagnostic range/choice, and deprecation date. The tables below provide behavior and tuning guidance.
+
 Most installs only need `plugins.enabled` and `context.engine: lcm-x`.
 
 `LCM_SQLITE_MMAP_SIZE` sets the SQLite memory-map size in bytes (default
