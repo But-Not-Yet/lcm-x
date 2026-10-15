@@ -45,6 +45,8 @@ an authority for writes or automatic merges.
   `docs/process/turn-path-probe-packet.md`.
 - Structural refactors follow `docs/process/refactor-window.md`: one move per `refactor-only`
   PR, characterization first, no behaviour change mixed with moves.
+- Schema changes follow `docs/process/schema-changes.md`: no new DDL owners, the migration's
+  format and oldest reader recorded, forward and rollback tests.
 - Do not implement a `needs-repro` report merely because an upstream PR or issue claims a fix.
 - Prioritize verified supported-path impact:
   - `P0`: active catastrophic data loss, disclosure, or unusable core path.
