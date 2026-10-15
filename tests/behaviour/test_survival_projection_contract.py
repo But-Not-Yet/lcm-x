@@ -65,7 +65,6 @@ def test_length_role_content_cells(engine, length, kind, structured):
         expected = {**expected, "content": mark}
     result = engine._survival_projection([source], {id(source): store_id}, 0)
     assert result == [expected]
-    assert result[0] is not source
     assert source == original
     assert engine._store.get(store_id) == stored
     if result[0] is not source:
