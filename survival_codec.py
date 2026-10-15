@@ -20,7 +20,8 @@ def projected_fields(row: Dict[str, Any], tokens: int, head: int, tail: int,
                      *, legacy: bool = False, mark_calls: bool = False) -> Dict[str, Any]:
     """The projection of a stored row: its content as head/tail around the mark, head plus mark when
     shorter, or whole when at most ``head``; tool-call arguments over ``head`` replaced by the mark, and
-    stored tool linkage. ``legacy`` recomputes old mark-only text for recognition, never emission.
+    stored tool linkage. ``legacy`` gives the mark-only form: survival fit's second pass emits it for short
+    rows as a last resort, and replay recomputes it to recognise rows emitted that way.
     ``mark_calls`` marks short content when unbounded stored calls replace the live calls.
     Deterministic in (row bytes, tokens, head, tail) for each form."""
     store_id = int(row["store_id"])
