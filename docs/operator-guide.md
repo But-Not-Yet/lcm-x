@@ -659,7 +659,8 @@ change keeps existing vectors ineligible until re-embedded. `lcm_recall` serves 
 hits with `degraded=true` and an `embedding_identity_stale:` reason; `lcm_grep` semantic
 mode falls back to full-text, and `lcm_doctor` warns. Backfill still refuses until a new
 warmup registers the profile (run
-`/lcm embed warmup` then `/lcm embed backfill --apply`; LCM never re-embeds
+`/lcm embed warmup` then `/lcm embed backfill --apply`, adding `--corpus chunks`, or
+`--corpus both`, when the doctor's `stale_tasks` lists `chunk`; LCM never re-embeds
 automatically). Under the explicit opt-out the pattern catalog is not part of the
 `privacy:off` identity, so catalog edits alone change nothing until you opt back in. Durable messages, summaries, FTS rows, and payloads are not
 rewritten by this provider boundary.
