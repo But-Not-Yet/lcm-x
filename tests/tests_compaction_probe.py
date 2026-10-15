@@ -114,6 +114,7 @@ def test_drive_codex_dry_run_echoes_exact_command_shapes(tmp_path, capsys):
         ("01a01dd1-d81c-7e00-a5ba-d2f0a05b2faa", 3),
     ],
 )
+@pytest.mark.skip(reason="requires external archived rollout data; excluded from offline CI")
 def test_parse_named_real_rollouts(tmp_path, session_id, expected_compactions):
     parser = _load_script("parse_rollout")
     sessions_root = Path.home() / ".codex" / "sessions"

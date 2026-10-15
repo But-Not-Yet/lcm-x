@@ -4,7 +4,6 @@ import asyncio
 import json
 import sqlite3
 import threading
-import time
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -12,6 +11,8 @@ import pytest
 import hermes_lcm.engine as engine_module
 import hermes_lcm.rollup_builder as builder_module
 import hermes_lcm.rollup_periods as periods_module
+from tests.timing_helpers import returns_while_blocked
+
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.dag import SummaryDAG, SummaryNode
 from hermes_lcm.engine import LCMEngine
@@ -463,7 +464,7 @@ def test_session_start_does_not_wait_for_slow_rollup_provider(tmp_path, monkeypa
 
     def slow_summarizer(_text, **_kwargs):
         provider_started.set()
-        if not release_provider.wait(timeout=2):
+        if not release_provider.wait():
             raise AssertionError("test did not release slow rollup provider")
         return "completed in background", 1
 
@@ -478,11 +479,10 @@ def test_session_start_does_not_wait_for_slow_rollup_provider(tmp_path, monkeypa
                 slow_summarizer,
             )
 
-            started_at = time.monotonic()
-            engine.on_session_start(scope, conversation_id="slow-rollup-conversation")
-            bind_elapsed = time.monotonic() - started_at
-
-            assert bind_elapsed < 0.15
+            returns_while_blocked(
+                lambda: engine.on_session_start(scope, conversation_id="slow-rollup-conversation"),
+                release_provider,
+            )
             assert provider_started.wait(timeout=1)
             release_provider.set()
             assert engine.drain_rollup_maintenance(timeout=2)
@@ -814,7 +814,7 @@ def test_engine_shutdown_does_not_wait_for_background_rollup_provider(
 
     def blocking_maintenance(*_args, **_kwargs):
         maintenance_started.set()
-        if not release_maintenance.wait(timeout=2):
+        if not release_maintenance.wait():
             raise AssertionError("test did not release background maintenance")
         return 0
 
@@ -830,11 +830,7 @@ def test_engine_shutdown_does_not_wait_for_background_rollup_provider(
         )
         assert maintenance_started.wait(timeout=1)
 
-        started_at = time.monotonic()
-        engine.shutdown()
-        shutdown_elapsed = time.monotonic() - started_at
-
-        assert shutdown_elapsed < 0.15
+        returns_while_blocked(engine.shutdown, release_maintenance)
     finally:
         release_maintenance.set()
         assert engine.drain_rollup_maintenance(timeout=2)

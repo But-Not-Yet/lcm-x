@@ -27,6 +27,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.timing_helpers import returns_while_blocked
+
 from hermes_lcm import db_bootstrap
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.engine import LCMEngine
@@ -174,12 +176,14 @@ def _shutdown(ctx):
 def test_t1_abandoned_load_logs_one_error_and_writes_record(tmp_path, monkeypatch, caplog):
     home = tmp_path / "hermes-home"
     home.mkdir()
-    _install_host(monkeypatch, home, delay=0.8)
+    _install_host(monkeypatch, home)
     module = _load_plugin("hermes_lcm_622_t1")
     ctx = _Ctx(_Manager())
+    ctx._abandon_load()
+    monkeypatch.setattr(module, "_MODULE_IMPORTED_AT", time.monotonic() - 1.0)
     caplog.set_level(logging.INFO)
     try:
-        _register_under_deadline(module, ctx, deadline=0.3)
+        module.register(ctx)
     finally:
         _shutdown(ctx)
 
@@ -363,17 +367,19 @@ def _age_markers(db: Path, hours: float) -> float:
     return aged
 
 
-def _hold_write_lock(db: Path, seconds: float) -> threading.Timer:
+def _hold_write_lock(db: Path):
     holder = sqlite3.connect(str(db), timeout=10, check_same_thread=False)
     holder.execute("BEGIN IMMEDIATE")
+    release = threading.Event()
 
-    def _release():
+    def unlock():
+        release.wait()
         holder.rollback()
         holder.close()
 
-    timer = threading.Timer(seconds, _release)
-    timer.start()
-    return timer
+    worker = threading.Thread(target=unlock, daemon=True)
+    worker.start()
+    return release, worker
 
 
 def _timed_open(db: Path, **overrides) -> float:
@@ -389,13 +395,13 @@ def test_t6_due_deep_check_behind_a_writer_does_not_stall_the_open(tmp_path):
     _seed(db)
     aged = _age_markers(db, hours=25)
 
-    timer = _hold_write_lock(db, seconds=5)
+    release, holder = _hold_write_lock(db)
     try:
-        elapsed = _timed_open(db)
+        returns_while_blocked(lambda: _timed_open(db), release)
     finally:
-        timer.join()
+        release.set()
+        holder.join(timeout=10)
     db_bootstrap.join_background_integrity_scans(timeout=30)
-    assert elapsed < 1.0, f"store open took {elapsed:.2f} s behind a held write lock"
     # Skipped, not stamped: the markers stay due for a later open.
     assert _markers(db) == {"messages_fts": aged, "nodes_fts": aged}
 
@@ -488,12 +494,12 @@ def test_t8_rollups_on_open_does_not_wait_for_another_writer(tmp_path):
     db = tmp_path / "lcm.db"
     _seed(db, temporal_rollups_enabled=True)
 
-    timer = _hold_write_lock(db, seconds=5)
+    release, holder = _hold_write_lock(db)
     try:
-        elapsed = _timed_open(db, temporal_rollups_enabled=True)
+        returns_while_blocked(lambda: _timed_open(db, temporal_rollups_enabled=True), release)
     finally:
-        timer.join()
-    assert elapsed < 1.0, f"rollups-on store open took {elapsed:.2f} s behind a held write lock"
+        release.set()
+        holder.join(timeout=10)
 
 
 # --- review round 2 (#691) -----------------------------------------------------

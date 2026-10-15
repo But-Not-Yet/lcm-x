@@ -2437,33 +2437,36 @@ class TestMessageStore:
     def test_store_waits_out_long_write_lock_with_extended_busy_timeout(self, tmp_path):
         db_path = tmp_path / "busy-timeout.db"
         store = MessageStore(db_path)
-
         lock_conn = sqlite3.connect(db_path, timeout=1.0, check_same_thread=False)
-        lock_conn.execute("PRAGMA journal_mode=WAL")
         lock_conn.execute("BEGIN IMMEDIATE")
-        lock_conn.execute(
-            "INSERT INTO messages(session_id, role, content, timestamp, token_estimate, pinned) VALUES (?, ?, ?, ?, ?, ?)",
-            ("hold", "user", "holding write lock", 1.0, 1, 0),
-        )
+        attempted = threading.Event()
+        errors = []
+        store._conn.set_trace_callback(lambda sql: attempted.set() if "INSERT INTO messages" in sql else None)
 
-        def release_lock():
-            time.sleep(6.2)
-            lock_conn.commit()
+        def append():
+            try:
+                store.append("sess1", {"role": "user", "content": "writer survives lock"})
+            except BaseException as exc:
+                errors.append(exc)
+
+        writer = threading.Thread(target=append, daemon=True)
+        try:
+            # SQLite's native busy handler has no Python clock seam. Its configured
+            # 30 s budget guards the old 5 s regression without a 6.2 s real sleep.
+            assert store._conn.execute("PRAGMA busy_timeout").fetchone()[0] >= 30000
+            writer.start()
+            assert attempted.wait(timeout=10)
+        finally:
+            lock_conn.rollback()
             lock_conn.close()
-
-        releaser = threading.Thread(target=release_lock, daemon=True)
-        releaser.start()
-
-        start = time.monotonic()
-        store.append("sess1", {"role": "user", "content": "writer survives lock"})
-        elapsed = time.monotonic() - start
-        releaser.join(timeout=1.0)
-
-        assert elapsed >= 6.0
-        assert store.get_session_count("sess1") == 1
-        assert store._conn.execute("PRAGMA busy_timeout").fetchone()[0] >= 30000
-
-        store.close()
+            writer.join(timeout=10)
+            store._conn.set_trace_callback(None)
+        try:
+            assert not writer.is_alive()
+            assert errors == []
+            assert store.get_session_count("sess1") == 1
+        finally:
+            store.close()
 
     def test_search_sort_modes_apply_before_limit(self, store):
         older_strong = store.append(

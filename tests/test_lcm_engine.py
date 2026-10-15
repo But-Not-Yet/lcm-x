@@ -18,6 +18,8 @@ import hermes_lcm.engine as lcm_engine
 import hermes_lcm.tools as lcm_tools
 
 from agent.context_engine import ContextEngine
+from tests.timing_helpers import ContentionProbe
+
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.dag import SummaryNode
 from hermes_lcm.engine import LCMEngine
@@ -218,6 +220,8 @@ def test_shutdown_closes_lifecycle_store(tmp_path):
 def test_stable_active_use_blocks_rebind_and_keeps_ingest_in_original_session(tmp_path):
     config = LCMConfig(database_path=str(tmp_path / "stable-active-use.db"))
     engine = LCMEngine(config=config)
+    probe = ContentionProbe(engine._stable_use_lock)
+    engine._stable_use_lock = probe
     use_started = threading.Event()
     release_use = threading.Event()
     rebind_started = threading.Event()
@@ -257,7 +261,8 @@ def test_stable_active_use_blocks_rebind_and_keeps_ingest_in_original_session(tm
         assert use_started.wait(timeout=2)
         rebind_thread.start()
         assert rebind_started.wait(timeout=2)
-        assert not rebind_finished.wait(timeout=0.05)
+        assert probe.contended.wait(timeout=10)
+        assert not rebind_finished.is_set()
         assert engine.bound_session_id == "session-a"
 
         release_use.set()
@@ -323,6 +328,8 @@ def test_stable_active_use_blocks_rebind_and_keeps_ingest_in_original_session(tm
 def test_shutdown_waits_for_stable_use_and_is_terminal_and_idempotent(tmp_path):
     config = LCMConfig(database_path=str(tmp_path / "stable-shutdown.db"))
     engine = LCMEngine(config=config)
+    probe = ContentionProbe(engine._stable_use_lock)
+    engine._stable_use_lock = probe
     operation_started = threading.Event()
     release_operation = threading.Event()
     shutdown_finished = threading.Event()
@@ -346,7 +353,8 @@ def test_shutdown_waits_for_stable_use_and_is_terminal_and_idempotent(tmp_path):
         use_thread.start()
         assert operation_started.wait(timeout=2)
         shutdown_thread.start()
-        assert not shutdown_finished.wait(timeout=0.05)
+        assert probe.contended.wait(timeout=10)
+        assert not shutdown_finished.is_set()
 
         release_operation.set()
         use_thread.join(timeout=2)
@@ -13705,6 +13713,7 @@ class TestSessionRollover:
 
         assert "LCM session-end lifecycle finalization interrupted" in caplog.text
 
+    @pytest.mark.latency
     def test_on_session_end_returns_quickly_under_real_sqlite_writer_lock(self, engine, caplog):
         engine.on_session_start("test-session", platform="discord")
         engine._store._conn.execute("PRAGMA busy_timeout=750")

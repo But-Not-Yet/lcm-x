@@ -132,8 +132,18 @@ def test_anthropic_messages_json_and_sse_and_tool_result_normalisation(provider)
                      "message_delta", "message_stop"]
 
 
-def test_fault_hooks_http_error_hold_until_killed_and_slow(tmp_path):
+def test_fault_hooks_http_error_hold_until_killed_and_slow(tmp_path, monkeypatch):
     fired = []
+    holds = []
+    real_hold = FP.FakeProvider.hold
+
+    def hold(handler, seconds):
+        if seconds == 0.3:
+            holds.append(seconds)
+            return False
+        return real_hold(handler, seconds)
+
+    monkeypatch.setattr(FP.FakeProvider, "hold", staticmethod(hold))
     replies = iter([{"status": 500}, {"hold_until_killed": True, "on_hold": lambda: fired.append("held")},
                     {"hold": 0.3, "content": "late"}])
     p = FP.FakeProvider(tmp_path / "req.jsonl", main=lambda m: next(replies), hold_cap=10).start()
@@ -145,9 +155,8 @@ def test_fault_hooks_http_error_hold_until_killed_and_slow(tmp_path):
                      b"Content-Length: " + str(len(raw)).encode() + b"\r\n\r\n" + raw)
         assert p.in_flight.wait(5) and fired == ["held"]
         sock.close()  # the "host" dies while its request is held
-        started = time.monotonic()
         assert post(p, "/v1/chat/completions", {"model": "rel/main", "messages": MSGS})[1]["choices"][0]["message"]["content"] == "late"
-        assert time.monotonic() - started >= 0.3
+        assert holds == [0.3]
         for _ in range(50):
             log = [json.loads(x) for x in p.log_path.read_text().splitlines()]
             if any(r.get("phase") == "client_closed" for r in log):
@@ -510,6 +519,7 @@ def test_ci_gate_requires_a_complete_result_set():
         assert len(problems) == 1 and problems[0].startswith("INCOMPLETE h"), problems
 
 
+@pytest.mark.latency
 def test_process_phase_deadline_is_an_error_with_its_cause(tmp_path):
     """R2a.3 item 7: run_matrix --timeout was unused for process cells; a host that never answers a prompt now
     ERRORs at the phase deadline instead of waiting out the per-request timeout."""
@@ -928,3 +938,21 @@ def test_p8_controls_must_be_scorable_on_the_uid_host():
             rows = [{**r, "host": host} for r in full_set(transport, **unsupported)]
             problems = ci.gate(rows, set())
             assert bool(problems) is gates, (host, transport, problems)
+
+
+def test_provider_hold_waits_until_its_logical_deadline(monkeypatch):
+    from types import SimpleNamespace
+
+    now = [0.0]
+    waits = []
+
+    def select(_read, _write, _error, timeout):
+        waits.append(timeout)
+        now[0] += timeout
+        return [], [], []
+
+    monkeypatch.setattr(FP, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(FP, "select", SimpleNamespace(select=select))
+    assert FP.FakeProvider.hold(SimpleNamespace(connection=object()), 0.3) is False
+    assert now[0] == 0.3
+    assert waits == [0.2, 0.3 - 0.2]

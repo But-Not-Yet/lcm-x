@@ -4,9 +4,10 @@ from contextlib import contextmanager
 import json
 import sqlite3
 import threading
-import time
 
 import pytest
+
+from tests.timing_helpers import returns_while_blocked
 
 from hermes_lcm import tools as lcm_tools
 from hermes_lcm import store as lcm_store
@@ -443,7 +444,7 @@ def test_compaction_telemetry_lock_contention_is_nonblocking(tmp_path):
     def hold_write_lock():
         lock_owner._conn.execute("BEGIN IMMEDIATE")
         lock_ready.set()
-        release_lock.wait(timeout=5)
+        release_lock.wait()
         lock_owner._conn.rollback()
 
     def write_telemetry():
@@ -459,18 +460,13 @@ def test_compaction_telemetry_lock_contention_is_nonblocking(tmp_path):
             write_done.set()
 
     holder = threading.Thread(target=hold_write_lock)
-    writer = threading.Thread(target=write_telemetry)
     try:
         holder.start()
         assert lock_ready.wait(timeout=5)
         assert telemetry_store._conn.execute("PRAGMA busy_timeout").fetchone()[0] == 30000
 
-        started = time.monotonic()
-        writer.start()
-        assert write_done.wait(timeout=0.25)
-        elapsed = time.monotonic() - started
-
-        assert elapsed < 0.25
+        returns_while_blocked(write_telemetry, release_lock)
+        assert write_done.is_set()
         assert len(write_errors) == 1
         assert isinstance(write_errors[0], sqlite3.OperationalError)
         assert "locked" in str(write_errors[0]).lower()
@@ -478,7 +474,6 @@ def test_compaction_telemetry_lock_contention_is_nonblocking(tmp_path):
         assert telemetry_store.read_compaction_telemetry("conv-1") is None
     finally:
         release_lock.set()
-        writer.join(timeout=5)
         holder.join(timeout=5)
         lock_owner.close()
         telemetry_store.close()
