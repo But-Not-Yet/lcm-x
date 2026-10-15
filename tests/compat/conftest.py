@@ -3,11 +3,10 @@ import os
 from pathlib import Path
 import subprocess
 import tarfile
-import time
-from types import SimpleNamespace
 
 import pytest
 
+from tests.compat import codec_adapter
 from tests.compat.helpers import READERS
 
 
@@ -50,18 +49,9 @@ def old_tree(tmp_path_factory, host_root):
 
 @pytest.fixture(autouse=True)
 def deterministic_runtime(monkeypatch, host_root):
-    from hermes_lcm import externalize, survival_fit, tokens
-
     for key in os.environ:
         if key.startswith("LCM_"):
             monkeypatch.delenv(key)
-    monkeypatch.setattr(tokens, "_encoder", None)
-    monkeypatch.setattr(tokens, "_encoder_ready", True)
-    tokens._count_tokens_cached.cache_clear()
-    monkeypatch.setattr(survival_fit, "_host_estimate", lambda messages: None)
-    # Only payload filenames use a fixed clock; scheduler/timeout clocks run normally.
-    monkeypatch.setattr(externalize, "time", SimpleNamespace(
-        strftime=time.strftime, gmtime=lambda: time.gmtime(1700000000),
-        time_ns=lambda: 1700000000000000000, time=lambda: 1700000000.0))
+    codec_adapter.deterministic_runtime(monkeypatch)
     yield
-    tokens._count_tokens_cached.cache_clear()
+    codec_adapter.clear_token_cache()
