@@ -23,18 +23,31 @@ logger = logging.getLogger(__name__)
 
 class BypassMixin:
     def _bypass_compress_state(self) -> dict:
-        """Keep bypass diagnostics and native-compressor ownership on the calling thread."""
+        """Only a marked child has thread-local diagnostics and native state."""
         context = getattr(self, "_thread_context", None)
-        if context is not None and self._bypasses_lcm_context_management():
+        if context is not None and self._thread_context_stateless():
             return vars(context)
         return self.__dict__
 
     def _host_fallback_state_for_session(self, session_id: str) -> dict:
-        # Lifecycle callbacks can retire the thread marker before ending its compressor.
-        for state in (vars(self._thread_context), self.__dict__):
-            if state.get("_host_fallback_session_id") == session_id:
+        # The child may have cleared its marker, or the callback may be on another thread.
+        with self._auxiliary_session_lock:
+            state = self._child_host_fallback_states.get(session_id)
+            if state is not None:
                 return state
-        return self._bypass_compress_state()
+        return self.__dict__
+
+    def _host_fallback_states(self) -> list[dict]:
+        with self._auxiliary_session_lock:
+            return [self.__dict__, *self._child_host_fallback_states.values()]
+
+    def _clear_host_fallback_state(self, state: dict) -> None:
+        with self._auxiliary_session_lock:
+            session_id = state.get("_host_fallback_session_id", "")
+            if self._child_host_fallback_states.get(session_id) is state:
+                self._child_host_fallback_states.pop(session_id)
+            state["_host_fallback_compressor"] = None
+            state["_host_fallback_session_id"] = ""
 
     @property
     def _host_fallback_compressor(self):
@@ -50,7 +63,14 @@ class BypassMixin:
 
     @_host_fallback_session_id.setter
     def _host_fallback_session_id(self, value):
-        self._bypass_compress_state()["_host_fallback_session_id"] = value
+        state = self._bypass_compress_state()
+        with self._auxiliary_session_lock:
+            previous_id = state.get("_host_fallback_session_id", "")
+            if self._child_host_fallback_states.get(previous_id) is state:
+                self._child_host_fallback_states.pop(previous_id)
+            state["_host_fallback_session_id"] = value
+            if value and state is not self.__dict__:
+                self._child_host_fallback_states[value] = state
 
     @property
     def _last_compress_aborted(self):
@@ -151,8 +171,7 @@ class BypassMixin:
                     on_session_reset()
                 except Exception:
                     logger.debug("LCM host fallback compressor reset failed", exc_info=True)
-            state["_host_fallback_compressor"] = None
-            state["_host_fallback_session_id"] = ""
+            self._clear_host_fallback_state(state)
 
     def _get_host_fallback_compressor(self) -> Any:
         """Return Hermes' native compressor for LCM-bypassed sessions if available."""
@@ -496,6 +515,7 @@ class BypassMixin:
         force: bool = False,
     ) -> List[Dict[str, Any]]:
         """Delegate ignored/stateless context bounding without writing to LCM."""
+        state = self._bypass_compress_state()
         reason = self._bypass_lcm_reason()
         session_id = self._bypass_lcm_session_id()
         self._remember_lcm_bypass_message_prefix(session_id, messages)
@@ -512,13 +532,13 @@ class BypassMixin:
                 observed_tokens,
                 self.threshold_tokens,
             )
-            self._thread_context._last_compression_status = "noop"
-            self._thread_context._last_compression_noop_reason = f"LCM bypassed below threshold: {reason}"
+            state["_last_compression_status"] = "noop"
+            state["_last_compression_noop_reason"] = f"LCM bypassed below threshold: {reason}"
             return self._redact_active_replay_messages(messages)
 
         logger.debug("LCM delegating compaction for bypassed %s %s", reason, session_id)
-        self._thread_context._last_compression_status = "host_fallback"
-        self._thread_context._last_compression_noop_reason = f"LCM bypassed: {reason}"
+        state["_last_compression_status"] = "host_fallback"
+        state["_last_compression_noop_reason"] = f"LCM bypassed: {reason}"
         safe_messages = self._redact_active_replay_messages(messages)
         target_tokens = self._bypass_compaction_target_tokens(
             observed_tokens=observed_tokens,

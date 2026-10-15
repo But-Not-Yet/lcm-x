@@ -559,6 +559,7 @@ class CompactionMixin:
                  bypass_cooldown: bool = False) -> List[Dict[str, Any]]:
         """Run compaction and leave a terminal public status on every failure. ``bypass_cooldown`` is the
         host's mark of a recovery attempt (#608): the returned list fits under the compaction threshold."""
+        self._maybe_reclassify_late_auxiliary_before_compaction_write()
         if self._bypasses_lcm_context_management():
             return self._compress_bypassed(messages, current_tokens, focus_topic, force)
         self._last_compress_leaves = None
@@ -671,16 +672,17 @@ class CompactionMixin:
             self._finish_foreground_budget(budget, returned)
 
     def _compress_bypassed(self, messages, current_tokens, focus_topic, force):
-        """A child owns its budget and status; it never enters foreground bookkeeping."""
+        """Bypassed calls own a local budget; only child diagnostics are thread-local."""
         context = self._thread_context
+        state = self._bypass_compress_state()
         budget = context.foreground_budget = self._new_foreground_budget()
         returned = None
-        context._last_compression_status = "running"
-        context._last_compression_noop_reason = ""
+        state["_last_compression_status"] = "running"
+        state["_last_compression_noop_reason"] = ""
         try:
             if not messages:
-                context._last_compression_status = "noop"
-                context._last_compression_noop_reason = "empty message list"
+                state["_last_compression_status"] = "noop"
+                state["_last_compression_noop_reason"] = "empty message list"
                 result = messages
             else:
                 if current_tokens is None or current_tokens <= 0:
@@ -701,8 +703,8 @@ class CompactionMixin:
             returned = result
             return result
         except BaseException:
-            context._last_compression_status = "error"
-            context._last_compression_noop_reason = ""
+            state["_last_compression_status"] = "error"
+            state["_last_compression_noop_reason"] = ""
             raise
         finally:
             context.foreground_budget = None
