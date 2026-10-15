@@ -1741,7 +1741,7 @@ def test_post_llm_hook_keeps_ingest_binding_stable_during_concurrent_rebind(
         hook_thread.start()
         assert ingest_started.wait(timeout=2)
         rebind_thread.start()
-        assert probe.contended.wait(timeout=10)
+        assert probe.contended.wait(timeout=10), "competing lifecycle call never attempted the held lock"
         assert not rebind_finished.is_set()
         release_ingest.set()
         hook_thread.join(timeout=2)

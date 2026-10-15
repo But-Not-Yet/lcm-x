@@ -94,8 +94,6 @@ jobs:
         run: python -c "import sqlite3; print('sqlite', sqlite3.sqlite_version)"
 
       - name: Run pytest under low file descriptor limit
-        env:
-          TMPDIR: ${{ runner.temp }}
         run: |
           ulimit -n 1024
           python -m pytest tests/ -q -m "not latency"

@@ -125,13 +125,3 @@ def _drain_background_maintenance(monkeypatch):
         if scheduler is not None and not _wait_scheduler_idle(scheduler, timeout=30.0):
             # Fail closed: a job still running here would call a later test's fakes.
             pytest.fail(f"{name} still had background work 30 s after the test ended")
-
-
-class _OfflineBenchTests(pytest.File):
-    def collect(self):
-        yield pytest.Dir.from_parent(self, path=plugin_dir / "bench")
-
-
-def pytest_collect_file(file_path, parent):
-    if file_path.name == "offline_bench.tests":
-        return _OfflineBenchTests.from_parent(parent, path=file_path)
