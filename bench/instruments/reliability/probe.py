@@ -80,6 +80,11 @@ UNSHORTENED = "LCM survival fit could not shorten the list"
 FILLER = "alpha beta gamma delta "
 
 
+def request_contains(messages: list[dict], text: str) -> bool:
+    """Full current-request bytes in one provider message; a tag alone is insufficient."""
+    return any(text in str(m.get("content") or "") for m in messages)
+
+
 def write_tool_files(files: Path, cell: dict) -> None:
     """Shared R1/R2 fixtures; distinct paths bypass the host's identical-read dedup."""
     files.mkdir(exist_ok=True)
@@ -568,6 +573,18 @@ def main():
     orig_compress, orig_tool = etype.compress, etype.handle_tool_call
     orig_start, orig_end = etype.on_session_start, getattr(etype, "on_session_end", None)
 
+    if "F4" in cell.get("bars", []):
+        orig_gate = etype.should_compress
+
+        def traced_gate(self, prompt_tokens=None):
+            result = orig_gate(self, prompt_tokens)
+            event(turn=cur["turn"], event="compression_gate", session_prefix=cur.get("prefix", "T"),
+                  final=cur["final"], tool_round=cur["step"],
+                  tokens=prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens,
+                  threshold_tokens=self.threshold_tokens, triggered=result)
+            return result
+        etype.should_compress = traced_gate
+
     recovery_turns = []
     fr = faults.get("forced_recovery")
     recovery_module = sys.modules[cell["plugin"]["module"] + ".engine"]
@@ -575,6 +592,7 @@ def main():
         ("placeholder", "_OVERFLOW_RECOVERY_PLACEHOLDER"), ("note", "_OVERFLOW_RECOVERY_OVERCAP_NOTE"))}
 
     def traced_compress(self, messages, *args, **kwargs):
+        message_count = len(messages)
         injecting = fr and cur["turn"] == fr["turn"] and cur["step"] > 0
         if injecting:
             if fr["kind"] not in fired:
@@ -604,6 +622,7 @@ def main():
               depth0_nodes=depth0() if status == "compacted" else None,
               rejection=rejection(self), native_attempts=cur["native"], **recovery,
               **({"input_tokens": recovery_module.count_messages_tokens(messages),
+                  "message_count": message_count,
                   "output_tokens": recovery_module.count_messages_tokens(result),
                   "threshold_tokens": self.threshold_tokens, "config_threshold": self._config.context_threshold}
                  if set(cell.get("bars", [])) & {"C1", "F4"} else {}))
@@ -769,8 +788,7 @@ def main():
                 messages = kw.get("messages") or []
                 event(turn=t, event="provider_request", session_prefix=prefix, final=cur["final"],
                       continuity={"F4": any(f"[{prefix}{t:02d}]" in str(m.get("content") or "") for m in messages),
-                                  "current_request_present": any(current in str(m.get("content") or "")
-                                                                 for m in messages)})
+                                  "current_request_present": request_contains(messages, current)})
             sent = sum(len(str(m.get("content") or "")) for m in kw.get("messages") or []) // 4 + 800
             usage = int((sent if asst.get("real_usage") else est) * float(asst.get("usage_scale", 1.0)))
             if cancel and step == 0:  # the ACP cancel lands while the provider call is in flight

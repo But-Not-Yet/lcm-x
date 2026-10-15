@@ -200,43 +200,47 @@ instruction is obeyed. P3/P4 (plan, goal) and the plain-Hermes arm are #659 PR B
 
 ## Shipped-default small windows (R1, opt-in)
 
-Select `--cells 'default-window/*'` explicitly. These backtest cells are excluded
-from `--cells all` and nightly admission: the bounded three-attempt backtest did
-**not** establish both required historical RED/GREEN patterns. R2 returns
-UNSUPPORTED because it lacks these ordered R1 request records. No existing cell
-or bar changes its verdict.
+Select `--cells 'default-window/*'` explicitly. These two backtest candidates
+are excluded from `--cells all` and nightly admission. Broad globs such as
+`--cells '*'` also include opt-in cells, as they do for the continuity probes.
+The `default-window/` id prefix is the dispatch contract: `run_matrix.config_yaml`
+omits the host threshold override, and `process_cell.unsupported` rejects R2,
+which lacks the ordered R1 request records. Giving another cell that prefix
+opts into both behaviors. No existing cell definition or nightly selection changes.
 
-All three use `lcm_env={}` (unlike `None`, which selects `tight()`). Their generated
+Both use `lcm_env={}` (unlike `None`, which selects `tight()`). Their generated
 host config omits the harness's usual `compression.threshold: 0.8`, so the plugin
-uses each ref's shipped default: rc8 is 0.75, while the #936-era refs are 0.35.
-No LCM tuning override is injected. Other cells retain their existing config.
+uses each ref's shipped default: rc8 is 0.75, while the parent of the optimized
+defaults is 0.35. No LCM tuning override is injected.
 
-- `default-window/32k-cadence`: 400 turns, 50 filler repeats per user
-  (about 290 tokens), 100 repeats per fake summary (about 600 tokens).
-- `default-window/64k-cadence`: 100 turns, 400 filler repeats per user
+- `default-window/64k-cadence`: 101 turns, 400 filler repeats per user
   (about 2,300 tokens), 300 repeats per fake summary (about 1,750 tokens).
-  At rc8 the triggers are 24,000/48,000 tokens. Traffic totals about
-  116,000/230,000 tokens, enough for several compactions; fake summaries and
-  assistant replies add pressure. Effective thresholds and input/output token
-  counts are recorded on each opt-in `compaction` event.
+  At rc8 the trigger is 48,000 tokens; traffic totals about 232,300 tokens,
+  before summaries and assistant replies. The final backlog extension reaches
+  turn 104 at rc8, after its last automatic commit at 103, and B4 publishes.
+  The culprit still commits on every closing turn through 104, so its B4 is
+  INCONCLUSIVE even though C1 fails. This part of acceptance remains unmet.
 - `default-window/64k-large-objective`: a short setup, then the **current**
-  request on turn 2 has 3,500 filler repeats (about 20,125 tokens). Twenty-four
-  distinct reads in that turn (40 lines each) push it outside the fresh tail;
-  ordinary traffic continues through turn 40. The setup avoids the independent
-  sole-user anchoring rule. This workload did not isolate #1221.
+  request on turn 2 has 3,630 filler repeats (about 20,873 tokens). Twenty-four
+  distinct reads in that turn (57 lines each, below the default 12,000-character
+  externalization threshold) push it outside the fresh tail; ordinary traffic
+  continues through turn 40. The setup avoids the independent sole-user anchor.
+  Only **B1, B2 and F4** gate this cell. Survival fitting is its designed fallback,
+  so B8 does not gate it; the other bars remain diagnostics.
 
-The #930 default prefix budget is dynamic, not a fixed 64K constant. At culprit
-`112388f7` (`engine.py:7826`) it is `max(C - O - A - T, C // 4)`:
-`C` is the survival ceiling, `O` assembly overhead, `A` leading anchors and
-`T` the selected tail. With the default 15% reserve, `C=54,400` and the floor
-is **13,600** at 64,000. At rc8 (`engine.py:8127`), `T` is the larger of the
-selected tail and its repaired tool-pair measurement; enabled recall also
-reserves its budget. The floor is still 13,600. The objective exceeds the
-floor, but that alone does not prove it exceeds the observed dynamic bound.
-Rc6/rc8 exempt an over-bound objective from summary pruning; the cell must still
-prove that path and separate the historical parent before admission.
+The 32K cadence candidate was removed: within 400 turns it never reaches the
+historical every-call regime, and its B8 failure is not a C1 detector.
 
-Only the cadence cells declare **C1**: in ordered `transcript.jsonl`, begin at
+The #930 default prefix budget is dynamic, not a fixed 64K constant. At the
+older `112388f7` implementation (`engine.py:7826`) it is
+`max(C - O - A - T, C // 4)`: `C` is the survival ceiling, `O` assembly overhead,
+`A` leading anchors and `T` the selected tail. With the default 15% reserve,
+`C=54,400` and the floor is **13,600** at 64,000. At rc8 (`engine.py:8127`),
+`T` also accounts for repaired tool pairs and enabled recall reserves its budget.
+Exceeding the floor alone does not prove that an objective exceeds the dynamic
+bound. Rc6/rc8 exempt an over-bound objective from summary pruning.
+
+Only the cadence cell declares **C1**: in ordered `transcript.jsonl`, begin at
 the first non-final chat `compaction` with status `compacted` or `host_native`.
 Each later `provider_request` counts once in the denominator, including the first
 following that commit. Count it once in the numerator if at least one commit
@@ -244,21 +248,44 @@ occurred since the preceding request. Noops do not clear a pending commit;
 multiple commits before a request still count once. Final/cron records do not
 count. Fail when `2 * preceded_by_compaction > model_calls`; no measured calls
 is INCONCLUSIVE. This absolute bound is independent of the backtest refs.
+C1 also fails released v0.26.2 at 64K (48/81 in the original 100-turn cell), so
+it measures excessive cadence rather than identifying #1139 specifically.
 
 Only the objective cell declares the R1 **F4** equivalent: for every non-final
 committed chat compaction, the first following model request must contain the
-complete current user request in one message. Metadata stores a boolean and tag
-presence, never request text. A tag alone cannot pass. A missing complete request
-fails; absent telemetry or a commit without a following request is INCONCLUSIVE.
-The existing B1-B9 bars still apply. R2 continuity diagnostics are unchanged.
+complete current user request in one message. `probe.request_contains` performs
+the literal check; metadata stores a boolean and tag presence, never request text.
+A tag alone cannot pass. A missing complete request fails; absent telemetry or a
+commit without a following request is INCONCLUSIVE. Synthetic controls prove an
+absent full request fails, a noop retains the pending commit, and a trailing
+commit stays unknown. R2 continuity diagnostics are unchanged.
 
-The final backtest detects excessive 64K cadence at `2c6dfef9` (63/84 calls),
-versus parent `86fc834e` (17/84) and fixed refs (31/84), but fixed 64K cells have
-an inconclusive forced `/compress` check. The 32K culprit fails B8 and the other
-refs pass. The objective cell reports F4 present for both culprit and parent;
-other bars fail, including B8 at rc8. These are **not** a validated positive
-control or a pre-rc gate. Future admission needs a newly authorized bounded
-scenario and the complete historical/host GREEN pattern, without weakening bars.
+B1/B2 map a held row beginning with the exact generated objective-marker line
+`[Current user objective preserved from compacted history]` plus a newline back
+to that attempt's persisted original. The carrier is a generated projection,
+not a new stored user row. Quoted markers, other carrier types and similar text
+are not mapped. A real duplicate original still fails B1/B2.
+
+**Backtest status: not admitted.** With shipped defaults, the #1221 onset pair
+is `207092cd` (parent) / `10e10d82` (optimized defaults), followed by the
+`bd46fd9f` fix and rc8 `4e603ed6`; `7defa0b0` / `112388f7` predate those defaults.
+In this revision the objective remained GREEN on all four refs after three
+parameter attempts, so it does **not** detect #1221. Calibration stopped without
+loosening a bar. Cadence separates `2c6dfef9` RED (C1 64/85) from `86fc834e`
+GREEN (17/84), `09e32580` and rc8 GREEN (31/85), but the culprit's B4 remains
+INCONCLUSIVE. These observations do not satisfy the complete acceptance bar or
+justify pre-rc promotion. Gate telemetry records token estimates,
+thresholds, tool rounds and compression input message counts for further diagnosis.
+
+Frozen-parameter path replays used output and scratch paths of 97 versus 212
+characters. First committed compression input counts were identical: 19 messages
+at the onset/fixed/rc8 refs, 23 at the parent (whose initial three-message pass
+is a noop). At the 48,000-token refs, short-path observations bracketed the first
+trigger at 46,735 / 49,681 tokens; long paths gave 46,821 / 49,768. The minimum
+margin was 1,179 tokens. The parent's first 22,400-token gate was above by
+3,661 / 3,747 tokens, but its preceding below-threshold gate was not recorded.
+This is path-stability evidence, not the missing RED positive control or a
+complete measured margin bracket on every ref.
 
 ## Positive controls
 `controls.py` holds each control's refs, hosts, cells and expected red/green pattern; `run_matrix.py --control

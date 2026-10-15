@@ -165,6 +165,9 @@ def expected_items(atts: list[dict], notices=()) -> list[tuple[str, str]]:
     items = []
     for i, a in enumerate(atts):
         text = a["held"] if a["held"] is not None else a["persist"]
+        # reconcile.py's generated objective carrier is a projection, never a stored user row.
+        if text.startswith("[Current user objective preserved from compacted history]\n"):
+            text = a["persist"]
         nxt = next((b for b in atts[i + 1:] if b["prefix"] == a["prefix"]), None)
         cand = multiset.norm(text)
         folded = (nxt is not None and not a["reply"] and nxt["held"] is not None and cand

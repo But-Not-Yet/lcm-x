@@ -1137,7 +1137,9 @@ def test_default_window_counts_requests_once_and_ignores_noops_final_and_cron(tm
 
 def test_default_window_cell_contract():
     selected = cells.select("default-window/*")
-    assert len(selected) == 3
+    assert len(selected) == 2
+    with pytest.raises(ValueError, match="no cell matches"):
+        cells.select("default-window/32k-cadence")
     assert not any(c["id"].startswith("default-window/") for c in cells.select("all"))
     from bench.instruments.reliability import process_cell
     for c in selected:
@@ -1146,7 +1148,67 @@ def test_default_window_cell_contract():
         assert ("C1" in c["bars"]) is c["id"].endswith("cadence")
         assert ("F4" in c["bars"]) is c["id"].endswith("large-objective")
     c = cells.select("default-window/64k-large-objective")[0]
+    assert c["bars"] == ["B1", "B2", "F4"]
     assert len(probe.user_text(c, "T", 2)) // 4 > 13600
     assert len(probe.user_text(c, "T", 3)) < len(probe.user_text(c, "T", 2))
     assert len(c["tool_plan"]) > 1
     assert "threshold:" not in run_matrix.config_yaml(c, {"engine": "fixture", "enabled": "fixture"})
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_default_window_objective_carrier_expects_persisted_original(tmp_path, duplicate):
+    original = U.format(2, 2)
+    carrier = "[Current user objective preserved from compacted history]\n" + original
+    carrier += "\n\n[Recent Summary (d0, node 1)]\nStub summary."
+    events = turn_events(1) + turn_events(2, held=carrier) + turn_events(3)
+    rows = clean_rows() + ([("user", original)] if duplicate else [])
+    out = make(tmp_path, rows=rows, events=events, bars=["B1", "B2"])
+    assert out["verdict"] == ("FAIL" if duplicate else "PASS")
+    assert out["numbers"]["B2"]["deficit_rows"] == 0
+    assert out["numbers"]["B2"]["surplus_rows"] == int(duplicate)
+
+
+@pytest.mark.parametrize("held", [
+    "quoted [Current user objective preserved from compacted history]\ntext",
+    "[Current user objective preserved from compacted history] not a carrier line",
+    "[Your active task list was preserved across context compression]\ntext",
+])
+def test_default_window_carrier_mapping_requires_exact_objective_marker(held):
+    atts = bars.attempts(turn_events(1, held=held))
+    assert bars.expected_items(atts)[0] == ("user", held)
+
+
+@pytest.mark.parametrize("contains", [True, False])
+def test_default_window_request_contains_complete_text(contains):
+    current = "[T02] user turn 2: complete objective"
+    messages = [{"role": "system", "content": None},
+                {"role": "user", "content": "prefix\n" + (current if contains else "[T02] shortened") + "\nsuffix"}]
+    assert probe.request_contains(messages, current) is contains
+
+
+def test_default_window_f4_absent_request_positive_control(tmp_path):
+    current = U.format(2, 2)
+    present = probe.request_contains([{"role": "user", "content": "[T02] shortened"}], current)
+    events = clean_events() + [{"event": "compaction", "compression_status": "compacted"},
+                              {"event": "provider_request", "continuity": {"current_request_present": present}}]
+    out = make(tmp_path, rows=clean_rows(), events=events, passes=0, bars=["F4"])
+    assert present is False
+    assert out["verdict"] == "FAIL" and out["numbers"]["F4"]["absent"] == 1
+
+
+def test_default_window_noop_preserves_pending_commit(tmp_path):
+    events = clean_events() + [{"event": "compaction", "compression_status": "compacted"},
+                              {"event": "compaction", "compression_status": "noop"},
+                              {"event": "provider_request", "continuity": {"current_request_present": True}}]
+    out = make(tmp_path, rows=clean_rows(), events=events, passes=0, bars=["C1", "F4"])
+    assert out["numbers"]["C1"] == {"model_calls": 1, "preceded_by_compaction": 1}
+    assert out["numbers"]["F4"] == {"observed": 1, "present": 1, "absent": 0, "unknown": 0}
+
+
+def test_default_window_trailing_commit_without_request_is_inconclusive(tmp_path):
+    events = clean_events() + [{"event": "compaction", "compression_status": "compacted"},
+                              {"event": "provider_request", "continuity": {"current_request_present": True}},
+                              {"event": "compaction", "compression_status": "compacted"}]
+    out = make(tmp_path, rows=clean_rows(), events=events, passes=0, bars=["F4"])
+    assert out["verdict"] == "INCONCLUSIVE"
+    assert out["numbers"]["F4"] == {"observed": 1, "present": 1, "absent": 0, "unknown": 1}
