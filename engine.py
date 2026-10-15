@@ -829,7 +829,7 @@ class LCMEngine(
         self._lcm_normal_message_prefix_fingerprints: dict[tuple[str, str], list[str]] = {}
         self._lcm_current_start_allows_bypass_lineage = False
         self._auxiliary_session_lock = threading.RLock()
-        self._child_host_fallback_states: dict[str, dict] = {}
+        self._child_host_fallback_states: dict[str, dict[int, dict]] = {}
         self._host_fallback_compressor: Any = None
         self._host_fallback_session_id = ""
         self._host_fallback_import_warning_logged = False

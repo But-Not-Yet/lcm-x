@@ -291,8 +291,9 @@ class AuxiliarySessionMixin:
         else:
             stack.clear()
         self._sync_thread_context_current_auxiliary()
-        for key in ("_last_compression_status", "_last_compression_noop_reason", "_last_compress_aborted"):
-            vars(self._thread_context).pop(key, None)
+        if not stack:
+            for key in ("_last_compression_status", "_last_compression_noop_reason", "_last_compress_aborted"):
+                vars(self._thread_context).pop(key, None)
 
     def _handoff_auxiliary_session(
         self,

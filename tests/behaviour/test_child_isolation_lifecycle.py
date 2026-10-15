@@ -222,7 +222,6 @@ def _compress_child(engine, sid="child"):
 
 
 @pytest.mark.parametrize("event", ["reset", "rebind", "reconfigure"])
-@pytest.mark.xfail(strict=True, reason="R2-1: registry displaces another worker with the same child id")
 def test_same_child_id_two_threads_lifecycle_then_end(tmp_path, monkeypatch, native, event):
     """Every worker cache must receive the base lifecycle sequence."""
     pin_char_counter(monkeypatch)
@@ -258,7 +257,6 @@ def test_same_child_id_two_threads_lifecycle_then_end(tmp_path, monkeypatch, nat
             assert engine._child_host_fallback_states == {}
 
 
-@pytest.mark.xfail(strict=True, reason="R2-1: registry displaces another worker with the same child id")
 def test_same_child_id_two_threads_end_then_first_thread_reuses_id(tmp_path, monkeypatch, native):
     pin_char_counter(monkeypatch)
     created, ended, resets = native
@@ -280,7 +278,6 @@ def test_same_child_id_two_threads_end_then_first_thread_reuses_id(tmp_path, mon
         assert resets == created
 
 
-@pytest.mark.xfail(strict=True, reason="R2-3: inner child clear erases outer diagnostics")
 def test_nested_child_clear_keeps_outer_diagnostics(tmp_path, monkeypatch, native):
     pin_char_counter(monkeypatch)
     with engine_context(tmp_path, window=200_000, session_id="parent") as engine:
@@ -312,7 +309,6 @@ def test_nested_child_clear_keeps_outer_diagnostics(tmp_path, monkeypatch, nativ
 
 
 @pytest.mark.parametrize("event", ["reset", "end"])
-@pytest.mark.xfail(strict=True, reason="R2-1: registry displaces another worker with the same child id")
 def test_same_child_registry_barrier_interleavings(tmp_path, monkeypatch, native, event):
     """Exercise registry writes and lifecycle walks without taking a second lock."""
     pin_char_counter(monkeypatch)

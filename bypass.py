@@ -30,22 +30,29 @@ class BypassMixin:
         return self.__dict__
 
     def _host_fallback_state_for_session(self, session_id: str) -> dict:
-        # The child may have cleared its marker, or the callback may be on another thread.
+        # Lifecycle guards only need a representative state; cleanup walks all states.
         with self._auxiliary_session_lock:
-            state = self._child_host_fallback_states.get(session_id)
-            if state is not None:
-                return state
+            states = self._child_host_fallback_states.get(session_id)
+            if states:
+                return next(iter(states.values()))
         return self.__dict__
 
-    def _host_fallback_states(self) -> list[dict]:
+    def _host_fallback_states(self, session_id: str | None = None) -> list[dict]:
         with self._auxiliary_session_lock:
-            return [self.__dict__, *self._child_host_fallback_states.values()]
+            if session_id is not None:
+                states = self._child_host_fallback_states.get(session_id)
+                return list(states.values()) if states else [self.__dict__]
+            return [self.__dict__, *(state for states in self._child_host_fallback_states.values()
+                                     for state in states.values())]
 
     def _clear_host_fallback_state(self, state: dict) -> None:
         with self._auxiliary_session_lock:
             session_id = state.get("_host_fallback_session_id", "")
-            if self._child_host_fallback_states.get(session_id) is state:
-                self._child_host_fallback_states.pop(session_id)
+            states = self._child_host_fallback_states.get(session_id)
+            if states is not None:
+                states.pop(id(state), None)
+                if not states:
+                    self._child_host_fallback_states.pop(session_id)
             state["_host_fallback_compressor"] = None
             state["_host_fallback_session_id"] = ""
 
@@ -66,11 +73,14 @@ class BypassMixin:
         state = self._bypass_compress_state()
         with self._auxiliary_session_lock:
             previous_id = state.get("_host_fallback_session_id", "")
-            if self._child_host_fallback_states.get(previous_id) is state:
-                self._child_host_fallback_states.pop(previous_id)
+            states = self._child_host_fallback_states.get(previous_id)
+            if states is not None:
+                states.pop(id(state), None)
+                if not states:
+                    self._child_host_fallback_states.pop(previous_id)
             state["_host_fallback_session_id"] = value
             if value and state is not self.__dict__:
-                self._child_host_fallback_states[value] = state
+                self._child_host_fallback_states.setdefault(value, {})[id(state)] = state
 
     @property
     def _last_compress_aborted(self):
@@ -150,28 +160,28 @@ class BypassMixin:
         *,
         current_session_bypasses: bool,
     ) -> None:
-        state = self._host_fallback_state_for_session(session_id)
-        compressor = state.get("_host_fallback_compressor")
-        fallback_session_id = state.get("_host_fallback_session_id", "")
-        if compressor is not None and (
-            current_session_bypasses
-            or not fallback_session_id
-            or fallback_session_id == session_id
-        ):
-            fallback_session_id = fallback_session_id or session_id
-            on_session_end = getattr(compressor, "on_session_end", None)
-            if callable(on_session_end) and fallback_session_id:
-                try:
-                    on_session_end(fallback_session_id, messages)
-                except Exception:
-                    logger.debug("LCM host fallback compressor session-end reset failed", exc_info=True)
-            on_session_reset = getattr(compressor, "on_session_reset", None)
-            if callable(on_session_reset):
-                try:
-                    on_session_reset()
-                except Exception:
-                    logger.debug("LCM host fallback compressor reset failed", exc_info=True)
-            self._clear_host_fallback_state(state)
+        for state in self._host_fallback_states(session_id):
+            compressor = state.get("_host_fallback_compressor")
+            fallback_session_id = state.get("_host_fallback_session_id", "")
+            if compressor is not None and (
+                current_session_bypasses
+                or not fallback_session_id
+                or fallback_session_id == session_id
+            ):
+                fallback_session_id = fallback_session_id or session_id
+                on_session_end = getattr(compressor, "on_session_end", None)
+                if callable(on_session_end) and fallback_session_id:
+                    try:
+                        on_session_end(fallback_session_id, messages)
+                    except Exception:
+                        logger.debug("LCM host fallback compressor session-end reset failed", exc_info=True)
+                on_session_reset = getattr(compressor, "on_session_reset", None)
+                if callable(on_session_reset):
+                    try:
+                        on_session_reset()
+                    except Exception:
+                        logger.debug("LCM host fallback compressor reset failed", exc_info=True)
+                self._clear_host_fallback_state(state)
 
     def _get_host_fallback_compressor(self) -> Any:
         """Return Hermes' native compressor for LCM-bypassed sessions if available."""
