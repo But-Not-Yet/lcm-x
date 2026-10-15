@@ -14,10 +14,11 @@ and `turn-path`. Existing review lanes are unchanged: a known risk or unknown ch
 files names acceptance and adversarial; known paths with no risk name acceptance only.
 The evaluator's hint never changes readiness decisions or blocker codes.
 
-`TURN_PATH_FILES` maps the synchronous ingest, assembly, compaction, lifecycle/identity,
-and pre-LLM path, traced through engine mixins and direct module consumers. Supported
-conditional turn branches count; command-only and deferred background work do not.
-Turn-path files also retain `lcm-memory-preservation`. Renames count both paths.
+`TURN_PATH_FILES` lists the modules that shape the request sent to the model or the
+per-turn stored record: assembly, compaction, survival fit, ingest/re-ingest identity,
+the summary route and the host `compress` contract. Being reachable from a turn is not
+enough: storage, commands, config, tools and opt-in pre-answer modules keep only
+`lcm-memory-preservation`. Turn-path files also retain `lcm-memory-preservation`. Renames count both paths.
 Only a supplied changed path in that set adds `turn_path_probe_packet`, a fixed list:
 
 1. Consumer enumeration: `rg` call sites for every changed helper and effects on each consumer.

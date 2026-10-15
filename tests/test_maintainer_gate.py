@@ -255,9 +255,12 @@ def test_review_lanes_hint_never_blocks_readiness(checks_present):
     [
         *[
             ([{"filename": path}], ["lcm-memory-preservation", "turn-path"], BOTH_LANES)
-            for path in ("engine.py", "survival_fit.py", "__init__.py", "store.py", "tools.py")
+            for path in ("engine.py", "survival_fit.py", "__init__.py", "compaction.py", "identity_anchor.py")
         ],
-        ([{"filename": "presets.py"}], ["lcm-memory-preservation"], BOTH_LANES),
+        *[
+            ([{"filename": path}], ["lcm-memory-preservation"], BOTH_LANES)
+            for path in ("presets.py", "store.py", "tools.py")
+        ],
         (
             [{"filename": "engine.py", "previous_filename": "presets.py"}],
             ["lcm-memory-preservation", "turn-path"],
@@ -275,8 +278,8 @@ def test_review_lanes_hint_never_blocks_readiness(checks_present):
             BOTH_LANES,
         ),
     ],
-    ids=["engine", "survival-fit", "pre-llm-hook", "store", "proactive-recall",
-         "preset-only", "rename-into-turn-path", "rename-out-of-turn-path",
+    ids=["engine", "survival-fit", "pre-llm-hook", "compaction", "ingest-identity",
+         "preset-only", "store-only", "tools-only", "rename-into-turn-path", "rename-out-of-turn-path",
          "docs-only", "rename-across-policy-boundary"],
 )
 def test_review_lanes_hint_maps_changed_paths(changed_files, risks, lanes):

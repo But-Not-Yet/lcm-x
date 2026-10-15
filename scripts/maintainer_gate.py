@@ -31,22 +31,18 @@ MEMORY_MIGRATION_FILES = {
     "scripts/backfill_externalized_tool_outputs.py",
     "scripts/import_lossless_claw.py",
 }
-# Synchronous ingest/assembly/compaction, lifecycle/identity and pre-LLM
-# consumers traced one module deep at 4e603ed6. Conditional turn branches count;
-# startup-only, command-only and deferred background work do not.
+# Modules that shape the request sent to the model or the per-turn stored record:
+# assembly, compaction, survival fit, ingest/re-ingest identity, the summary route and
+# the host compress contract (docs/process/turn-path-probe-packet.md). Reachability
+# alone does not qualify: storage, commands, config, tools and opt-in pre-answer
+# modules keep only lcm-memory-preservation.
 TURN_PATH_FILES = {
-    "__init__.py", "answer_contract.py", "assertion_store.py", "aux_session.py",
-    "bypass.py", "codex_routing.py", "command.py", "compaction.py", "config.py", "dag.py",
-    "db_bootstrap.py", "diagnostics.py", "embedding_maintenance.py", "engine.py",
-    "engine_registry.py",
-    "escalation.py", "evidence_compiler.py", "externalize.py", "extraction.py",
-    "fresh_tail.py", "host_uid.py", "host_uid_emit.py", "identity_anchor.py",
-    "ingest_protection.py", "lifecycle_state.py", "message_analysis.py",
-    "message_content.py", "message_patterns.py", "placeholder_ledger.py",
-    "prefix_matching.py", "reconcile.py", "reset_state.py", "rollup_builder.py",
-    "sanitize.py", "selective_compiler.py", "selective_recall.py",
-    "session_patterns.py", "sqlite_util.py", "store.py", "store_complete.py",
-    "summary_input_clip.py", "survival_fit.py", "tokens.py", "tools.py", "vector_store.py",
+    "__init__.py", "aux_session.py", "bypass.py", "codex_routing.py", "compaction.py",
+    "dag.py", "engine.py", "escalation.py", "externalize.py", "fresh_tail.py",
+    "host_uid.py", "host_uid_emit.py", "identity_anchor.py", "ingest_protection.py",
+    "lifecycle_state.py", "message_content.py", "placeholder_ledger.py",
+    "prefix_matching.py", "reconcile.py", "sanitize.py", "store_complete.py",
+    "summary_input_clip.py", "survival_fit.py", "tokens.py",
 }
 FINDING_GATE_CLASSES = {"MERGE_BLOCKING", "RELEASE_BLOCKING", "NON_BLOCKING"}
 TERMINAL_FINDING_DISPOSITIONS = {
