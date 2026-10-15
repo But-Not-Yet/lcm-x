@@ -185,7 +185,7 @@ class AuxiliarySessionMixin:
                 if previous_generation != generation:
                     if previous_generation is not None:
                         self._retire_auxiliary_generation(session_id, previous_generation)
-                    if self._host_fallback_session_id == session_id:
+                    if self._host_fallback_state_for_session(session_id).get("_host_fallback_session_id") == session_id:
                         self._end_host_fallback_compressor_for_session(
                             session_id,
                             [],
@@ -411,7 +411,9 @@ class AuxiliarySessionMixin:
                     self._auxiliary_session_ids.add(new_session_id)
                     self._auxiliary_foreground_reused_session_ids.discard(new_session_id)
                     if generation:
-                        if previous_new_generation != generation and self._host_fallback_session_id == new_session_id:
+                        if (previous_new_generation != generation
+                                and self._host_fallback_state_for_session(new_session_id).get(
+                                    "_host_fallback_session_id") == new_session_id):
                             self._end_host_fallback_compressor_for_session(
                                 new_session_id,
                                 [],
@@ -427,7 +429,7 @@ class AuxiliarySessionMixin:
                             self._retire_auxiliary_generation(new_session_id, previous_new_generation)
                         self._auxiliary_last_prompt_tokens.pop(new_session_id, None)
                         self._auxiliary_direct_end_guard_session_ids.discard(new_session_id)
-                        if self._host_fallback_session_id == new_session_id:
+                        if self._host_fallback_state_for_session(new_session_id).get("_host_fallback_session_id") == new_session_id:
                             self._end_host_fallback_compressor_for_session(
                                 new_session_id,
                                 [],
@@ -441,7 +443,7 @@ class AuxiliarySessionMixin:
                         self._retire_auxiliary_generation(new_session_id, previous_new_generation)
                     self._auxiliary_last_prompt_tokens.pop(new_session_id, None)
                     self._auxiliary_direct_end_guard_session_ids.discard(new_session_id)
-                    if self._host_fallback_session_id == new_session_id:
+                    if self._host_fallback_state_for_session(new_session_id).get("_host_fallback_session_id") == new_session_id:
                         self._end_host_fallback_compressor_for_session(
                             new_session_id,
                             [],

@@ -29,6 +29,13 @@ class BypassMixin:
             return vars(context)
         return self.__dict__
 
+    def _host_fallback_state_for_session(self, session_id: str) -> dict:
+        # Lifecycle callbacks can retire the thread marker before ending its compressor.
+        for state in (vars(self._thread_context), self.__dict__):
+            if state.get("_host_fallback_session_id") == session_id:
+                return state
+        return self._bypass_compress_state()
+
     @property
     def _host_fallback_compressor(self):
         return self._bypass_compress_state().get("_host_fallback_compressor")
@@ -123,13 +130,15 @@ class BypassMixin:
         *,
         current_session_bypasses: bool,
     ) -> None:
-        if self._host_fallback_compressor is not None and (
+        state = self._host_fallback_state_for_session(session_id)
+        compressor = state.get("_host_fallback_compressor")
+        fallback_session_id = state.get("_host_fallback_session_id", "")
+        if compressor is not None and (
             current_session_bypasses
-            or not self._host_fallback_session_id
-            or self._host_fallback_session_id == session_id
+            or not fallback_session_id
+            or fallback_session_id == session_id
         ):
-            compressor = self._host_fallback_compressor
-            fallback_session_id = self._host_fallback_session_id or session_id
+            fallback_session_id = fallback_session_id or session_id
             on_session_end = getattr(compressor, "on_session_end", None)
             if callable(on_session_end) and fallback_session_id:
                 try:
@@ -142,8 +151,8 @@ class BypassMixin:
                     on_session_reset()
                 except Exception:
                     logger.debug("LCM host fallback compressor reset failed", exc_info=True)
-            self._host_fallback_compressor = None
-            self._host_fallback_session_id = ""
+            state["_host_fallback_compressor"] = None
+            state["_host_fallback_session_id"] = ""
 
     def _get_host_fallback_compressor(self) -> Any:
         """Return Hermes' native compressor for LCM-bypassed sessions if available."""
