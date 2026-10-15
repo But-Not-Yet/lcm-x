@@ -20,9 +20,6 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("LCM_REAL_HERMES_SRC"), reason="LCM_REAL_HERMES_SRC is not set"
-)
 
 
 def _stub_engine():
@@ -110,11 +107,47 @@ def _real_call_shapes(signature, target_signature):
                 yield call_args, call_kwargs
 
 
+def _override_problem(real_signature, plugin_signature, *, filtered_compress=False):
+    if filtered_compress:
+        # All pinned hosts' _supported_compression_kwargs filters optional
+        # compress arguments by name before dispatch. Required names and kinds
+        # remain contractual; **kwargs must still accept the host's candidates.
+        kept = []
+        for parameter in real_signature.parameters.values():
+            override = plugin_signature.parameters.get(parameter.name)
+            if override is not None and override.kind != parameter.kind:
+                return f"changed kind for {parameter.name}"
+            if override is None:
+                if parameter.default is parameter.empty:
+                    return f"missing required parameter {parameter.name}"
+                if not any(p.kind == p.VAR_KEYWORD for p in plugin_signature.parameters.values()):
+                    continue
+            kept.append(parameter)
+        real_signature = real_signature.replace(parameters=kept)
+    for args, kwargs in _real_call_shapes(real_signature, plugin_signature):
+        # The filtered host dispatch is compress_fn(messages, **compress_kwargs),
+        # so only the receiver and messages are positional, even with **kwargs.
+        if filtered_compress and len(args) != 2:
+            continue
+        try:
+            plugin_signature.bind(*args, **kwargs)
+        except TypeError as exc:
+            return f"{len(args)} positional, keywords {sorted(kwargs)}: {exc}"
+    return None
+
+
 def _differences(real, stub, plugin, plugin_base):
     differences = []
     for name in sorted(real.__abstractmethods__):
         if not hasattr(stub, name):
             differences.append(f"stub lacks real abstract member: {name}")
+        elif name not in getattr(stub, "__abstractmethods__", ()):
+            differences.append(f"stub member is not abstract: {name}")
+        elif isinstance(getattr(real, name), property):
+            real_property = getattr(real, name).fget
+            stub_property = getattr(stub, name)
+            if not isinstance(stub_property, property) or _signature(stub_property.fget) != _signature(real_property):
+                differences.append(f"stub abstract property signature differs: {name}")
 
     owners = plugin.__mro__[:plugin.__mro__.index(plugin_base)]
     overrides = {name for owner in owners for name in vars(owner)}
@@ -139,18 +172,41 @@ def _differences(real, stub, plugin, plugin_base):
             )
         if name in overrides:
             plugin_signature = _signature(getattr(plugin, name))
-            for args, kwargs in _real_call_shapes(real_signature, plugin_signature):
-                try:
-                    plugin_signature.bind(*args, **kwargs)
-                except TypeError as exc:
-                    differences.append(
-                        f"incompatible override {name}: real {real_signature}; plugin {plugin_signature}; "
-                        f"{len(args)} positional, keywords {sorted(kwargs)}: {exc}"
-                    )
-                    break  # One witness per incompatible method; keep checking the others.
+            problem = _override_problem(real_signature, plugin_signature, filtered_compress=name == "compress")
+            if problem:
+                differences.append(
+                    f"incompatible override {name}: real {real_signature}; plugin {plugin_signature}; {problem}"
+                )
     return differences
 
 
+@pytest.mark.parametrize("real, plugin, filtered, compatible", [
+    ('self, messages, current_tokens=None, memory_context=""', 'self, messages', True, True),
+    ('self, messages, memory_context=""', 'self, messages, **kwargs', True, True),
+    ('self, messages', 'self', True, False),
+    ('self, messages', 'self, renamed', True, False),
+    ('self, messages', 'self, **kwargs', True, False),
+    ('self, messages', 'self, *, messages', True, False),
+    ('self, messages, memory_context=""', 'self, messages, *, memory_context=""', True, False),
+    ('self, messages', 'self, messages, surprise', True, False),
+    ('self, messages, memory_context=""', 'self, messages, memory_context', True, False),
+    ('self, messages, **kwargs', 'self, messages', True, False),
+    ('self, messages, *args', 'self, messages', True, False),
+    ('self, messages, memory_context=""', 'self, messages', False, False),
+])
+def test_override_check_keeps_required_contract(real, plugin, filtered, compatible):
+    signatures = []
+    for parameters in (real, plugin):
+        namespace = {}
+        exec(f"def compress({parameters}): pass", namespace)
+        signatures.append(_signature(namespace["compress"]))
+    problem = _override_problem(*signatures, filtered_compress=filtered)
+    assert (problem is None) == compatible, problem
+
+
+@pytest.mark.skipif(
+    not os.environ.get("LCM_REAL_HERMES_SRC"), reason="LCM_REAL_HERMES_SRC is not set"
+)
 def test_ci_stub_and_lcm_overrides_match_real_host(monkeypatch):
     from hermes_lcm.engine import ContextEngine, LCMEngine
 
