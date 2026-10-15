@@ -1221,6 +1221,16 @@ def test_fastembed_timeout_capacity_is_bounded_until_worker_exits(monkeypatch, t
     first = FastembedProvider("local", cache_dir=tmp_path, timeout=0.01)
     second = FastembedProvider("local", cache_dir=tmp_path, timeout=0.01)
 
+    slots = provider_mod._LOCAL_EMBED_WORKER_SLOTS
+    original_acquire = slots.acquire
+    capacity_timeouts = []
+
+    def bounded_acquire(blocking=True, timeout=None):
+        capacity_timeouts.append(timeout)
+        assert timeout is not None and 0 < timeout <= 0.01, "capacity acquisition must use the request budget"
+        return original_acquire(blocking=blocking, timeout=timeout)
+
+    monkeypatch.setattr(slots, "acquire", bounded_acquire)
     try:
         with pytest.raises(EmbeddingProviderError, match="deadline exceeded"):
             first.embed_query("slow")
@@ -1230,6 +1240,7 @@ def test_fastembed_timeout_capacity_is_bounded_until_worker_exits(monkeypatch, t
                 second.embed_query("must-not-start")
 
         returns_while_blocked(rejected_call, release_worker)
+        assert len(capacity_timeouts) == 2
         assert calls == 1
     finally:
         release_worker.set()
