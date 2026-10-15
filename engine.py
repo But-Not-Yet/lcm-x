@@ -8149,23 +8149,26 @@ class LCMEngine(
                             }) <= summary_budget:
                                 summary_parts[0] = anchor_part = candidate
                                 break
+            anchor_exempt = (
+                summary_budget is not None and assembly_cap is None and self._config.survival_fit
+                and part_keys[0] == (-1, None) and count_message_tokens({
+                    "role": summary_role, "content": strip_injected_context_blocks(summary_parts[0]),
+                }) > summary_budget
+            )
             kept_indexes = list(range(len(summary_parts)))
-            if summary_budget is not None:
+            if anchor_exempt:
+                summary_parts[0] = strip_injected_context_blocks(summary_parts[0])
+                kept_indexes = [0]
+            elif summary_budget is not None:
                 # #653: within a depth the newest parts are kept first; kept parts render in the order above.
                 kept_indexes = []
                 for index in sorted(range(len(summary_parts)), key=lambda i: (part_keys[i][0], -i)):
-                    if assembly_cap is None and part_keys[index] == (-1, None):
-                        # #1221: the default bound budgets nodes; survival fit keeps the objective.
-                        summary_parts[index] = strip_injected_context_blocks(summary_parts[index])
-                        kept_indexes.append(index)
-                        continue
                     candidate = "\n\n---\n\n".join(
                         strip_injected_context_blocks(summary_parts[i])
                         if part_keys[i] == (-1, None) and count_message_tokens({
                             "role": summary_role, "content": summary_parts[i],
                         }) > summary_budget else summary_parts[i]
-                        for i in sorted(kept_indexes + [index])
-                        if assembly_cap is not None or part_keys[i] != (-1, None))
+                        for i in sorted(kept_indexes + [index]))
                     candidate_msg = {"role": summary_role, "content": candidate}
                     if count_message_tokens(candidate_msg) > summary_budget:
                         continue
