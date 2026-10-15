@@ -1,0 +1,71 @@
+name: Differential
+on:
+  schedule: [{cron: "41 4 * * *"}]
+  workflow_dispatch:
+  pull_request:
+    paths: [__init__.py, aux_session.py, bypass.py, codex_routing.py, compaction.py, dag.py, engine.py, escalation.py, externalize.py, extraction.py, fresh_tail.py, host_uid.py, host_uid_emit.py, identity_anchor.py, ingest_protection.py, lifecycle_state.py, message_analysis.py, message_content.py, placeholder_ledger.py, prefix_matching.py, reconcile.py, sanitize.py, store_complete.py, summary_input_clip.py, survival_fit.py, tokens.py, 'tests/differential/**', .github/workflows/differential.yml]
+permissions: {contents: read}
+concurrency: {group: '${{ github.workflow }}-${{ github.ref }}', cancel-in-progress: true}
+jobs:
+  differential:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Advisory on PRs; nightly/manual failures remain red.
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    env: {CI: 'true', PYTHONPATH: '${{ github.workspace }}', HERMES_DISABLE_LAZY_INSTALLS: '1'}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with: {python-version: '3.12'}
+      - run: pip install pytest numpy
+      # keep identical to ci.yml's stub step
+      - name: Stub hermes-agent ABC
+        run: |
+          mkdir -p agent
+          cat > agent/__init__.py <<'STUB'
+          STUB
+          cat > agent/context_engine.py <<'STUB'
+          """Minimal stub of hermes-agent ContextEngine ABC for CI."""
+          class ContextEngine:
+              """Base class stub — just enough for LCMEngine to import."""
+              def __init__(self, **kwargs):
+                  self.compression_count = 0
+                  self.last_prompt_tokens = 0
+              def compress(self, messages, current_tokens=None, **kwargs):
+                  raise NotImplementedError
+              def on_session_start(self, session_id, **kwargs):
+                  pass
+              def on_session_end(self, **kwargs):
+                  pass
+              def on_session_reset(self):
+                  self.compression_count = 0
+                  self.last_prompt_tokens = 0
+              def get_tool_schemas(self):
+                  return []
+              def handle_tool_call(self, name, args, **kwargs):
+                  raise NotImplementedError
+              def get_status(self):
+                  return {}
+          STUB
+      - run: git fetch --no-tags --depth=1 origin 6800cf45ad05280e6cf6fa9e1ad96c62b7132646
+      - name: Run and report differential
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/differential"
+          set +e
+          LCM_DIFFERENTIAL=1 LCM_DIFFERENTIAL_OUT=$RUNNER_TEMP/differential python -m pytest tests/differential -q -rx -p no:randomly 2>&1 | tee "$RUNNER_TEMP/differential/pytest.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          {
+            printf '# Differential report\n\nPytest exit code: %s\n\n' "$status"
+            tail -n 1 "$RUNNER_TEMP/differential/pytest.log"
+            while IFS= read -r summary; do
+              printf '\n### %s\n' "$(basename "$(dirname "$summary")")"
+              sed -n '4p' "$summary"
+            done < <(find "$RUNNER_TEMP/differential" -name summary.md -type f | sort)
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with: {name: differential, path: '${{ runner.temp }}/differential', retention-days: 14}
