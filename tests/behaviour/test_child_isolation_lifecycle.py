@@ -359,7 +359,6 @@ def test_same_child_registry_barrier_interleavings(tmp_path, monkeypatch, native
 
 
 @pytest.mark.parametrize("marker_held", [False, True])
-@pytest.mark.xfail(strict=True, reason="R3-1: child registry hides the bound MAIN compressor")
 def test_retained_child_promoted_to_bypassed_main_ends_native(tmp_path, monkeypatch, native, marker_held):
     """Retained child state must not hide the same ID's foreground compressor."""
     pin_char_counter(monkeypatch)
@@ -393,7 +392,6 @@ def test_retained_child_promoted_to_bypassed_main_ends_native(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("kind", ["ignore", "stateless"])
-@pytest.mark.xfail(strict=True, reason="R3-1: child registry hides the bound MAIN compressor")
 def test_child_collides_with_bypassed_main_end(tmp_path, monkeypatch, native, kind):
     pin_char_counter(monkeypatch)
     created, ended, resets = native
@@ -416,10 +414,7 @@ def test_child_collides_with_bypassed_main_end(tmp_path, monkeypatch, native, ki
         assert created[-1] not in active
 
 
-@pytest.mark.parametrize("bound", [
-    pytest.param("child", marks=pytest.mark.xfail(strict=True, reason="R3-1: child registry hides MAIN")),
-    "other", "",
-])
+@pytest.mark.parametrize("bound", ["child", "other", ""])
 def test_auxiliary_handoff_respects_main_native_binding(tmp_path, monkeypatch, native, bound):
     """The usage handoff's equality guard applies separately to every native state."""
     pin_char_counter(monkeypatch)

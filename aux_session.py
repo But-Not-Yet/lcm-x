@@ -190,6 +190,7 @@ class AuxiliarySessionMixin:
                             session_id,
                             [],
                             current_session_bypasses=True,
+                            require_session_match=True,
                         )
                     if (
                         had_active_session
@@ -421,6 +422,7 @@ class AuxiliarySessionMixin:
                                 new_session_id,
                                 [],
                                 current_session_bypasses=True,
+                                require_session_match=True,
                             )
                         self._auxiliary_session_generations[new_session_id] = generation
                         self._auxiliary_handoff_parent_session_ids.pop(new_session_id, None)
@@ -437,6 +439,7 @@ class AuxiliarySessionMixin:
                                 new_session_id,
                                 [],
                                 current_session_bypasses=True,
+                                require_session_match=True,
                             )
                     self._auxiliary_session_ids.add(new_session_id)
                     self._auxiliary_session_generations[new_session_id] = generation
@@ -451,6 +454,7 @@ class AuxiliarySessionMixin:
                             new_session_id,
                             [],
                             current_session_bypasses=True,
+                            require_session_match=True,
                         )
                     self._auxiliary_session_ids.add(new_session_id)
                     self._auxiliary_session_generations.pop(new_session_id, None)

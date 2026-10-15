@@ -1451,6 +1451,7 @@ class LCMEngine(
                                 auxiliary_session_id,
                                 [],
                                 current_session_bypasses=True,
+                                require_session_match=True,
                             )
                         self._auxiliary_session_generations[
                             auxiliary_session_id

@@ -41,7 +41,7 @@ class BypassMixin:
         with self._auxiliary_session_lock:
             if session_id is not None:
                 states = self._child_host_fallback_states.get(session_id)
-                return list(states.values()) if states else [self.__dict__]
+                return [self.__dict__, *states.values()] if states else [self.__dict__]
             return [self.__dict__, *(state for states in self._child_host_fallback_states.values()
                                      for state in states.values())]
 
@@ -159,10 +159,15 @@ class BypassMixin:
         messages: List[Dict[str, Any]],
         *,
         current_session_bypasses: bool,
+        require_session_match: bool = False,
     ) -> None:
         for state in self._host_fallback_states(session_id):
             compressor = state.get("_host_fallback_compressor")
             fallback_session_id = state.get("_host_fallback_session_id", "")
+            # Generation handoffs previously guarded the one shared slot by exact ID.
+            # Apply that guard to each state, including MAIN and an empty binding.
+            if require_session_match and fallback_session_id != session_id:
+                continue
             if compressor is not None and (
                 current_session_bypasses
                 or not fallback_session_id
