@@ -18,6 +18,7 @@ from typing import Any
 import uuid
 
 from .command_auth import CommandInvocation, Decision, authorize
+from .command_router import route
 from .db_bootstrap import (
     _create_stem_fts,
     check_external_content_fts_integrity,
@@ -5799,79 +5800,4 @@ def handle_lcm_command(
     if not tokens:
         return _status_text(engine)
 
-    head = tokens[0].lower()
-    rest = tokens[1:]
-
-    if head == "status":
-        if rest:
-            return _help_text("`/lcm status` does not accept extra arguments.")
-        return _status_text(engine)
-
-    if head == "doctor":
-        if not rest:
-            return _doctor_text(engine)
-        if len(rest) == 1 and rest[0].lower() == "clean":
-            return _doctor_clean_text(engine)
-        if len(rest) == 1 and rest[0].lower() == "repair":
-            return _doctor_repair_text(engine)
-        if len(rest) == 1 and rest[0].lower() == "source":
-            return _doctor_source_text(engine)
-        if len(rest) == 1 and rest[0].lower() == "retention":
-            return _doctor_retention_text(engine)
-        if len(rest) == 2 and rest[0].lower() == "clean" and rest[1].lower() == "apply":
-            return _doctor_clean_apply_text(engine)
-        if len(rest) == 2 and rest[0].lower() == "clean" and rest[1].lower() == "lifecycle":
-            return _doctor_clean_lifecycle_text(engine)
-        if len(rest) == 3 and rest[0].lower() == "clean" and rest[1].lower() == "lifecycle" and rest[2].lower() == "apply":
-            return _doctor_clean_lifecycle_apply_text(engine)
-        if len(rest) == 2 and rest[0].lower() == "repair" and rest[1].lower() == "apply":
-            return _doctor_repair_apply_text(engine)
-        if len(rest) == 2 and rest[0].lower() == "repair" and rest[1].lower() == "level3":
-            return _doctor_repair_level3_text(engine)
-        if len(rest) == 3 and [part.lower() for part in rest] == ["repair", "level3", "apply"]:
-            return _doctor_repair_level3_apply_text(engine)
-        if len(rest) == 2 and rest[0].lower() == "repair" and rest[1].lower() == "schema-stamp":
-            return _doctor_repair_schema_stamp_text(engine)
-        if (
-            len(rest) == 3
-            and rest[0].lower() == "repair"
-            and rest[1].lower() == "schema-stamp"
-            and rest[2].lower() == "apply"
-        ):
-            return _doctor_repair_schema_stamp_apply_text(engine)
-        if len(rest) == 2 and rest[0].lower() == "source" and rest[1].lower() == "apply":
-            return _doctor_source_apply_text(engine)
-        return _help_text("`/lcm doctor` currently supports `clean`, `clean apply`, `clean lifecycle`, `clean lifecycle apply`, `repair`, `repair apply`, `repair schema-stamp`, `repair schema-stamp apply`, `source`, `source apply`, and `retention` as extra subcommands, plus `repair level3` and `repair level3 apply`.")
-
-    if head == "backup":
-        if rest:
-            return _help_text("`/lcm backup` does not accept extra arguments.")
-        return _backup_text(engine)
-
-    if head == "rotate":
-        if not rest:
-            return _rotate_text(engine)
-        if len(rest) == 1 and rest[0].lower() == "apply":
-            return _rotate_apply_text(engine)
-        return _help_text("`/lcm rotate` accepts an optional `apply` subcommand.")
-
-    if head == "rollups":
-        return _rollups_text(rest, engine)
-
-    if head == "assertions":
-        return _assertions_text(rest, engine)
-
-    if head == "preset":
-        return _preset_text(rest, engine)
-
-    if head == "embed":
-        if len(rest) == 1 and rest[0].lower() == "warmup":
-            return _embedding_warmup_text(engine)
-        if rest and rest[0].lower() == "backfill":
-            return _embedding_backfill_text(rest[1:], engine)
-        return _help_text("`/lcm embed` requires the `warmup` or `backfill` subcommand.")
-
-    if head == "help":
-        return _help_text()
-
-    return _help_text(f"Unknown subcommand: {tokens[0]}")
+    return route(tokens[0], tokens[1:], engine, globals())
