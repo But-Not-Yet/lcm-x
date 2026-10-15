@@ -49,8 +49,9 @@ def test_i1225_objective_exceeds_room_32k(outputs):
     evaluate([case], outputs / case["id"])
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="#1225: objective exceeds room; absolute fit is unresolved")
-def test_i1225_absolute_fit(outputs):
+def test_i1225_shape_fits(outputs):
+    """This 22k-objective shape projects to 22,579 tokens and fits. It does not reproduce #1225's absolute
+    failure, so it is pinned as a fit, not as a strict xfail; a reproducing shape needs the issue's host input."""
     import json
     path = outputs / "i1225_objective_exceeds_room_32k" / "summary.json"
     if not path.exists():
