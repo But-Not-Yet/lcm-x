@@ -113,11 +113,14 @@ def select_tail(
         msg_tokens = count_message_tokens(msg)
         own_results_start: int | None = None
         if msg.get("role") == "assistant" and msg.get("tool_calls"):
-            # Reserve the final sanitizer's stubs within this turn's result group.
+            # The final sanitizer inserts a plain stub for each call whose result is not
+            # in this turn's own result group (the tool rows right after it). Reserve them
+            # too, or a full summary budget overflows after sanitizing and the over-cap
+            # pass drops the preserved objective first (#1048).
             own_results_start = len(kept_reversed)
             while own_results_start and prepared_rows[kept_reversed[own_results_start - 1]].get("role") == "tool":
                 own_results_start -= 1
-            # Count each occurrence: repeated IDs do not share a single result.
+            # Count, don't collapse: the sanitizer pairs each call occurrence separately.
             unmatched_results = Counter(
                 str(prepared_rows[i].get("tool_call_id") or "").strip()
                 for i in kept_reversed[own_results_start:]
@@ -135,7 +138,8 @@ def select_tail(
                     [missing_tool_result_stub(call_id) for call_id in missing_ids])
         if anchor_cost + tail_token_total + msg_tokens > cap:
             if own_results_start is not None and own_results_start < len(kept_reversed):
-                # Rejected calls leave orphan results; refund their original charge.
+                # The turn is rejected: its kept results would be orphans the final
+                # sanitizer drops, so stop charging them to the tail budget.
                 tail_token_total -= sum(count_message_tokens(prepared_rows[i]) for i in kept_reversed[own_results_start:])
                 del kept_reversed[own_results_start:]
             if is_budget_droppable_tail_message(msg):
