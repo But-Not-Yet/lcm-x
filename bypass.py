@@ -511,6 +511,9 @@ class BypassMixin:
         }
         self._mint_engine_uids([(marker, "omitted_marker", None, "omitted_marker")],
                                taken=(row.get("message_uid") for row in head + tail))
+        minted = getattr(getattr(self, "_thread_context", None), "bypass_minted_engine_uids", None)
+        if minted is not None and marker.get("message_uid"):
+            minted.append(marker["message_uid"])
         compacted = head + [marker] + tail
         return self._trim_bypass_compacted_to_cap(compacted, target_tokens)
 
