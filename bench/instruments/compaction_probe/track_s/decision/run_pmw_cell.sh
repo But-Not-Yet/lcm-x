@@ -1,8 +1,9 @@
 #!/bin/bash
 # Track S per-message-wait cell: one repeat per seed, GLM reader, Codex summariser.
 # Only an observed 429 / usage-limit marker brakes the cell (exit 3).
+# FACTS_FLOOR is the cp-304 floor the release declares (RELEASE-READINESS-V1 D7: the previous GA's D7 mean - 0.10).
 set -eu
-for var in PRODUCT_WT PRODUCT_SHA KIT_DIR MATERIAL OUT PY GLM_API_KEY; do
+for var in PRODUCT_WT PRODUCT_SHA KIT_DIR MATERIAL OUT PY GLM_API_KEY FACTS_FLOOR; do
   if [ -z "${!var:-}" ]; then echo "STOP: required environment variable $var is unset" >&2; exit 2; fi
 done
 export GLM_API_KEY
@@ -78,4 +79,4 @@ done
 "$PY" -B "$KIT_DIR/decision/score_decision.py" --run-root "$OUT/lcmx-runs" --logs "$H/logs" \
   --material "$MATERIAL" --out "$H" --arms "$ARM" --seeds "${seeds[@]}" --checkpoints 176 304 > "$OUT/score.log" 2>&1
 "$PY" -B "$KIT_DIR/decision/pmw_read.py" --run-root "$OUT" --material "$MATERIAL" \
-  --arm "$ARM" --seeds "${seeds[@]}" --json "$OUT/pmw-read.json"
+  --arm "$ARM" --seeds "${seeds[@]}" --facts-floor "$FACTS_FLOOR" --json "$OUT/pmw-read.json"

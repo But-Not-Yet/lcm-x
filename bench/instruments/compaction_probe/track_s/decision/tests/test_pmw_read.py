@@ -163,7 +163,8 @@ def test_runner_sequence_and_limit(tmp_path, mode, expected):
     for filename in ("score_decision.py", "pmw_read.py"):
         (decision / filename).write_text(
             "import os\nfrom pathlib import Path\n"
-            f"with (Path(os.environ['OUT']) / 'sequence').open('a') as f: f.write('{filename}\\n')\n")
+            "import sys\n"
+            f"with (Path(os.environ['OUT']) / 'sequence').open('a') as f: f.write('{filename} ' + ' '.join(sys.argv[1:]) + '\\n')\n")
     env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "SYSTEMROOT")}
     # Product preflight uses a tiny clean repository; the kit itself is synthetic.
     product = tmp_path / "product"
@@ -172,12 +173,15 @@ def test_runner_sequence_and_limit(tmp_path, mode, expected):
                     "commit", "-q", "--allow-empty", "-m", "fixture"], check=True)
     head = subprocess.check_output(["git", "-C", str(product), "rev-parse", "HEAD"], text=True).strip()
     env.update(PRODUCT_WT=str(product), PRODUCT_SHA=head, KIT_DIR=str(kit), MATERIAL=str(tmp_path / "material"),
-               OUT=str(tmp_path / "out"), PY=sys.executable, GLM_API_KEY="synthetic-unused", SEEDS="1 2 3", PARALLEL="2")
+               OUT=str(tmp_path / "out"), PY=sys.executable, GLM_API_KEY="synthetic-unused", SEEDS="1 2 3", PARALLEL="2",
+               FACTS_FLOOR="0.772")
     result = subprocess.run(["bash", str(DECISION / "run_pmw_cell.sh")], env=env, capture_output=True, text=True, timeout=15)
     assert result.returncode == expected, result.stderr
     sequence = Path(env["OUT"]) / "sequence"
     if mode == "pass":
-        assert sequence.read_text().splitlines() == ["score_decision.py", "pmw_read.py"]
+        steps = sequence.read_text().splitlines()
+        assert [line.split()[0] for line in steps] == ["score_decision.py", "pmw_read.py"]
+        assert "--facts-floor 0.772" in steps[1]  # the declared floor reaches the reader
         assert len(list((Path(env["OUT"]) / "decision/logs").glob("*.log.wall"))) == 3
     else:
         assert not sequence.exists()
@@ -186,10 +190,12 @@ def test_runner_sequence_and_limit(tmp_path, mode, expected):
         assert not (Path(env["OUT"]) / "decision/logs/s2-LCMX-fleet-rc3-d3-r1.log").exists()
 
 
-@pytest.mark.parametrize("missing", ["PRODUCT_WT", "PRODUCT_SHA", "KIT_DIR", "MATERIAL", "OUT", "PY", "GLM_API_KEY"])
+@pytest.mark.parametrize("missing", ["PRODUCT_WT", "PRODUCT_SHA", "KIT_DIR", "MATERIAL", "OUT", "PY", "GLM_API_KEY",
+                                     "FACTS_FLOOR"])
 def test_runner_requires_environment(missing):
     env = dict(PATH=os.environ["PATH"])
-    env.update({key: "synthetic-unused" for key in ("PRODUCT_WT", "PRODUCT_SHA", "KIT_DIR", "MATERIAL", "OUT", "PY", "GLM_API_KEY")})
+    env.update({key: "synthetic-unused" for key in ("PRODUCT_WT", "PRODUCT_SHA", "KIT_DIR", "MATERIAL", "OUT", "PY", "GLM_API_KEY",
+                                                    "FACTS_FLOOR")})
     del env[missing]
     result = subprocess.run(["bash", str(DECISION / "run_pmw_cell.sh")], env=env, capture_output=True, text=True)
     assert result.returncode == 2
