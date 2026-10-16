@@ -187,14 +187,17 @@ def test_pre_crossing_and_reported_figures(cell):
     assert pooled["survival_fits"] == 0
 
 
-@pytest.mark.parametrize("mode,expected", [("pass", 0), ("fail", 7), ("limit", 3),
-                                         ("dirty-tracked", 2), ("dirty-untracked", 2),
-                                         ("short-seeds", 0), ("other-arm", 0)])
-def test_runner_sequence_and_limit(tmp_path, mode, expected):
+@pytest.mark.parametrize("mode,expected,fault", [("pass", 0, ""), ("pass", 0, "T"), ("pass", 0, "P"),
+                                                ("fail", 7, ""), ("limit", 3, ""),
+                                                ("dirty-tracked", 2, ""), ("dirty-untracked", 2, ""),
+                                                ("short-sleep", 2, "T"), ("empty-sleep", 2, "P"),
+                                                ("short-seeds", 0, ""), ("other-arm", 0, "")])
+def test_runner_sequence_and_limit(tmp_path, mode, expected, fault):
     kit = tmp_path / "kit"
     runner = kit / "s2" / "run_s_lcmx.py"
     runner.parent.mkdir(parents=True)
-    runner.write_text("import sys, time\nprint('HTTP 429' if " + repr(mode) + " == 'limit' else 'replay', flush=True)\n"
+    runner.write_text("import sys, time\nprint('ARGS: ' + ' '.join(sys.argv[1:]), flush=True)\n"
+                      "print('HTTP 429' if " + repr(mode) + " == 'limit' else 'replay', flush=True)\n"
                       "if " + repr(mode) + " == 'limit': time.sleep(20)\n"
                       "sys.exit(7 if " + repr(mode) + " == 'fail' else 0)\n")
     decision = kit / "decision"
@@ -222,25 +225,31 @@ def test_runner_sequence_and_limit(tmp_path, mode, expected):
     head = subprocess.check_output(["git", "-C", str(product), "rev-parse", "HEAD"], text=True).strip()
     env.update(PRODUCT_WT=str(product), PRODUCT_SHA=head, KIT_DIR=str(kit), MATERIAL=str(tmp_path / "material"),
                OUT=str(tmp_path / "out"), PY=sys.executable, GLM_API_KEY="synthetic-unused", SEEDS="1 2 3", PARALLEL="2",
-               FACTS_FLOOR="0.772")
+               FACTS_FLOOR="0.772", FAULT=fault)
     if mode == "short-seeds":
         env["SEEDS"] = "1 2"
     elif mode == "other-arm":
         env["ARM"] = "synthetic"
+    elif mode in ("short-sleep", "empty-sleep"):
+        env["S2_FAULT_SLEEP_S"] = "0.01" if mode == "short-sleep" else ""
     result = subprocess.run(["bash", str(DECISION / "run_pmw_cell.sh")], env=env, capture_output=True, text=True, timeout=15)
     assert result.returncode == expected, result.stderr
     sequence = Path(env["OUT"]) / "sequence"
+    if mode in ("short-sleep", "empty-sleep"):
+        assert "S2_FAULT_SLEEP_S" in result.stderr
+        assert not Path(env["OUT"]).exists()
+        return
     if mode.startswith("dirty-"):
         assert str(kit) in result.stderr
         assert not Path(env["OUT"]).exists()  # rejected before starting runs
         return
     receipt = json.loads((Path(env["OUT"]) / "cell.json").read_text())
     assert receipt == dict(product_sha=head, kit_sha=kit_sha, arm=env.get("ARM", "LCMX-fleet-rc3"),
-                           seeds=[int(n) for n in env["SEEDS"].split()], facts_floor=0.772,
-                           gating=mode not in ("short-seeds", "other-arm"))
-    if mode in ("short-seeds", "other-arm"):
+                           seeds=[int(n) for n in env["SEEDS"].split()], facts_floor=0.772, fault=fault or None,
+                           gating=mode not in ("short-seeds", "other-arm") and not fault)
+    if mode in ("short-seeds", "other-arm") or fault:
         assert "NON-GATING:" in result.stderr
-        assert ("SEEDS" if mode == "short-seeds" else "ARM") in result.stderr
+        assert ("FAULT" if fault else "SEEDS" if mode == "short-seeds" else "ARM") in result.stderr
     else:
         assert "NON-GATING:" not in result.stderr
     if expected == 0:
@@ -248,11 +257,49 @@ def test_runner_sequence_and_limit(tmp_path, mode, expected):
         assert [line.split()[0] for line in steps] == ["score_decision.py", "pmw_read.py"]
         assert "--facts-floor 0.772" in steps[1]  # the declared floor reaches the reader
         assert len(list((Path(env["OUT"]) / "decision/logs").glob("*.log.wall"))) == len(receipt["seeds"])
+        for log in (Path(env["OUT"]) / "decision/logs").glob("*.log"):
+            assert (f"--fault-hang {fault}" in log.read_text()) if fault else "--fault-hang" not in log.read_text()
     else:
         assert not sequence.exists()
     if mode == "limit":
         assert (Path(env["OUT"]) / "STOP").exists()
         assert not (Path(env["OUT"]) / "decision/logs/s2-LCMX-fleet-rc3-d3-r1.log").exists()
+
+
+@pytest.mark.parametrize("fault", ["t", "X", "T P", "0"])
+def test_runner_rejects_bad_fault(fault):
+    result = subprocess.run(["bash", str(DECISION / "run_pmw_cell.sh")],
+                            env=dict(PATH=os.environ["PATH"], FAULT=fault), capture_output=True, text=True)
+    assert result.returncode == 2
+    assert "FAULT" in result.stderr
+
+
+def test_hang_metrics_are_reported_only(cell):
+    def change(s):
+        s["events"][0].update(compress_wall_s=100)
+        s["events"][1].update(turn=0, compress_wall_s=101)
+        s["events"].insert(0, dict(turn=-1, tokens_at_trigger=50, compress_wall_s=999))
+        s["fault_hang"] = dict(mode="P", faulted_calls=2)
+    change_runs(cell, change)
+    _, result = invoke(cell)
+    x = result["pooled"][ARM]
+    assert (x["long_waits"], x["max_long_waits_in_one_turn"], x["max_turn_wait_s"]) == (4, 2, 201)
+    assert (x["faulted_calls"], x["fault_mode"]) == (4, "P")
+    for run in result["per_run"].values():
+        assert (run["long_waits"], run["max_long_waits_in_one_turn"], run["max_turn_wait_s"]) == (2, 2, 201)
+    assert len(result["verdict"]["bars"]) == 6
+
+
+def test_missing_and_mixed_fault_modes(cell):
+    _, result = invoke(cell)
+    assert result["pooled"][ARM]["fault_mode"] is None
+    assert result["pooled"][ARM]["faulted_calls"] == 0
+    path = next(cell[0].glob("lcmx-runs/*/seed-*/*/summary.json"))
+    s = json.loads(path.read_text())
+    s["fault_hang"] = dict(mode="T", faulted_calls=1)
+    write(path, s)
+    _, result = invoke(cell)
+    assert result["pooled"][ARM]["fault_mode"] == "mixed"
 
 
 @pytest.mark.parametrize("missing", ["PRODUCT_WT", "PRODUCT_SHA", "KIT_DIR", "MATERIAL", "OUT", "PY", "GLM_API_KEY",
