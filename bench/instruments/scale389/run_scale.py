@@ -15,7 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from bench.tools.benchpaths import bench_path
+from bench.tools.benchpaths import required_path
 from bench.tools.pinverify import verify as verify_pins  # noqa: E402
 from bench.tools.storefreeze import (  # noqa: E402
     verify_manifest,
@@ -24,9 +24,6 @@ from bench.tools.storefreeze import (  # noqa: E402
 
 
 SCRIPT = Path(__file__).with_name("phase1a.py")
-DEFAULT_RESULTS = Path(
-    "Codex/session-notes/2026-07-29/hermes-r3-1/artifacts/laneINSTPREP-logs/scale389-results"
-)
 
 
 def _verify_store(args: argparse.Namespace, phase: str) -> None:
@@ -135,7 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    args.results = args.results or bench_path(DEFAULT_RESULTS)
+    args.results = args.results or required_path("SCALE389_RESULTS", argument="--results")
     args.results.mkdir(parents=True, exist_ok=True)
     _verify_pins(args, "pre-run")
     _verify_store(args, "pre-run")

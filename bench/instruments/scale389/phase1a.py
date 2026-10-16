@@ -34,6 +34,7 @@ from bench.instruments.scale389.metrics import (  # noqa: E402
     session_gold_metrics,
     summarise_rows,
 )
+from bench.tools.benchpaths import required_path
 
 
 BRIDGE = Path(
@@ -69,14 +70,11 @@ def _data_path(relative: str, override: str) -> Path:
 
 
 def _corpus() -> Path:
-    return _data_path("Codex/session-notes/2026-07-25/hermes-v1-scale/artifacts/corpus", "SCALE389_CORPUS")
+    return required_path("SCALE389_CORPUS")
 
 
 def _results() -> Path:
-    return _data_path(
-        "Codex/session-notes/2026-07-29/hermes-r3-1/artifacts/laneINSTPREP-logs/scale389-results",
-        "SCALE389_RESULTS",
-    )
+    return required_path("SCALE389_RESULTS")
 
 
 def _filescan() -> Path:
