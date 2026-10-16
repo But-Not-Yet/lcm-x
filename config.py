@@ -87,16 +87,26 @@ def _parse_float_env(key: str, default: float) -> float:
         return default
 
 
-def _parse_bool_env(key: str, default: bool) -> bool:
+def _parse_bool_env(
+    key: str, default: bool, *, unknown: bool | None = None,
+    true_values: tuple[str, ...] = ("1", "true", "yes", "on"),
+    false_values: tuple[str, ...] = ("0", "false", "no", "off"),
+) -> bool:
+    """Read on every call; unknown (including blank) keeps default unless specified."""
     raw = os.environ.get(key)
     if raw is None:
         return default
     normalized = raw.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
+    if normalized in true_values:
         return True
-    if normalized in {"0", "false", "no", "off"}:
+    if normalized in false_values:
         return False
-    return default
+    return default if unknown is None else unknown
+
+
+def _disabled_tool_names() -> set[str]:
+    """Tools disabled via LCM_DISABLED_TOOLS (comma-separated lcm_* names)."""
+    return set(_parse_pattern_list(os.environ.get("LCM_DISABLED_TOOLS", "")))
 
 
 def _parse_str_env(key: str, default):
@@ -722,7 +732,9 @@ class LCMConfig:
     l3_truncate_tokens: int = 512
 
     # -- Assembly guardrails ---
-    # Hard cap for the assembled active context (0 = disabled)
+    # Hard cap for the assembled active context (0 = disabled). Exception (#1162): keep the newest visible
+    # assistant reply beyond the cap when it would otherwise be dropped before being summarised.
+    # Hermes re-adds that reply after compaction anyway; keeping it here puts it in the right place.
     max_assembly_tokens: int = 0
     # Reserve this many tokens from the model context window before assembly
     # (0 = disabled). Effective cap becomes context_length - reserve_tokens_floor.
