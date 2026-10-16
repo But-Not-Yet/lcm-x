@@ -52,6 +52,7 @@ from .search_query import (
     should_apply_directness_rank_adjustment,
 )
 from .message_content import normalize_content_value as _normalize_content_value
+from .sqlite_session import ConnectionPolicy, open_connection
 from .sqlite_util import (
     _run_sqlite_write_with_snapshot_retry,
     _temporary_sqlite_busy_timeout,
@@ -340,12 +341,16 @@ class MessageStore:
 
     def _init_db(self):
         # #1159: reserve the write lock before FTS5 can read during re-prepare.
-        self._conn = sqlite3.connect(
-            str(self.db_path), timeout=5.0, check_same_thread=False,
-            isolation_level="IMMEDIATE",
-        )
-        refuse_schema_version_too_new(self._conn)
-        configure_connection(self._conn)
+        open_connection(ConnectionPolicy(
+            database=str(self.db_path),
+            connect_kwargs=(
+                ("timeout", 5.0), ("check_same_thread", False), ("isolation_level", "IMMEDIATE"),
+            ),
+            before_row_factory=(refuse_schema_version_too_new, configure_connection),
+            row_factory=None,
+            on_open=lambda conn: setattr(self, "_conn", conn),
+            on_setup_error=None,
+        ))
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS messages (
                 store_id INTEGER PRIMARY KEY AUTOINCREMENT,
