@@ -1775,6 +1775,11 @@ class LCMEngine(
         until, reason = self._no_progress_hold
         return {"reason": reason, "until": time.time() + max(0.0, until - time.monotonic())}  # #618: wall clock
 
+    def _zero_leaf_streak_status(self) -> Optional[dict]:
+        """#1162: this conversation's consecutive over-threshold passes that stored no leaf, and the last reason."""
+        streak = self.__dict__.get("_zero_leaf_streaks", {}).get(self._hold_conversation_key())
+        return dict(streak) if streak else None
+
     def record_rejected_compaction(self) -> None:
         """#651 host breaker hook: the host refused the last compaction (the result would be larger). Called
         without arguments inside an error-swallowing wrapper. #665: a refusal of a bypassed (auxiliary or
@@ -2821,6 +2826,7 @@ class LCMEngine(
         observed = int(observed_tokens or 0)
         if observed < self.threshold_tokens:
             self._note_fresh_tail_pressure_relieved()
+            self.__dict__.get("_zero_leaf_streaks", {}).pop(self._hold_conversation_key(), None)  # #1162
             return False
         boundary = self._fresh_tail_boundary(messages)
         leading_anchor_count = self._leading_anchor_count(messages)
@@ -5015,6 +5021,7 @@ class LCMEngine(
             "threshold_full_sweep": dict(self._last_threshold_full_sweep),
             "last_stub_first_exit": dict(self._last_stub_first_exit) if self._last_stub_first_exit else None,
             "no_progress_hold": self._no_progress_hold_status(),
+            "zero_leaf_streak": self._zero_leaf_streak_status(),
             "ingest_failure_count": self._ingest_failure_count,
             "consecutive_ingest_failures": self._consecutive_ingest_failures,
             "last_ingest_error": self._last_ingest_error,
@@ -5266,7 +5273,7 @@ class LCMEngine(
             return
         try:
             self._ingest_cursor_needs_reconcile = (
-                self._store.get_session_count(self._session_id) > 0
+                self._store.has_session_messages(self._session_id)
                 # An empty rotation child resumed after a restart still has to
                 # re-index the host's post-compaction list (#483, C7), from a
                 # commit proof or a carried native recovery proof.
@@ -6039,8 +6046,8 @@ class LCMEngine(
                                    if identity != cached_source_identities[idx]), None)
             try:
                 if reconciled_existing_session and cursor > 0:
-                    for store_id, stamp in self._identity_anchor_backfill_prefix(messages, reconcile_messages, cursor):
-                        self._store.backfill_observed_at(store_id, stamp)
+                    self._store.backfill_observed_at_many(
+                        self._identity_anchor_backfill_prefix(messages, reconcile_messages, cursor))
                 anchor_plan = self._identity_anchor_prematch(messages, reconcile_messages, cursor, audit_from)
                 anchor_plan["replayed"] -= replayed_tool_segment_indexes
                 self._identity_anchor_version_rewind(messages, anchor_plan)
@@ -6110,7 +6117,7 @@ class LCMEngine(
         empty_session_placeholder_ordinals: dict[str, set[int]] = {}
         if not compression_boundary_ingest_pending and self._session_id:
             try:
-                if self._store.get_session_count(self._session_id) == 0:
+                if not self._store.has_session_messages(self._session_id):
                     empty_session_placeholder_budget = self._load_generated_ignored_placeholder_hash_counts()
                     empty_session_placeholder_ordinals = self._load_generated_ignored_placeholder_hash_ordinals()
             except Exception:
