@@ -75,6 +75,14 @@ including SQLite's cap. Example: `LCM_SQLITE_MMAP_SIZE=0 hermes` after restartin
 
 Change one tuning variable at a time, then re-check `lcm_status`, context pressure, summary health, latency, and actual answer quality.
 
+The uniform boolean/integer/float environment loader keeps defaults for malformed
+values and reports them through `config_source_warnings` in `lcm_status`,
+`/lcm status`, and the `lcm_doctor` configuration check. For example,
+`LCM_SURVIVAL_FIT=flase` keeps `true`; the warning names the key, shows the raw
+value's representation limited to 40 characters, and states the value used.
+Empty or whitespace-only values in this loader keep the default without warnings.
+Range warnings (`LCM_CONTEXT_THRESHOLD`, `LCM_SURVIVAL_RESERVE`, `LCM_LEAF_CHUNK_TOKENS`, `LCM_SUMMARY_TIMEOUT_MS`), choice warnings (`LCM_EMBEDDING_PROVIDER`, `LCM_PREANSWER_EVIDENCE_MODE`, `LCM_EMBEDDING_STORAGE_DTYPE`), and dropped-input warnings (`LCM_EMPTY_LIFECYCLE_GC_MAX_AGE_HOURS`, `LCM_RECALL_ARM_WEIGHTS`, `LCM_MODEL_THRESHOLDS`) use the same channel without changing values or consumer fallbacks.
+
 ### Tool exposure
 
 Both native context-engine schemas and plugin-registry registration advertise

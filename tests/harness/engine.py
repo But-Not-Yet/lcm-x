@@ -12,6 +12,8 @@ from hermes_lcm.tokens import count_messages_tokens
 def make_engine(tmp_path, *, window=None, session_id="S", conversation_id=None,
                 platform="cli", **overrides) -> LCMEngine:
     """Use shipped defaults, isolated storage, and explicit config overrides only."""
+    if "database_path" in overrides:
+        raise TypeError("make_engine always stores in tmp_path/lcm.db; database_path cannot be overridden")
     config = LCMConfig()
     config.database_path = str(tmp_path / "lcm.db")
     names = {field.name for field in fields(config)}
@@ -53,7 +55,7 @@ class HostCall(NamedTuple):
 
 
 def host_call(engine, view, *, retry_on_overflow=True) -> HostCall:
-    """Ingest, check pressure, compress, and retry overflow once if requested.
+    """Ingest, check pressure (the threshold, then the engine's preflight gate), compress, and retry overflow once.
 
     ``compressed`` records an invocation, including a real engine no-op.
     An unbound/unknown window (zero) does not imply overflow.
@@ -61,6 +63,17 @@ def host_call(engine, view, *, retry_on_overflow=True) -> HostCall:
     engine.ingest(view)
     n = count_messages_tokens(view)
     compressed = engine.should_compress(n)
+    if not compressed:
+        # The host's sub-threshold branch: an unblocked request asks the engine's preflight gate, which can
+        # request one compress pass (Hermes agent/turn_context_compaction.py, _engine_preflight_maintenance).
+        info, preflight = getattr(engine, "should_compress_info", None), getattr(engine, "should_compress_preflight", None)
+        blocked = callable(info) and info(n)[1]
+        compressed = bool(not blocked and callable(preflight) and preflight(view))
+    # Every automatic compress passes the host's breaker gate, read on the type (Hermes
+    # agent/conversation_compression.py, _automatic_compression_gate_blocks): a no-progress or sweep hold skips it.
+    gate = getattr(type(engine), "_automatic_compression_blocked", None)
+    if compressed and callable(gate) and gate(engine):
+        compressed = False
     if compressed:
         view = engine.compress(view, current_tokens=n)
         n = count_messages_tokens(view)

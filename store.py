@@ -339,7 +339,11 @@ class MessageStore:
         self._init_db()
 
     def _init_db(self):
-        self._conn = sqlite3.connect(str(self.db_path), timeout=5.0, check_same_thread=False)
+        # #1159: reserve the write lock before FTS5 can read during re-prepare.
+        self._conn = sqlite3.connect(
+            str(self.db_path), timeout=5.0, check_same_thread=False,
+            isolation_level="IMMEDIATE",
+        )
         refuse_schema_version_too_new(self._conn)
         configure_connection(self._conn)
         self._conn.executescript("""
@@ -374,9 +378,9 @@ class MessageStore:
             self._conn,
             build_message_fts_spec(),
         )
+        # Also ensures conversation_id and its index on current-schema opens.
         run_versioned_migrations(self._conn)
         self._ensure_source_column()
-        self._ensure_conversation_id_column()
         self._ensure_time_contract_columns()
         self._conn.commit()
         # False: a busy writer deferred stem init, so this handle reads only the plain index.
@@ -392,18 +396,6 @@ class MessageStore:
         )
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_msg_source_session ON messages(source, session_id, store_id)"
-        )
-
-    def _ensure_conversation_id_column(self) -> None:
-        columns = {
-            row[1] for row in self._conn.execute("PRAGMA table_info(messages)").fetchall()
-        }
-        add_column_if_missing(
-            self._conn, columns, "conversation_id",
-            "ALTER TABLE messages ADD COLUMN conversation_id TEXT DEFAULT ''",
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_msg_conversation_session ON messages(conversation_id, session_id, store_id)"
         )
 
     def _ensure_time_contract_columns(self) -> None:
@@ -726,29 +718,33 @@ class MessageStore:
     def scan_evidence_rows(self, *, limit: int = 4096) -> Dict[str, Any]:
         """Return one bounded, read-only whole-corpus evidence snapshot.
 
-        The window metadata and rows come from one SQLite statement, so a
+        The window metadata and rows come from one read transaction, so a
         caller cannot accidentally certify finite coverage from a count and a
         row page taken at different corpus generations.  This API deliberately
         has no query or session filter: a narrower scan is not whole-corpus
         coverage.  Callers must treat ``truncated`` as an honest fallback.
         """
         bounded_limit = min(4096, max(1, int(limit)))
-        rows = self._conn.execute(
-            f"""
-            WITH snapshot AS (
-                SELECT {_MESSAGE_SELECT_COLUMNS},
-                       COUNT(*) OVER () AS snapshot_total_rows,
-                       MAX(store_id) OVER () AS snapshot_max_store_id,
-                       SUM(CASE WHEN observed_at IS NULL THEN 1 ELSE 0 END)
-                           OVER () AS snapshot_observed_at_missing_rows
-                FROM messages
-            )
-            SELECT * FROM snapshot
-            ORDER BY store_id
-            LIMIT ?
-            """,
-            (bounded_limit,),
-        ).fetchall()
+        with self._write_lock:
+            conn = self._conn
+            owns_transaction = not conn.in_transaction
+            if owns_transaction:
+                conn.execute("BEGIN")
+            try:
+                totals = conn.execute(
+                    "SELECT COUNT(*), MAX(store_id), "
+                    "SUM(CASE WHEN observed_at IS NULL THEN 1 ELSE 0 END) FROM messages"
+                ).fetchone()
+                rows = conn.execute(
+                    f"SELECT {_MESSAGE_SELECT_COLUMNS} FROM messages ORDER BY store_id LIMIT ?",
+                    (bounded_limit,),
+                ).fetchall()
+                if owns_transaction:
+                    conn.commit()
+            except BaseException:
+                if owns_transaction:
+                    conn.rollback()
+                raise
         if not rows:
             return {
                 "rows": [],
@@ -758,11 +754,10 @@ class MessageStore:
                 "truncated": False,
                 "observed_at_missing_rows": 0,
             }
-        message_column_count = _MESSAGE_SELECT_COLUMN_COUNT
-        total_rows = int(rows[0][message_column_count] or 0)
-        snapshot_max_store_id = int(rows[0][message_column_count + 1] or 0)
-        observed_at_missing_rows = int(rows[0][message_column_count + 2] or 0)
-        messages = [self._row_to_dict(row[:message_column_count]) for row in rows]
+        total_rows = int(totals[0] or 0)
+        snapshot_max_store_id = int(totals[1] or 0)
+        observed_at_missing_rows = int(totals[2] or 0)
+        messages = [self._row_to_dict(row) for row in rows]
         return {
             "rows": messages,
             "snapshot_max_store_id": snapshot_max_store_id,
@@ -1054,7 +1049,8 @@ class MessageStore:
         for start in range(0, len(ids) if self._host_uid_table_exists() else 0, 500):
             chunk = ids[start:start + 500]
             for store_id, uid in self._conn.execute(
-                f"SELECT store_id, uid FROM host_uid_bindings WHERE store_id IN ({','.join('?' * len(chunk))}) "
+                f"SELECT store_id, uid FROM host_uid_bindings INDEXED BY idx_host_uid_store "
+                f"WHERE store_id IN ({','.join('?' * len(chunk))}) "
                 "AND lineage_key = ? AND kind IN ('canonical', 'version')", [*chunk, lineage_key]):
                 out.setdefault(int(store_id), set()).add(str(uid))
         return out
@@ -1203,6 +1199,25 @@ class MessageStore:
             self._conn.commit()
             return cur.rowcount > 0
 
+    def backfill_observed_at_many(self, pairs) -> int:
+        """R5: batch proven ``(store_id, stamp)`` backfills, never overwriting a value."""
+        rows = [(float(stamp), int(store_id)) for store_id, stamp in pairs]
+        if not rows:  # no commit: an empty pass must not commit a caller's open transaction (the per-row loop did not)
+            return 0
+        with self._write_lock, self._conn:
+            return self._conn.executemany(
+                "UPDATE messages SET observed_at = ?, observed_at_source = 'host_message_timestamp' "
+                "WHERE store_id = ? AND observed_at IS NULL",
+                rows,
+            ).rowcount
+
+    def has_session_messages(self, session_id: str) -> bool:
+        """Whether a session contains any messages, without counting them."""
+        return bool(self._conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = ?)",
+            (session_id,),
+        ).fetchone()[0])
+
     def get_session_count(self, session_id: str) -> int:
         """Count messages in a session."""
         row = self._conn.execute(
@@ -1292,9 +1307,9 @@ class MessageStore:
         return self._conn.execute(
             """
             WITH session_ids AS (
-                SELECT session_id FROM messages
+                SELECT session_id FROM messages WHERE session_id = ?
                 UNION
-                SELECT session_id FROM summary_nodes
+                SELECT session_id FROM summary_nodes WHERE session_id = ?
             ),
             message_stats AS (
                 SELECT session_id,
@@ -1302,7 +1317,7 @@ class MessageStore:
                        COALESCE(SUM(token_estimate), 0) AS token_total,
                        MIN(timestamp) AS first_message_at,
                        MAX(timestamp) AS last_message_at
-                FROM messages
+                FROM messages WHERE session_id = ?
                 GROUP BY session_id
             ),
             node_stats AS (
@@ -1311,7 +1326,7 @@ class MessageStore:
                        COALESCE(SUM(token_count), 0) AS node_token_total,
                        MIN(COALESCE(earliest_at, created_at)) AS first_node_at,
                        MAX(COALESCE(latest_at, created_at)) AS last_node_at
-                FROM summary_nodes
+                FROM summary_nodes WHERE session_id = ?
                 GROUP BY session_id
             )
             SELECT s.session_id,
@@ -1329,7 +1344,7 @@ class MessageStore:
             WHERE s.session_id = ?
             ORDER BY s.session_id
             """,
-            (session_id,),
+            (session_id,) * 5,
         ).fetchall()
 
     def get_source_normalization_plan(self) -> Dict[str, Any]:
