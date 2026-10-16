@@ -72,6 +72,7 @@ from .reasoning import (
     verify_final_answer,
 )
 from .presets import preset_status_payload
+from .retrieval_context import RetrievalContext
 from .rollup_periods import (
     CoverageNode,
     RecentPeriodWindow,
@@ -3199,14 +3200,11 @@ def _lcm_grep_full_text_with_deadline(
                 conn.set_progress_handler(interrupt_if_expired, 1000)
                 require_remaining("connection setup")
             read_engine = copy.copy(engine)
-            read_store = copy.copy(engine._store)
-            read_dag = copy.copy(engine._dag)
-            read_store._conn = message_conn
-            read_store._db_lock = threading.RLock()
-            read_dag._conn = dag_conn
-            read_dag._db_lock = threading.RLock()
-            read_engine._store = read_store
-            read_engine._dag = read_dag
+            read_io = RetrievalContext(engine._store, engine._dag).bind(
+                message_conn, dag_conn,
+            )
+            read_engine._store = read_io.store
+            read_engine._dag = read_io.dag
             require_remaining("full-text search")
             payload = json.loads(
                 _lcm_grep_full_text(
@@ -4843,12 +4841,8 @@ def _lcm_recall_summary_source_hits(
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA query_only=ON")
         conn.set_progress_handler(interrupt_if_expired, 1000)
-        read_store = copy.copy(engine._store)
-        read_dag = copy.copy(engine._dag)
-        read_store._conn = conn
-        read_dag._conn = conn
-        read_store._write_lock = threading.RLock()
-        read_dag._db_lock = threading.RLock()
+        read_io = RetrievalContext(engine._store, engine._dag).bind(conn, conn)
+        read_store, read_dag = read_io.store, read_io.dag
 
         leads: list[dict[str, Any]] = []
         ordered_ids: list[int] = []
