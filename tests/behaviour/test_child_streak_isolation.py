@@ -15,7 +15,8 @@ def test_child_compress_leaves_parent_zero_leaf_streak(tmp_path, monkeypatch, ca
         key = engine._hold_conversation_key()
         parent = {key: {"passes": 2, "last_reason": "parent pass"}}
         engine.__dict__["_zero_leaf_streaks"] = {key: dict(parent[key])}
-        engine._store_complete_blocked = (7, "user", "raw")  # the parent's blocking row, never the child's
+        # Shape only: a bypassed pass never selects a leaf, so blocked= is unreachable here (not an isolation proof).
+        engine._store_complete_blocked = (7, "user", "raw")
         engine._mark_thread_context_stateless("child")
         view = [] if case == "empty" else [user("child request"), assistant("child reply")]
         try:
