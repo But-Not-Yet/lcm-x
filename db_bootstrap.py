@@ -19,7 +19,7 @@ import time
 from contextlib import closing, contextmanager
 from typing import Iterable, Sequence
 
-from .config import sqlite_mmap_size
+from .config import _parse_bool_env, sqlite_mmap_size
 
 logger = logging.getLogger(__name__)
 _wal_reset_warned = False  # no lock: a rare duplicate warning beats a lock a forked child could inherit held
@@ -2518,7 +2518,9 @@ def quote_sql_identifier(identifier: str) -> str:
     return f'"{identifier}"'
 
 
-def _fts_needs_rebuild_structural(conn: sqlite3.Connection, spec: ExternalContentFtsSpec) -> bool:
+def _fts_needs_rebuild_structural(
+    conn: sqlite3.Connection, spec: ExternalContentFtsSpec, *, _retry_schema: bool = True,
+) -> bool:
     shadow_tables = get_fts_shadow_table_names(spec.table_name)
     existing_tables = get_existing_table_names(conn, [spec.table_name, *shadow_tables])
     if spec.table_name not in existing_tables:
@@ -2568,6 +2570,12 @@ def _fts_needs_rebuild_structural(conn: sqlite3.Connection, spec: ExternalConten
         # turning lock exhaustion into destructive repair.
         if _is_sqlite_lock_error(exc):
             raise
+        # #1112: a racing schema change can make a healthy FTS5 connect fail.
+        if _retry_schema and (
+            getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_SCHEMA
+            or "vtable constructor failed" in str(exc).lower()
+        ):
+            return _fts_needs_rebuild_structural(conn, spec, _retry_schema=False)
         return True
 
     return False
@@ -2679,10 +2687,7 @@ _integrity_scan_threads: dict[tuple[str, str], threading.Thread] = {}
 def _background_integrity_enabled() -> bool:
     """Kill-switch: ``LCM_FTS_INTEGRITY_BACKGROUND=false`` restores the exact old
     synchronous integrity-check behavior on the startup path."""
-    raw = os.environ.get(BACKGROUND_INTEGRITY_ENV)
-    if raw is None:
-        return True
-    return raw.strip().lower() not in ("0", "false", "no", "off")
+    return _parse_bool_env(BACKGROUND_INTEGRITY_ENV, True, unknown=True, true_values=())
 
 
 def _integrity_failed_key(spec: ExternalContentFtsSpec) -> str:

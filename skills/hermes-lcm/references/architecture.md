@@ -42,7 +42,16 @@ never a silent degrade to full-text. A stale vector identity is different: when 
 cloud profile matches, or the stored vectors carry an older privacy revision, `lcm_recall`
 answers from its full-text arm (for every `include`) with `degraded=true` and an
 `embedding_identity_stale:` reason, sends no query to the stale arm, and reads none of its
-vectors. The remedy is `/lcm embed warmup`, then `/lcm embed backfill --apply`.
+vectors. The remedy is `/lcm embed warmup`, then `/lcm embed backfill --apply`
+for summary-only staleness. The doctor's `stale_tasks` selects the corpus: add
+`--corpus chunks` for chunk-only staleness or `--corpus both` when both are stale.
+Chunk apply commands on cloud providers also require `--confirm-raw-text` on
+every invocation. This flag acknowledges sending raw message text to the named
+cloud provider, even with provider-input privacy enabled; inspect the doctor's
+emitted `remedy` and consent warning before applying it.
+Repeat the backfill apply only while `remaining` is above 0 and each run lowers it.
+Stop on `status: partial`, `status: error`, or `status: failed`, or if `remaining`
+stops falling, and inspect the warnings, errors, and detail output.
 
 With embeddings on and a registered profile, new leaf summaries are embedded by a bounded
 background pass after each published leaf summary and on session bind; new message chunks are
