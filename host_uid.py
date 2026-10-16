@@ -167,10 +167,13 @@ class HostUidShadowMixin:
                        if isinstance(uid, str)}
             records: dict = defaultdict(list)
             for uid in (present & pending.keys()) - done:
-                lineage, proof_kind = pending[uid]
+                entry = pending.get(uid)  # a bypassed pass on another thread may drop its own uid meanwhile
+                if entry is None:
+                    continue
+                lineage, proof_kind = entry
                 records[lineage].append((0, uid, "engine", proof_kind))
             for uid in (pending.keys() - present) | (pending.keys() & done):
-                pending.pop(uid)
+                pending.pop(uid, None)
             for lineage, rows in records.items():
                 try:
                     self._store.add_host_uid_bindings(lineage, rows)
