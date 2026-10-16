@@ -13,16 +13,19 @@ import time
 
 import pytest
 
-from hermes_lcm import db_bootstrap
+from hermes_lcm import db_bootstrap, lifecycle_state, vector_store
 from hermes_lcm.assertion_store import AssertionStore
 from hermes_lcm.dag import SummaryDAG
+from hermes_lcm.lifecycle_state import LifecycleStateStore
 from hermes_lcm.query_view_store import QueryViewStore
 from hermes_lcm.rollup_store import RollupStore
 from hermes_lcm.store import MessageStore
 from hermes_lcm.trajectory_store import CorpusIdentity, TrajectoryStore
+from hermes_lcm.vector_store import VectorStore
 
 
-CASES = ("trajectory", "trajectory_ro", "assertion", "assertion_ro", "rollup", "query_view")
+WRITABLE_CASES = ("trajectory", "assertion", "rollup", "query_view", "lifecycle", "vector")
+CASES = ("trajectory", "trajectory_ro", "assertion", "assertion_ro", "rollup", "query_view", "lifecycle", "vector")
 GOLDEN = Path(__file__).with_name("fixtures") / "connection_recipes.json"
 
 
@@ -42,7 +45,7 @@ def golden_traces():
         expected = set(CASES) | {
             f"{prefix}_{kind}"
             for prefix in ("future", "failure")
-            for kind in ("trajectory", "assertion", "rollup", "query_view")
+            for kind in WRITABLE_CASES
         }
         assert set(traces) == expected, "Regenerate by running the entire test file"
         lines = ["{"]
@@ -88,7 +91,10 @@ def construct(kind, path):
         )
     if kind.startswith("assertion"):
         return AssertionStore(path, read_only=kind.endswith("_ro"))
-    return {"rollup": RollupStore, "query_view": QueryViewStore}[kind](path)
+    return {
+        "rollup": RollupStore, "query_view": QueryViewStore,
+        "lifecycle": LifecycleStateStore, "vector": VectorStore,
+    }[kind](path)
 
 
 def trace_connections(monkeypatch, path, *, fail_statement=None):
@@ -159,7 +165,7 @@ def test_constructor_trace(kind, tmp_path, monkeypatch, check_trace):
         store.close()
 
 
-@pytest.mark.parametrize("kind", ("trajectory", "assertion", "rollup", "query_view"))
+@pytest.mark.parametrize("kind", WRITABLE_CASES)
 def test_future_core_version_refused_before_writable_setup(kind, tmp_path, monkeypatch, check_trace):
     path = tmp_path / "future.db"
     conn = sqlite3.connect(path)
@@ -202,7 +208,7 @@ def test_read_only_open_preserves_database_bytes(kind, tmp_path):
     assert path.read_bytes() == before
 
 
-@pytest.mark.parametrize("kind", ("trajectory", "assertion", "rollup", "query_view"))
+@pytest.mark.parametrize("kind", WRITABLE_CASES)
 def test_setup_failure_cleanup_and_exception(kind, tmp_path, monkeypatch, check_trace):
     path = tmp_path / "failure.db"
     events, connections = trace_connections(
@@ -219,3 +225,57 @@ def test_setup_failure_cleanup_and_exception(kind, tmp_path, monkeypatch, check_
     finally:
         for conn in connections:
             conn.close()
+
+
+@pytest.mark.parametrize("kind", ("lifecycle", "vector"))
+def test_live_bootstrap_bindings_order_and_connection_lifetime(kind, tmp_path, monkeypatch):
+    """Pin I6 refusal ordering, migration/commit timing and caller-owned handles."""
+    module, cls = {
+        "lifecycle": (lifecycle_state, LifecycleStateStore),
+        "vector": (vector_store, VectorStore),
+    }[kind]
+    path = tmp_path / "lifetime.db"
+    store = cls.__new__(cls)
+    callbacks = []
+
+    def observe(name, original):
+        def call(conn):
+            assert store.connection is conn
+            assert conn.row_factory is (sqlite3.Row if name == "migrate" else None)
+            callbacks.append(name)
+            return original(conn)
+        return call
+
+    for name, attribute in (
+        ("refuse", "refuse_schema_version_too_new"),
+        ("configure", "configure_connection"),
+        ("migrate", "run_versioned_migrations"),
+    ):
+        monkeypatch.setattr(module, attribute, observe(name, getattr(module, attribute)))
+    if kind == "vector":
+        original_schema = cls._ensure_embedding_schema
+
+        def ensure_schema(self):
+            assert callbacks == ["refuse", "configure", "migrate"]
+            callbacks.append("embedding_schema")
+            return original_schema(self)
+
+        monkeypatch.setattr(cls, "_ensure_embedding_schema", ensure_schema)
+
+    events, connections = trace_connections(monkeypatch, path)
+    try:
+        cls.__init__(store, path)
+        assert callbacks == ["refuse", "configure", "migrate"] + (
+            ["embedding_schema"] if kind == "vector" else []
+        )
+        assert events[-1] == ["commit"]
+        assert store.connection is connections[0]
+        assert store.connection.isolation_level is None
+        assert store.connection.row_factory is sqlite3.Row
+        store.close()
+        assert store.connection is None
+        assert events[-2:] == [["execute", "PRAGMA wal_checkpoint(PASSIVE)", []], ["close"]]
+        store.close()
+        assert events.count(["close"]) == 1
+    finally:
+        store.close()
