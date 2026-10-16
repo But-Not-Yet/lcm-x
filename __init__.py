@@ -540,23 +540,7 @@ def register(ctx):
         use_cold_lcm_engine,
         use_lcm_engine,
     )
-    from .schemas import (
-        LCM_GREP,
-        LCM_RECALL,
-        LCM_QUERY_STATE,
-        LCM_COMPUTE,
-        LCM_COMPILE_EVIDENCE,
-        LCM_EVIDENCE_PACK,
-        LCM_RETRIEVE,
-        LCM_RECENT,
-        LCM_LOAD_SESSION,
-        LCM_DESCRIBE,
-        LCM_EXPAND,
-        LCM_EXPAND_QUERY,
-        LCM_STATUS,
-        LCM_INSPECT,
-        LCM_DOCTOR,
-    )
+    from .tool_registry import TOOL_REGISTRY
 
     # A separate pre-rename copy (plugin ``hermes-lcm``) that loaded first owns
     # the context-engine slot. Registering our hooks too would make two
@@ -711,23 +695,7 @@ def register(ctx):
     # names through the plugin registry (Path A) on message-blind hosts would
     # shadow Path B and lose current-turn ingest, so the Path B fallback is the
     # expected healthy behavior there.
-    _TOOLS = [
-        ("lcm_grep", LCM_GREP, "🔍"),
-        ("lcm_recall", LCM_RECALL, "🧠"),
-        ("lcm_query_state", LCM_QUERY_STATE, "🧾"),
-        ("lcm_compute", LCM_COMPUTE, "🧮"),
-        ("lcm_compile_evidence", LCM_COMPILE_EVIDENCE, "🧷"),
-        ("lcm_evidence_pack", LCM_EVIDENCE_PACK, "📦"),
-        ("lcm_retrieve", LCM_RETRIEVE, "🧭"),
-        ("lcm_recent", LCM_RECENT, "🕒"),
-        ("lcm_load_session", LCM_LOAD_SESSION, "📋"),
-        ("lcm_describe", LCM_DESCRIBE, "📊"),
-        ("lcm_expand", LCM_EXPAND, "🔎"),
-        ("lcm_expand_query", LCM_EXPAND_QUERY, "❓"),
-        ("lcm_status", LCM_STATUS, "💚"),
-        ("lcm_inspect", LCM_INSPECT, "🧭"),
-        ("lcm_doctor", LCM_DOCTOR, "🏥"),
-    ]
+    _TOOLS = [(spec.name, spec.schema, spec.emoji) for spec in TOOL_REGISTRY]
     # Share the loaded-config filter with the native context-engine path:
     # explicitly disabled and flag-dormant tools cost no schema tokens.
     _disabled = engine._omitted_tool_names()
