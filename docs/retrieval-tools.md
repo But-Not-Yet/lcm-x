@@ -275,8 +275,13 @@ A missing active cloud profile or an older registered privacy revision degrades
 `embedding_identity_stale:` reason. No query is sent to the stale arm's provider and
 its stored vectors are not read. `lcm_grep` semantic mode uses the same reason, and
 `lcm_doctor` warns with the remedy: `/lcm embed warmup`, then
-`/lcm embed backfill --apply`. Proactive recall can use these full-text hits without
-counting a privacy-policy error.
+`/lcm embed backfill --apply`, with `--corpus chunks` (or `--corpus both`) when the stale
+corpus includes chunk vectors. Cloud providers also require `--confirm-raw-text` on
+every chunk or combined apply. Inspect the doctor's complete `remedy` and consent warning.
+Repeat the backfill apply only while `remaining` is above 0 and each run lowers it.
+Stop on `status: partial`, `status: error`, or `status: failed`, or if `remaining`
+stops falling, and inspect the warnings, errors, and detail output.
+Proactive recall can use these full-text hits without counting a privacy-policy error.
 
 An embedding-privacy policy error (empty/unknown catalog, dispatch-time policy drift, residual
 detector match) is a deterministic configuration fault. `lcm_recall` raises it from every
