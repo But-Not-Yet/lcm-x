@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from hermes_lcm import recall_delivery
 import hermes_lcm.tools as lcm_tools
 import hermes_lcm.vector_store as vector_store_module
 from hermes_lcm.config import LCMConfig
@@ -2728,7 +2729,7 @@ def test_answer_ready_keeps_missing_session_refs_independently_eligible():
         for index in range(7)
     ]
 
-    selected, dropped = lcm_tools._lcm_recall_diverse_entries(
+    selected, dropped = recall_delivery._diverse_entries(
         entries,
         limit=7,
         per_session_limit=5,

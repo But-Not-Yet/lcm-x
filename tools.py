@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import logging
 import re
@@ -11,9 +10,11 @@ import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any, Dict, TYPE_CHECKING
 
+from . import recall_delivery
 from .externalize import (
     _inspect_top_level_json_string_fields_before_content as _externalized_top_level_fields_before_content,
     extract_externalized_ref,
@@ -61,6 +62,7 @@ from .ingest_protection import (
 from .model_routing import apply_lcm_model_route
 from .assertion_state import query_assertion_state
 from .assertion_store import ASSERTION_KINDS
+from . import expansion_evidence
 from .reasoning import (
     compile_evidence_plan,
     execute_plan,
@@ -68,12 +70,17 @@ from .reasoning import (
     question_date_as_of_epoch,
     validate_selector_alignment,
     verify_final_answer,
-    resolve_occurrence_time,
 )
 from .presets import preset_status_payload
 from . import recent as _recent
+from .retrieval_context import RetrievalContext
 from .retrieval_core import (
     _hit_identity,
+    _lcm_recall_excerpt_expand_hint,
+    _lcm_recall_recency_boost as _lcm_recall_recency_boost,  # re-export for direct imports; the prior runs it in retrieval_core
+    apply_prior,
+    fuse_candidates,
+    place_fts_anchor,
     _lcm_grep_confidence,
     _lcm_grep_deadline_error,
     _resolve_semantic_conversation_scope,
@@ -460,15 +467,6 @@ _LCM_RECALL_SUMMARY_SOURCE_PER_NODE = 4
 # read per candidate it has to skip.
 _LCM_RECALL_STRICT_READ_WAVE = 32
 _LCM_RECALL_ANSWER_READY_CONTENT_CHARS = 2_400
-# Recency boost half-life (30 days) and its floor: a memory's rank_score is
-# multiplied by 2**(-age/half_life), clamped so age never zeroes an otherwise
-# strong hit — it only nudges toward newer memories.
-_LCM_RECALL_RECENCY_HALF_LIFE_S = 30 * 24 * 3600.0
-_LCM_RECALL_RECENCY_FLOOR = 0.5
-_LCM_RECALL_RRF_K = 60
-# FTS anchor slot (#950): the FTS arm's best message, when fusion pushed it out
-# of the delivered window, takes the slot of the 10th distinct session at most.
-_LCM_RECALL_FTS_ANCHOR_SLOTS = 10
 _LCM_LOAD_SESSION_DEFAULT_LIMIT = 100
 _LCM_LOAD_SESSION_HARD_LIMIT_CAP = 200
 _LCM_LOAD_SESSION_DEFAULT_MAX_CONTENT_CHARS = 4000
@@ -1921,506 +1919,6 @@ def _context_content_token_count(blocks: list[dict[str, Any]]) -> int:
     return total
 
 
-_EXPAND_QUERY_EVIDENCE_QUOTE_MAX_CHARS = 500
-_EXPAND_QUERY_EVIDENCE_MAX_ITEMS = 24
-_EXPAND_QUERY_EVIDENCE_MAX_SERIALIZED_CHARS = 10_000
-_EXPAND_QUERY_EVIDENCE_METADATA_MAX_CHARS = 256
-_EXPAND_QUERY_EVIDENCE_SOURCE_PATH_MAX_HOPS = 8
-_EXPAND_QUERY_EVIDENCE_SOURCE_PATH_MAX_PATHS = 8
-
-
-def _expand_query_evidence_serialized_chars(evidence: dict[str, Any]) -> int:
-    """Measure the exact JSON representation used by the tool response."""
-
-    return len(json.dumps(evidence))
-
-
-def _bounded_evidence_text(value: Any) -> tuple[str, dict[str, Any] | None]:
-    """Bound metadata while retaining explicit length and digest disclosure."""
-
-    text = str(value or "")
-    if len(text) <= _EXPAND_QUERY_EVIDENCE_METADATA_MAX_CHARS:
-        return text, None
-    return text[:_EXPAND_QUERY_EVIDENCE_METADATA_MAX_CHARS], {
-        "original_chars": len(text),
-        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-    }
-
-
-def _normalized_evidence_source_path(
-    value: Any,
-    *,
-    source_path_depth: Any = None,
-    source_path_truncated: Any = None,
-) -> dict[str, Any] | None:
-    if not isinstance(value, (list, tuple)):
-        return None
-    result: list[dict[str, int]] = []
-    for part in value[-_EXPAND_QUERY_EVIDENCE_SOURCE_PATH_MAX_HOPS:]:
-        if not isinstance(part, dict):
-            continue
-        node_id = part.get("node_id")
-        source_index = part.get("source_index")
-        if isinstance(node_id, int) and isinstance(source_index, int):
-            result.append({"node_id": node_id, "source_index": source_index})
-    if not result:
-        return None
-    depth = (
-        source_path_depth
-        if isinstance(source_path_depth, int) and source_path_depth >= len(result)
-        else len(result)
-    )
-    return {
-        "path": result,
-        "depth": depth,
-        "truncated": bool(source_path_truncated or depth > len(result)),
-    }
-
-
-def _evidence_source_path_with_final_edge(
-    block: dict[str, Any],
-    source_index: Any,
-) -> tuple[Any, Any, Any]:
-    """Return a block path extended through its selected child/message edge."""
-
-    source_path = block.get("source_path")
-    path = list(source_path) if isinstance(source_path, (list, tuple)) else []
-    depth = block.get("source_path_depth")
-    if not isinstance(depth, int) or depth < len(path):
-        depth = len(path)
-    node_id = block.get("node_id")
-    if isinstance(node_id, int) and isinstance(source_index, int):
-        path.append({"node_id": node_id, "source_index": source_index})
-        depth += 1
-    return path, depth, block.get("source_path_truncated")
-
-
-def _build_expand_query_evidence(
-    context_blocks: list[dict[str, Any]],
-    *,
-    session_id: str,
-    context_truncated: bool,
-    synthesis_status: str,
-    session_ids: list[str] | None = None,
-    scope_kind: str = "current_session",
-) -> dict[str, Any]:
-    """Return bounded, tool-extracted provenance for expansion synthesis context.
-
-    The bundle identifies excerpts that were actually sent to the auxiliary
-    model. It deliberately does not claim that the resulting answer is
-    semantically entailed by those excerpts.
-
-    ``session_id`` is the ACTIVE session: it is the per-item attribution
-    fallback and decides whether a summary locator needs an explicit session.
-    ``session_ids``/``scope_kind`` describe the sessions actually searched, which
-    for an explicit cross-session retrieval is not the active session alone.
-    """
-
-    synthesis_status = (
-        synthesis_status
-        if synthesis_status in {"completed", "failed", "not_run"}
-        else "unknown"
-    )
-    candidates: list[dict[str, Any]] = []
-    seen_items: dict[str, dict[str, Any]] = {}
-
-    def put_bounded_text(item: dict[str, Any], field: str, value: Any) -> bool:
-        bounded, truncation = _bounded_evidence_text(value)
-        item[field] = bounded
-        if truncation is not None:
-            item.setdefault("metadata_truncation", {})[field] = truncation
-            return True
-        return False
-
-    def add_candidate(
-        identity: str,
-        item: dict[str, Any],
-        *,
-        source_path: Any = None,
-        source_path_depth: Any = None,
-        source_path_truncated: Any = None,
-    ) -> None:
-        path = _normalized_evidence_source_path(
-            source_path,
-            source_path_depth=source_path_depth,
-            source_path_truncated=source_path_truncated,
-        )
-        existing = seen_items.get(identity)
-        if existing is not None:
-            existing["context_occurrence_count"] += 1
-            source_paths = existing.setdefault("source_paths", [])
-            if path and path not in source_paths:
-                if len(source_paths) < _EXPAND_QUERY_EVIDENCE_SOURCE_PATH_MAX_PATHS:
-                    source_paths.append(path)
-                else:
-                    existing["source_paths_truncated"] = True
-            return
-        put_bounded_text(item, "evidence_id", identity)
-        item["context_occurrence_count"] = 1
-        if path:
-            item["source_paths"] = [path]
-        seen_items[identity] = item
-        candidates.append(item)
-
-    def summary_expand_args(node_id: int, item: dict[str, Any]) -> dict[str, Any]:
-        # Mirrors `_lcm_recall_summary_expand_hint`: a summary locator carries
-        # its session only when the node is not the active session's, because a
-        # bare node_id replays against whatever session is active now.
-        expand_args: dict[str, Any] = {"node_id": node_id}
-        item_session_id = item.get("session_id") or ""
-        if (
-            item_session_id
-            and item_session_id != session_id
-            and "session_id" not in (item.get("metadata_truncation") or {})
-        ):
-            expand_args["session_id"] = item_session_id
-        return expand_args
-
-    def quote_payload(content: Any) -> dict[str, Any]:
-        quote = str(content or "")
-        return {
-            "quote": quote[:_EXPAND_QUERY_EVIDENCE_QUOTE_MAX_CHARS],
-            "quote_chars_before_provenance_cap": len(quote),
-            "quote_truncated_by_provenance_cap": len(quote)
-            > _EXPAND_QUERY_EVIDENCE_QUOTE_MAX_CHARS,
-        }
-
-    for block_index, block in enumerate(context_blocks):
-        if not isinstance(block, dict):
-            continue
-        block_type = block.get("type")
-
-        if block_type == "summary":
-            node_id = block.get("node_id")
-            identity = (
-                f"node:{node_id}"
-                if isinstance(node_id, int)
-                else f"context:{block_index}:summary"
-            )
-            item: dict[str, Any] = {
-                "source_type": "summary",
-                "node_id": node_id if isinstance(node_id, int) else None,
-                "locator_present": isinstance(node_id, int),
-                "locator_replay_status": "unverified" if isinstance(node_id, int) else "not_available",
-                **quote_payload(block.get("summary")),
-            }
-            put_bounded_text(item, "session_id", block.get("session_id") or session_id)
-            if isinstance(node_id, int):
-                item["expand_args"] = summary_expand_args(node_id, item)
-            add_candidate(
-                identity,
-                item,
-                source_path=block.get("source_path"),
-                source_path_depth=block.get("source_path_depth"),
-                source_path_truncated=block.get("source_path_truncated"),
-            )
-
-        if block_type in {"child_nodes", "descendant_child_nodes"}:
-            for child_index, child in enumerate(block.get("children", []) or []):
-                if not isinstance(child, dict):
-                    continue
-                node_id = child.get("node_id")
-                identity = (
-                    f"node:{node_id}"
-                    if isinstance(node_id, int)
-                    else f"context:{block_index}:child:{child_index}"
-                )
-                item = {
-                    "source_type": "summary",
-                    "node_id": node_id if isinstance(node_id, int) else None,
-                    "parent_node_id": (
-                        block.get("node_id")
-                        if isinstance(block.get("node_id"), int)
-                        else None
-                    ),
-                    "source_index": (
-                        child.get("source_index")
-                        if isinstance(child.get("source_index"), int)
-                        else None
-                    ),
-                    "locator_present": isinstance(node_id, int),
-                    "locator_replay_status": "unverified" if isinstance(node_id, int) else "not_available",
-                    **quote_payload(child.get("summary")),
-                }
-                put_bounded_text(
-                    item,
-                    "session_id",
-                    child.get("session_id") or block.get("session_id") or session_id,
-                )
-                if isinstance(node_id, int):
-                    item["expand_args"] = summary_expand_args(node_id, item)
-                source_path, source_path_depth, source_path_truncated = (
-                    _evidence_source_path_with_final_edge(
-                        block,
-                        child.get("source_index"),
-                    )
-                )
-                add_candidate(
-                    identity,
-                    item,
-                    source_path=source_path,
-                    source_path_depth=source_path_depth,
-                    source_path_truncated=source_path_truncated,
-                )
-
-        if block_type not in {"messages", "child_messages", "raw_messages"}:
-            continue
-        for message_index, message in enumerate(block.get("messages", []) or []):
-            if not isinstance(message, dict):
-                continue
-            store_id = message.get("store_id")
-            content_offset = message.get("content_offset")
-            if not isinstance(content_offset, int) or content_offset < 0:
-                content_offset = 0
-            content_source = str(message.get("content_source") or "message")
-            externalized = message.get("externalized") or {}
-            externalized_ref = externalized.get("ref") if isinstance(externalized, dict) else None
-            if content_source == "externalized_payload" and externalized_ref:
-                identity = f"externalized:{externalized_ref}:{content_offset}"
-                source_type = "externalized_payload"
-            elif isinstance(store_id, int):
-                identity = f"store:{store_id}:{content_offset}:{content_source}"
-                source_type = "raw_message"
-            else:
-                identity = f"context:{block_index}:message:{message_index}"
-                source_type = "raw_message"
-
-            item = {
-                "source_type": source_type,
-                "store_id": store_id if isinstance(store_id, int) else None,
-                "node_id": (
-                    block.get("node_id")
-                    if isinstance(block.get("node_id"), int)
-                    else None
-                ),
-                "parent_node_id": (
-                    block.get("parent_node_id")
-                    if isinstance(block.get("parent_node_id"), int)
-                    else None
-                ),
-                "source_index": (
-                    message.get("source_index")
-                    if isinstance(message.get("source_index"), int)
-                    else None
-                ),
-                "content_offset": content_offset,
-                **quote_payload(message.get("content")),
-            }
-            put_bounded_text(item, "session_id", message.get("session_id") or "")
-            put_bounded_text(item, "source", message.get("source") or "")
-            put_bounded_text(item, "role", message.get("role"))
-            put_bounded_text(item, "content_source", content_source)
-            ref_truncated = put_bounded_text(item, "externalized_ref", externalized_ref)
-            if content_source == "externalized_payload":
-                if externalized_ref and not ref_truncated:
-                    item["expand_args"] = {
-                        "externalized_ref": str(externalized_ref),
-                        "content_offset": content_offset,
-                    }
-            elif isinstance(store_id, int):
-                item["expand_args"] = {"store_id": store_id, "content_offset": content_offset}
-            item["locator_present"] = "expand_args" in item
-            item["locator_replay_status"] = (
-                "unverified" if item["locator_present"] else "not_available"
-            )
-            source_path = block.get("source_path")
-            source_path_depth = block.get("source_path_depth")
-            source_path_truncated = block.get("source_path_truncated")
-            if block_type in {"messages", "child_messages"}:
-                source_path, source_path_depth, source_path_truncated = (
-                    _evidence_source_path_with_final_edge(
-                        block,
-                        message.get("source_index"),
-                    )
-                )
-            add_candidate(
-                identity,
-                item,
-                source_path=source_path,
-                source_path_depth=source_path_depth,
-                source_path_truncated=source_path_truncated,
-            )
-
-            # Externalized/hydrated context blocks can contain both the text
-            # exposed as ``content`` and the durable transcript representation
-            # exposed as ``transcript_content``. Both fields are serialized into
-            # the auxiliary model prompt, so traceability cannot be called
-            # complete unless both are represented when they differ.
-            transcript_content = message.get("transcript_content")
-            if transcript_content is not None and str(transcript_content) != str(
-                message.get("content") or ""
-            ):
-                transcript_identity = (
-                    f"store:{store_id}:0:transcript_content"
-                    if isinstance(store_id, int)
-                    else f"context:{block_index}:message:{message_index}:transcript_content"
-                )
-                transcript_item = {
-                    "source_type": "raw_message",
-                    "store_id": store_id if isinstance(store_id, int) else None,
-                    "node_id": (
-                        block.get("node_id")
-                        if isinstance(block.get("node_id"), int)
-                        else None
-                    ),
-                    "parent_node_id": (
-                        block.get("parent_node_id")
-                        if isinstance(block.get("parent_node_id"), int)
-                        else None
-                    ),
-                    "source_index": (
-                        message.get("source_index")
-                        if isinstance(message.get("source_index"), int)
-                        else None
-                    ),
-                    "content_offset": 0,
-                    "locator_present": isinstance(store_id, int),
-                    "locator_replay_status": "unverified" if isinstance(store_id, int) else "not_available",
-                    **quote_payload(transcript_content),
-                }
-                put_bounded_text(transcript_item, "session_id", message.get("session_id") or "")
-                put_bounded_text(transcript_item, "source", message.get("source") or "")
-                put_bounded_text(transcript_item, "role", message.get("role"))
-                put_bounded_text(transcript_item, "content_source", "transcript_content")
-                if isinstance(store_id, int):
-                    transcript_item["expand_args"] = {
-                        "store_id": store_id,
-                        "content_offset": 0,
-                    }
-                add_candidate(
-                    transcript_identity,
-                    transcript_item,
-                    source_path=source_path,
-                    source_path_depth=source_path_depth,
-                    source_path_truncated=source_path_truncated,
-                )
-
-    items = candidates[:_EXPAND_QUERY_EVIDENCE_MAX_ITEMS]
-    scope_kind = (
-        scope_kind if scope_kind in {"current_session", "explicit_sessions"} else "unknown"
-    )
-    scope_sessions = list(session_ids) if session_ids else [session_id]
-    bounded_scope_sessions: list[str] = []
-    scope_truncations: dict[str, Any] = {}
-    for scope_index, scope_session in enumerate(scope_sessions):
-        bounded_scope_session, scope_truncation = _bounded_evidence_text(scope_session)
-        bounded_scope_sessions.append(bounded_scope_session)
-        if scope_truncation is not None:
-            scope_truncations[f"session_ids[{scope_index}]"] = scope_truncation
-    retrieval_scope: dict[str, Any] = {
-        "kind": scope_kind,
-        "session_ids": bounded_scope_sessions,
-    }
-    if scope_truncations:
-        retrieval_scope["metadata_truncation"] = scope_truncations
-    evidence = {
-        "retrieval_scope": retrieval_scope,
-        "identifiers_are_authority": False,
-        "locator_replay_safety": "not_guaranteed",
-        "synthesis_status": synthesis_status,
-        "semantic_entailment": "not_verified" if synthesis_status == "completed" else "not_applicable",
-        "quote_origin": "tool_extracted_from_synthesis_context",
-        "context_truncated": bool(context_truncated),
-        "context_unique_item_count": len(candidates),
-        "context_occurrence_count": sum(
-            int(item.get("context_occurrence_count") or 1) for item in candidates
-        ),
-        "serialized_char_limit": _EXPAND_QUERY_EVIDENCE_MAX_SERIALIZED_CHARS,
-        "serialization": {
-            "scope": "evidence_provenance_only",
-            "json_ensure_ascii": True,
-        },
-        "quote_max_chars": _EXPAND_QUERY_EVIDENCE_QUOTE_MAX_CHARS,
-        "items": items,
-    }
-
-    def refresh_bounds() -> None:
-        items_truncated = len(items) < len(candidates)
-        located_items = sum(1 for item in items if item.get("locator_present"))
-        if not candidates:
-            locator_coverage = "none"
-        elif items_truncated or located_items < len(candidates):
-            locator_coverage = "partial"
-        else:
-            locator_coverage = "complete"
-        evidence["locator_coverage"] = locator_coverage
-        evidence["items_truncated"] = items_truncated
-        evidence["quotes_truncated_by_provenance_cap"] = sum(
-            1 for item in items if item.get("quote_truncated_by_provenance_cap")
-        )
-        evidence["metadata_truncated"] = bool(
-            retrieval_scope.get("metadata_truncation")
-            or any(item.get("metadata_truncation") for item in items)
-        )
-
-    refresh_bounds()
-    while (
-        items
-        and _expand_query_evidence_serialized_chars(evidence)
-        > _EXPAND_QUERY_EVIDENCE_MAX_SERIALIZED_CHARS
-    ):
-        items.pop()
-        refresh_bounds()
-    if (
-        _expand_query_evidence_serialized_chars(evidence)
-        > _EXPAND_QUERY_EVIDENCE_MAX_SERIALIZED_CHARS
-    ):
-        # Bounded metadata makes this unreachable under normal inputs. Keep a
-        # compact fail-safe so even a pathological fixed envelope cannot violate
-        # the public nested-object contract.
-        evidence = {
-            "retrieval_scope": {
-                "kind": scope_kind,
-                "session_ids": [],
-                "session_id_sha256": hashlib.sha256(
-                    "\n".join(str(scope or "") for scope in scope_sessions).encode(
-                        "utf-8"
-                    )
-                ).hexdigest(),
-                "session_id_omitted_due_to_size": True,
-            },
-            "identifiers_are_authority": False,
-            "locator_replay_safety": "not_guaranteed",
-            "synthesis_status": synthesis_status,
-            "semantic_entailment": (
-                "not_verified" if synthesis_status == "completed" else "not_applicable"
-            ),
-            "quote_origin": "tool_extracted_from_synthesis_context",
-            "context_truncated": bool(context_truncated),
-            "context_unique_item_count": len(candidates),
-            "context_occurrence_count": sum(
-                int(item.get("context_occurrence_count") or 1) for item in candidates
-            ),
-            "serialized_char_limit": _EXPAND_QUERY_EVIDENCE_MAX_SERIALIZED_CHARS,
-            "serialization": {
-                "scope": "evidence_provenance_only",
-                "json_ensure_ascii": True,
-            },
-            "quote_max_chars": _EXPAND_QUERY_EVIDENCE_QUOTE_MAX_CHARS,
-            "locator_coverage": "none" if not candidates else "partial",
-            "items_truncated": bool(candidates),
-            "quotes_truncated_by_provenance_cap": 0,
-            "metadata_truncated": True,
-            "fixed_envelope_compacted": True,
-            "items": [],
-        }
-    return evidence
-
-def _serialized_context_token_count(blocks: list[dict[str, Any]]) -> int:
-    from .tokens import count_tokens
-
-    # Budget against the encoding the caller actually receives. Every
-    # ``lcm_expand_query`` return goes out as ``json.dumps(payload)`` with the
-    # default ``ensure_ascii=True``, which escapes non-ASCII to ``\uXXXX`` (a
-    # surrogate pair, 12 characters, per astral emoji). Counting an
-    # ``ensure_ascii=False`` serialization here under-counts CJK/emoji evidence
-    # by a multiple, so the emitted payload can overrun ``context_max_tokens``
-    # while ``context_tokens`` reports it inside budget. ASCII evidence is
-    # byte-identical under both encodings, so this only tightens the
-    # non-ASCII case.
-    return count_tokens(json.dumps(blocks))
-
-
 class _ExpansionSynthesisError(RuntimeError):
     """Raised when the expansion aux-LLM call returns an unusable response.
 
@@ -3228,14 +2726,11 @@ def _lcm_grep_full_text_with_deadline(
                 conn.set_progress_handler(interrupt_if_expired, 1000)
                 require_remaining("connection setup")
             read_engine = copy.copy(engine)
-            read_store = copy.copy(engine._store)
-            read_dag = copy.copy(engine._dag)
-            read_store._conn = message_conn
-            read_store._db_lock = threading.RLock()
-            read_dag._conn = dag_conn
-            read_dag._db_lock = threading.RLock()
-            read_engine._store = read_store
-            read_engine._dag = read_dag
+            read_io = RetrievalContext(engine._store, engine._dag).bind(
+                message_conn, dag_conn,
+            )
+            read_engine._store = read_io.store
+            read_engine._dag = read_io.dag
             require_remaining("full-text search")
             payload = json.loads(
                 _lcm_grep_full_text(
@@ -3976,19 +3471,6 @@ def lcm_grep(args: Dict[str, Any], **kwargs) -> str:
     })
 
 
-def _lcm_recall_recency_boost(timestamp: Any, *, now: float) -> float:
-    """Half-life recency multiplier in ``[floor, 1.0]`` (newer => closer to 1)."""
-    try:
-        ts = float(timestamp or 0.0)
-    except (TypeError, ValueError):
-        ts = 0.0
-    if ts <= 0:
-        return _LCM_RECALL_RECENCY_FLOOR
-    age = max(0.0, now - ts)
-    boost = 2.0 ** (-(age / _LCM_RECALL_RECENCY_HALF_LIFE_S))
-    return max(_LCM_RECALL_RECENCY_FLOOR, boost)
-
-
 def _lcm_recall_summary_expand_hint(hit: dict[str, Any]) -> str:
     if hit.get("from_current_session"):
         return f"lcm_expand(node_id={hit.get('node_id')})"
@@ -3996,41 +3478,6 @@ def _lcm_recall_summary_expand_hint(hit: dict[str, Any]) -> str:
     # apostrophes/backslashes, and an unescaped interpolation would advertise
     # a handle lcm_expand cannot parse back.
     return _session_expand_hint(hit.get("node_id"), hit.get("session_id") or "")
-
-
-def _lcm_recall_excerpt_expand_hint(hit: dict[str, Any]) -> str:
-    offset = int(hit.get("content_offset") or 0)
-    return f"lcm_expand(store_id={hit.get('store_id')}, content_offset={offset})"
-
-
-def _lcm_recall_diverse_entries(
-    ordered: list[dict[str, Any]],
-    *,
-    limit: int,
-    per_session_limit: int,
-) -> tuple[list[dict[str, Any]], int]:
-    """Select a stable rank-preserving result set with bounded session density."""
-    selected: list[dict[str, Any]] = []
-    session_counts: dict[str, int] = {}
-    dropped = 0
-    for entry in ordered:
-        hit = entry["hit"]
-        raw_session_id = hit.get("session_id")
-        # Missing session identities must not collapse into one synthetic session.
-        # Exact refs remain independently eligible in their existing rank order.
-        session_key = (
-            str(raw_session_id)
-            if raw_session_id not in {None, ""}
-            else f"missing:{_hit_identity(hit)!r}"
-        )
-        if session_counts.get(session_key, 0) >= per_session_limit:
-            dropped += 1
-            continue
-        session_counts[session_key] = session_counts.get(session_key, 0) + 1
-        selected.append(entry)
-        if len(selected) >= limit:
-            break
-    return selected, dropped
 
 
 def _lcm_recall_reference_shape(hit: dict[str, Any], *, hydratable: bool) -> str | None:
@@ -4225,7 +3672,7 @@ class _LcmRecallSelectionLedger:
 class _LcmRecallStrictSelector:
     """Rank-ordered admission that VERIFIES a candidate before it is admitted.
 
-    Reference-strict replacement for :func:`_lcm_recall_diverse_entries`. Same
+    Reference-strict replacement for :func:`recall_delivery._diverse_entries`. Same
     stable rank-preserving walk with bounded session density, plus the rule that
     makes the mode meaningful: a candidate is admitted only once its delivered
     text has been found at its claimed offset in the CURRENT row.
@@ -4566,9 +4013,6 @@ def _lcm_recall_content_window(
     }
 
 
-_LCM_RECALL_EVENT_TIME_KEYS = ("event_time", "event_time_source")
-
-
 def _lcm_recall_event_time(stored: dict[str, Any] | None) -> dict[str, str]:
     """Return a message hit's event-time fields from its stored host observation.
 
@@ -4650,54 +4094,6 @@ def _lcm_recall_event_time_rows(
         int(store_id): {"observed_at": observed_at, "observed_at_source": source}
         for store_id, observed_at, source in rows
     }, None
-
-
-def _lcm_recall_without_event_time(item: dict[str, Any]) -> dict[str, Any]:
-    """Return ``item`` without its optional event-time fields.
-
-    The response cap sizes hits by this view, so the optional fields can never
-    evict a hit that fits without them (#995).
-    """
-    return {
-        key: value
-        for key, value in item.items()
-        if key not in _LCM_RECALL_EVENT_TIME_KEYS
-    }
-
-
-def _lcm_recall_fit_event_time(response: dict[str, Any]) -> tuple[str, str | None]:
-    """Strip hits' event-time fields, lowest rank first, until ``response`` fits.
-
-    Runs before the cap touches anything else, so the optional fields never
-    cost a hit, nor a query cut the response would not otherwise need. A
-    stripped hit sets the ``event_time_unavailable`` marker with the
-    ``response_cap`` reason, unless a ``deadline`` or ``read_error`` marker is
-    already set: that reason is kept, never overwritten. If the response is
-    still over the cap with every field stripped, the marker is taken out too,
-    whatever its reason, so it is never what evicts a hit. Returns ``(encoded,
-    deferred_reason)``: ``deferred_reason`` is the reason of a marker taken out,
-    which the caller puts back if it fits once the cap has done the rest, and
-    ``None`` otherwise (#995).
-    """
-    encoded = json.dumps(response, ensure_ascii=False)
-    for hit in reversed(response["hits"]):
-        if len(encoded) <= _LCM_RECALL_RESPONSE_CHAR_CAP:
-            return encoded, None
-        if not any(key in hit for key in _LCM_RECALL_EVENT_TIME_KEYS):
-            continue
-        for key in _LCM_RECALL_EVENT_TIME_KEYS:
-            hit.pop(key, None)
-        if not response.get("event_time_unavailable"):
-            response["event_time_unavailable"] = True
-            response["event_time_unavailable_reason"] = "response_cap"
-        encoded = json.dumps(response, ensure_ascii=False)
-    if len(encoded) > _LCM_RECALL_RESPONSE_CHAR_CAP and response.get(
-        "event_time_unavailable"
-    ):
-        del response["event_time_unavailable"]
-        deferred_reason = response.pop("event_time_unavailable_reason")
-        return json.dumps(response, ensure_ascii=False), deferred_reason
-    return encoded, None
 
 
 def _lcm_recall_answer_ready_content(
@@ -4794,19 +4190,6 @@ def _lcm_recall_answer_ready_content(
             **_lcm_recall_event_time(stored),
         }
     return hydrated
-
-
-def _lcm_recall_exact_ref(hit: dict[str, Any], hydrated: dict[str, Any] | None) -> str | None:
-    """Return the exact identity for an opt-in delta item."""
-    if hit.get("kind") == "summary":
-        node_id = hit.get("node_id")
-        return f"lcm-summary:{node_id}" if node_id is not None else None
-    store_id = hit.get("store_id")
-    if store_id is None or hydrated is None or "content" not in hydrated:
-        return None
-    start = int(hydrated.get("content_offset") or 0)
-    end = start + len(str(hydrated.get("content") or ""))
-    return f"lcm:{int(store_id)}:{start}-{end}"
 
 
 def _lcm_recall_bounded_reason(
@@ -4984,12 +4367,8 @@ def _lcm_recall_summary_source_hits(
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA query_only=ON")
         conn.set_progress_handler(interrupt_if_expired, 1000)
-        read_store = copy.copy(engine._store)
-        read_dag = copy.copy(engine._dag)
-        read_store._conn = conn
-        read_dag._conn = conn
-        read_store._write_lock = threading.RLock()
-        read_dag._db_lock = threading.RLock()
+        read_io = RetrievalContext(engine._store, engine._dag).bind(conn, conn)
+        read_store, read_dag = read_io.store, read_io.dag
 
         leads: list[dict[str, Any]] = []
         ordered_ids: list[int] = []
@@ -5341,66 +4720,8 @@ def _lcm_recall_rerank(
     return reordered, "applied", rerank_scores
 
 
-def _lcm_recall_fts_anchor(
-    ordered: list[dict[str, Any]],
-    arm_hits: dict[str, list[dict[str, Any]]],
-    arm_order: list[str],
-    limit: int,
-    slots: int = _LCM_RECALL_FTS_ANCHOR_SLOTS,
-    *,
-    arm_weights: list[float] | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Keep the FTS arm's best message inside the delivered window (#950).
-
-    Rank-only: when the FTS arm's raw position-1 message fell outside the first
-    ``limit`` fused entries, it moves to the start of the S-th distinct session
-    of that window (S = min(limit, slots)), else to slot ``limit``. At most one
-    entry moves and at most one session leaves the window. ``rrf_score`` and
-    ``_final_score`` are untouched, and the moved entry reports its own score,
-    so a relevance floor applied to the serialized score still sees the hit's
-    true strength (delivered scores need not be monotone around it).
-    Inert unless at least two arms ran and FTS is one of them, so FTS-only
-    output is unchanged. Also inert when ``arm_weights`` (the weights
-    ``rrf_fuse`` used, aligned to ``arm_order``) gives the FTS arm a weight of
-    zero or less: an operator who switched the arm off gets no anchor from it.
-    """
-    info: dict[str, Any] = {"fired": False, "position": None}
-    if len(arm_order) < 2 or "fts" not in arm_order or limit < 4 or not arm_hits.get("fts"):
-        return ordered, info
-    fts_index = arm_order.index("fts")
-    if arm_weights is not None and fts_index < len(arm_weights) and arm_weights[fts_index] <= 0:
-        return ordered, info
-    anchor = _hit_identity(arm_hits["fts"][0])
-    j = next(
-        (i for i, entry in enumerate(ordered) if _hit_identity(entry["hit"]) == anchor),
-        None,
-    )
-    if j is None or j < limit:
-        return ordered, info
-    window = ordered[:limit]
-    target = min(limit, slots)
-    cut = limit - 1
-    seen: list[Any] = []
-    for i, entry in enumerate(window):
-        sid = entry["hit"].get("session_id")
-        if sid and sid not in seen:
-            seen.append(sid)
-            if len(seen) == target:
-                cut = i
-                break
-    cut = min(cut, limit - 1)
-    ordered = list(ordered)
-    entry = ordered.pop(j)
-    info.update(fired=True, position=cut + 1)
-    return ordered[:cut] + [entry] + ordered[cut:], info
-
-
-def _lcm_recall_fts_anchor_delivered(
-    hits: list[dict[str, Any]], arm_hits: dict[str, list[dict[str, Any]]]
-) -> bool:
-    """Whether the FTS arm's anchored hit is among the returned ``hits`` (#950)."""
-    anchor = _hit_identity(arm_hits["fts"][0])
-    return any(_hit_identity(hit) == anchor for hit in hits)
+# Re-export for existing direct callers only. lcm_recall runs retrieval_core.place_fts_anchor, so patch that, not this name.
+_lcm_recall_fts_anchor = place_fts_anchor
 
 
 def _lcm_recall_preflight_scan_deadline(now: float, deadline: float) -> float:
@@ -6011,97 +5332,13 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
                         coverage["chunk"] = "none"
                         degraded_reasons.append(f"chunk arm failed: {exc}")
 
-    # -- RRF fusion over the arms that produced hits (order fixes base-hit win) --
-    # Per-arm weights down-weight the weak FTS arm so the 3-arm hybrid is never
-    # dragged below its best arm (measured −21 R@5 on LongMemEval for naive
-    # equal-weight fusion). Weights echo into provenance below.
-    arm_order = [name for name in ("fts", "summary", "chunk") if arm_hits.get(name)]
-    configured_arm_weights = getattr(engine._config, "recall_arm_weights", None) or {}
-    arm_weights = [float(configured_arm_weights.get(name, 1.0)) for name in arm_order]
-    ordered = rrf_fuse(
-        [arm_hits[name] for name in arm_order],
-        k=_LCM_RECALL_RRF_K,
-        weights=arm_weights,
+    ordered, arm_order, arm_weights = fuse_candidates(
+        arm_hits, getattr(engine._config, "recall_arm_weights", None)
     )
-
-    # Merge chunk-arm provenance onto a message whose store_id also surfaced via
-    # FTS. The chunk list is best-first, so keep the BEST-ranked chunk per store
-    # (setdefault, not a plain comprehension which keeps the WORST last entry --
-    # F1-chunk-dedupe-wrong-span). When both arms carry the message, the merged
-    # hit takes the better-ranked arm's snippet AND its offsets together so the
-    # displayed preview and the expand handle describe the SAME span (DEDUPE-1);
-    # a mismatched snippet/offset pair pointed at two different parts of the
-    # message. arm_order fixes the fused base object to the earliest arm, so we
-    # compare per-arm ranks explicitly rather than trusting insertion order.
-    chunk_by_store: dict[Any, dict[str, Any]] = {}
-    for chunk_hit in arm_hits.get("chunk", []):
-        chunk_by_store.setdefault(chunk_hit.get("store_id"), chunk_hit)
-    # Every OTHER arm's representation of the same row is kept alongside the
-    # fused base rather than discarded. Fusion picks one base per identity (the
-    # earliest arm, so FTS when it hit), but an FTS snippet is a match window
-    # with markers -- not a verbatim span -- so a row whose only surviving
-    # representation is the FTS one cannot be cited beyond the hydration budget
-    # even though the chunk or summary-source excerpt of that same row could be.
-    # Reference-strict verification tries these in order and delivers the first
-    # that the row actually supports.
-    alternates_by_store: dict[Any, list[dict[str, Any]]] = {}
-    for arm_name in ("summary", "chunk"):
-        for other_hit in arm_hits.get(arm_name, []):
-            if other_hit.get("kind") != "message_excerpt":
-                continue
-            alternates_by_store.setdefault(other_hit.get("store_id"), []).append(
-                other_hit
-            )
-    chunk_arm_index = arm_order.index("chunk") if "chunk" in arm_order else None
     fts_arm_index = arm_order.index("fts") if "fts" in arm_order else None
-    for entry in ordered:
-        hit = entry["hit"]
-        if hit.get("kind") != "message_excerpt":
-            continue
-        entry["_alternates"] = [
-            other
-            for other in alternates_by_store.get(hit.get("store_id"), [])
-            if other is not hit
-        ]
-        chunk_hit = chunk_by_store.get(hit.get("store_id"))
-        if chunk_hit is None:
-            continue
-        ranks = entry["ranks"]
-        chunk_rank = ranks.get(chunk_arm_index) if chunk_arm_index is not None else None
-        fts_rank = ranks.get(fts_arm_index) if fts_arm_index is not None else None
-        # Adopt the chunk arm's span+snippet when the base hit lacks a span (a
-        # pure-FTS base) OR the chunk arm ranked this message at least as well as
-        # the FTS arm. Lower rank number == better.
-        chunk_wins = not hit.get("chunk_span") or (
-            chunk_rank is not None
-            and (fts_rank is None or chunk_rank <= fts_rank)
-        )
-        if chunk_wins:
-            hit["chunk_span"] = chunk_hit.get("chunk_span")
-            hit["content_offset"] = chunk_hit.get("content_offset", 0)
-            hit["snippet"] = chunk_hit.get("snippet") or hit.get("snippet")
-            hit["expand_hint"] = _lcm_recall_excerpt_expand_hint(hit)
-
-    # -- Scope-prior + recency rescoring. Applied BEFORE the rerank window is
-    #    selected so an item the prior lifts into the true top-N is the one
-    #    actually reranked (RERANK-1). Boost eligibility spans the whole
-    #    conversation-scope session set, not a single session-id equality, so a
-    #    mid-conversation session rotation keeps the boost (SCOPE-1). --
     now = time.time()
     scope_session_ids = set(_recent._recent_conversation_scope_session_ids(engine))
-    for entry in ordered:
-        hit = entry["hit"]
-        rank_score = float(entry.get("rrf_score", 0.0))
-        is_current = 1.0 if hit.get("session_id") in scope_session_ids else 0.0
-        recency = _lcm_recall_recency_boost(hit.get("timestamp"), now=now)
-        entry["_final_score"] = rank_score * (1.0 + scope_bias * is_current) * recency
-    ordered.sort(
-        key=lambda entry: (
-            -float(entry["_final_score"]),
-            -float(entry.get("rrf_score", 0.0)),
-            _hit_identity(entry["hit"]),
-        )
-    )
+    ordered = apply_prior(ordered, scope_session_ids, now, scope_bias)
 
     # -- Optional rerank stage (default OFF): a pure rank-REORDER within the top
     #    window of the post-prior order (no score splicing onto the RRF scale). --
@@ -6118,436 +5355,52 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
     if bool(kwargs.get("fts_anchor", True)) and bool(
         getattr(engine._config, "recall_fts_anchor", True)
     ):
-        ordered, fts_anchor_info = _lcm_recall_fts_anchor(
+        ordered, fts_anchor_info = place_fts_anchor(
             ordered, arm_hits, arm_order, limit, arm_weights=arm_weights
         )
 
-    # -- Response shaping (char-capped). The default snippets path retains the
-    # historical order and serialized response exactly. answer_ready applies
-    # stable post-rank diversity before bounded exact-ref hydration.
-    diversity_dropped = 0
-    if detail == "answer_ready":
-        # Take only what the response can hold. Delta used to select the whole
-        # 25-candidate cap up front and filter afterwards, which walked the
-        # ranking to exhaustion while already-seen entries held session quota --
-        # the refill then had nothing left to resume into. Selecting a wave at a
-        # time lets a released slot be reused by the next wave.
-        selection_limit = limit
-        expanded_limit = (
-            _LCM_RECALL_LIMIT_CAP
-            if delta_requested
-            else _LCM_RECALL_ANSWER_READY_EXPANDED_HIT_LIMIT
-        )
-        if reference_strict:
-            strict_selector = _LcmRecallStrictSelector(
-                ordered,
-                engine=engine,
-                per_session_limit=_LCM_RECALL_ANSWER_READY_PER_SESSION_LIMIT,
-                expanded_limit=expanded_limit,
-            )
-            selected_entries = strict_selector.take(selection_limit)
-            strict_rows = strict_selector.rows
-        else:
-            selected_entries, diversity_dropped = _lcm_recall_diverse_entries(
-                ordered,
-                limit=selection_limit,
-                per_session_limit=_LCM_RECALL_ANSWER_READY_PER_SESSION_LIMIT,
-            )
-            strict_rows = None
-        answer_ready_content = _lcm_recall_answer_ready_content(
-            engine,
-            selected_entries,
-            query=query,
-            expanded_limit=expanded_limit,
-            rows_by_id=strict_rows,
-            fts_arm_index=fts_arm_index,
-        )
-        if delta_requested:
-            def _novel(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-                """Keep the entries carrying a reference the caller lacks.
-
-                A discarded entry hands its session slot back: it is not part of
-                the response, so it must not count against the density budget
-                that decides which novel rows can still be delivered.
-                """
-                kept: list[dict[str, Any]] = []
-                for entry in entries:
-                    exact_ref = (
-                        None
-                        if entry["hit"].get("kind") == "summary"
-                        else _lcm_recall_exact_ref(
-                            entry["hit"],
-                            answer_ready_content.get(_hit_identity(entry["hit"])),
-                        )
-                    )
-                    if exact_ref is not None and exact_ref not in seen_refs:
-                        kept.append(entry)
-                    elif reference_strict:
-                        strict_selector.release(entry)
-                return kept
-
-            selected_entries = _novel(selected_entries)
-            # Delta shaping discards entries the caller has already seen, so it
-            # too must be able to draw on the ranked tail -- otherwise the mode
-            # silently returns short while valid candidates remain, which is the
-            # very underfill the resumable walk exists to prevent.
-            while (
-                reference_strict
-                and len(selected_entries) < limit
-                and not strict_selector.exhausted()
-            ):
-                more = strict_selector.take(limit)
-                if not more:
-                    break
-                answer_ready_content.update(
-                    _lcm_recall_answer_ready_content(
-                        engine,
-                        more,
-                        query=query,
-                        expanded_limit=len(more),
-                        rows_by_id=strict_selector.rows,
-                        fts_arm_index=fts_arm_index,
-                    )
-                )
-                selected_entries.extend(_novel(more))
-            selected_entries = selected_entries[:limit]
-    else:
-        selected_entries = ordered
-        diversity_dropped = 0
-        answer_ready_content = {}
-    # Event time for message hits that answer_ready hydration did not already
-    # cover (the snippets default, and answer_ready hits past the expansion
-    # limit): one batched read by store_id of only the deliverable entries,
-    # reusing rows reference-strict selection has already read. It runs after
-    # selection and never feeds ranking, selection or the hit text (#995).
-    event_time_rows: dict[int, dict[str, Any]] = (
-        dict(strict_selector.rows) if reference_strict else {}
+    return recall_delivery.deliver_recall(
+        ordered,
+        query=query,
+        limit=limit,
+        requested_limit=requested_limit,
+        scope_bias=scope_bias,
+        include=include,
+        detail=detail,
+        reference_strict=reference_strict,
+        delta_requested=delta_requested,
+        seen_refs=seen_refs,
+        include_occurrence_time=include_occurrence_time,
+        deadline=deadline,
+        fts_arm_index=fts_arm_index,
+        arm_order=arm_order,
+        arm_weights=arm_weights,
+        arm_hits=arm_hits,
+        coverage=coverage,
+        served_fts_index=served_fts_index,
+        rerank_status=rerank_status,
+        rerank_scores=rerank_scores,
+        embedding_query_metrics=embedding_query_metrics,
+        degraded_reasons=degraded_reasons,
+        timed_out=timed_out,
+        fts_anchor_info=fts_anchor_info,
+        summary_leads=summary_leads,
+        limit_cap=_LCM_RECALL_LIMIT_CAP,
+        snippet_chars=_LCM_RECALL_SNIPPET_CHARS,
+        response_char_cap=_LCM_RECALL_RESPONSE_CHAR_CAP,
+        per_session_limit=_LCM_RECALL_ANSWER_READY_PER_SESSION_LIMIT,
+        expanded_hit_limit=_LCM_RECALL_ANSWER_READY_EXPANDED_HIT_LIMIT,
+        content_chars=_LCM_RECALL_ANSWER_READY_CONTENT_CHARS,
+        strict_selector_factory=partial(_LcmRecallStrictSelector, engine=engine),
+        hydrate=partial(_lcm_recall_answer_ready_content, engine),
+        read_event_time=partial(_lcm_recall_event_time_rows, engine),
+        event_time_fields=_lcm_recall_event_time,
+        read_occurrence_source=lambda store_id: (
+            getattr(engine, "_session_occurrence_dates", {}) or {},
+            engine._store.get(store_id),
+        ),
+        rerank_enabled=lambda: bool(getattr(engine._config, "rerank_enabled", False)),
     )
-    event_time_ids = [
-        int(entry["hit"]["store_id"])
-        for entry in selected_entries[:limit]
-        if entry["hit"].get("kind") != "summary"
-        and entry["hit"].get("store_id") is not None
-        and _hit_identity(entry["hit"]) not in answer_ready_content
-        and int(entry["hit"]["store_id"]) not in event_time_rows
-    ]
-    # A skipped or failed read never blocks past the deadline and never looks
-    # like "no event time": a delivered hit it covered sets the response-level
-    # ``event_time_unavailable`` marker instead.
-    event_time_unavailable_reason: str | None = None
-    event_time_unread_ids: set[int] = set()
-    if event_time_ids:
-        fetched_rows, event_time_unavailable_reason = _lcm_recall_event_time_rows(
-            engine, event_time_ids, deadline=deadline
-        )
-        event_time_rows.update(fetched_rows)
-        if event_time_unavailable_reason is not None:
-            event_time_unread_ids = set(event_time_ids)
-    event_time_unavailable = False
-    hits_out: list[dict[str, Any]] = []
-    # Characters each delivered hit's optional event-time fields add on top of
-    # its measured size (parallel to ``hits_out``).
-    event_time_chars: list[int] = []
-    response_chars = 0
-    response_cap_truncated = False
-    unreferenced_omitted = 0
-    for entry in selected_entries:
-        hit = entry["hit"]
-        arms = sorted({arm_order[index] for index in entry["ranks"].keys()})
-        item: dict[str, Any] = {
-            "kind": hit.get("kind"),
-            "session_id": hit.get("session_id"),
-            "timestamp": hit.get("timestamp") or 0,
-            "snippet": (hit.get("snippet") or "")[:_LCM_RECALL_SNIPPET_CHARS],
-            "score": round(float(entry["_final_score"]), 6),
-            "expand_hint": hit.get("expand_hint"),
-            "from_current_session": bool(hit.get("from_current_session")),
-            "arms": arms,
-        }
-        if hit.get("kind") == "summary":
-            item["node_id"] = hit.get("node_id")
-            if hit.get("store_id") is not None:
-                item["store_id"] = hit.get("store_id")
-        else:
-            item["store_id"] = hit.get("store_id")
-            if hit.get("chunk_span"):
-                item["chunk_span"] = hit["chunk_span"]
-            if _hit_identity(hit) not in answer_ready_content and hit.get("store_id") is not None:
-                item.update(_lcm_recall_event_time(event_time_rows.get(int(hit["store_id"]))))
-        if detail == "answer_ready":
-            item["role"] = hit.get("role")
-            item["source"] = hit.get("source") or (
-                "summary" if hit.get("kind") == "summary" else ""
-            )
-            hydrated = answer_ready_content.get(_hit_identity(hit))
-            if hydrated is not None:
-                item.update(hydrated)
-            if delta_requested:
-                exact_ref = _lcm_recall_exact_ref(hit, hydrated)
-                if exact_ref is not None:
-                    item["exact_ref"] = exact_ref
-            if include_occurrence_time and hit.get("kind") != "summary":
-                session_dates = getattr(engine, "_session_occurrence_dates", {}) or {}
-                source_row = engine._store.get(int(hit.get("store_id") or 0))
-                source_row = source_row or {}
-                source_observed_at = source_row.get("observed_at")
-                session_date = session_dates.get(str(hit.get("session_id")))
-                if session_date is None and source_observed_at is not None:
-                    try:
-                        session_date = datetime.fromtimestamp(
-                            float(source_observed_at), tz=timezone.utc
-                        ).date().isoformat()
-                    except (TypeError, ValueError, OverflowError, OSError):
-                        session_date = None
-                occurrence = resolve_occurrence_time(
-                    (hydrated or {}).get("content") or hit.get("snippet") or "",
-                    observed_at=source_observed_at or 0,
-                    session_date=session_date,
-                )
-                occurrence["stored_at"] = source_row.get("ingested_at") or source_row.get("timestamp")
-                item["occurrence_time"] = occurrence
-                item["observation_time"] = {
-                    "observed_at": occurrence.get("observed_at") or None,
-                    "ingested_at": source_row.get("ingested_at") or source_row.get("timestamp"),
-                    "source": (
-                        "benchmark_session_date"
-                        if str(hit.get("session_id")) in session_dates
-                        else "host_message_timestamp"
-                        if source_observed_at is not None
-                        else "ingest_fallback"
-                    ),
-                }
-        if reference_strict:
-            # Selection already proved this candidate against its row, so there
-            # is nothing left to re-check here -- only the proven span to
-            # PUBLISH, so a consumer never has to guess an offset. (__init__.py's
-            # _answer_ready_baseline substitutes 0 when the field is absent.)
-            if hydrated is not None:
-                span = (
-                    int(hydrated["content_offset"]),
-                    int(hydrated["content_returned_chars"]),
-                )
-            else:
-                span = entry.get("_strict_span")
-            if span is None:
-                unreferenced_omitted += 1
-                continue
-            item["content_offset"], item["content_returned_chars"] = span
-        # The cap sizes a hit without its optional event-time fields, so they
-        # never evict a hit that fits without them (#995).
-        item_chars = len(
-            json.dumps(_lcm_recall_without_event_time(item), ensure_ascii=False)
-        )
-        if hits_out and response_chars + item_chars > _LCM_RECALL_RESPONSE_CHAR_CAP:
-            response_cap_truncated = True
-            break
-        response_chars += item_chars
-        event_time_chars.append(
-            len(json.dumps(item, ensure_ascii=False)) - item_chars
-        )
-        if reference_strict:
-            strict_selector.deliver(entry)
-        if (
-            hit.get("kind") != "summary"
-            and hit.get("store_id") is not None
-            and int(hit["store_id"]) in event_time_unread_ids
-        ):
-            event_time_unavailable = True
-        hits_out.append(item)
-        if len(hits_out) >= limit:
-            break
-    # Over the cap only with the fields: strip them, lowest rank first, and
-    # say so, instead of dropping any hit.
-    event_time_total = response_chars + sum(event_time_chars)
-    for index in reversed(range(len(hits_out))):
-        if event_time_total <= _LCM_RECALL_RESPONSE_CHAR_CAP:
-            break
-        if event_time_chars[index]:
-            for key in _LCM_RECALL_EVENT_TIME_KEYS:
-                hits_out[index].pop(key, None)
-            event_time_total -= event_time_chars[index]
-            # A ``deadline`` or ``read_error`` marker keeps its reason.
-            if not event_time_unavailable:
-                event_time_unavailable = True
-                event_time_unavailable_reason = "response_cap"
-
-    degraded = bool(degraded_reasons)
-    response: dict[str, Any] = {
-        "query": query,
-        "limit": limit,
-        "scope_bias": scope_bias,
-        "include": include,
-        "total_results": len(hits_out),
-        "hits": hits_out,
-        "provenance": {
-            "arms_run": arm_order,
-            "arm_weights": {name: arm_weights[i] for i, name in enumerate(arm_order)},
-            "coverage": coverage,
-            "fts_index": served_fts_index,
-            "rerank": rerank_status,
-            "ordering": (
-                "rrf-fusion -> scope/recency prior -> rerank reorder (top window); "
-                "the reported score is the scope/recency-adjusted RRF score, and "
-                "rerank (when applied) only permutes the top window without "
-                "replacing that score"
-            ),
-        },
-        "metrics": {
-            "embedding_query_calls": len(embedding_query_metrics),
-            "embedding_query_tokens": sum(
-                int(item["usage_tokens"] or 0) for item in embedding_query_metrics
-            ),
-            "embedding_query_tokens_complete": all(
-                item["usage_tokens"] is not None for item in embedding_query_metrics
-            ),
-            "embedding_queries": embedding_query_metrics,
-        },
-        "degraded": degraded,
-    }
-    if bool(getattr(engine._config, "rerank_enabled", False)) and rerank_scores:
-        response["provenance"]["rerank_scores"] = rerank_scores
-    if fts_anchor_info is not None and len(arm_order) > 1:
-        # The anchor only places the hit in the ranked window; answer_ready
-        # selection (citation and per-session rules) and the response cap still
-        # decide delivery, so report whether the anchored hit actually shipped.
-        # ``delivered`` is null when the anchor did not fire (no anchored hit).
-        fts_anchor_info["delivered"] = (
-            _lcm_recall_fts_anchor_delivered(response["hits"], arm_hits)
-            if fts_anchor_info["fired"]
-            else None
-        )
-        response["provenance"]["fts_anchor"] = fts_anchor_info
-    if degraded:
-        response["degraded_reason"] = "; ".join(dict.fromkeys(degraded_reasons))
-    if timed_out:
-        response["timeout"] = True
-    if event_time_unavailable:
-        response["event_time_unavailable"] = True
-        response["event_time_unavailable_reason"] = event_time_unavailable_reason
-    if requested_limit > _LCM_RECALL_LIMIT_CAP:
-        response["limit_clamped_from"] = requested_limit
-    if detail == "answer_ready":
-        expansion = {
-            "expanded_hit_count": sum("content" in hit for hit in hits_out),
-            "expanded_hit_limit": _LCM_RECALL_ANSWER_READY_EXPANDED_HIT_LIMIT,
-            "per_session_limit": _LCM_RECALL_ANSWER_READY_PER_SESSION_LIMIT,
-            "diversity_dropped_count": diversity_dropped,
-            "per_hit_char_cap": _LCM_RECALL_ANSWER_READY_CONTENT_CHARS,
-            "snippet_char_cap": _LCM_RECALL_SNIPPET_CHARS,
-            "response_char_cap": _LCM_RECALL_RESPONSE_CHAR_CAP,
-            "response_policy": (
-                "rank-preserving session diversity, then exact-ref hydration; "
-                "whole hits only when enforcing the response cap"
-            ),
-            "hydration_policy": "bounded exact reads only; no additional retrieval search",
-            "response_truncated": response_cap_truncated,
-        }
-        if reference_strict:
-            expansion["reference_strict"] = True
-            expansion["diversity_dropped_count"] = strict_selector.diversity_dropped
-            expansion["unreferenced_dropped_count"] = (
-                strict_selector.unreferenced_dropped
-            )
-            expansion["unreferenced_omitted_count"] = unreferenced_omitted
-            expansion["summary_leads"] = summary_leads
-            expansion["reference_policy"] = (
-                "every delivered hit publishes the (store_id, content_offset, "
-                "content_returned_chars) span its text occupies in the current "
-                "row; a candidate that fails that check is replaced by the "
-                "next-ranked citable one. Summary nodes are never delivered as "
-                "evidence -- their relevance reaches the ranking through the "
-                "source messages beneath them, and the nodes themselves come "
-                "back here as non-evidence drill-down leads"
-            )
-        response["detail"] = detail
-        response["provenance"]["detail"] = detail
-        response["provenance"]["answer_ready"] = expansion
-        if delta_requested:
-            novel_refs = [hit["exact_ref"] for hit in hits_out if hit.get("exact_ref")]
-            response["delta"] = {
-                "protocol": "exact-ref-delta-v1",
-                "seen_ref_count": len(seen_refs),
-                "novel_ref_count": len(novel_refs),
-                "novel_refs": novel_refs,
-                "progress": bool(novel_refs),
-                "termination_reason": None if novel_refs else "no_novel_exact_ref",
-            }
-        if include_occurrence_time:
-            response["provenance"]["occurrence_time"] = {
-                "policy_version": "occurrence-time-v1",
-                "anchor_source": "engine session metadata when available",
-                "observation_is_not_occurrence": True,
-            }
-
-        anchor_fired = bool(fts_anchor_info and fts_anchor_info.get("fired"))
-        if anchor_fired:
-            # Size the cap check with the widest value (``false``) so the final
-            # recompute below can never grow the encoded response past the cap.
-            fts_anchor_info["delivered"] = False
-        encoded = json.dumps(response, ensure_ascii=False)
-        event_time_marker_deferred: str | None = None
-        if len(encoded) > _LCM_RECALL_RESPONSE_CHAR_CAP:
-            encoded, event_time_marker_deferred = _lcm_recall_fit_event_time(
-                response
-            )
-        if len(encoded) > _LCM_RECALL_RESPONSE_CHAR_CAP:
-            original_query = response["query"]
-            response["query"] = original_query[:4_096]
-            expansion["query_truncated"] = len(response["query"]) < len(original_query)
-            encoded = json.dumps(response, ensure_ascii=False)
-        while len(encoded) > _LCM_RECALL_RESPONSE_CHAR_CAP and (
-            response["hits"] or expansion.get("summary_leads")
-        ):
-            if response["hits"]:
-                response["hits"].pop()
-            else:
-                expansion["summary_leads"].pop()
-            response["total_results"] = len(response["hits"])
-            expansion["response_truncated"] = True
-            expansion["expanded_hit_count"] = sum(
-                "content" in hit for hit in response["hits"]
-            )
-            encoded = json.dumps(response, ensure_ascii=False)
-        if event_time_marker_deferred is not None:
-            # Put the marker back with its original reason, only if it fits.
-            marked = {
-                **response,
-                "event_time_unavailable": True,
-                "event_time_unavailable_reason": event_time_marker_deferred,
-            }
-            marked_encoded = json.dumps(marked, ensure_ascii=False)
-            if len(marked_encoded) <= _LCM_RECALL_RESPONSE_CHAR_CAP:
-                response.update(
-                    event_time_unavailable=True,
-                    event_time_unavailable_reason=event_time_marker_deferred,
-                )
-                encoded = marked_encoded
-        if delta_requested:
-            novel_refs = [
-                hit["exact_ref"]
-                for hit in response["hits"]
-                if hit.get("exact_ref")
-            ]
-            response["delta"].update(
-                {
-                    "novel_ref_count": len(novel_refs),
-                    "novel_refs": novel_refs,
-                    "progress": bool(novel_refs),
-                    "termination_reason": (
-                        None if novel_refs else "no_novel_exact_ref"
-                    ),
-                }
-            )
-            encoded = json.dumps(response, ensure_ascii=False)
-        if anchor_fired:
-            # The cap loop may have popped the anchored hit: report delivery
-            # from the hits actually returned.
-            fts_anchor_info["delivered"] = _lcm_recall_fts_anchor_delivered(
-                response["hits"], arm_hits
-            )
-            encoded = json.dumps(response, ensure_ascii=False)
-        return encoded
-    return json.dumps(response)
 
 
 def lcm_describe(args: Dict[str, Any], **kwargs) -> str:
@@ -7048,7 +5901,7 @@ def lcm_expand_query(args: Dict[str, Any], **kwargs) -> str:
                 "node_ids": [],
                 "matches": [],
                 "raw_matches": [],
-                "evidence_provenance": _build_expand_query_evidence(
+                "evidence_provenance": expansion_evidence._build_expand_query_evidence(
                     [],
                     session_id=active_session_id,
                     session_ids=session_ids,
@@ -7082,7 +5935,7 @@ def lcm_expand_query(args: Dict[str, Any], **kwargs) -> str:
         if output == "evidence":
             for block in node_blocks:
                 candidate_blocks = [*context_blocks, block]
-                candidate_tokens = _serialized_context_token_count(candidate_blocks)
+                candidate_tokens = expansion_evidence._serialized_context_token_count(candidate_blocks)
                 if candidate_tokens > context_max_tokens:
                     context_budget_truncated = True
                     break
@@ -7113,7 +5966,7 @@ def lcm_expand_query(args: Dict[str, Any], **kwargs) -> str:
         if raw_block is not None:
             if output == "evidence":
                 candidate_blocks = [*context_blocks, raw_block]
-                candidate_tokens = _serialized_context_token_count(candidate_blocks)
+                candidate_tokens = expansion_evidence._serialized_context_token_count(candidate_blocks)
                 if candidate_tokens <= context_max_tokens:
                     context_blocks.append(raw_block)
                     context_budget_used = candidate_tokens
@@ -7124,123 +5977,7 @@ def lcm_expand_query(args: Dict[str, Any], **kwargs) -> str:
                 context_blocks.append(raw_block)
                 context_budget_used += _context_content_token_count([raw_block])
 
-    context_pagination = []
-    pagination_blocks = context_blocks
-    if raw_cursor_block is not None:
-        pagination_blocks = [*context_blocks, raw_cursor_block]
-    for block in pagination_blocks:
-        if not isinstance(block, dict):
-            continue
-        block_type = block.get("type")
-        if block_type == "summary" and block.get("summary_truncated"):
-            item = {
-                "node_id": block.get("node_id"),
-                "type": "summary",
-                "summary_truncated": True,
-                "expand_args": {"node_id": block.get("node_id")},
-            }
-            if block.get("session_id") is not None:
-                item["session_id"] = block["session_id"]
-                item["expand_args"]["session_id"] = block["session_id"]
-            context_pagination.append(item)
-            continue
-
-        if block_type in {"child_nodes", "descendant_child_nodes"}:
-            for child in block.get("children", []):
-                if child.get("summary_truncated"):
-                    child_node_id = child.get("node_id")
-                    item = {
-                        "node_id": block.get("node_id"),
-                        "type": "child_summary"
-                        if block_type == "child_nodes"
-                        else "descendant_child_summary",
-                        "child_node_id": child_node_id,
-                        "source_index": child.get("source_index"),
-                        "summary_truncated": True,
-                        "expand_args": {"node_id": child_node_id},
-                    }
-                    if block.get("session_id") is not None:
-                        item["session_id"] = block["session_id"]
-                        item["expand_args"]["session_id"] = block["session_id"]
-                    context_pagination.append(item)
-
-        pagination = block.get("pagination")
-        if not pagination or not pagination.get("has_more"):
-            continue
-
-        item = {
-            "node_id": block.get("node_id"),
-            "type": block_type,
-            "pagination": pagination,
-        }
-        if block.get("session_id") is not None:
-            item["session_id"] = block.get("session_id")
-        if block_type in {"messages", "child_messages"}:
-            truncated_message = next(
-                (
-                    message
-                    for message in block.get("messages", [])
-                    if message.get("content_truncated")
-                ),
-                None,
-            )
-            if truncated_message:
-                item["source_index"] = truncated_message.get("source_index")
-                item["content_source"] = truncated_message.get("content_source")
-                externalized = truncated_message.get("externalized") or {}
-                externalized_ref = externalized.get("ref")
-                if externalized_ref:
-                    item["externalized_ref"] = externalized_ref
-                    item["tool_call_id"] = externalized.get("tool_call_id")
-                if (
-                    truncated_message.get("content_source") == "externalized_payload"
-                    and externalized_ref
-                ):
-                    item["expand_args"] = {
-                        "externalized_ref": externalized_ref,
-                        "content_offset": pagination.get("next_content_offset") or 0,
-                    }
-                else:
-                    item["expand_args"] = {
-                        "node_id": block.get("node_id"),
-                        "source_offset": pagination.get("next_source_offset") or 0,
-                        "content_offset": pagination.get("next_content_offset") or 0,
-                    }
-            else:
-                item["expand_args"] = {
-                    "node_id": block.get("node_id"),
-                    "source_offset": pagination.get("next_source_offset") or 0,
-                    "content_offset": pagination.get("next_content_offset") or 0,
-                }
-        elif block_type == "raw_messages":
-            truncated_message = next(
-                (
-                    message
-                    for message in block.get("messages", [])
-                    if message.get("content_truncated")
-                ),
-                None,
-            )
-            if truncated_message:
-                item["store_id"] = truncated_message.get("store_id")
-                item["content_source"] = truncated_message.get("content_source")
-                item["expand_args"] = {
-                    "store_id": truncated_message.get("store_id"),
-                    "content_offset": truncated_message.get("next_content_offset") or 0,
-                }
-            elif pagination.get("next_store_id"):
-                item["store_id"] = pagination.get("next_store_id")
-                item["expand_args"] = {"store_id": pagination.get("next_store_id")}
-        elif block_type in {"child_nodes", "descendant_child_nodes"}:
-            item["expand_args"] = {
-                "node_id": block.get("node_id"),
-                "source_offset": pagination.get("next_source_offset") or 0,
-            }
-        if item.get("session_id") is not None and "node_id" in item.get(
-            "expand_args", {}
-        ):
-            item["expand_args"]["session_id"] = item["session_id"]
-        context_pagination.append(item)
+    context_pagination = expansion_evidence.continuations(context_blocks, raw_cursor_block)
 
     context_truncated = context_budget_truncated or any(
         bool(item.get("summary_truncated"))
@@ -7271,7 +6008,7 @@ def lcm_expand_query(args: Dict[str, Any], **kwargs) -> str:
             "output": "evidence",
             "evidence": context_blocks,
             "context_max_tokens": context_max_tokens,
-            "context_tokens": _serialized_context_token_count(context_blocks),
+            "context_tokens": expansion_evidence._serialized_context_token_count(context_blocks),
             "context_truncated": context_truncated,
             "context_pagination": context_pagination,
             "node_ids": node_ids,
@@ -7296,7 +6033,7 @@ def lcm_expand_query(args: Dict[str, Any], **kwargs) -> str:
             "node_ids": node_ids,
             "matches": matches,
             "raw_matches": raw_matches,
-            "evidence_provenance": _build_expand_query_evidence(
+            "evidence_provenance": expansion_evidence._build_expand_query_evidence(
                 context_blocks,
                 session_id=active_session_id,
                 session_ids=session_ids,
@@ -7353,7 +6090,7 @@ def lcm_expand_query(args: Dict[str, Any], **kwargs) -> str:
             "node_ids": node_ids,
             "matches": matches,
             "raw_matches": raw_matches,
-            "evidence_provenance": _build_expand_query_evidence(
+            "evidence_provenance": expansion_evidence._build_expand_query_evidence(
                 context_blocks,
                 session_id=active_session_id,
                 session_ids=session_ids,
@@ -7505,12 +6242,32 @@ def _embedding_provider_health_check(engine: "LCMEngine") -> dict[str, Any]:
         finally:
             conn.close()
         if stale_tasks:
+            corpus_option = ""
+            consent_option = ""
+            consent_note = ""
+            if "chunk" in stale_tasks:
+                from .command import _is_local_embedding_provider
+
+                corpus_option = " --corpus both" if "summary" in stale_tasks else " --corpus chunks"
+                if not _is_local_embedding_provider(provider_id):
+                    consent_option = " --confirm-raw-text"
+                    consent_note = (
+                        "; --confirm-raw-text acknowledges sending raw message text to the "
+                        f"'{provider_id}' cloud embedding provider"
+                    )
+            remedy = f"/lcm embed warmup, then /lcm embed backfill{corpus_option} --apply{consent_option}"
             detail.update({
                 "embedding_identity_stale": True,
                 "stale_tasks": stale_tasks,
-                "reason": _EMBEDDING_IDENTITY_STALE_REASON,
+                "reason": (
+                    "embedding_identity_stale: stored vectors use an older embedding privacy "
+                    f"revision; run {remedy}{consent_note}"
+                    "; repeat the backfill apply only while remaining is above 0 and each run lowers it, "
+                    "but stop and inspect its warnings and details on status: partial, status: error, "
+                    "status: failed, or if remaining stops falling"
+                ),
                 "impact": "lcm_recall skips the stale semantic arm until the profile is re-registered",
-                "remedy": "/lcm embed warmup, then /lcm embed backfill --apply",
+                "remedy": remedy,
             })
             return {
                 "check": "embedding_provider_health",
@@ -8220,6 +6977,7 @@ def lcm_status(args: Dict[str, Any], **kwargs) -> str:
         "threshold_full_sweep": full_status.get("threshold_full_sweep"),
         "last_stub_first_exit": full_status.get("last_stub_first_exit"),
         "no_progress_hold": full_status.get("no_progress_hold"),
+        "zero_leaf_streak": full_status.get("zero_leaf_streak"),  # #1162
         "model": full_status.get("model", ""),
         "provider": full_status.get("provider", ""),
         "raw_context_length": full_status.get("raw_context_length", engine.context_length),
@@ -8715,6 +7473,14 @@ def lcm_doctor(args: Dict[str, Any], **kwargs) -> str:
             "status": "pass" if usage_pct < threshold_pct else "warn",
             "detail": f"{usage_pct}% used, compaction triggers at {threshold_pct}%",
         })
+
+    # 8. Compaction progress (#1162): consecutive over-threshold passes that stored no leaf
+    streak = engine._zero_leaf_streak_status() if hasattr(engine, "_zero_leaf_streak_status") else None
+    checks.append({
+        "check": "compaction_progress",
+        "status": "warn" if streak and streak.get("passes", 0) >= 3 else "pass",
+        "detail": streak or {"passes": 0},
+    })
 
     overall = "healthy"
     if any(ch["status"] == "fail" for ch in checks):
