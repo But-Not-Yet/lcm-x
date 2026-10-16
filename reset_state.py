@@ -74,4 +74,4 @@ class ResetStateMixin:
         self._objective_only_noop = False
         self._sweep_budget_hold_until, self._sweep_budget_hold_conversation = 0.0, ""
         # #677: a preflight request of the previous binding never shapes the next one's compress().
-        self._preflight_below_threshold_cleanup_only = self._preflight_automatic_request = False
+        self._compaction_request.below_threshold_cleanup_only = self._compaction_request.automatic_request = False

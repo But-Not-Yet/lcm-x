@@ -121,10 +121,12 @@ copy-paste setups per agent type. Externalization and temporal rollups are on by
 ## Project status
 
 The latest stable release is
-`v0.26.2@6800cf45ad05280e6cf6fa9e1ad96c62b7132646` (plugin `hermes-lcm-x`, engine
-`lcm-x`; the rename shipped in v0.24.0, #471), a patch on v0.26.1 in which user and
-assistant text is externalized only above 100,000 characters or about 25,000
-estimated tokens, whichever comes first, with a preview and a read hint (#1016). It carries
+`v0.27.0@c67d7633d963a2ffd24cf90995189ee58e2f88c7` (plugin `hermes-lcm-x`, engine
+`lcm-x`; the rename shipped in v0.24.0, #471), a minor release on v0.26.2 with the
+theme summary quality: leaf summaries see the middle of long messages (#611),
+full-text recall stems its queries (#1035), and the defaults match the managed
+deployment, with a 24,000-token leaf chunk and a 2,000-token summary target
+(#1013, #1123). It requires Hermes 0.21.3 or newer (#1080). It carries
 the v0.23.2 lossless
 default (durable sensitive-pattern redaction is opt-in; cloud-embedding privacy
 is an independent flag that transforms only the provider-bound copy — see
@@ -137,14 +139,14 @@ Stable release identity and the continuing `main` development line are
 separate proof planes; do not describe an arbitrary `main` checkout as the
 installed stable product.
 
-The `main` line carries the forward identity `hermes-lcm-x v0.27.0` — summary quality — which the
-`v0.27.0-rc1` tag carries first, on top of the `v0.26.2` release tag (`hermes-lcm-x v0.26.2 (15 tools)`; patch releases are cut from `release/v0.26.x` and carry their own identity). An identity is never a restamp of any past commit's own recorded identity
+At the `v0.27.0` tag, the `main` line carries the identity `hermes-lcm-x v0.27.0` — summary quality — which the
+`v0.27.0-rc1` tag carried first; the next release candidate bumps it (patch releases of v0.26.x were cut from `release/v0.26.x` and carry their own identity). An identity is never a restamp of any past commit's own recorded identity
 (#385 fixed the earlier drift).
 The manifest declares 15 tools; runtime discovery advertises 13 by default,
 or 15 with both assertion and adaptive-retrieval flags on.
 
 Every compaction LCM-X starts today runs on the turn thread, so the user waits
-for it. v0.25.0 makes a hidden backlog drain at turn pace (#597); v0.28.0
+for it. v0.25.0 makes a hidden backlog drain at turn pace (#597); v0.31.0
 removes the wait by preparing summaries in the background and publishing them
 at the threshold (#787). Recall is re-baselined on the shipped default
 configuration.
@@ -525,43 +527,32 @@ Available commands:
 - `/lcm backup` - timestamped SQLite backup. The snapshot holds the database only; copy the externalized payload directory named in the output alongside it when moving a backup to another host.
 - `/lcm rotate` - read-only preview of an in-place tail-preserving compact of
   the active session
-- `/lcm rotate apply` - backup-first rotate that advances the lifecycle frontier
-  past pre-tail raw messages
+- `/lcm rotate apply` - refused on Hermes (#1141); use `/compress here N`
 - `/lcm help` - command help
 
 Apply paths are intentionally narrow and backup-first. Start with diagnostics
 before cleanup or repair.
 
-### Rotate: compact in place without changing session identity
+### Rotate: read-only preview
 
-`/lcm rotate` compacts a long-running session in place without changing
-`session_id` or `conversation_id`. It is the in-session counterpart to
-Hermes-level `/new` and to `/lcm doctor clean`.
+`/lcm rotate` previews the tail-preserving frontier for the active session
+without changing `session_id` or `conversation_id`. It reports the configured
+fresh tail, pre-tail message count, current and planned lifecycle frontier, and
+rolling backup path. The preview refuses ignored or stateless sessions.
 
-What rotate does:
+`/lcm rotate apply` is refused on Hermes (#1141): Hermes reloads its own
+transcript after a restart, so advancing the frontier without summaries leaves
+rows LCM-X cannot map. No backup is created and no lifecycle state is changed.
+Use `/compress here N` to summarise everything except the most recent N messages.
+If an earlier LCM-X already rotated this session and Hermes restarted since, compaction can stop on rows below that frontier and `/compress here N` will not repair it: start a new session with `/new` (raw rows stay recoverable via `lcm_load_session`; in-place fix tracked in #1184).
+Raw source rows remain recoverable through `lcm_load_session` and `lcm_expand`.
 
-- preserves the live tail (`LCM_FRESH_TAIL_COUNT` most-recent messages)
-- advances the lifecycle frontier marker past every raw message before the tail,
-  so subsequent bootstrap stops replaying them into the active prompt
-- writes a rolling `*-rotate-latest.sqlite3` backup under the same backup
-  directory as `/lcm backup`, overwriting the previous rotate slot atomically so
-  disk usage stays bounded across repeated rotates
-
-What rotate does not do:
-
-- it does not delete raw messages; pre-tail rows remain recoverable through
-  `lcm_load_session` and `lcm_expand`
-- it does not invoke the summarization model; trigger normal compaction first if
-  you want pre-tail content covered by summary nodes before rotating
-- it does not change session or conversation identity, and it refuses ignored or
-  stateless sessions with a clear reason
-
-`lcm_status` and `/lcm status` surface `last_rotate_at` and the rolling backup
-path. Re-running `/lcm rotate apply` after the frontier is already at or ahead of
-the target boundary reports `status: noop` and does not overwrite the previous
-known-good rolling backup.
+`lcm_status` and `/lcm status` still surface `last_rotate_at` and the rolling
+backup path for existing stores.
 
 ## Configuration
+
+The [generated scalar environment reference](skills/hermes-lcm/references/configuration.md#generated-scalar-environment-reference) lists every scalar registry key, type, declared default, diagnostic range/choice, and deprecation release. The tables below provide behavior and tuning guidance.
 
 Most installs only need `plugins.enabled` and `context.engine: lcm-x`.
 
@@ -620,7 +611,7 @@ assistant even when doing so exceeds a configured bound.
 | `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUBBING_ENABLED` | `true` | Replace token-heavy textual tool results with recoverable externalized refs in active replay; current-turn ingest is immediate and historical assembly respects the protected fresh tail; requires large-output externalization |
 | `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUB_THRESHOLD_TOKENS` | `10000` | First-sight threshold: a new tool result over this many tokens is stubbed at ingest |
 | `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUB_AGED_THRESHOLD_TOKENS` | `2000` | Aged tier: at a compaction, a tool result outside the fresh tail is stubbed from this many tokens (`0` = the first-sight threshold; never above it) |
-| `LCM_LARGE_OUTPUT_TRANSCRIPT_GC_ENABLED` | `false` | Rewrite already-externalized summarized tool rows to compact placeholders |
+| `LCM_LARGE_OUTPUT_TRANSCRIPT_GC_ENABLED` | `false` | Rewrite already-externalized summarized tool rows to compact placeholders; deprecated since v0.28.0, removed in v0.29.0 (#1246). Enabling it adds a config warning; behavior is unchanged until removal |
 | `LCM_DOCTOR_CLEAN_APPLY_ENABLED` | `false` | Permit destructive `/lcm doctor clean apply` in trusted operator contexts |
 | `LCM_EMPTY_LIFECYCLE_GC_ENABLED` | `true` | Master toggle for automatic pruning of lifecycle rows for sessions that never ingested any messages or summary nodes |
 | `LCM_EMPTY_LIFECYCLE_GC_THRESHOLD` | `200` | Number of lifecycle rows at which the GC pass fires |
@@ -1104,7 +1095,7 @@ exposes retrieval tools that can drill back into exact stored sources.
 - [Operator guide](docs/operator-guide.md) — install, activation, full
   configuration reference, diagnostics
 - [Retrieval tools reference](docs/retrieval-tools.md) — exact tool contracts
-- [Current project state](docs/project-status.md) — v0.26.2 stable baseline,
+- [Current project state](docs/project-status.md) — v0.27.0 stable baseline,
   separate main-development identity, active work, and proof boundaries
 - [Benchmark methodology and results](benchmarks/METHODOLOGY.md) — retrieval
   and judged-QA evaluation contracts, reproduction, and landed result index
@@ -1156,7 +1147,7 @@ See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for project conduct expectations
 and [SECURITY.md](SECURITY.md) for vulnerability reporting.
 See the [releases page](https://github.com/electricsheephq/lcm-x/releases),
 [tags page](https://github.com/electricsheephq/lcm-x/tags), and
-[CHANGELOG](CHANGELOG.md) for version history. `v0.26.2` is the latest stable
+[CHANGELOG](CHANGELOG.md) for version history. `v0.27.0` is the latest stable
 GitHub Release; verify its exact SHA before installation.
 
 ## License

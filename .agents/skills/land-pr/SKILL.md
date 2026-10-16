@@ -112,6 +112,13 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
   acceptance review and a distinct adversarial review whose reviewer model differs from the
   author model. A failed hint command, `HINT UNAVAILABLE`, or `"changed_files": "unknown"` also
   means both lanes.
+- When `named_risks` also includes `turn-path`, the PR body carries the fixed
+  `turn_path_probe_packet`: consumer enumeration (`rg` call sites for every changed helper
+  and effects on each consumer); the previous-GA differential row (`tests/differential`,
+  opt-in); and sibling shapes (neighbouring windows, row roles, recovery paths). This is
+  advisory: it adds no reviewers or PR-size cap and never blocks readiness or landing.
+  Turn-path files still name `lcm-memory-preservation`, so review lanes stay unchanged.
+  Unknown changed files have no packet key and still require both lanes.
 - Report each lane's pointer, or `REVIEW_SKIPPED: <lane> — <reason>` for the owner to decide.
   The merge receipt comment is a write: it is posted only in Section 7, after merge authority is
   established. A readiness-only invocation stays read-only.
