@@ -9,6 +9,7 @@ Based on the LCM paper by Ehrlich & Blackman (Voltropy PBC, Feb 2026).
 import json
 import logging
 import os
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,18 +57,20 @@ def get_recall_policy() -> str:
 
 
 def _env_flag_enabled(name: str, default: bool = False) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    if __package__ in sys.modules:
+        from .config import _parse_bool_env
+    else:  # Standalone plugin inspection has no package context.
+        from config import _parse_bool_env
+    return _parse_bool_env(name, default, unknown=False, false_values=())
 
 
 def _disabled_tool_names() -> set[str]:
     """Tools disabled via LCM_DISABLED_TOOLS (comma-separated lcm_* names)."""
-    raw = os.environ.get("LCM_DISABLED_TOOLS", "")
-    if not raw:
-        return set()
-    return {part.strip() for part in raw.split(",") if part.strip()}
+    if __package__ in sys.modules:
+        from .config import _disabled_tool_names as read_disabled_tools
+    else:
+        from config import _disabled_tool_names as read_disabled_tools
+    return read_disabled_tools()
 
 
 def _make_wrapped_handler(tool_name: str, engine):
