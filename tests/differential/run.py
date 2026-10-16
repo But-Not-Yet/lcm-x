@@ -12,7 +12,7 @@ import time
 from .ACCEPTED_DELTAS import ACCEPTED_DELTAS
 from .cases import exact_cases, generated_cases, projection_cases
 from .oracles import compare
-from .trees import BASELINE_CONFIG, DEFAULT_BASELINE, ROOT, PrerequisiteUnavailable, check_host, materialize, resolve
+from .trees import BASELINE_CONFIG, BASELINES, DEFAULT_BASELINE, ROOT, PrerequisiteUnavailable, check_host, materialize, resolve
 
 
 def candidate_identity(root):
@@ -36,6 +36,8 @@ def candidate_identity(root):
 def run(cases, out, baseline=DEFAULT_BASELINE, candidate="worktree", seed=1227, baseline_config=None):
     if os.environ.get("LCM_DIFFERENTIAL") != "1":
         raise RuntimeError("set LCM_DIFFERENTIAL=1 to opt in")
+    baseline_ref, baseline_sha = baseline, resolve(baseline)
+    baseline = next((tag for tag, sha in BASELINES.items() if sha == baseline_sha), baseline)
     baseline_config = baseline_config or os.environ.get("LCM_DIFFERENTIAL_BASELINE_CONFIG") or BASELINE_CONFIG.get(baseline, "bare")
     if baseline_config not in {"bare", "managed"}:
         raise ValueError("baseline_config must be bare or managed")
@@ -46,7 +48,8 @@ def run(cases, out, baseline=DEFAULT_BASELINE, candidate="worktree", seed=1227, 
     trees = {"ga": materialize(baseline, cache),
              "candidate": ROOT if candidate == "worktree" else materialize(candidate, cache)}
     identity = candidate_identity(ROOT) if candidate == "worktree" else dict(candidate=resolve(candidate))
-    summary = dict(baseline=resolve(baseline), **identity,
+    summary = dict(baseline=baseline_sha, baseline_ref=baseline_ref,
+                   baseline_tag=baseline if baseline in BASELINES else None, **identity,
                    baseline_config=baseline_config, seed=seed, cases=len(cases), counts={}, delta_absorption={}, stale_deltas=[], unexplained=[],
                    accepted=[], coverage={}, timings={}, missing_seams={}, absolute_over_window=[],
                    inherited_user_marks=dict(cases=0, marks=0))
@@ -61,7 +64,8 @@ def run(cases, out, baseline=DEFAULT_BASELINE, candidate="worktree", seed=1227, 
             started = time.perf_counter()
             with (out / f"{layer}-{label}.log").open("w") as log:
                 subprocess.run(["nice", "-n", "19", sys.executable, str(Path(__file__).with_name("driver.py")),
-                                "--tree", str(tree), "--baseline-config", baseline_config if label == "ga" else "bare", "--layer", layer, "--cases", str(case_path), "--out", str(result_path)],
+                                "--tree", str(tree), "--side", label,
+                                "--baseline-config", baseline_config if label == "ga" else "bare", "--layer", layer, "--cases", str(case_path), "--out", str(result_path)],
                                check=True, stdout=log, stderr=log, cwd=ROOT)
             records = [json.loads(line) for line in result_path.read_text().splitlines()]
             assert [record["id"] for record in records] == [case["id"] for case in sample], "incomplete driver output"
@@ -94,6 +98,7 @@ def run(cases, out, baseline=DEFAULT_BASELINE, candidate="worktree", seed=1227, 
     summary["stale_deltas"] = [key for key, value in absorbed.items() if not value]
     (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
     lines = ["# Differential report", f"Baseline: `{summary['baseline']}`; candidate: `{summary['candidate']}`.",
+             f"Baseline ref: `{baseline_ref}`; canonical tag: `{summary['baseline_tag']}`.",
              f"Baseline config: {baseline_config}.", f"Cases: {len(cases)}; seed: {seed}; unexplained events: {len(summary['unexplained'])}.",
              f"Inherited user marks: {summary['inherited_user_marks']['cases']} cases; {summary['inherited_user_marks']['marks']} marks.",
              "", "## Counts (layer / family / oracle)", "", "```json", json.dumps(summary["counts"], indent=2), "```",

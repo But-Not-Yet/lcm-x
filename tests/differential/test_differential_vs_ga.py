@@ -336,7 +336,8 @@ def test_f1244r_projection_requires_every_user_row_in_order(mutation):
             "lcm_expand / lcm_grep reach the full text. (projection 1200/600)]")
     failures = compare(case, ga, cand)
     assert [row["oracle"] for row in failures] == ["P_USER_ROWS"]
-    assert failures[0]["detail"] == ([2] if mutation == "swapped" else [0])
+    extra = [] if mutation == "dropped" else [0]
+    assert failures[0]["detail"] == dict(missing=[2] if mutation == "swapped" else [0], extra=extra)
     assert failures[0]["delta"] is None
 
 
@@ -460,3 +461,88 @@ def test_f1244r_user_token_evidence_survives_removed_timestamps(marked):
     store = SimpleNamespace(get=lambda sid: source if sid == 1 else None)
     evidence = user_row_evidence(view, [source], lambda row: len(row["content"]), lambda text: text, pattern, store)
     assert evidence == {"0": dict(tokens=len(content), marked=marked, preserved=not marked)}
+
+
+@pytest.mark.parametrize("mutation", ["inserted", "duplicated", "clean"])
+def test_f1244r2_projection_user_sequence_is_exact(mutation):
+    case, ga = projection_row_fixture()
+    cand = deepcopy(ga)
+    if mutation != "clean":
+        extra = dict(role="user", content="inserted") if mutation == "inserted" else deepcopy(cand["out"][0])
+        cand["out"].insert(1, extra)
+    failures = compare(case, ga, cand)
+    assert failures == ([] if mutation == "clean" else [
+        dict(oracle="P_USER_ROWS", detail=dict(missing=[], extra=[1]), delta=None)])
+
+
+@pytest.mark.parametrize("shape,expected", [
+    ("reversed", ["result-out-of-order:b"]),
+    ("separated", ["result-not-contiguous:a"]),
+    ("duplicate-call", ["duplicate-call:a"]),
+    ("valid", []),
+])
+def test_f1244r2_provider_safe_tool_groups(shape, expected):
+    assistant = dict(role="assistant", tool_calls=[dict(id="a"), dict(id="b")])
+    a, b = [dict(role="tool", tool_call_id=cid, content="result") for cid in ("a", "b")]
+    rows = [assistant, a, b]
+    if shape == "reversed":
+        rows = [assistant, b, a]
+    elif shape == "separated":
+        rows = [dict(role="assistant", tool_calls=[dict(id="a")]), dict(role="user", content="next"), a]
+    elif shape == "duplicate-call":
+        rows = [dict(role="assistant", tool_calls=[dict(id="a"), dict(id="a")]), a]
+    assert pair_errors(rows) == expected
+
+
+@pytest.mark.parametrize("side", ["candidate", "ga"])
+def test_f1244r2_missing_override_seam(side, tmp_path):
+    from types import SimpleNamespace
+    from .driver import run_case
+
+    config = SimpleNamespace()
+    engine = SimpleNamespace(
+        on_session_start=lambda *a, **kw: None, shutdown=lambda: None,
+        _store=SimpleNamespace(append=lambda *a, **kw: 1),
+        _survival_projection=lambda rows, ids, limit: rows, _survival_measure=lambda rows: 0)
+    modules = dict(
+        config=SimpleNamespace(LCMConfig=lambda **kw: config),
+        engine=SimpleNamespace(LCMEngine=lambda **kw: engine),
+        escalation=SimpleNamespace(_call_llm_for_summary=None),
+        survival_fit=SimpleNamespace(_PROJECTED_RE=None),
+        message_content=SimpleNamespace(normalize_content_value=lambda value: value),
+        tokens=SimpleNamespace(count_message_tokens=lambda row: 0))
+    case = dict(id="missing-override", layer="projection", summarizer="healthy", window=100,
+                limit=100, rows=[], overrides=dict(unavailable_setting=True))
+    result = (run_case(case, modules, tmp_path, []) if side == "candidate"
+              else run_case(case, modules, tmp_path, [], side=side))
+    assert "config.unavailable_setting" in result["missing_seams"]
+    if side == "candidate":
+        assert "unavailable_setting" in result["error"]
+        assert [failure["oracle"] for failure in compare(case, {}, result)] == ["DRIVER"]
+    else:
+        assert "error" not in result
+        assert result["out"] == []
+
+
+@pytest.mark.parametrize("ref_form", ["tag", "full", "short"])
+def test_f1244r2_baseline_cli_canonicalizes_known_commit(ref_form, tmp_path, monkeypatch, capsys):
+    import json
+    import sys
+    from .run import main
+    from .trees import BASELINES
+
+    monkeypatch.delenv("LCM_DIFFERENTIAL_BASELINE_CONFIG", raising=False)
+    tag = "v0.26.2"
+    ref = {"tag": tag, "full": BASELINES[tag], "short": BASELINES[tag][:9]}[ref_form]
+    out = tmp_path / ref_form
+    monkeypatch.setattr(sys, "argv", ["differential", "--baseline", ref, "--layers", "projection",
+                                   "--cases", "1", "--seed", "1227", "--out", str(out)])
+    assert main() == 0
+    result = json.loads((out / "summary.json").read_text())
+    assert result["baseline_config"] == "managed"
+    assert result["counts"] == {"projection/p34/P_USER": 1}
+    assert result["accepted"][0]["delta"] == "D1233_LAST_RESORT_USER_MARK"
+    assert not result["unexplained"]
+    assert result["baseline_ref"] == ref
+    assert result["baseline_tag"] == tag
+    assert "0 unexplained events" in capsys.readouterr().out
