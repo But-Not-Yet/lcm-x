@@ -6,6 +6,9 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
+- Fix: E2 canonical uid copy evidence never excludes user rows; sync the shadow-mode copy-exclusion docs. (#1124, #1146)
+- Fix: repeated tool groups are excluded whole or kept whole; E1 preserves occurrences with their own uid binding. (#1146, #1154)
+- Fix: proven hidden re-ingest copies no longer consume leaf input or count as hidden backlog. Exclusion requires an earlier owned byte-equal twin that an existing summary or the same leaf covers, tool-call identity or canonical host-uid evidence, and a non-lossy identity. The publication transaction rechecks each copy's bytes, ownership and twin coverage. Stored rows, ingest behavior and the schema are unchanged. (#1124)
 - Fix: `/lcm rotate apply` is refused on Hermes because it reloads its own transcript after a restart; use `/compress here N` to summarise everything except the most recent N messages. (#1141)
 - Fix: when chunk vectors carry a stale embedding identity, `lcm_doctor` now advises `/lcm embed backfill --corpus chunks --apply --confirm-raw-text` (or `--corpus both --apply --confirm-raw-text` when summaries are stale too) for cloud providers. Repeat the backfill apply only while `remaining` is above 0 and each run lowers it. Stop on `status: partial`, `status: error`, or `status: failed`, or if `remaining` stops falling, and inspect the warnings, errors, and detail output. The summary-only command is unchanged; its advice gains only the repeat guidance. (#896)
 ### Deprecated
