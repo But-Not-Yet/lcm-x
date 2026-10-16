@@ -287,7 +287,8 @@ def test_accounting_matches_requests_to_scripted_steps(tmp_path):
 
 @pytest.mark.parametrize("intervals,kills,unexpected", [
     ([(10, 30)], [20], []),  # its own in-flight truncation
-    ([(30, 40)], [20], [1]),  # request started after the kill
+    ([(2_000_000_030, 2_000_000_040)], [20], [1]),  # request started well after the kill
+    ([(25, 40)], [20], []),  # its handler thread stamped the start just after the kill
     ([(10, 15)], [20], [1]),  # client had already disconnected
     ([(10, 30), (40, 60)], [20, 50], []),
     ([(10, 30), (10, 30)], [20], [2]),  # one kill cannot license two requests
