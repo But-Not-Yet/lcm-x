@@ -1183,6 +1183,74 @@ class ReconcileMixin:
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
+    def _replay_snapshot_prefix_digests(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        native_recovery: bool = False,
+        compacted_active: bool = False,
+        session_end: bool = False,
+    ) -> tuple[dict[int, str], dict[int, str], dict[int, str]]:
+        """Index exact legacy digests by cut, resolving each identity once (#1090).
+
+        The version-1 JSON envelope sorts ``messages`` before ``version``. Feed
+        its open array and each serialized identity into one SHA-256 state;
+        closing a COPY with the constant suffix yields the same bytes/digest
+        as the legacy whole-prefix serialization. Hashing prefix bytes again
+        would still be quadratic even if identities were cached.
+
+        Eligibility is prefix-local and namespace-specific: native recovery
+        refuses every prefix containing a lossy identity; engine proof needs
+        both anchors; session-end proof needs the summary anchor only. Empty
+        namespaces do no work. This is a call-local view, never a durable cache
+        of payload files or a change to persisted proof metadata.
+        """
+        native: dict[int, str] = {}
+        active: dict[int, str] = {}
+        ended: dict[int, str] = {}
+        if not (native_recovery or compacted_active or session_end):
+            return native, active, ended
+        state = hashlib.sha256(b'{"messages":[')
+        has_lossy_identity = False
+        has_lcm_system_note = False
+        has_generated_summary = False
+        for cursor, message in enumerate(messages, 1):
+            if compacted_active or session_end:
+                role = str(message.get("role") or "")
+                content = normalize_content_value(message.get("content")) or ""
+                if role == "system":
+                    has_lcm_system_note |= (
+                        "[Note: This conversation uses Lossless Context Management (LCM)." in content
+                        and "Earlier turns have been compacted into hierarchical summaries below." in content
+                    )
+                elif "[Expand for details:" in content:
+                    has_generated_summary |= bool(re.search(
+                        r"\[(?:Recent|Session Arc|Durable|Depth-\d+) Summary \(d\d+, node \d+\)\]",
+                        content,
+                    ))
+            identity = self._message_replay_identity(message)
+            if native_recovery:
+                has_lossy_identity |= _has_lossy_redacted_identity(identity)
+            if cursor > 1:
+                state.update(b",")
+            state.update(json.dumps(
+                list(identity), ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+            ).encode("utf-8"))
+            eligible_native = native_recovery and not has_lossy_identity
+            eligible_active = compacted_active and has_lcm_system_note and has_generated_summary
+            eligible_end = session_end and has_generated_summary
+            if eligible_native or eligible_active or eligible_end:
+                closed = state.copy()
+                closed.update(b'],"version":1}')
+                digest = closed.hexdigest()
+                if eligible_native:
+                    native[cursor] = digest
+                if eligible_active:
+                    active[cursor] = digest
+                if eligible_end:
+                    ended[cursor] = digest
+        return native, active, ended
+
     def _replay_snapshot_metadata_key(
         self,
         prefix: str,
@@ -1609,12 +1677,18 @@ class ReconcileMixin:
         # Every identity the tool-anchored terms are allowed to advance over
         # must itself be durable, on either the raw or the cleaned-up view.
         durable_replay_identities = set(stored_tail) | set(sanitized_replay_tail)
+        native_prefix_digests, engine_prefix_digests, session_end_prefix_digests = (
+            self._replay_snapshot_prefix_digests(
+                messages,
+                native_recovery=bool(native_recovery_snapshot_digests),
+                compacted_active=bool(engine_snapshot_digests),
+                session_end=bool(session_end_snapshot_digests),
+            )
+        )
         empty_prefix_cursor: int | None = None
         for cursor in range(len(messages), -1, -1):
             candidate_messages = messages[:cursor]
-            native_recovery_snapshot_digest = (
-                self._native_recovery_replay_snapshot_digest(candidate_messages)
-            )
+            native_recovery_snapshot_digest = native_prefix_digests.get(cursor, "")
             if (
                 native_recovery_snapshot_digest
                 and native_recovery_snapshot_digest
@@ -1682,12 +1756,8 @@ class ReconcileMixin:
                 and self._matches_store_tail_suffix(sanitized_replay_tail, candidate_prefix)
             )
             matches_raw_tail = self._matches_store_tail_suffix(stored_tail, candidate_prefix)
-            engine_snapshot_digest = self._compacted_active_replay_snapshot_digest(candidate_messages)
-            session_end_snapshot_digest = (
-                self._session_end_replay_snapshot_digest(candidate_messages)
-                if allow_session_end_replay_proof
-                else ""
-            )
+            engine_snapshot_digest = engine_prefix_digests.get(cursor, "")
+            session_end_snapshot_digest = session_end_prefix_digests.get(cursor, "")
             has_registered_engine_snapshot = (
                 bool(engine_snapshot_digest)
                 and engine_snapshot_digest in engine_snapshot_digests
@@ -2578,10 +2648,11 @@ class ReconcileMixin:
                 self._load_native_recovery_replay_snapshot_digests()
             )
             if native_recovery_snapshot_digests:
+                native_prefix_digests, _, _ = self._replay_snapshot_prefix_digests(
+                    messages, native_recovery=True,
+                )
                 for cursor in range(len(messages), 0, -1):
-                    digest = self._native_recovery_replay_snapshot_digest(
-                        messages[:cursor]
-                    )
+                    digest = native_prefix_digests.get(cursor, "")
                     if digest not in native_recovery_snapshot_digests:
                         continue
                     self._record_ingest_reconciliation(
