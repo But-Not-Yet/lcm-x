@@ -1088,3 +1088,178 @@ def test_b9_only_cell_without_the_audit_is_unsupported_never_pass(tmp_path):
     out = make(tmp_path, rows=clean_rows(), events=clean_events(), bars=["B9"])
     assert out["verdict"] == "UNSUPPORTED" and out["applicable_bars"] == [], out
     assert out["reason"].startswith("B9: ")
+
+
+@pytest.mark.parametrize("committed,expected", [(2, "PASS"), (3, "FAIL")])
+def test_default_window_cadence_half_boundary(tmp_path, committed, expected):
+    events = clean_events(4)
+    for i in range(4):
+        if i < committed:
+            events.append({"event": "compaction", "compression_status": "compacted", "turn": i + 1})
+        events.append({"event": "provider_request", "turn": i + 1})
+    out = make(tmp_path, rows=clean_rows(4), events=events, passes=0, bars=["C1"])
+    assert out["verdict"] == expected
+    assert out["numbers"]["C1"] == {"model_calls": 4, "preceded_by_compaction": committed}
+
+
+@pytest.mark.parametrize("committed,expected", [(1, "INCONCLUSIVE"), (2, "INCONCLUSIVE"), (3, "FAIL")])
+def test_default_window_cadence_trailing_commit_is_inconclusive(tmp_path, committed, expected):
+    # A commit with no observed model call after it never scores PASS. The missing call can only add a call that a
+    # commit preceded, so a FAIL stands: 2 of 4 would PASS, but 3 of 5 fails.
+    events = clean_events(4)
+    for i in range(4):
+        if i < committed:
+            events.append({"event": "compaction", "compression_status": "compacted", "turn": i + 1})
+        events.append({"event": "provider_request", "turn": i + 1})
+    events.append({"event": "compaction", "compression_status": "compacted", "turn": 5})
+    out = make(tmp_path, rows=clean_rows(4), events=events, passes=0, bars=["C1"])
+    assert out["verdict"] == expected
+
+
+@pytest.mark.parametrize("present,expected", [(True, "PASS"), (False, "FAIL"), (None, "INCONCLUSIVE")])
+def test_default_window_objective_requires_request_bytes(tmp_path, present, expected):
+    events = clean_events()
+    events += [{"event": "compaction", "compression_status": "compacted"},
+               {"event": "provider_request", "continuity": {"F4": True, "current_request_present": present}}]
+    out = make(tmp_path, rows=clean_rows(), events=events, passes=0, bars=["F4"])
+    assert out["verdict"] == expected
+    assert out["numbers"]["F4"] == {"observed": 1, "present": int(present is True),
+                                      "absent": int(present is False), "unknown": int(present is None)}
+
+
+@pytest.mark.parametrize("bar", ["C1", "F4"])
+def test_default_window_missing_scenario_never_passes(tmp_path, bar):
+    out = make(tmp_path, rows=clean_rows(), events=clean_events(), passes=0, bars=[bar])
+    assert out["verdict"] == "INCONCLUSIVE"
+
+
+def test_default_window_counts_requests_once_and_ignores_noops_final_and_cron(tmp_path):
+    events = clean_events()
+    events += [{"event": "compaction", "compression_status": "noop"},
+               {"event": "provider_request"},
+               {"event": "compaction", "compression_status": "compacted"},
+               {"event": "compaction", "compression_status": "compacted"},
+               {"event": "provider_request", "continuity": {"current_request_present": True}},
+               {"event": "compaction", "compression_status": "noop"},
+               {"event": "provider_request"},
+               {"event": "compaction", "compression_status": "compacted", "final": True},
+               {"event": "compaction", "compression_status": "compacted", "session_prefix": "K"}]
+    out = make(tmp_path, rows=clean_rows(), events=events, passes=0, bars=["C1", "F4"])
+    assert out["verdict"] == "PASS"
+    assert out["numbers"]["C1"] == {"model_calls": 2, "preceded_by_compaction": 1}
+    assert out["numbers"]["F4"]["observed"] == 2
+
+
+def test_default_window_cell_contract():
+    selected = cells.select("default-window/*")
+    assert len(selected) == 2
+    with pytest.raises(ValueError, match="no cell matches"):
+        cells.select("default-window/32k-cadence")
+    assert not any(c["id"].startswith("default-window/") for c in cells.select("all"))
+    from bench.instruments.reliability import process_cell
+    for c in selected:
+        assert "R1" in process_cell.unsupported(c, "acp-process")
+        assert c["lcm_env"] == {} and c["in_place"] is True
+        assert ("C1" in c["bars"]) is c["id"].endswith("cadence")
+        assert ("F4" in c["bars"]) is c["id"].endswith("objective-1221")
+    with pytest.raises(ValueError, match="no cell matches"):
+        cells.select("default-window/64k-large-objective")
+    c = cells.select("default-window/objective-1221")[0]
+    assert c["bars"] == ["B1", "B2", "B6", "F4"]
+    assert c["window"] == 32768 and c["turns"] == 2
+    assert 12000 <= len(probe.user_text(c, "T", 2)) // 4 < 12100
+    assert len(probe.user_text(c, "T", 1)) < 100
+    assert not c["final_compaction_check"]
+    assert len(c["tool_plan"]) == 11
+    assert [g["calls"][0]["args"]["path"] for g in c["tool_plan"]] == [
+        f"~/objective-1221/big-{n:02d}.txt" for n in range(1, 12)]
+    assert "threshold:" not in run_matrix.config_yaml(c, {"engine": "fixture", "enabled": "fixture"})
+
+
+def test_default_window_objective_fixtures_stay_in_private_home(tmp_path, monkeypatch):
+    private_home = tmp_path / "home"
+    private_home.mkdir()
+    monkeypatch.setenv("HOME", str(private_home))
+    c = cells.select("default-window/objective-1221")[0]
+    # The output path is independent of the paths sent to the real host's file tool.
+    for name in ("short", "a-much-longer-output-directory"):
+        files = tmp_path / name
+        probe.write_tool_files(files, c)
+        for n, size in enumerate([24000, 16000] + [7400] * 9, 1):
+            text = (private_home / "objective-1221" / f"big-{n:02d}.txt").read_text()
+            expected = "".join(f"Record {i:04d}: datum for task step {n:02d}.\n"
+                               for i in range(size // 30 + 1))[:size]
+            assert text == expected
+            assert not (files / f"big-{n:02d}.txt").exists()
+
+
+def test_check_result_expands_home_in_read_file_paths(tmp_path, monkeypatch):
+    private_home = tmp_path / "home"
+    private_home.mkdir()
+    monkeypatch.setenv("HOME", str(private_home))
+    probe.write_tool_files(tmp_path / "files", cells.select("default-window/objective-1221")[0])
+    path = "~/objective-1221/big-01.txt"
+    lines = len((private_home / "objective-1221" / "big-01.txt").read_text().splitlines())
+    ok, detail, _ = probe.check_result("read_file", {"path": path}, json.dumps({"total_lines": lines}))
+    assert ok, detail
+    ok, detail, _ = probe.check_result("read_file", {"path": path}, json.dumps({"total_lines": lines - 1}))
+    assert not ok and f"of {lines}" in detail
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_default_window_objective_carrier_expects_persisted_original(tmp_path, duplicate):
+    original = U.format(2, 2)
+    carrier = "[Current user objective preserved from compacted history]\n" + original
+    carrier += "\n\n[Recent Summary (d0, node 1)]\nStub summary."
+    events = turn_events(1) + turn_events(2, held=carrier) + turn_events(3)
+    rows = clean_rows() + ([("user", original)] if duplicate else [])
+    out = make(tmp_path, rows=rows, events=events, bars=["B1", "B2"])
+    assert out["verdict"] == ("FAIL" if duplicate else "PASS")
+    assert out["numbers"]["B2"]["deficit_rows"] == 0
+    assert out["numbers"]["B2"]["surplus_rows"] == int(duplicate)
+
+
+@pytest.mark.parametrize("held", [
+    "quoted [Current user objective preserved from compacted history]\ntext",
+    "[Current user objective preserved from compacted history] not a carrier line",
+    "[Your active task list was preserved across context compression]\ntext",
+])
+def test_default_window_carrier_mapping_requires_exact_objective_marker(held):
+    atts = bars.attempts(turn_events(1, held=held))
+    assert bars.expected_items(atts)[0] == ("user", held)
+
+
+@pytest.mark.parametrize("contains", [True, False])
+def test_default_window_request_contains_complete_text(contains):
+    current = "[T02] user turn 2: complete objective"
+    messages = [{"role": "system", "content": None},
+                {"role": "user", "content": "prefix\n" + (current if contains else "[T02] shortened") + "\nsuffix"}]
+    assert probe.request_contains(messages, current) is contains
+
+
+def test_default_window_f4_absent_request_positive_control(tmp_path):
+    current = U.format(2, 2)
+    present = probe.request_contains([{"role": "user", "content": "[T02] shortened"}], current)
+    events = clean_events() + [{"event": "compaction", "compression_status": "compacted"},
+                              {"event": "provider_request", "continuity": {"current_request_present": present}}]
+    out = make(tmp_path, rows=clean_rows(), events=events, passes=0, bars=["F4"])
+    assert present is False
+    assert out["verdict"] == "FAIL" and out["numbers"]["F4"]["absent"] == 1
+
+
+def test_default_window_noop_preserves_pending_commit(tmp_path):
+    events = clean_events() + [{"event": "compaction", "compression_status": "compacted"},
+                              {"event": "compaction", "compression_status": "noop"},
+                              {"event": "provider_request", "continuity": {"current_request_present": True}}]
+    out = make(tmp_path, rows=clean_rows(), events=events, passes=0, bars=["C1", "F4"])
+    assert out["numbers"]["C1"] == {"model_calls": 1, "preceded_by_compaction": 1}
+    assert out["numbers"]["F4"] == {"observed": 1, "present": 1, "absent": 0, "unknown": 0}
+
+
+def test_default_window_trailing_commit_without_request_is_inconclusive(tmp_path):
+    events = clean_events() + [{"event": "compaction", "compression_status": "compacted"},
+                              {"event": "provider_request", "continuity": {"current_request_present": True}},
+                              {"event": "compaction", "compression_status": "compacted"}]
+    out = make(tmp_path, rows=clean_rows(), events=events, passes=0, bars=["F4"])
+    assert out["verdict"] == "INCONCLUSIVE"
+    assert out["numbers"]["F4"] == {"observed": 1, "present": 1, "absent": 0, "unknown": 1}
