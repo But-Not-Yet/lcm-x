@@ -624,6 +624,23 @@ def unanswered_before_next_turn(point, host, include_known_open):
 KNOWN_OPEN[RESTART_PENDING] = unanswered_before_next_turn
 
 
+def repeated_user_after_recompression(proof_lost, proof, host, occurrences, user):
+    """#1328: unchanged recompression lost the preceding output's emission proof.
+
+    The two compressions have no intervening delivery. Role repair moves the
+    fresh repeated user before the old cursor in this emitted-head/plain-tail
+    shape. Neither equal text nor a short host view alone selects the input.
+    """
+    return (proof_lost and proof is None
+            and [row["role"] for row in host] == ["user", "user", "assistant"]
+            and identity(user) != identity(host[1])
+            and any(row["role"] == "user" and identity(row) == identity(user)
+                    and row.get("timestamp") != user.get("timestamp") for row in occurrences[:-2]))
+
+
+KNOWN_OPEN[1328] = repeated_user_after_recompression
+
+
 class RestartMachine(RotationMachine):
     """Restart from the host's durable view, never the interrupted live list.
 
@@ -636,7 +653,24 @@ class RestartMachine(RotationMachine):
 
     def __init__(self):
         self.host_clock = 1_000_000
+        self.last_compress_sequence = None
+        self.proof_lost_view = None
         super().__init__()
+
+    @precondition(lambda self: bool(self.host))
+    @rule()
+    def compress(self):
+        previous = list(map(identity, self.host))
+        prior_proof = self.engine._compress_commit_proof
+        consecutive = self.last_compress_sequence == self.sequence
+        super().compress()
+        current = list(map(identity, self.host))
+        if (consecutive and prior_proof and prior_proof.get("emissions")
+                and previous == current and self.engine._compress_commit_proof is None):
+            self.proof_lost_view = current
+        elif current != self.proof_lost_view or self.engine._compress_commit_proof is not None:
+            self.proof_lost_view = None
+        self.last_compress_sequence = self.sequence
 
     def _persist_host_view(self, session, messages, parent=None):
         # Model only the host's persisted columns, not LCM's private metadata
@@ -678,11 +712,13 @@ class RestartMachine(RotationMachine):
         self.session_id = session
         self.host = merge_host_users([dict(row, _db_persisted=True) for row in json.loads(payload)])
         self.engine = self.start_engine()
+        self.last_compress_sequence = None
+        self.proof_lost_view = None
         # r34.10 cold start only binds; post_llm_call delivers the next
         # completed turn, after per-request role repair. Never ingest here.
         self.stale_proof = False
 
-    @rule(text=TEXT, structured=st.booleans(), tool_count=st.integers(0, 3),
+    @rule(text=st.one_of(TEXT, st.just("alpha 2")), structured=st.booleans(), tool_count=st.integers(0, 3),
           retry=st.booleans(), tool_name=st.sampled_from(("lookup", "inspect")))
     def new_turn(self, text, structured, tool_count, retry, tool_name):
         user = self.stamp({"role": "user", "content": (
@@ -693,6 +729,14 @@ class RestartMachine(RotationMachine):
         is_retry = retry and retry_resend_1179(self.host, user)
         if is_retry and not self.include_known_open and KNOWN_OPEN[1179](self.host, user):
             return
+        proof_lost = (self.proof_lost_view is not None
+                      and self.proof_lost_view == list(map(identity, self.host)))
+        if (not self.include_known_open and not is_retry
+                and KNOWN_OPEN[1328](proof_lost, self.engine._compress_commit_proof,
+                                    self.host, self.occurrences, user)):
+            return  # exclude this trajectory before delivery, never an oracle failure
+        self.last_compress_sequence = None
+        self.proof_lost_view = None
         if is_retry:
             self.host = self.host[:-2]
         self.retry_occurrence_index = len(self.occurrences) if is_retry else None
