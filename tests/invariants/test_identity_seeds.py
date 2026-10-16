@@ -527,20 +527,20 @@ def test_gateway_reset_retains_deliveries_across_fresh_engines():
 
 
 class CliResetReplayStored(AssertionError):
-    """Only the extra carrier and kept rows in the newly bound conversation."""
+    """Only an occurrence-oracle failure after the CLI bare reset."""
 
 
 @pytest.mark.parametrize("start", [
     pytest.param(False, id="bare-new", marks=pytest.mark.xfail(
-        strict=True, reason="UNFILED: CLI /new skips turn ingest then re-stores compressed output after rebind",
+        strict=True, reason="#1306: CLI /new keeps LCM bound to the ended session",
         raises=CliResetReplayStored)),
     pytest.param(True, id="explicit-start-control"),
 ])
 def test_cli_new_post_llm_compress_replay(start, caplog, monkeypatch):
-    """p3d: bare reset, two registry-dispatched turns, compress/end/start, ingest.
+    """Real CLI: two turns, /new, two turns, unchanged /compress, final turn.
 
-    A delivery belongs only to the conversation that first stores it; rebinding
-    never copies the ledger. The control supplies the missing start hook.
+    Deliveries belong to the host's persisted session, even when LCM writes
+    them elsewhere. The control supplies only the missing start after /new.
     """
     import importlib.util
     import hermes_lcm
@@ -557,9 +557,9 @@ def test_cli_new_post_llm_compress_replay(start, caplog, monkeypatch):
     def start_cli(machine):
         RotationMachine._publish_host_session(machine, "identity-session")
         engine = LCMEngine(config=LCMConfig(database_path=str(machine.home / "lcm.db"),
-                                           fresh_tail_count=2, leaf_chunk_tokens=16),
+                                           fresh_tail_count=2, leaf_chunk_tokens=64),
                            hermes_home=str(machine.home / "home"))
-        engine.on_session_start("identity-session", platform="cli", context_length=200_000)
+        engine.on_session_start("identity-session", platform="cli", context_length=8192)
         return engine
 
     monkeypatch.setattr(ExactlyOnceMachine, "start_engine", start_cli)
@@ -576,34 +576,51 @@ def test_cli_new_post_llm_compress_replay(start, caplog, monkeypatch):
         plugin.register(types.SimpleNamespace(register_context_engine=engines.append,
                                               register_hook=lambda name, hook: hooks.update({name: hook})))
         prototype = engines[0]
-        # CLI skips on_session_end when /new starts from empty history.
+        ledgers = {old: [], new: []}
+
+        def turn(session, text):
+            batch = [machine.stamp({"role": "user", "content": text}),
+                     machine.stamp({"role": "assistant", "content": f"answer {text}"})]
+            machine.host.extend(batch)
+            ledgers[session].extend(deepcopy(batch))
+            # CLI passes the session ID, no gateway key or context_compressor.
+            hooks["post_llm_call"](session_id=session, conversation_history=machine.host, platform="cli")
+
+        for text in ("before-one", "before-two"):
+            turn(old, text)
+        machine.engine.on_session_end(old, machine.host)
         with sqlite3.connect(machine.home / "home" / "state.db") as connection:
             connection.execute("UPDATE sessions SET end_reason = 'new_session' WHERE id = ?", (old,))
             connection.execute("INSERT INTO sessions VALUES (?, NULL, NULL)", (new,))
+        machine.host = []
         machine.engine.on_session_reset()
         if start:
-            machine.engine.on_session_start(new, platform="cli", context_length=200_000)
-        for _ in range(2):
-            user = machine.stamp({"role": "user", "content": "alpha"})
-            answer = machine.stamp({"role": "assistant", "content": f"answer alpha occurrence {machine.sequence}"})
-            machine.host.extend([user, answer])
-            machine.occurrences.extend(deepcopy([user, answer]))
-            # CLI passes the new session ID, no gateway key or context_compressor.
-            hooks["post_llm_call"](session_id=new, conversation_history=machine.host, platform="cli")
+            machine.engine.on_session_start(new, platform="cli", context_length=8192)
+        caplog.clear()
+        for text in ("alpha", "beta"):
+            turn(new, text)
         if not start:
             assert "resident_engine_conflict" in caplog.text
-            assert machine.engine._store.connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
-        owner = new if start else old
-        ledgers = {old: [], new: []}
-        ledgers[owner] = deepcopy(machine.occurrences)
+            assert machine.engine._store.connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 4
         previous = deepcopy(machine.host)
         compressed = machine.engine.compress(machine.host, current_tokens=machine.engine.threshold_tokens + 1,
                                              force=True)
-        assert machine.engine._last_compression_status == "compacted"
-        assert compressed != previous
-        machine.engine.on_session_end(new, previous)
-        machine.engine.on_session_start(new, platform="cli", boundary_reason="compression", old_session_id=new)
-        hooks["post_llm_call"](session_id=new, conversation_history=compressed, platform="cli")
+        if start:
+            assert machine.engine._last_compression_status == "compacted"
+            assert compressed != previous
+            machine.engine.on_session_end(new, previous)
+            machine.engine.on_session_start(new, platform="cli", boundary_reason="compression", old_session_id=new)
+            machine.host = compressed
+        else:
+            assert machine.engine._last_compression_status == "error"
+            assert machine.engine._survival_fit_reason == "lifecycle_binding_changed"
+            assert compressed == previous
+            assert machine.host == previous
+            # Real CLI sees unchanged output and skips both boundary hooks.
+        caplog.clear()
+        turn(new, "gamma")
+        if not start:
+            assert "resident_engine_conflict" in caplog.text
         for conversation, ledger in ledgers.items():
             cursor = machine.engine._store.connection.execute(
                 "SELECT role, content, tool_call_id, tool_calls FROM messages "
@@ -612,7 +629,7 @@ def test_cli_new_post_llm_compress_replay(start, caplog, monkeypatch):
             try:
                 assert_occurrences(ledger, rows)
             except AssertionError as error:
-                if not start and conversation == new and list(map(identity, rows)) == list(map(identity, compressed)):
+                if not start:
                     raise CliResetReplayStored(str(error)) from error
                 raise
     finally:
