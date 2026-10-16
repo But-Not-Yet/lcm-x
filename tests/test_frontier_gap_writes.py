@@ -166,12 +166,19 @@ def test_reconcile_probe_failure_trusts_zero_cursor(
     ]
     engine.ingest(messages)
 
+    probed: list[str] = []
+
     def fail_probe(session_id: str) -> int:
+        probed.append(session_id)
         raise RuntimeError("injected reconciliation probe failure")
 
     with monkeypatch.context() as patch:
-        patch.setattr(engine._store, "get_session_count", fail_probe)
+        # The probe was get_session_count() > 0 until #1174 made it has_session_messages(); fault whichever exists.
+        for name in ("get_session_count", "has_session_messages"):
+            if hasattr(engine._store, name):
+                patch.setattr(engine._store, name, fail_probe)
         engine.on_session_start("session", platform="acp")
+    assert probed, "the reconciliation probe was not reached; the injected fault must hit the probe the engine calls"
     assert engine._store.get_session_count("session") == len(messages)
     engine.ingest([*messages, {"role": "user", "content": "New question."}])
     rows = engine._store.get_session_messages("session")
