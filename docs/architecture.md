@@ -128,6 +128,7 @@ Engine
   engine_registry.py     process-wide active-clone registry (resolve_active_lcm_engine)
   runtime_identity.py    plugin/git identity for status and doctor
   codex_routing.py       Codex OAuth route detection and effective context caps
+  compaction_policy.py   pure context-window, threshold and assembly-cap policy
   sqlite_util.py         SQLite lock-contention / busy-timeout helpers
   message_analysis.py    tool-call-id pairing and synthetic-noise detection
   sanitize.py            active-context sanitizers
