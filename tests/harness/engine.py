@@ -55,7 +55,7 @@ class HostCall(NamedTuple):
 
 
 def host_call(engine, view, *, retry_on_overflow=True) -> HostCall:
-    """Ingest, check pressure, compress, and retry overflow once if requested.
+    """Ingest, check pressure (the threshold, then the engine's preflight gate), compress, and retry overflow once.
 
     ``compressed`` records an invocation, including a real engine no-op.
     An unbound/unknown window (zero) does not imply overflow.
@@ -63,6 +63,12 @@ def host_call(engine, view, *, retry_on_overflow=True) -> HostCall:
     engine.ingest(view)
     n = count_messages_tokens(view)
     compressed = engine.should_compress(n)
+    if not compressed:
+        # The host's sub-threshold branch: an unblocked request asks the engine's preflight gate, which can
+        # request one compress pass (Hermes agent/turn_context_compaction.py, _engine_preflight_maintenance).
+        info, preflight = getattr(engine, "should_compress_info", None), getattr(engine, "should_compress_preflight", None)
+        blocked = callable(info) and info(n)[1]
+        compressed = bool(not blocked and callable(preflight) and preflight(view))
     if compressed:
         view = engine.compress(view, current_tokens=n)
         n = count_messages_tokens(view)
