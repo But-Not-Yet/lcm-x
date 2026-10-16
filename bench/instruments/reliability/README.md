@@ -227,8 +227,10 @@ uses each ref's shipped defaults. No LCM tuning override is injected.
   The host supplies line numbers and JSON formatting. Fixed
   `~/objective-1221/big-NN.txt` tool arguments resolve inside the cell's private
   HOME; output/scratch path lengths do not enter those arguments. No DAG state
-  is injected and no final forced `/compress` is used. Only **B1, B2 and F4**
-  gate this cell. B8 is excluded because survival fitting is the designed fallback.
+  is injected and no final forced `/compress` is used. Only **B1, B2, B6 and F4**
+  gate this cell. B6 confirms the window pressure is real: all eleven reads
+  return their records as stored tool groups, with no split group, orphan drop
+  or tool failure. B8 is excluded because survival fitting is the designed fallback.
   F4 checks the complete current request, not merely its synthetic turn tag.
 
 The old `default-window/64k-large-objective` cell was removed: all four historical
