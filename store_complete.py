@@ -142,7 +142,7 @@ class StoreCompleteMixin:
         result = self._last_hidden_backlog = HiddenBacklog(
             len(set(loose) - self._store_complete_node_covered(loose)), truncated)
         if result:
-            self._current_compress_store_ids_by_message_id = full_map
+            self._compress_run.store_ids_by_message_id = full_map
         elif truncated:
             key = self._hold_conversation_key()
             if key not in self._hidden_backlog_unknown_warned:

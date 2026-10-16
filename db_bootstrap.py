@@ -19,7 +19,8 @@ import time
 from contextlib import closing, contextmanager
 from typing import Iterable, Sequence
 
-from .config import sqlite_mmap_size
+from .config import _parse_bool_env, sqlite_mmap_size
+from .schema_families import SchemaFinding
 
 logger = logging.getLogger(__name__)
 _wal_reset_warned = False  # no lock: a rare duplicate warning beats a lock a forked child could inherit held
@@ -1614,7 +1615,7 @@ def embedding_schema_missing(conn: sqlite3.Connection) -> set[str]:
     return required - present
 
 
-def verify_embedding_schema(conn: sqlite3.Connection) -> list[str]:
+def embedding_schema_findings(conn: sqlite3.Connection) -> list[SchemaFinding]:
     """Return structural embedding-schema errors, not just missing names.
 
     Feature state is derived and rebuildable, but silently accepting a table
@@ -1623,7 +1624,7 @@ def verify_embedding_schema(conn: sqlite3.Connection) -> list[str]:
     ``ensure_embedding_tables``; incompatible same-name objects are rejected
     before the named migration marker is published.
     """
-    errors = [f"missing object: {name}" for name in sorted(embedding_schema_missing(conn))]
+    errors = [SchemaFinding("missing object", name) for name in sorted(embedding_schema_missing(conn))]
     if errors:
         return errors
 
@@ -1639,7 +1640,7 @@ def verify_embedding_schema(conn: sqlite3.Connection) -> list[str]:
             for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
         )
         if actual != expected:
-            errors.append(f"malformed table: {table}")
+            errors.append(SchemaFinding("malformed table", table))
 
     # CHECK expressions are not exposed by PRAGMA table_info, so fingerprint
     # their normalized expressions exactly rather than looking for a loose
@@ -1656,7 +1657,7 @@ def verify_embedding_schema(conn: sqlite3.Connection) -> list[str]:
         sql = table_sql.get(table, "")
         actual_checks = _sql_check_expressions(sql)
         if actual_checks != expected_checks:
-            errors.append(f"malformed constraints: {table}")
+            errors.append(SchemaFinding("malformed constraints", table))
 
     for index, (table, expected_columns, predicate) in _EMBEDDING_INDEX_SHAPES.items():
         index_shape = tuple(
@@ -1690,8 +1691,13 @@ def verify_embedding_schema(conn: sqlite3.Connection) -> list[str]:
             or partial != int(predicate is not None)
             or actual_predicate != predicate
         ):
-            errors.append(f"malformed index: {index}")
-    return sorted(set(errors))
+            errors.append(SchemaFinding("malformed index", index))
+    return sorted(set(errors), key=str)
+
+
+def verify_embedding_schema(conn: sqlite3.Connection) -> list[str]:
+    """Return the historical string findings in their original order."""
+    return [str(f) for f in embedding_schema_findings(conn)]
 
 
 def ensure_chunk_tables(conn: sqlite3.Connection) -> None:
@@ -2687,10 +2693,7 @@ _integrity_scan_threads: dict[tuple[str, str], threading.Thread] = {}
 def _background_integrity_enabled() -> bool:
     """Kill-switch: ``LCM_FTS_INTEGRITY_BACKGROUND=false`` restores the exact old
     synchronous integrity-check behavior on the startup path."""
-    raw = os.environ.get(BACKGROUND_INTEGRITY_ENV)
-    if raw is None:
-        return True
-    return raw.strip().lower() not in ("0", "false", "no", "off")
+    return _parse_bool_env(BACKGROUND_INTEGRITY_ENV, True, unknown=True, true_values=())
 
 
 def _integrity_failed_key(spec: ExternalContentFtsSpec) -> str:
