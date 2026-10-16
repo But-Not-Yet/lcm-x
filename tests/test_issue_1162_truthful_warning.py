@@ -93,13 +93,12 @@ def test_regression_command_doctor_cause(no_call):
 def test_regression_tool_doctor_cause(no_call):
     engine, _, _ = no_call
     report = json.loads(lcm_doctor({}, engine=engine))
-    check = next(item for item in report["checks"] if item["check"] == "survival_fit")
-    assert check["detail"]["last_cause"] == engine._last_compression_noop_reason
-    guidance = next(item for item in report["guidance"] if item["check"] == "survival_fit")
-    assert engine._last_compression_noop_reason in guidance["rationale"]
-    assert "could not publish" not in guidance["rationale"]
-    assert report["overall"] == "warnings"
-    assert "status: action-recommended" in handle_lcm_command("doctor", engine)
+    record = engine._store.read_metadata_json(survival.SURVIVAL_FIT_COUNTER_KEY)
+    assert report["survival_fit"] == record
+    assert report["survival_fit"]["last_cause"] == engine._last_compression_noop_reason
+    assert not any(item["check"] == "survival_fit" for item in report["checks"])
+    command = handle_lcm_command("doctor", engine)
+    assert f"last cause {engine._last_compression_noop_reason}" in command
 
 
 def test_control_fitted_rows_remain_retrievable(no_call):
@@ -233,24 +232,36 @@ def test_second_compaction_timeout(tmp_path, monkeypatch, host_estimator, sweep)
         engine.shutdown()
 
 
-def test_primary_timeout_then_fallback_rejection(tmp_path, monkeypatch, host_estimator):
+@pytest.mark.parametrize("outcome", ["rejection", "success", "all_rejected"])
+def test_primary_timeout_then_fallback_rejection(tmp_path, monkeypatch, host_estimator, outcome):
     engine = fit._engine(tmp_path, context_length=fit.WINDOW, summary_fallback_models=["fb"])
     calls = []
 
     def summarize(*args, model="", **kwargs):
         calls.append(model)
+        if outcome == "all_rejected":
+            return ""
+        if model == "fb" and outcome == "success":
+            return "Earlier turns.\nExpand for details about: turns"
         return "" if model == "fb" else _timeout()
 
     monkeypatch.setattr(escalation, "_invoke_summary_llm", summarize)
     try:
-        view = fit._long_view()
+        view = fit._long_view(turns=200 if outcome == "success" else 80)
         engine.ingest(view)
         engine.compress(view, current_tokens=host_estimator(view))
         assert "" in calls and "fb" in calls
         assert escalation._summary_call.error is None
-        assert engine._survival_fit_pending_warning[1] == FAILED.format(
+        failed = outcome == "rejection"
+        assert engine._survival_fit_pending_warning[1] == (FAILED if failed else FITTED).format(
             n=engine._last_survival_fit["dropped_rows"])
-        assert engine._last_survival_fit["cause"] == "summary call failed: TimeoutError"
+        if failed:
+            assert engine._last_survival_fit["cause"] == "summary call failed: TimeoutError"
+        else:
+            assert not engine._last_survival_fit.get("cause", "").startswith("summary call failed:")
+        if outcome == "success":
+            assert engine._last_compression_status == "compacted"
+            assert engine._dag.get_session_nodes("S")
     finally:
         engine.shutdown()
 
@@ -313,17 +324,22 @@ def test_status_drops_previous_session_fit(no_call, boundary):
                          ({"count": 0, "count_lost": True}, True),
                          ({"count": 0, "projected_count": 1}, True), ({"count": "damaged"}, True)])
 def test_doctor_surfaces_agree(tmp_path, record, expected):
-    engine = retained._engine(tmp_path, False)
+    engine = retained._engine(tmp_path, False, context_threshold=0.75)
     try:
         engine.ingest([{"role": "user", "content": "ordinary stored turn"}])
         baseline_command_status = handle_lcm_command("doctor", engine).splitlines()[1]
         baseline_tool_status = json.loads(lcm_doctor({}, engine=engine))["overall"]
+        assert baseline_command_status == "status: ok"
+        assert baseline_tool_status == "healthy"
+        record = {**record, "last_cause": "synthetic fit cause"}
         engine._store.write_metadata_json([survival.SURVIVAL_FIT_COUNTER_KEY], json.dumps(record))
         command = handle_lcm_command("doctor", engine)
         tool = json.loads(lcm_doctor({}, engine=engine))
-        assert any(c["check"] == "survival_fit" for c in tool["checks"]) == expected
+        assert tool["survival_fit"] == (record if expected else None)
+        assert not any(c["check"] == "survival_fit" for c in tool["checks"])
         assert ("survival_fit: applied" in command) == expected
-        assert tool["overall"] == ("warnings" if expected else baseline_tool_status)
-        assert command.splitlines()[1] == ("status: action-recommended" if expected else baseline_command_status)
+        assert ("last cause synthetic fit cause" in command) == expected
+        assert tool["overall"] == baseline_tool_status
+        assert command.splitlines()[1] == baseline_command_status
     finally:
         engine.shutdown()

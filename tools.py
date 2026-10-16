@@ -9198,8 +9198,6 @@ def lcm_doctor(args: Dict[str, Any], **kwargs) -> str:
         survival_fit = engine._store.read_metadata_json("survival_fit:counter")
     except Exception:
         survival_fit = None
-    if survival_fit_count(survival_fit) != 0:
-        checks.append({"check": "survival_fit", "status": "warn", "detail": survival_fit})
 
     # 8. Compaction progress (#1162): consecutive over-threshold passes that stored no leaf
     streak = engine._zero_leaf_streak_status() if hasattr(engine, "_zero_leaf_streak_status") else None
@@ -9217,6 +9215,7 @@ def lcm_doctor(args: Dict[str, Any], **kwargs) -> str:
 
     return json.dumps({
         "overall": overall,
+        "survival_fit": survival_fit if survival_fit_count(survival_fit) != 0 else None,
         "runtime_identity": engine.get_runtime_identity(),
         "checks": checks,
         "guidance": doctor_guidance_for_checks(checks),
