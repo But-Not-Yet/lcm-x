@@ -142,7 +142,7 @@ class StoreCompleteMixin:
         result = self._last_hidden_backlog = HiddenBacklog(
             len(set(loose) - self._store_complete_node_covered(loose)), truncated)
         if result:
-            self._current_compress_store_ids_by_message_id = full_map
+            self._compress_run.store_ids_by_message_id = full_map
         elif truncated:
             key = self._hold_conversation_key()
             if key not in self._hidden_backlog_unknown_warned:
@@ -159,6 +159,7 @@ class StoreCompleteMixin:
         from .identity_anchor import _match_occurrences
 
         self._store_complete_excluded, self._store_complete_cut = [], False
+        self._store_complete_blocked = None  # #1162: (store_id, role, kind, chunk head position) of a [] return
         given_claims = claims
         in_chunk = {id(message) for message in chunk}
         claims = {key: list(ids) for key, ids in claims.items()}
@@ -249,6 +250,9 @@ class StoreCompleteMixin:
                 dependent = dependent and role not in ("user", "system")
                 continue
             if store_id not in text or not take(text[store_id], [store_id]):  # a retained row, or the budget
+                if store_id not in text:  # #1162: shown by an unmapped view occurrence, or mapped by a view row
+                    self._store_complete_blocked = (store_id, role, "shown" if store_id in blocked else "mapped",
+                                                    position(chunk[0]) if chunk else 0)
                 complete = False
                 break
             dependent = dependent and role not in ("user", "system")
