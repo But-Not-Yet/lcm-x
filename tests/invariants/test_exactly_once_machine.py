@@ -6,6 +6,7 @@ RotationMachine adds the host's compress/end/start commit with fresh child
 sessions, checking the ledger across the whole conversation. HostMergeMachine
 adds post-adoption role repair; GatewayResetMachine adds gateway /new with
 a fresh engine and the same conversation key. CLI bare /new has a seed only.
+RestartMachine loses process state at durable transcript/publication boundaries.
 
 The ledger records deliveries, not distinct text. The host view can archive its
 last exchange on retry; the ledger must retain both exchanges. Compression
@@ -548,3 +549,144 @@ class GatewayResetMachine(ExactlyOnceMachine):
 
 TestGatewayReset = GatewayResetMachine.TestCase
 TestGatewayReset.settings = PROFILE
+
+
+RESTART_CHILD = "UNFILED: cold published child lacks its parent emission proof"
+
+
+def interrupted_child_start(point, include_known_open):
+    """The host published the child but no compression start re-keyed its proof.
+
+    This is a trajectory boundary, evaluated before restart, never a predicate
+    over the replay result. The strict seed and warm-start control exercise it.
+    """
+    return point == "rotation-published" and not include_known_open
+
+
+KNOWN_OPEN[RESTART_CHILD] = interrupted_child_start
+
+RESTART_SUPERSEDED = "UNFILED: unadopted compaction supersedes the durable input emission"
+
+
+def interrupted_recompression(point, prior_emission, include_known_open):
+    """A second compress may replace the only proof of the still-durable input.
+
+    Keyed on the prior adopted emission, before starting the interrupted
+    compaction. No generated text or observed replay result selects this path.
+    """
+    return point in ("in-place", "rotation-ended") and prior_emission and not include_known_open
+
+
+KNOWN_OPEN[RESTART_SUPERSEDED] = interrupted_recompression
+
+RESTART_REPEAT = "UNFILED: restart merges a repeated pending prompt into an unsplit source row"
+
+
+def repeated_pending_prompt(point, host, text, include_known_open):
+    """A second persisted prompt repeats the unanswered tail at a new stamp."""
+    return (point == "user-persisted" and bool(host) and host[-1].get("role") == "user"
+            and host[-1].get("content") == text and not include_known_open)
+
+
+KNOWN_OPEN[RESTART_REPEAT] = repeated_pending_prompt
+
+
+class RestartMachine(RotationMachine):
+    """Restart from the host's durable view, never the interrupted live list.
+
+    Fleet conversation_compression.py:3683, 3712, 3329-3351 separates the
+    end hook, parent flush and atomic child publication. Restart follows the
+    published tip (cli_agent_setup_mixin.py:534-617) and calls ordinary start
+    (agent_init.py:2106-2111), without a compression boundary notification.
+    turn_context.py:963-977 persists the user before post_llm_call ingestion.
+    """
+
+    def __init__(self):
+        self.host_clock = 1_000_000
+        super().__init__()
+
+    def _persist_host_view(self, session, messages, parent=None):
+        # Model only the host's persisted columns, not LCM's private metadata
+        # or the generator's message_uid. Late CLI resume has no _row_id.
+        fields = ("role", "content", "timestamp", "tool_calls", "tool_call_id", "_compressed_summary")
+        durable = []
+        for message in messages:
+            row = {key: deepcopy(message[key]) for key in fields if key in message}
+            if not row.get("timestamp"):
+                self.host_clock += 1
+                row["timestamp"] = float(self.host_clock)
+            # _insert_message_rows stamps the live dict as well as SQLite.
+            message["timestamp"] = row["timestamp"]
+            durable.append(row)
+        with sqlite3.connect(self.home / "home" / "state.db") as connection:
+            connection.execute("CREATE TABLE IF NOT EXISTS host_views "
+                               "(session_id TEXT PRIMARY KEY, messages TEXT NOT NULL)")
+            if parent is not None:
+                # Host publication commits ancestry AND handoff in one txn.
+                connection.execute("UPDATE sessions SET end_reason = 'compression' WHERE id = ?", (parent,))
+                connection.execute("INSERT INTO sessions VALUES (?, ?, NULL)", (session, parent))
+            connection.execute("INSERT OR REPLACE INTO host_views VALUES (?, ?)",
+                               (session, json.dumps(durable, ensure_ascii=False)))
+
+    def _restart_from_host(self):
+        # All modeled calls have returned with their transactions committed.
+        # shutdown closes handles only; no end/reset hook or in-memory proof
+        # is transferred. This models process-state loss, not power-loss IO.
+        self.engine.shutdown()
+        with sqlite3.connect(self.home / "home" / "state.db") as connection:
+            session = self.session_id
+            while child := connection.execute(
+                    "SELECT child.id FROM sessions child JOIN sessions parent "
+                    "ON child.parent_session_id = parent.id "
+                    "WHERE parent.id = ? AND parent.end_reason = 'compression'", (session,)).fetchone():
+                session = child[0]
+            payload = connection.execute("SELECT messages FROM host_views WHERE session_id = ?",
+                                         (session,)).fetchone()[0]
+        self.session_id = session
+        self.host = merge_host_users([dict(row, _db_persisted=True) for row in json.loads(payload)])
+        self.engine = self.start_engine()
+        # Advance to the first replay ingest, as cold_resume does. The host's
+        # start hook itself does not ingest the restored message list.
+        self.engine.ingest(self.host)
+        self.stale_proof = False
+
+    @precondition(lambda self: bool(self.host))
+    @rule(point=st.sampled_from(("in-place", "rotation-ended", "rotation-published", "user-persisted")),
+          text=TEXT)
+    def restart(self, point, text):
+        # The same cold-replay trajectory as the inherited #1286 guard, keyed
+        # BEFORE the transition; never exclude from the observed store rows.
+        if KNOWN_OPEN[1286](self.stale_proof, "cold_resume"):
+            return
+        if KNOWN_OPEN[RESTART_CHILD](point, self.include_known_open):
+            return
+        if KNOWN_OPEN[RESTART_REPEAT](point, self.host, text, self.include_known_open):
+            return
+        prior_proof = self.engine._durable_commit_proof_payload() or {}
+        if KNOWN_OPEN[RESTART_SUPERSEDED](point, bool(prior_proof.get("emissions")), self.include_known_open):
+            return
+        self._persist_host_view(self.session_id, self.host)
+        if point == "user-persisted":
+            user = self.stamp({"role": "user", "content": text})
+            self.host.append(user)
+            self.occurrences.append(deepcopy(user))
+            self._persist_host_view(self.session_id, self.host)
+        else:
+            previous = deepcopy(self.host)
+            compressed = self.engine.compress(self.host, current_tokens=self.engine.threshold_tokens + 1, force=True)
+            if point != "in-place":
+                def stripped(rows):
+                    return [{k: v for k, v in row.items() if k != "_db_persisted"} for row in rows]
+
+                if compressed == previous or stripped(compressed) == stripped(previous):
+                    return  # host rejects no progress, so no end/start window
+                self.engine.on_session_end(self.session_id, previous)
+                if point == "rotation-published":
+                    child = f"identity-session-{len(self.session_ids)}"
+                    self._persist_host_view(child, compressed, parent=self.session_id)
+                    self.session_ids.append(child)
+        self._restart_from_host()
+
+
+TestRestart = RestartMachine.TestCase
+TestRestart.settings = PROFILE

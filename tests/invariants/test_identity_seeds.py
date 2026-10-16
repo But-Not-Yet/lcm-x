@@ -467,6 +467,7 @@ def test_known_open_exclusions_track_their_strict_xfails():
                    for parameter in mark.args[1] if hasattr(parameter, "marks")
                    for mark in parameter.marks if mark.name == "xfail" and mark.kwargs.get("strict"))
     xfailed = {int(found.group(1)) for reason in reasons if (found := re.match(r"#(\d+)", reason))}
+    xfailed.update(reason for reason in reasons if reason.startswith("UNFILED: "))
     assert set(KNOWN_OPEN) <= xfailed, (set(KNOWN_OPEN) - xfailed)
 
 
@@ -635,4 +636,151 @@ def test_cli_new_post_llm_compress_replay(start, caplog, monkeypatch):
     finally:
         if prototype is not None:
             prototype.shutdown()
+        machine.teardown()
+
+
+@pytest.mark.parametrize("point", ["in-place", "rotation-ended", "user-persisted"])
+def test_restart_replay_resume_append(point):
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    try:
+        for text in ("alpha", "same text"):
+            machine.new_turn(text, False, 0, False, "lookup")
+        engine = machine.engine
+        machine.restart(point, "interrupted user")
+        assert machine.engine is not engine
+        assert machine.engine._session_id == machine.session_id
+        assert len(machine.session_ids) == (2 if point == "rotation-published" else 1)
+        assert all("message_uid" not in row for row in machine.host)
+        machine.exactly_once()
+        for operation in (machine.replay, machine.cold_resume):
+            operation()
+            machine.exactly_once()
+        machine.new_turn("βeta", True, 1, False, "inspect")
+        machine.exactly_once()
+        machine.rotate()
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+class RestartScaffoldStored(AssertionError):
+    """Only the unchanged ledger plus one restored carrier stored as a source."""
+
+
+def check_restart_scaffold(machine):
+    expected, actual = list(map(identity, machine.occurrences)), list(map(identity, machine.rows()))
+    try:
+        machine.exactly_once()
+    except AssertionError as error:
+        if actual == expected + [identity(machine.host[0])]:
+            raise RestartScaffoldStored(str(error)) from error
+        raise
+
+
+@pytest.mark.xfail(strict=True, reason="UNFILED: cold published child lacks its parent emission proof",
+                   raises=RestartScaffoldStored)
+def test_restart_published_child_without_start_proof():
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        for _ in range(2):
+            machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.exactly_once()
+        machine.restart("rotation-published", "alpha")
+        check_restart_scaffold(machine)
+    finally:
+        machine.teardown()
+
+
+def test_restart_published_child_after_start_control(monkeypatch):
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    cold = machine._restart_from_host
+
+    def after_start():
+        child = machine.session_ids[-1]
+        machine.engine.on_session_start(child, platform="cli", conversation_id="identity-conversation",
+                                         boundary_reason="compression", old_session_id=machine.session_id)
+        cold()
+
+    monkeypatch.setattr(machine, "_restart_from_host", after_start)
+    try:
+        for _ in range(2):
+            machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.restart("rotation-published", "alpha")
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+@pytest.mark.parametrize("point", ["in-place", "rotation-ended"])
+@pytest.mark.xfail(strict=True, reason="UNFILED: unadopted compaction supersedes the durable input emission",
+                   raises=RestartScaffoldStored)
+def test_restart_before_recompression_adoption(point):
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.new_turn("alpha", False, 1, False, "lookup")
+        machine.rotate()
+        machine.exactly_once()
+        machine.restart(point, "alpha")
+        check_restart_scaffold(machine)
+    finally:
+        machine.teardown()
+
+
+@pytest.mark.parametrize("point", ["in-place", "rotation-ended"])
+def test_restart_before_recompression_adoption_control(point):
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.rotate()
+        machine.exactly_once()
+        machine.restart(point, "alpha")
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+class RestartMergedStored(AssertionError):
+    """Only the new prompt replaced by the host's held-plus-new composite."""
+
+
+@pytest.mark.parametrize("repeated", [
+    pytest.param(True, marks=pytest.mark.xfail(
+        strict=True, reason="UNFILED: restart merges a repeated pending prompt into an unsplit source row",
+        raises=RestartMergedStored)),
+    False,
+], ids=["repeated-pending-prompt", "different-prompt-control"])
+def test_restart_repeated_pending_prompt(repeated):
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.restart("user-persisted", "line one\nline two")
+        machine.exactly_once()
+        machine.restart("user-persisted", "line one\nline two" if repeated else "different prompt")
+        expected, actual = list(map(identity, machine.occurrences)), list(map(identity, machine.rows()))
+        try:
+            machine.exactly_once()
+        except AssertionError as error:
+            if repeated and actual == expected[:-1] + [identity(machine.host[-1])]:
+                raise RestartMergedStored(str(error)) from error
+            raise
+    finally:
         machine.teardown()
