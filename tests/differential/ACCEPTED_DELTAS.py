@@ -14,12 +14,25 @@ class AcceptedDelta:
     baselines: tuple[str, ...]
 
 
+def preserved_user_growth(ga, cand):
+    return sum(max(0, b["tokens"] - a["tokens"])
+               for index, a in ga.get("user_rows", {}).items()
+               if a["marked"] and (b := cand.get("user_rows", {}).get(index))
+               and b["preserved"] and not b["marked"])
+
+
 def ga_marked_user(case, ga, cand, failure=None):
+    def explained(a, b, metric, limit):
+        return a[metric] <= limit < b[metric] and b[metric] - limit <= preserved_user_growth(a, b)
+
     if case["layer"] == "projection":
-        return ga["out_tokens"] <= case["limit"] < cand["out_tokens"] and bool(ga["user_marks"])
+        return explained(ga, cand, "out_tokens", case["limit"])
+    if failure is not None:
+        index = failure["detail"]["call"]
+        return explained(ga["calls"][index], cand["calls"][index], "tokens", case["window"])
     failures = [(a, b) for a, b in zip(ga["calls"], cand["calls"])
                 if a["tokens"] <= case["window"] < b["tokens"]]
-    return bool(failures) and all(a["user_marks"] for a, _ in failures)
+    return bool(failures) and all(explained(a, b, "tokens", case["window"]) for a, b in failures)
 
 
 ACCEPTED_DELTAS = [AcceptedDelta(

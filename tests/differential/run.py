@@ -1,6 +1,7 @@
 """Opt-in CLI; archive identities, replay inputs and every red are retained."""
 import argparse
 from collections import Counter
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,24 @@ from .ACCEPTED_DELTAS import ACCEPTED_DELTAS
 from .cases import exact_cases, generated_cases, projection_cases
 from .oracles import compare
 from .trees import BASELINE_CONFIG, DEFAULT_BASELINE, ROOT, PrerequisiteUnavailable, check_host, materialize, resolve
+
+
+def candidate_identity(root):
+    """Name the executed checkout, including tracked and untracked input bytes."""
+    def git(*args):
+        return subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True).stdout
+
+    sha = git("rev-parse", "HEAD").decode().strip()
+    tracked = git("diff", "HEAD", "--name-only", "-z").split(b"\0")
+    untracked = sorted(path for path in git("ls-files", "--others", "--exclude-standard", "-z").split(b"\0") if path)
+    files = sorted({os.fsdecode(path) for path in tracked + untracked if path})
+    if not files:
+        return dict(candidate=sha)
+    digest = hashlib.sha256(git("diff", "HEAD"))
+    for name in untracked:
+        path = Path(root) / os.fsdecode(name)
+        digest.update(os.fsencode(os.readlink(path)) if path.is_symlink() else path.read_bytes())
+    return dict(candidate=f"{sha}+dirty", candidate_dirty=dict(files=files, diff_sha256=digest.hexdigest()))
 
 
 def run(cases, out, baseline=DEFAULT_BASELINE, candidate="worktree", seed=1227, baseline_config=None):
@@ -26,7 +45,8 @@ def run(cases, out, baseline=DEFAULT_BASELINE, candidate="worktree", seed=1227, 
     cache = out.parent / "trees"
     trees = {"ga": materialize(baseline, cache),
              "candidate": ROOT if candidate == "worktree" else materialize(candidate, cache)}
-    summary = dict(baseline=resolve(baseline), candidate=resolve("HEAD" if candidate == "worktree" else candidate),
+    identity = candidate_identity(ROOT) if candidate == "worktree" else dict(candidate=resolve(candidate))
+    summary = dict(baseline=resolve(baseline), **identity,
                    baseline_config=baseline_config, seed=seed, cases=len(cases), counts={}, delta_absorption={}, stale_deltas=[], unexplained=[],
                    accepted=[], coverage={}, timings={}, missing_seams={}, absolute_over_window=[],
                    inherited_user_marks=dict(cases=0, marks=0))
