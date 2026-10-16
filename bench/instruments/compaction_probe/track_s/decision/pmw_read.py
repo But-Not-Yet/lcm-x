@@ -61,6 +61,7 @@ def run_metrics(run_root, material, arm, n, r):
     if not post:
         raise ValueError(f"{arm}|d{n}-r{r}: zero post-crossing turns")
     wait = {t: 0.0 for t in post}
+    long_waits = {t: 0 for t in post}
     c_events, leaves, freed, walls, lat, timeouts, fails, zero_leaf = 0, [], [], [], [], 0, 0, 0
     src = []
     for e in ev:
@@ -79,6 +80,7 @@ def run_metrics(run_root, material, arm, n, r):
         w = float(e.get("compress_wall_s") or 0)
         if e["turn"] in wait:
             wait[e["turn"]] += w
+            long_waits[e["turn"]] += int(w >= 100.0)
         if w >= 1.0:
             c_events += 1
             walls.append(w)
@@ -106,7 +108,11 @@ def run_metrics(run_root, material, arm, n, r):
             "wall_p50": med(walls), "wall_p90": p90(walls), "wall_max": max(walls) if walls else None,
             "timeouts": timeouts, "failures": fails, "zero_leaf_events": zero_leaf, "no_progress_holds": holds,
             "survival_fits": len(fits), "dropped_rows": sum(int(a) for a in fits), "env": env,
-            "facts_kept": facts, "replay_wall_s": s.get("replay_wall_s")}
+            "facts_kept": facts, "replay_wall_s": s.get("replay_wall_s"),
+            "long_waits": sum(long_waits.values()), "max_long_waits_in_one_turn": max(long_waits.values(), default=0),
+            "max_turn_wait_s": max(wait.values(), default=0.0),
+            "faulted_calls": (s.get("fault_hang") or {}).get("faulted_calls", 0),
+            "fault_mode": (s.get("fault_hang") or {}).get("mode")}
 
 
 
@@ -121,6 +127,7 @@ def pooled(out, a, runs):
     lat = [v for x in rs for v in x["_lat"]]
     f304 = [x["facts_kept"].get("304") for x in rs if x["facts_kept"].get("304") is not None]
     f176 = [x["facts_kept"].get("176") for x in rs if x["facts_kept"].get("176") is not None]
+    modes = {x["fault_mode"] for x in rs}
     return {"runs": len(rs), "post_turns": pt, "c_per_100": 100.0 * ce / pt if pt else None,
             "mean_turn_wait_s": mean([x["mean_turn_wait_s"] for x in rs if x["mean_turn_wait_s"] is not None]),
             "waited_turn_share": mean([x["waited_turn_share"] for x in rs if x["waited_turn_share"] is not None]),
@@ -130,7 +137,12 @@ def pooled(out, a, runs):
             "timeouts": sum(x["timeouts"] for x in rs), "failures": sum(x["failures"] for x in rs),
             "zero_leaf_events": sum(x["zero_leaf_events"] for x in rs), "no_progress_holds": sum(x["no_progress_holds"] for x in rs),
             "survival_fits": sum(x["survival_fits"] for x in rs), "dropped_rows": sum(x["dropped_rows"] for x in rs),
-            "facts_304_mean": mean(f304), "facts_176_mean": mean(f176), "facts_n": (len(f176), len(f304))}
+            "facts_304_mean": mean(f304), "facts_176_mean": mean(f176), "facts_n": (len(f176), len(f304)),
+            "long_waits": sum(x["long_waits"] for x in rs),
+            "max_long_waits_in_one_turn": max(x["max_long_waits_in_one_turn"] for x in rs),
+            "max_turn_wait_s": max(x["max_turn_wait_s"] for x in rs),
+            "faulted_calls": sum(x["faulted_calls"] for x in rs),
+            "fault_mode": next(iter(modes)) if len(modes) == 1 else "mixed"}
 
 
 def find(d, k):
