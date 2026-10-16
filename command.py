@@ -509,7 +509,7 @@ def _help_text(error: str | None = None) -> str:
         "- /lcm doctor retention: read-only retention analysis for stored session footprint and age",
         "- /lcm backup: create a timestamped SQLite backup before any future cleanup workflow",
         "- /lcm rotate: preview a tail-preserving in-place compact of the active session (read-only)",
-        "- /lcm rotate apply: backup-first rotate that advances the lifecycle frontier past pre-tail raw messages",
+        "- /lcm rotate apply: refused on Hermes (#1141); use /compress here N",
         "- /lcm rollups: show temporal-rollup status for the current session",
         "- /lcm rollups rebuild <day|week|month|all> [date]: synchronously rebuild a bounded UTC target set",
         "- /lcm assertions rebuild [--apply] [--limit N]: preview or run one bounded exact-row assertion batch",
@@ -726,13 +726,28 @@ def _rotate_text(engine) -> str:
     if preview.get("noop"):
         lines.append(f"reason: {preview.get('reason', 'no_change')}")
         lines.append("note: read-only preview — rotate apply would be a no-op for this session")
+        lines.append("note: if an earlier LCM-X already rotated this session and Hermes restarted since, compaction can stop on the rows below that frontier and /compress here N will not repair it: start a new session with /new (raw rows stay recoverable via lcm_load_session; in-place fix tracked in #1184)")
     else:
-        lines.append("note: read-only preview — use `/lcm rotate apply` to advance the frontier (backup-first)")
+        lines.append("note: read-only preview — on Hermes, use `/compress here N` to compact (rotate apply is refused, #1141)")
+        lines.append("note: if an earlier LCM-X already rotated this session and Hermes restarted since, compaction can stop on the rows below that frontier and /compress here N will not repair it: start a new session with /new (raw rows stay recoverable via lcm_load_session; in-place fix tracked in #1184)")
         lines.append("note: pre-tail raw messages remain in the store and recoverable via lcm_load_session")
     return "\n".join(lines)
 
 
 def _rotate_apply_text(engine) -> str:
+    return "\n".join([
+        "LCM rotate apply",
+        "status: refused",
+        "reason: host_owns_transcript",
+        "note: Hermes reloads its own transcript after a restart, so advancing the frontier without summaries leaves rows LCM-X cannot map (#1141)",
+        "note: use `/compress here N` to summarise everything except the most recent N messages",
+        "note: if an earlier LCM-X already rotated this session and Hermes restarted since, compaction can stop on the rows below that frontier and /compress here N will not repair it: start a new session with /new (raw rows stay recoverable via lcm_load_session; in-place fix tracked in #1184)",
+        "note: no backup was created and no lifecycle state was changed",
+    ])
+
+
+def _rotate_apply_unchecked(engine) -> str:
+    # Kept for hosts that rebuild the context from the store.
     # Pre-flight refusal AND noop check before touching disk. This avoids
     # both writing a backup for a session that would refuse and overwriting
     # the previous known-good rolling backup when the apply would be a no-op
