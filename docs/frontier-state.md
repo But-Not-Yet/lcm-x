@@ -108,9 +108,10 @@ Rules:
    - `clone_for_agent` and `__deepcopy__` build a fresh engine (engine.py:858-917), so each clone already gets a fresh frontier from
      `__init__`.
    - The one shallow copy of an engine is `copy.copy(engine)` for the full-text grep deadline read (tools.py:3704). Today it
-     copies the ints by value and shares the two dicts. With a FrontierState object it would share the whole object. The use is
-     read-only, and B7 step 5 replaces that copy with a RetrievalContext. C4 slice 1 therefore lands after B7 step 5, or copies
-     the frontier explicitly at that site.
+     copies the ints by value and shares the two dicts. With a FrontierState object it would share the whole object. B7 step 5
+     (#1298) keeps this engine copy: its RetrievalContext replaces only the store and DAG copies. So slice 1 copies the frontier
+     explicitly at that site with `copy.copy` of the state. That keeps today's semantics exactly: ints by value, the same two dict
+     objects.
    - A test pins that two clones never share one FrontierState object.
 
 ## 5. Slices
