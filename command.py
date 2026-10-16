@@ -1910,7 +1910,6 @@ def _doctor_text(engine) -> str:
                             f"{'unknown' if uncovered_fits is None else uncovered_fits}; unknown_coverage_fit_count "
                             f"{'unknown' if unknown_fits is None else unknown_fits}{rollback}")
         triage_checks.append({"check": "survival_fit", "status": "warn", "detail": survival_fit})
-        recommended_actions.append(doctor_guidance_for_check(triage_checks[-1])["operator_action"])
     stub_first_exit = getattr(engine, "_last_stub_first_exit", None)
     if stub_first_exit:  # #671: a partial stop; the rows no leaf summarised stay stored as backlog
         observations.append("stub_first_exit: the last threshold compaction stopped on its free cuts without a "
