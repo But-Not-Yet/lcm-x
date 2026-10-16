@@ -1,4 +1,4 @@
-"""Deterministic occurrence seeds, including compress and a #1179 probe."""
+"""Occurrence seeds for compress, #1179 retries and #1286 stale commit proofs."""
 from copy import deepcopy
 import re
 import sys
@@ -11,7 +11,7 @@ from hypothesis import settings, strategies as st
 from hypothesis.stateful import invariant, rule, run_state_machine_as_test
 
 from tests.invariants.test_exactly_once_machine import (
-    CONDENSED_COLD_OPEN, KNOWN_OPEN, PROFILE, ExactlyOnceMachine, assert_occurrences, identity,
+    KNOWN_OPEN, PROFILE, ExactlyOnceMachine, assert_occurrences, identity,
 )
 
 
@@ -124,17 +124,18 @@ def test_compress_replay_resume_append():
         machine.teardown()
 
 
-class CondensedCarrierStored(AssertionError):
-    """Only an extra condensed carrier after an otherwise exact source ledger."""
+class StaleProofCarrierStored(AssertionError):
+    """Only an extra carrier after cold resume with a stale durable proof."""
 
 
-@pytest.mark.xfail(strict=True, reason=CONDENSED_COLD_OPEN, raises=CondensedCarrierStored)
+@pytest.mark.xfail(strict=True, reason="#1286: changed sanitized output leaves the durable commit proof stale",
+                   raises=StaleProofCarrierStored)
 @pytest.mark.parametrize(("counts", "compress_after"), [
     ((1, 1, 0), (0, 0, 2)),
     ((0, 1, 1), (0, 1, 2)),
     ((0, 1, 0), (0, 2, 2)),
 ], ids=["arc", "objective", "durable"])
-def test_cold_condensed_carrier_is_not_source(counts, compress_after):
+def test_cold_stale_proof_1286_does_not_store_carrier(counts, compress_after):
     machine = ExactlyOnceMachine()
     try:
         for tool_count, compressions in zip(counts, compress_after):
@@ -143,7 +144,8 @@ def test_cold_condensed_carrier_is_not_source(counts, compress_after):
             for _ in range(compressions):
                 machine.compress()
                 machine.exactly_once()
-        assert KNOWN_OPEN[CONDENSED_COLD_OPEN](machine.host, "cold_resume")
+        assert machine.engine._last_compression_status == "sanitized"
+        assert KNOWN_OPEN[1286](machine.stale_proof, "cold_resume")
         carrier = deepcopy(machine.host[0])
         # Exercise the excluded transition without going through its rule guard.
         machine.engine.shutdown()
@@ -154,8 +156,25 @@ def test_cold_condensed_carrier_is_not_source(counts, compress_after):
             machine.exactly_once()
         except AssertionError as error:
             if list(map(identity, machine.rows())) == list(map(identity, [*machine.occurrences, carrier])):
-                raise CondensedCarrierStored(str(error)) from error
+                raise StaleProofCarrierStored(str(error)) from error
             raise
+    finally:
+        machine.teardown()
+
+
+def test_cold_compacted_arc_keeps_exact_occurrences():
+    """T(1) T(1) T(0) C publishes an arc with a current durable proof."""
+    machine = ExactlyOnceMachine()
+    try:
+        for tool_count in (1, 1, 0):
+            machine.new_turn("alpha", False, tool_count, False, "lookup")
+        machine.compress()
+        assert machine.engine._last_compression_status == "compacted"
+        assert "[Session Arc Summary (" in machine.host[0]["content"]
+        assert not KNOWN_OPEN[1286](machine.stale_proof, "cold_resume")
+        machine.exactly_once()
+        machine.cold_resume()
+        machine.exactly_once()
     finally:
         machine.teardown()
 
@@ -233,5 +252,4 @@ def test_known_open_exclusions_track_their_strict_xfails():
                for mark in getattr(value, "pytestmark", [])
                if mark.name == "xfail" and mark.kwargs.get("strict")}
     xfailed = {int(found.group(1)) for reason in reasons if (found := re.match(r"#(\d+)", reason))}
-    xfailed.update(reason for reason in reasons if reason.startswith("UNFILED: "))
     assert set(KNOWN_OPEN) <= xfailed, (set(KNOWN_OPEN) - xfailed)
