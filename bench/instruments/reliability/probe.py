@@ -163,7 +163,7 @@ def check_result(name, args, result):
     if isinstance(data, dict) and (data.get("error") or data.get("success") is False):
         return False, f"error: {str(data.get('error'))[:160]}", len(text)
     if name == "read_file":
-        path = Path(str((args or {}).get("path", "")))
+        path = Path(str((args or {}).get("path", ""))).expanduser()  # the host expands "~" itself
         want = len(path.read_text().splitlines()) if path.is_file() else None
         if not isinstance(data, dict) or data.get("truncated") or want is None or data.get("total_lines") != want:
             return False, f"read_file result incomplete (total_lines {(data or {}).get('total_lines')} of {want})", len(text)

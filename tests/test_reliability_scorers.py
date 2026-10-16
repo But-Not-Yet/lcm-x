@@ -1150,7 +1150,7 @@ def test_default_window_cell_contract():
     with pytest.raises(ValueError, match="no cell matches"):
         cells.select("default-window/64k-large-objective")
     c = cells.select("default-window/objective-1221")[0]
-    assert c["bars"] == ["B1", "B2", "F4"]
+    assert c["bars"] == ["B1", "B2", "B6", "F4"]
     assert c["window"] == 32768 and c["turns"] == 2
     assert 12000 <= len(probe.user_text(c, "T", 2)) // 4 < 12100
     assert len(probe.user_text(c, "T", 1)) < 100
@@ -1176,6 +1176,19 @@ def test_default_window_objective_fixtures_stay_in_private_home(tmp_path, monkey
                                for i in range(size // 30 + 1))[:size]
             assert text == expected
             assert not (files / f"big-{n:02d}.txt").exists()
+
+
+def test_check_result_expands_home_in_read_file_paths(tmp_path, monkeypatch):
+    private_home = tmp_path / "home"
+    private_home.mkdir()
+    monkeypatch.setenv("HOME", str(private_home))
+    probe.write_tool_files(tmp_path / "files", cells.select("default-window/objective-1221")[0])
+    path = "~/objective-1221/big-01.txt"
+    lines = len((private_home / "objective-1221" / "big-01.txt").read_text().splitlines())
+    ok, detail, _ = probe.check_result("read_file", {"path": path}, json.dumps({"total_lines": lines}))
+    assert ok, detail
+    ok, detail, _ = probe.check_result("read_file", {"path": path}, json.dumps({"total_lines": lines - 1}))
+    assert not ok and f"of {lines}" in detail
 
 
 @pytest.mark.parametrize("duplicate", [False, True])
