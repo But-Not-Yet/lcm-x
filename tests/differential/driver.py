@@ -55,15 +55,28 @@ def config_overrides(case, baseline_config):
 
 def pair_errors(rows):
     calls, results, errors = set(), set(), []
+    pending = []
     for row in rows:
+        if row.get("role") != "tool":
+            pending = []
         for call in row.get("tool_calls") or []:
+            if call["id"] in calls:
+                errors.append(f"duplicate-call:{call['id']}")
             calls.add(call["id"])
+            pending.append(call["id"])
         if row.get("role") == "tool":
             cid = row.get("tool_call_id")
             if cid not in calls:
                 errors.append(f"result-before-call:{cid}")
             if cid in results:
                 errors.append(f"duplicate-result:{cid}")
+            elif cid in calls:
+                if cid not in pending:
+                    errors.append(f"result-not-contiguous:{cid}")
+                else:
+                    if cid != pending[0]:
+                        errors.append(f"result-out-of-order:{cid}")
+                    pending.remove(cid)
             results.add(cid)
     return errors + [f"missing-result:{cid}" for cid in sorted(calls - results)]
 
@@ -118,7 +131,7 @@ def load_tree(tree):
     return modules, missing
 
 
-def run_case(case, modules, directory, initial_missing, baseline_config="bare"):
+def run_case(case, modules, directory, initial_missing, baseline_config="bare", side="candidate"):
     missing = list(initial_missing)
     now = [100000.0]
     # Replace module bindings, not the interpreter's time module or thread clocks.
@@ -147,6 +160,10 @@ def run_case(case, modules, directory, initial_missing, baseline_config="bare"):
             setattr(config, key, value)
         else:
             missing.append(f"config.{key}")
+    absent_overrides = [key for key in case["overrides"] if not hasattr(config, key)]
+    if side == "candidate" and absent_overrides:
+        return dict(id=case["id"], missing_seams=missing,
+                    error=f"candidate override seam unavailable: {absent_overrides}")
     home = str(directory / "home")
     engine = modules["engine"].LCMEngine(config=config, hermes_home=home)
     engine.on_session_start("S", platform="cli", conversation_id="conv", context_length=case["window"])
@@ -296,6 +313,7 @@ def main():
     parser.add_argument("--cases", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--baseline-config", choices=["bare", "managed"], default="bare")
+    parser.add_argument("--side", choices=["ga", "candidate"], default="candidate")
     args = parser.parse_args()
     if os.environ.get("LCM_DIFFERENTIAL") != "1":
         parser.error("set LCM_DIFFERENTIAL=1 to opt in")
@@ -313,7 +331,7 @@ def main():
             started = time.perf_counter()
             with tempfile.TemporaryDirectory(prefix="case-", dir=args.out.parent) as directory:
                 try:
-                    result = run_case(case, modules, Path(directory), missing, args.baseline_config)
+                    result = run_case(case, modules, Path(directory), missing, args.baseline_config, args.side)
                 except Exception as exc:
                     result = dict(id=case["id"], error=f"{type(exc).__name__}: {exc}", missing_seams=missing)
             result["seconds"] = time.perf_counter() - started

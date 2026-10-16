@@ -12,7 +12,7 @@ PROJECTED = re.compile(r"\[LCM survival fit: this user message \((\d+) tokens\) 
 def projection_user_errors(case, cand):
     """Match user rows in order; a mark must reconstruct this input row exactly."""
     output = cand.get("out", [])
-    cursor, errors = 0, []
+    cursor, errors, matched = 0, [], set()
     for index, entry in enumerate(case.get("rows", [])):
         source = entry["message"]
         if source.get("role") != "user":
@@ -46,8 +46,10 @@ def projection_user_errors(case, cand):
         if found is None:
             errors.append(index)
         else:
+            matched.add(found)
             cursor = found + 1
-    return errors
+    extra = [i for i, row in enumerate(output) if row.get("role") == "user" and i not in matched]
+    return dict(missing=errors, extra=extra) if errors or extra else {}
 
 
 def compare(case, ga, cand, baseline=DEFAULT_BASELINE):
