@@ -17,6 +17,12 @@ import time
 from typing import Any
 import uuid
 
+from .command_auth import CommandInvocation, Decision, authorize
+from .command_router import route
+from .command_status import (
+    _status_text as _status_text,
+    _embedding_maintenance_status_lines as _embedding_maintenance_status_lines,
+)
 from .db_bootstrap import (
     _create_stem_fts,
     check_external_content_fts_integrity,
@@ -79,7 +85,7 @@ from .chunking import (
     group_by_store_id,
     normalize_content_policy,
 )
-from .embedding_maintenance import incremental_embedding_state
+from .embedding_maintenance import incremental_embedding_state as incremental_embedding_state
 from .embedding_provider import (
     EmbeddedDocumentBatch,
     EmbeddingProviderError,
@@ -104,21 +110,6 @@ from .vector_store import EmbeddingIdentity, EmbeddingPublishOutcome, VectorStor
 _EMBEDDING_BACKFILL_CLAIM_KEY = "lcm_embedding_backfill_claim"
 _EMBEDDING_BACKFILL_CLAIM_TTL_S = 10 * 60
 _EMBEDDING_BACKFILL_BATCH_SIZE = 32
-
-# Command paths; arguments do not change WRITE classification. Unknown paths
-# also default to WRITE. Plain doctor uses SQLite's FTS integrity-check INSERT.
-READ_LCM_SUBCOMMANDS = frozenset({
-    "status", "help", "doctor clean", "doctor clean lifecycle", "doctor source",
-    "doctor retention", "rotate", "rollups", "preset show", "preset suggest",
-})
-WRITE_LCM_SUBCOMMANDS = frozenset({
-    "doctor", "doctor clean apply", "doctor clean lifecycle apply",
-    "doctor repair", "doctor repair apply", "doctor repair level3",
-    "doctor repair level3 apply", "doctor repair schema-stamp",
-    "doctor repair schema-stamp apply", "doctor source apply", "backup",
-    "rotate apply", "rollups rebuild", "assertions rebuild", "preset apply",
-    "embed warmup", "embed backfill",
-})
 
 
 def _env_float(key: str, default: float) -> float:
@@ -518,7 +509,7 @@ def _help_text(error: str | None = None) -> str:
         "- /lcm doctor retention: read-only retention analysis for stored session footprint and age",
         "- /lcm backup: create a timestamped SQLite backup before any future cleanup workflow",
         "- /lcm rotate: preview a tail-preserving in-place compact of the active session (read-only)",
-        "- /lcm rotate apply: backup-first rotate that advances the lifecycle frontier past pre-tail raw messages",
+        "- /lcm rotate apply: refused on Hermes (#1141); use /compress here N",
         "- /lcm rollups: show temporal-rollup status for the current session",
         "- /lcm rollups rebuild <day|week|month|all> [date]: synchronously rebuild a bounded UTC target set",
         "- /lcm assertions rebuild [--apply] [--limit N]: preview or run one bounded exact-row assertion batch",
@@ -530,196 +521,6 @@ def _help_text(error: str | None = None) -> str:
         "- /lcm help: show this help",
     ])
     return "\n".join(lines)
-
-
-def _status_text(engine) -> str:
-    status = engine.get_status()
-    db_path = Path(engine._store.db_path)
-    db_exists = db_path.exists()
-    db_size = db_path.stat().st_size if db_exists else 0
-    session_bound = bool(engine.current_session_id)
-    source_stats = status.get("source_lineage") or {}
-    runtime_identity = status.get("runtime_identity") or {}
-    source_stats = {
-        "messages_total": int(source_stats.get("messages_total", 0) or 0),
-        "attributed_messages": int(source_stats.get("attributed_messages", 0) or 0),
-        "normalized_unknown_messages": int(source_stats.get("normalized_unknown_messages", 0) or 0),
-        "legacy_blank_source_messages": int(source_stats.get("legacy_blank_source_messages", 0) or 0),
-        "effective_unknown_messages": int(source_stats.get("effective_unknown_messages", 0) or 0),
-        **({"error": source_stats.get("error")} if source_stats.get("error") else {}),
-    }
-    protection = status.get("ingest_protection") or sensitive_pattern_status(engine._config)
-    config_sources = status.get("config_sources") or {}
-    config_source_warnings = status.get("config_source_warnings") or []
-    ignored_config_yaml_lcm_keys = status.get("ignored_config_yaml_lcm_keys") or []
-
-    uninitialized = "(uninitialized)"
-    unknown = "(unknown)"
-    model = (engine.model or unknown) if session_bound else uninitialized
-    provider = (engine.provider or unknown) if session_bound else uninitialized
-    context_length_source = (
-        (getattr(engine, "_context_length_source", "") or unknown)
-        if session_bound
-        else uninitialized
-    )
-
-    lines = [
-        "LCM status",
-        f"stem index: {stem_index_status(engine._store.connection)}",
-        f"engine: {status.get('engine', engine.name)}",
-        f"plugin_name: {runtime_identity.get('plugin_name', '(unknown)')}",
-        f"plugin_version: {runtime_identity.get('plugin_version', '(unknown)')}",
-        f"plugin_path: {runtime_identity.get('plugin_path', '(unknown)')}",
-        f"module_path: {runtime_identity.get('module_path', '(unknown)')}",
-        f"plugin_git_commit: {runtime_identity.get('plugin_git_commit') or '(unavailable)'}",
-        f"plugin_git_branch: {runtime_identity.get('plugin_git_branch') or '(unavailable)'}",
-        f"plugin_git_dirty: {runtime_identity.get('plugin_git_dirty') if runtime_identity.get('plugin_git_dirty') is not None else '(unavailable)'}",
-        f"hermes_home: {runtime_identity.get('hermes_home', '') or '(unset)'}",
-        f"session_id: {engine.current_session_id or '(unbound)'}",
-        f"session_platform: {engine.current_session_platform or ('(unbound)' if not session_bound else '(unknown)')}",
-        f"model: {model}",
-        f"provider: {provider}",
-        f"database_path: {db_path}",
-        f"database_path_source: {runtime_identity.get('database_path_source', '(unknown)')}",
-        f"database_exists: {_fmt_bool(db_exists)}",
-        f"database_size: {_fmt_size(db_size) if db_exists else 'missing'}",
-        f"compression_count: {engine.compression_count}",
-        f"total_compactions: {status.get('total_compactions', 0)}",
-        f"total_compactions_scope: {status.get('total_compactions_scope', 'current_conversation')}",
-        f"last_compression_status: {status.get('last_compression_status', 'idle')}",
-        f"last_compression_noop_reason: {status.get('last_compression_noop_reason', '') or '(none)'}",
-        f"context_length: {engine.context_length if session_bound else '(uninitialized)'}",
-        f"raw_context_length: {status.get('raw_context_length', 0) if session_bound else '(uninitialized)'}",
-        f"effective_context_length_cap: {status.get('effective_context_length_cap') or '(none)'}",
-        f"effective_context_length_reason: {status.get('effective_context_length_reason') or '(none)'}",
-        f"context_length_source: {context_length_source}",
-        f"configured_context_threshold: {status.get('configured_context_threshold', engine._config.context_threshold)}",
-        f"context_threshold: {status.get('context_threshold', engine._config.context_threshold)}",
-        f"context_threshold_source: {status.get('context_threshold_source', config_sources.get('context_threshold', 'manual_or_default'))}",
-        f"context_threshold_autoraised: {status.get('context_threshold_autoraised') or '(none)'}",
-        f"threshold_tokens: {engine.threshold_tokens if session_bound else '(uninitialized)'}",
-        f"cache_metrics_available: {_fmt_bool(status.get('cache_metrics_available'))}",
-        f"last_input_tokens: {status.get('last_input_tokens', 0)}",
-        f"last_output_tokens: {status.get('last_output_tokens', 0)}",
-        f"last_cache_read_tokens: {status.get('last_cache_read_tokens', 0)}",
-        f"last_cache_write_tokens: {status.get('last_cache_write_tokens', 0)}",
-        f"last_reasoning_tokens: {status.get('last_reasoning_tokens', 0)}",
-        f"cache_read_ratio: {float(status.get('cache_read_ratio', 0.0) or 0.0) * 100:.1f}%",
-        f"sensitive_patterns_enabled: {_fmt_bool(protection.get('enabled'))}",
-        f"sensitive_patterns: {', '.join(protection.get('patterns') or []) or '(none)'}",
-        f"sensitive_patterns_source: {protection.get('source', 'default')}",
-        # Filter classification for current_session_id (the foreground view).
-        # When a side channel is in flight, get_status() reports the bound
-        # session's flags; we read the engine properties instead so this row
-        # stays consistent with the session_id row above.
-        f"session_ignored: {_fmt_bool(engine.current_session_ignored)}",
-        f"session_stateless: {_fmt_bool(engine.current_session_stateless)}",
-        f"side_channel_active: {_fmt_bool(engine.side_channel_active)}",
-        f"conversation_id: {runtime_identity.get('conversation_id', '') or '(unbound)'}",
-        f"lifecycle_current_session_id: {runtime_identity.get('lifecycle_current_session_id', '') or '(none)'}",
-        f"lifecycle_last_finalized_session_id: {runtime_identity.get('lifecycle_last_finalized_session_id', '') or '(none)'}",
-        f"source_messages_total: {source_stats['messages_total']}",
-        f"source_attributed_messages: {source_stats['attributed_messages']}",
-        f"source_unknown_messages: {source_stats['normalized_unknown_messages']}",
-        f"source_legacy_blank_messages: {source_stats['legacy_blank_source_messages']}",
-        f"source_effective_unknown_messages: {source_stats['effective_unknown_messages']}",
-    ]
-
-    last_rotate_at = status.get("last_rotate_at")
-    if last_rotate_at:
-        lines.append(
-            f"last_rotate_at: "
-            f"{datetime.fromtimestamp(float(last_rotate_at), tz=timezone.utc).isoformat(timespec='seconds')}"
-        )
-        rotate_backup_size = int(status.get("rotate_backup_size", 0) or 0)
-        if rotate_backup_size:
-            lines.append(f"rotate_backup_size: {_fmt_size(rotate_backup_size)}")
-    else:
-        lines.append("last_rotate_at: (never)")
-    if status.get("rotate_backup_path"):
-        lines.append(f"rotate_backup_path: {status['rotate_backup_path']}")
-
-    if session_bound:
-        lines.extend([
-            f"store_messages: {status.get('store_messages', 0)}",
-            f"dag_nodes: {status.get('dag_nodes', 0)}",
-        ])
-    else:
-        lines.append(
-            "note: no active Hermes session has initialized LCM in this process yet — after a fresh restart, send one normal message first if you want live per-session runtime details"
-        )
-
-    if "ignore_session_patterns_source" in status:
-        lines.append(
-            f"ignore_session_patterns_source: {status.get('ignore_session_patterns_source')}"
-        )
-    if "stateless_session_patterns_source" in status:
-        lines.append(
-            f"stateless_session_patterns_source: {status.get('stateless_session_patterns_source')}"
-        )
-    if config_source_warnings:
-        lines.append("config_source_warnings: " + "; ".join(config_source_warnings))
-    if ignored_config_yaml_lcm_keys:
-        lines.append(
-            "ignored_config_yaml_lcm_keys: "
-            + ", ".join(f"lcm.{key}" for key in ignored_config_yaml_lcm_keys)
-        )
-    if source_stats.get("error"):
-        lines.append(f"source_lineage_error: {source_stats['error']}")
-    if bool(getattr(engine._config, "embeddings_enabled", False)):
-        lines.extend(_embedding_maintenance_status_lines(engine))
-    return "\n".join(lines)
-
-
-def _embedding_maintenance_status_lines(engine) -> list[str]:
-    """Unembedded backlog per corpus and the last incremental pass (#1014)."""
-    db_path = engine._store.db_path
-    backlog = {"summaries": "(no profile)", "chunks": "(no profile)"}
-
-    def _count(conn, identity: str, pending: int | str) -> str:
-        # In-flight rows are not pending; a provider failure after dispatch
-        # leaves them uncertain until an operator `--retry-uncertain` run.
-        try:
-            uncertain = int(conn.execute(
-                "SELECT COUNT(*) FROM lcm_embedding_backfill_inflight "
-                "WHERE identity_hash = ? AND state IN ('dispatched', 'uncertain')",
-                (identity,),
-            ).fetchone()[0])
-        except sqlite3.OperationalError:
-            uncertain = 0
-        return f"{pending} (uncertain {uncertain})" if uncertain else str(pending)
-
-    try:
-        conn = _embedding_read_connection(db_path)
-        try:
-            profile = _embedding_current_profile(conn)
-            if profile is not None:
-                identity = str(profile["identity_hash"])
-                backlog["summaries"] = _count(
-                    conn, identity, _embedding_pending_rows(conn, identity, 0)[0]
-                )
-            chunk_profile = _chunk_current_profile(conn)
-            if chunk_profile is not None:
-                policy = normalize_content_policy(getattr(
-                    engine._config, "embedding_content_policy", "conversational"
-                ))
-                identity = str(chunk_profile["identity_hash"])
-                backlog["chunks"] = _count(conn, identity, _chunk_backlog_estimate(conn, identity, policy))
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        backlog = {name: f"(unavailable: {exc})" for name in backlog}
-    last, failures = incremental_embedding_state(db_path)
-    last_text = "(never)" if last is None else (
-        datetime.fromtimestamp(last[0], tz=timezone.utc).isoformat(timespec="seconds")
-        + f" {last[1]}"
-    )
-    return [
-        f"embedding_backlog_summaries: {backlog['summaries']}",
-        f"embedding_backlog_chunks: {backlog['chunks']}",
-        f"embedding_incremental_last_pass: {last_text}",
-        f"embedding_incremental_failures: {failures}",
-    ]
 
 
 def _scan_clean_candidates(engine) -> dict[str, Any]:
@@ -925,13 +726,28 @@ def _rotate_text(engine) -> str:
     if preview.get("noop"):
         lines.append(f"reason: {preview.get('reason', 'no_change')}")
         lines.append("note: read-only preview — rotate apply would be a no-op for this session")
+        lines.append("note: if an earlier LCM-X already rotated this session and Hermes restarted since, compaction can stop on the rows below that frontier and /compress here N will not repair it: start a new session with /new (raw rows stay recoverable via lcm_load_session; in-place fix tracked in #1184)")
     else:
-        lines.append("note: read-only preview — use `/lcm rotate apply` to advance the frontier (backup-first)")
+        lines.append("note: read-only preview — on Hermes, use `/compress here N` to compact (rotate apply is refused, #1141)")
+        lines.append("note: if an earlier LCM-X already rotated this session and Hermes restarted since, compaction can stop on the rows below that frontier and /compress here N will not repair it: start a new session with /new (raw rows stay recoverable via lcm_load_session; in-place fix tracked in #1184)")
         lines.append("note: pre-tail raw messages remain in the store and recoverable via lcm_load_session")
     return "\n".join(lines)
 
 
 def _rotate_apply_text(engine) -> str:
+    return "\n".join([
+        "LCM rotate apply",
+        "status: refused",
+        "reason: host_owns_transcript",
+        "note: Hermes reloads its own transcript after a restart, so advancing the frontier without summaries leaves rows LCM-X cannot map (#1141)",
+        "note: use `/compress here N` to summarise everything except the most recent N messages",
+        "note: if an earlier LCM-X already rotated this session and Hermes restarted since, compaction can stop on the rows below that frontier and /compress here N will not repair it: start a new session with /new (raw rows stay recoverable via lcm_load_session; in-place fix tracked in #1184)",
+        "note: no backup was created and no lifecycle state was changed",
+    ])
+
+
+def _rotate_apply_unchecked(engine) -> str:
+    # Kept for hosts that rebuild the context from the store.
     # Pre-flight refusal AND noop check before touching disk. This avoids
     # both writing a backup for a session that would refuse and overwriting
     # the previous known-good rolling backup when the apply would be a no-op
@@ -5782,124 +5598,35 @@ def handle_lcm_command(
     context_conversation_id: str = "",
 ) -> str:
     tokens = [part.strip() for part in (raw_args or "").strip().split() if part.strip()]
-    profiles_known = bool(session_profile and engine_profile)
-    if profiles_known and session_profile != engine_profile:
-        return (
-            "The command could not resolve this session's LCM engine in this process; "
-            "run it from a process launched for this profile."
+    invocation = CommandInvocation(
+        command=tuple(tokens),
+        session_engine_resolved=session_engine_resolved,
+        session_context_present=session_context_present,
+        session_profile=session_profile, engine_profile=engine_profile,
+        context_session_id=context_session_id,
+        context_conversation_id=context_conversation_id,
+    )
+    decision = authorize(invocation)
+    if decision is Decision.READ_BINDINGS:
+        invocation = dataclasses.replace(
+            invocation,
+            bound_session_id=str(getattr(engine, "_session_id", "") or ""),
+            bound_conversation_id=str(getattr(engine, "_conversation_id", "") or ""),
         )
-    if session_context_present:
-        path = " ".join(part.lower() for part in tokens) or "status"
-        if path.startswith("preset show "):
-            path = "preset show"
-        bound_session_id = str(getattr(engine, "_session_id", "") or "")
-        bound_conversation_id = str(getattr(engine, "_conversation_id", "") or "")
-        profiles_equal = profiles_known and session_profile == engine_profile
-        bound_to_invoker = bool(
-            (context_session_id and bound_session_id == context_session_id)
-            or (context_conversation_id and bound_conversation_id == context_conversation_id)
+        decision = authorize(invocation)
+    if decision is Decision.CHECK_RESIDENT:
+        invocation = dataclasses.replace(
+            invocation, resident_engine_present=has_resident_lcm_engine(),
         )
-        # Session-first, like the resolver: the conversation key decides only
-        # when the invocation carries no session id.
-        bound_to_invoker_strict = bool(
-            bound_session_id == context_session_id if context_session_id
-            else context_conversation_id and bound_conversation_id == context_conversation_id
-        )
-        if (
-            path not in READ_LCM_SUBCOMMANDS and not (
-                (session_engine_resolved and (profiles_equal or (not profiles_known and bound_to_invoker)))
-                or (not session_engine_resolved and profiles_equal and (
-                    bound_to_invoker_strict or (
-                        not bound_session_id and not bound_conversation_id and not has_resident_lcm_engine()
-                    )
-                ))
-            )
-        ):
-            return (
-                "The command could not prove ownership of this session's LCM engine; "
-                "retry after the session has started."
-            )
+        decision = authorize(invocation)
+    if decision in (Decision.PROFILE_MISMATCH, Decision.OWNERSHIP_UNPROVEN):
+        return decision.value
     if not session_engine_resolved:
         result = handle_lcm_command(raw_args, engine)
-        if profiles_known and session_profile == engine_profile:
-            return result
-        return result + f"\nstore: {engine._store.db_path}"
+        if decision is Decision.ALLOW_WITH_STORE:
+            return result + f"\nstore: {engine._store.db_path}"
+        return result
     if not tokens:
         return _status_text(engine)
 
-    head = tokens[0].lower()
-    rest = tokens[1:]
-
-    if head == "status":
-        if rest:
-            return _help_text("`/lcm status` does not accept extra arguments.")
-        return _status_text(engine)
-
-    if head == "doctor":
-        if not rest:
-            return _doctor_text(engine)
-        if len(rest) == 1 and rest[0].lower() == "clean":
-            return _doctor_clean_text(engine)
-        if len(rest) == 1 and rest[0].lower() == "repair":
-            return _doctor_repair_text(engine)
-        if len(rest) == 1 and rest[0].lower() == "source":
-            return _doctor_source_text(engine)
-        if len(rest) == 1 and rest[0].lower() == "retention":
-            return _doctor_retention_text(engine)
-        if len(rest) == 2 and rest[0].lower() == "clean" and rest[1].lower() == "apply":
-            return _doctor_clean_apply_text(engine)
-        if len(rest) == 2 and rest[0].lower() == "clean" and rest[1].lower() == "lifecycle":
-            return _doctor_clean_lifecycle_text(engine)
-        if len(rest) == 3 and rest[0].lower() == "clean" and rest[1].lower() == "lifecycle" and rest[2].lower() == "apply":
-            return _doctor_clean_lifecycle_apply_text(engine)
-        if len(rest) == 2 and rest[0].lower() == "repair" and rest[1].lower() == "apply":
-            return _doctor_repair_apply_text(engine)
-        if len(rest) == 2 and rest[0].lower() == "repair" and rest[1].lower() == "level3":
-            return _doctor_repair_level3_text(engine)
-        if len(rest) == 3 and [part.lower() for part in rest] == ["repair", "level3", "apply"]:
-            return _doctor_repair_level3_apply_text(engine)
-        if len(rest) == 2 and rest[0].lower() == "repair" and rest[1].lower() == "schema-stamp":
-            return _doctor_repair_schema_stamp_text(engine)
-        if (
-            len(rest) == 3
-            and rest[0].lower() == "repair"
-            and rest[1].lower() == "schema-stamp"
-            and rest[2].lower() == "apply"
-        ):
-            return _doctor_repair_schema_stamp_apply_text(engine)
-        if len(rest) == 2 and rest[0].lower() == "source" and rest[1].lower() == "apply":
-            return _doctor_source_apply_text(engine)
-        return _help_text("`/lcm doctor` currently supports `clean`, `clean apply`, `clean lifecycle`, `clean lifecycle apply`, `repair`, `repair apply`, `repair schema-stamp`, `repair schema-stamp apply`, `source`, `source apply`, and `retention` as extra subcommands, plus `repair level3` and `repair level3 apply`.")
-
-    if head == "backup":
-        if rest:
-            return _help_text("`/lcm backup` does not accept extra arguments.")
-        return _backup_text(engine)
-
-    if head == "rotate":
-        if not rest:
-            return _rotate_text(engine)
-        if len(rest) == 1 and rest[0].lower() == "apply":
-            return _rotate_apply_text(engine)
-        return _help_text("`/lcm rotate` accepts an optional `apply` subcommand.")
-
-    if head == "rollups":
-        return _rollups_text(rest, engine)
-
-    if head == "assertions":
-        return _assertions_text(rest, engine)
-
-    if head == "preset":
-        return _preset_text(rest, engine)
-
-    if head == "embed":
-        if len(rest) == 1 and rest[0].lower() == "warmup":
-            return _embedding_warmup_text(engine)
-        if rest and rest[0].lower() == "backfill":
-            return _embedding_backfill_text(rest[1:], engine)
-        return _help_text("`/lcm embed` requires the `warmup` or `backfill` subcommand.")
-
-    if head == "help":
-        return _help_text()
-
-    return _help_text(f"Unknown subcommand: {tokens[0]}")
+    return route(tokens[0], tokens[1:], engine, globals())
