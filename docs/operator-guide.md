@@ -352,6 +352,8 @@ run `lcm_status` or `/lcm status` again for live per-session fields.
 
 ## Configuration
 
+The [generated scalar environment reference](../skills/hermes-lcm/references/configuration.md#generated-scalar-environment-reference) lists every scalar registry key, type, declared default, diagnostic range/choice, and deprecation release. The tables below provide behavior and tuning guidance.
+
 Most installs only need `plugins.enabled` and `context.engine: lcm-x`.
 
 Malformed boolean, integer, or float values in the uniform `LCM_*` field loader
