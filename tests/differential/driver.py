@@ -55,22 +55,27 @@ def config_overrides(case, baseline_config):
 
 def pair_errors(rows):
     calls, results, errors = set(), set(), []
+    seen_calls, missing = set(), []
     pending = []
     for row in rows:
         if row.get("role") != "tool":
             pending = []
+            if row.get("tool_calls"):
+                missing.extend(sorted(calls - results))
+                calls, results = set(), set()
         for call in row.get("tool_calls") or []:
             if call["id"] in calls:
                 errors.append(f"duplicate-call:{call['id']}")
             calls.add(call["id"])
+            seen_calls.add(call["id"])
             pending.append(call["id"])
         if row.get("role") == "tool":
             cid = row.get("tool_call_id")
-            if cid not in calls:
+            if cid not in seen_calls:
                 errors.append(f"result-before-call:{cid}")
             if cid in results:
                 errors.append(f"duplicate-result:{cid}")
-            elif cid in calls:
+            elif cid in seen_calls:
                 if cid not in pending:
                     errors.append(f"result-not-contiguous:{cid}")
                 else:
@@ -78,7 +83,7 @@ def pair_errors(rows):
                         errors.append(f"result-out-of-order:{cid}")
                     pending.remove(cid)
             results.add(cid)
-    return errors + [f"missing-result:{cid}" for cid in sorted(calls - results)]
+    return errors + [f"missing-result:{cid}" for cid in missing + sorted(calls - results)]
 
 
 def user_row_evidence(view, original, count_tokens, normalize, mark_re, store):
