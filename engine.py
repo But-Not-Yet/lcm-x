@@ -160,7 +160,7 @@ from .identity_anchor import IdentityAnchorMixin, _raw_remainder, identity_ancho
 from .host_uid import HostUidShadowMixin
 from .host_uid_emit import carry_identity, identity_emit_enabled, record_absorbed_message, sync_cached_host_metadata
 from .store_complete import HiddenBacklog, StoreCompleteMixin
-from .survival_fit import SurvivalFitMixin, _carries_survival_notice, _host_estimate
+from .survival_fit import SurvivalFitMixin, _carries_survival_notice, _host_estimate, survival_reserve_fraction
 from .db_bootstrap import refresh_legacy_conversation_ids
 from .reset_state import ResetStateMixin
 from .bypass import BypassMixin
@@ -1821,7 +1821,7 @@ class LCMEngine(
         window = int(self.context_length or 0)
         if window <= 0:
             return None
-        reserve = min(0.9, max(0.0, float(getattr(self._config, "survival_reserve", 0.15) or 0.0)))
+        reserve = survival_reserve_fraction(self._config)
         return int(window * (1 - reserve))
 
     def _hold_fit_only_applies(self, tokens: int) -> bool:
