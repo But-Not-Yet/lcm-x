@@ -257,6 +257,29 @@ def test_empty_implicit_atomic_has_no_transaction(message_store: Any, golden: di
     assert trace == golden["schema_1"]["trace"] == []
 
 
+def test_nested_immediate_reserves_inside_an_empty_scope(message_store: Any, tmp_path: Path) -> None:
+    """An empty implicit scope has not reserved the database; a nested immediate entry still must."""
+    owner = message_store
+    conn: TraceConnection = owner.connection
+    other = sqlite3.connect(tmp_path / "transactions.db", timeout=0, isolation_level=None)
+    seen: list[bool] = []
+
+    def write(raw: sqlite3.Connection) -> None:
+        seen.append(raw.in_transaction)
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            other.execute("BEGIN IMMEDIATE")
+        raw.execute("DELETE FROM metadata WHERE key='absent'")
+
+    try:
+        with owner.atomic():
+            owner._host_uid_write(write)
+            assert conn.in_transaction
+    finally:
+        other.close()
+    assert seen == [True]
+    assert not conn.in_transaction
+
+
 def test_host_uid_still_refuses_an_enclosing_transaction(message_store: Any) -> None:
     owner = message_store
     conn: TraceConnection = owner.connection
