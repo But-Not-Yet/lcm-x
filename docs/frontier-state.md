@@ -126,7 +126,7 @@ Each slice is its own refactor-only PR with byte-identical behaviour. Each slice
 | S0 | This note. | |
 | S1 | Add `FrontierState`; the engine holds `self._frontier`. The five old names become properties that read and write through it. No call site changes. | Tests and fixtures that write the old names keep working (for example tests/legacy_native_state.py:192-343). Engines built without `__init__` in tests (4 sites: `LCMEngine.__new__` at test_per_model_threshold.py:121 and test_path_containment.py:62 and :97, and `object.__new__(LCMEngine)` at test_issue_646_prompt_version.py:276) never get `_frontier`; S1 makes the properties tolerate that or gives those fixtures the field. The #1240 ratchet's attribute-write counts move; update its baseline in the same PR. |
 | S2 | compaction.py call sites: adopt, adopt and trust, publish frontier, record proof, bind fit emission. | |
-| S3 | engine.py boundary sites: invalidate, restart cursor, bind frontier, filter by binding, transfer to child. | Waits for the v0.27.1 boundary fixes (gate 1). |
+| S3 | engine.py boundary sites: invalidate, restart cursor, bind frontier, filter by binding, transfer to child. | Waits for the v0.28.0 boundary fixes (gate 1). |
 | S4 | engine.py ingest sites: schedule reconcile, consult proof (typed outcome), reconcile from store, rewind, advance. | |
 | S5 | reset_state.py and survival_fit.py. | B2 PR3a first moves survival_fit.py:229-231 into a caller-owned apply step; S5 edits that step. |
 | S6 | First initialize `FrontierState` directly in `__init__` (engine.py:581, 590-596) and migrate the remaining test and fixture writers to the state methods (tests/legacy_native_state.py:192-193, 314-324, 337-338, and the writer it installs on the class at :343). Only then remove the setters; the getters stay while outside readers remain (tools.py:8552, identity_anchor.py, reconcile.py, store_complete.py). Add the static guard, scoped to production code. Fold the shadow `pending_reset_store_id` into the state, keeping its capture (engine.py:4618), clear (2627) and consumption (2639-2643, 3686-3697) sites. Delete the dead `_persist_frontier_marker`. | Until every writer is migrated, the setters stay. |
@@ -151,7 +151,7 @@ change.
 
 ## 7. Gates before code (S1 and later)
 
-1. **Product PRs first.** The open v0.27.1 PRs that edit writer functions have merged or closed. The ones within 3 lines of a write
+1. **Product PRs first.** The open v0.28.0 PRs that edit writer functions have merged or closed. The ones within 3 lines of a write
    are #1147 and #1178. Others edit the same functions: #1117, #1142, #1143, #1146, #1148, #1174, #1182, #1195, #1205, #1212, #1218
    and #1277. Re-measure the hunk map before each slice.
 2. **This note is accepted.**
