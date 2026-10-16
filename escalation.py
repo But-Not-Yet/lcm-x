@@ -25,10 +25,11 @@ from .model_routing import apply_lcm_model_route, apply_lcm_reasoning_effort
 from .summary_attempt import (
     SummaryAttempt,
     SummaryTiming,
-    is_summary_content_filter_error,
-    is_summary_context_length_error,
+    is_summary_content_filter_error as is_summary_content_filter_error,
+    is_summary_context_length_error as is_summary_context_length_error,
     is_summary_route_config_error,
 )
+from .summary_outcome import SummaryOutcomeFacts, SummaryOutcomeKind, classify_summary_outcome
 from .tokens import count_tokens
 
 logger = logging.getLogger(__name__)
@@ -1024,35 +1025,47 @@ def _invoke_summary_llm_chain(
         )
         result, route, error = attempt.text, attempt.route, attempt.error
         started, ended = attempt.timing.started, attempt.timing.ended
-        deadline_installed = attempt.timing.deadline_installed
         if budget is not None:
             budget.record_call(route_key, started, ended)
-            if result is None and _is_budget_cut(error, budget, budget_bound, ended - started, call_timeout,
-                                                 deadline_installed):
-                # #1137: a full-window hang opens this route for the NEXT compaction.
-                full_window = min(budget.configured_timeout, budget.hard - budget.reserve - budget.leaf_reserve)
-                if not budget_bound:  # the host timeout can be a no-progress window, shorter than the call
-                    full_window = budget.hard - budget.reserve - budget.leaf_reserve
-                used_window = (
-                    (budget_bound and call_timeout >= 0.9 * full_window)
-                    or (deadline_installed and ended >= budget.usable_deadline - 1.0)
-                )
-                if (circuit_breaker is not None and used_window
-                        and ended - started >= 0.9 * full_window):  # an early host fence is not a hang
-                    circuit_breaker.record_hang(route_key)
-                    if not circuit_breaker.allows(route_key):
-                        budget.hung_route = route_key
-                # #605 F4: still stop this compaction, with no time left for a fallback.
-                raise budget.stop("summariser call cut by the foreground budget")
-        if circuit_breaker is not None and route:
+        # Non-empty results consult the acceptance callback after route bookkeeping.
+        # A missing result may be a budget cut, which must stop before note_route.
+        if result is not None and circuit_breaker is not None and route:
             circuit_breaker.note_route(route_key, route)
-        if result and (accepts_result is None or accepts_result(result)):
+        accepted = bool(result) and (accepts_result is None or accepts_result(result))
+        outcome = classify_summary_outcome(attempt, SummaryOutcomeFacts(
+            budget_present=budget is not None,
+            budget_bound=budget_bound,
+            call_timeout=call_timeout,
+            configured_timeout=budget.configured_timeout if budget is not None else 0.0,
+            hard=budget.hard if budget is not None else 0.0,
+            reserve=budget.reserve if budget is not None else 0.0,
+            leaf_reserve=budget.leaf_reserve if budget is not None else 0.0,
+            usable_deadline=budget.usable_deadline if budget is not None else 0.0,
+            now=time.monotonic() if budget is not None and result is None and error is not None else 0.0,
+            breaker_present=circuit_breaker is not None,
+            accepts_result=accepted,
+            verbatim_small_source=verbatim_small_source,
+            source_tokens=source_tokens,
+            result_tokens=(count_tokens(result) if result and not accepted and verbatim_small_source
+                           and source_tokens is not None else 0),
+            context_length_rescue=context_length_rescue,
+        ))
+        if outcome.kind is SummaryOutcomeKind.BUDGET_CUT:
+            if outcome.record_hang:
+                circuit_breaker.record_hang(route_key)
+                if not circuit_breaker.allows(route_key):
+                    budget.hung_route = route_key
+            # #605 F4: still stop this compaction, with no time left for a fallback.
+            raise budget.stop("summariser call cut by the foreground budget")
+        if result is None and circuit_breaker is not None and route:
+            circuit_breaker.note_route(route_key, route)
+        if outcome.kind is SummaryOutcomeKind.ACCEPTED:
             if circuit_breaker is not None:
                 circuit_breaker.record_success(route_key)
             if provenance is not None:  # #441: the route that actually answered
                 provenance["model"] = candidate_model
             return result
-        if result and verbatim_small_source and source_tokens is not None and count_tokens(result) >= source_tokens:
+        if outcome.kind is SummaryOutcomeKind.VERBATIM_SMALL_SOURCE:
             # #722: the caller stores the source whole; this working route gets no circuit event.
             logger.info(
                 "LCM summary result not shorter; small source stored whole (source_tokens=%d, result_tokens=%d, model=%s)",
@@ -1061,7 +1074,7 @@ def _invoke_summary_llm_chain(
             if provenance is not None:
                 provenance["model"] = "deterministic"
             return result
-        if result is not None:  # #628: a content rejection, not a provider failure
+        if outcome.kind in (SummaryOutcomeKind.REJECTED, SummaryOutcomeKind.REJECTION):
             logger.warning(
                 "LCM summary result rejected (reason=%s, source_tokens=%s, result_tokens=%d, model=%s)",
                 "not_shorter" if result else "no_content" + (
@@ -1070,21 +1083,21 @@ def _invoke_summary_llm_chain(
                 count_tokens(result) if result else 0,
                 candidate_model or _DEFAULT_ROUTE_KEY,
             )
-        if result is None and is_summary_route_config_error(error):
+        if outcome.kind is SummaryOutcomeKind.CONFIG_ERROR:
             if circuit_breaker is None:
                 logger.warning("LLM summarization failed: %s", error)
             else:
                 circuit_breaker.record_config_error(route_key, route=route, error=error, sent_model=candidate_model)
-        elif result is None and is_summary_content_filter_error(error):
+        elif outcome.kind is SummaryOutcomeKind.CONTENT_FILTER:
             if provenance is not None:  # the filtered chunk must not open the route's circuit
                 provenance["content_filter_error"] = True
-        elif result is None and context_length_rescue and is_summary_context_length_error(error):
+        elif outcome.kind is SummaryOutcomeKind.CONTEXT_LENGTH:
             if provenance is not None:  # #751: the chunk is too large for this route; the caller shrinks it
                 provenance["context_length_error"] = True
         elif circuit_breaker is not None:
-            if result is None:
+            if outcome.kind is SummaryOutcomeKind.FAILURE:
                 circuit_breaker.record_failure(route_key)
-            else:
+            elif outcome.kind is SummaryOutcomeKind.REJECTION:
                 circuit_breaker.record_rejection(route_key)
     if skipped == len(chain):
         (logger.debug if all(circuit_breaker.in_config_episode(route_key_prefix + m) for m in chain) else logger.warning)(
