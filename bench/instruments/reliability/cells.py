@@ -173,7 +173,7 @@ def default_window_cells() -> list[dict]:
                     "C1 fails when over half the model calls after the first commit follow a commit.")]
     out.append(cell("default-window/objective-1221", [], in_place=True, window=32768,
                     turns=2, repeat=1, lcm_env={}, final_compaction_check=False,
-                    assistant={"real_usage": True}, min_compactions=1, bars=["B1", "B2", "F4"],
+                    assistant={"real_usage": True}, min_compactions=1, bars=["B1", "B2", "B6", "F4"],
                     tool_plan=[{"turns": [2], "calls": [{"name": "read_file", "args": {
                         "path": f"~/objective-1221/big-{k:02d}.txt"}}]} for k in range(1, 12)],
                     doc="#1221 real-host fix control: short setup, one plain 12k objective, then 11 distinct reads. "
