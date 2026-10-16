@@ -179,8 +179,14 @@ def assert_complete_vectors(engine: Any) -> None:
 
 def assert_calls_once(provider: OfflineProvider, previous: tuple[set[str], set[str]], engine: Any) -> None:
     current = vector_ids(engine)
-    assert len(provider.documents) == sum(len(now - old) for now, old in zip(current, previous))
-    assert all(count == 1 for count in Counter(provider.documents).values())
+    new_summaries, new_chunks = (now - old for now, old in zip(current, previous))
+    conn = engine._store.connection
+    expected = [str(row[1]) for row in conn.execute("SELECT node_id, summary FROM summary_nodes")
+                if str(row[0]) in new_summaries]
+    expected.extend(chunk.text for row in conn.execute("SELECT store_id, role, content FROM messages")
+                    for chunk in plugin("command").chunk_message(*row, policy="conversational")
+                    if chunk.chunk_id in new_chunks)
+    assert Counter(provider.documents) == Counter(expected)
 
 
 def finish_embeddings(engine: Any) -> None:
