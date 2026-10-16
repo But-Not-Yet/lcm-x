@@ -339,7 +339,11 @@ class MessageStore:
         self._init_db()
 
     def _init_db(self):
-        self._conn = sqlite3.connect(str(self.db_path), timeout=5.0, check_same_thread=False)
+        # #1159: reserve the write lock before FTS5 can read during re-prepare.
+        self._conn = sqlite3.connect(
+            str(self.db_path), timeout=5.0, check_same_thread=False,
+            isolation_level="IMMEDIATE",
+        )
         refuse_schema_version_too_new(self._conn)
         configure_connection(self._conn)
         self._conn.executescript("""
