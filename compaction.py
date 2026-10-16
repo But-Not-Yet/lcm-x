@@ -24,7 +24,12 @@ from collections import Counter
 from typing import Any, Dict, List, Optional
 
 from .dag import SummaryNode
-from .escalation import ForegroundBudget, ForegroundEstimates, SweepBudgetExhausted
+from .escalation import (
+    _THRESHOLD_FULL_SWEEP_MIN_CALL_SECONDS,
+    ForegroundBudget,
+    ForegroundEstimates,
+    SweepBudgetExhausted,
+)
 from .externalize import ingest_payload_writes, payload_lookup_scope
 from .fresh_tail import tool_group_safe_end
 from .lifecycle_state import LifecycleBindingChangedError, LifecyclePublicationConflictError
@@ -53,6 +58,7 @@ logger = logging.getLogger(__name__)
 
 _THRESHOLD_FULL_SWEEP_MAX_PASSES = 12
 _THRESHOLD_FULL_SWEEP_MAX_SECONDS = 120.0
+_EXTRACTION_HEADROOM_SECONDS = 2.0  # overhead between the extraction timeout and the next admit
 _DEFAULT_SWEEP_TARGET_THRESHOLD_SHARE = 0.25
 _THRESHOLD_FULL_SWEEP_PARTIAL_STOP_REASONS = frozenset({
     "pass_budget_exhausted",
@@ -2042,12 +2048,19 @@ class CompactionMixin:
                 # Use the same dependency-filtered view as summarization so ignored
                 # turns cannot leak through derived assistant/tool replies.
                 if self._config.extraction_enabled:
-                    # #605: every foreground path, sweep on or off: extraction never outlasts the hard bound.
-                    self._run_pre_compaction_extraction(
-                        summary_input_chunk,
-                        timeout_seconds=max(0.001, min(self._config.summary_timeout_ms / 1000,
-                                                       sweep_deadline - time.monotonic())),
+                    # #1122: reserve the next admit's floor/estimate and timeout-handling overhead.
+                    est = budget.estimate(self._primary_summary_route())
+                    extraction_deadline = (
+                        budget.usable_deadline
+                        - max(est, _THRESHOLD_FULL_SWEEP_MIN_CALL_SECONDS)
+                        - _EXTRACTION_HEADROOM_SECONDS
                     )
+                    if budget.progress and budget.soft > 0:
+                        extraction_deadline = min(
+                            extraction_deadline, budget.t0 + budget.soft - est - _EXTRACTION_HEADROOM_SECONDS
+                        )
+                    extraction_deadline = min(extraction_deadline, sweep_deadline)
+                    self._run_pre_compaction_extraction(summary_input_chunk, deadline=extraction_deadline)
                 if bool(
                     getattr(
                         self._config,
