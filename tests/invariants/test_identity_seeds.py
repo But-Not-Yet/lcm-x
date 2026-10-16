@@ -7,7 +7,7 @@ import types
 import pytest
 
 pytest.importorskip("hypothesis")
-from hypothesis import settings, strategies as st
+from hypothesis import given, settings, strategies as st
 from hypothesis.stateful import invariant, rule, run_state_machine_as_test
 
 from tests.invariants.test_exactly_once_machine import (
@@ -750,11 +750,7 @@ def test_restart_replay_resume_append(point):
     (0, "alpha"), (1, "alpha"), (2, "alpha 2"),
 ], ids=["no-compress", "one-compress", "two-compress-distinct"])
 def test_restart_repeated_prompt_controls(cold, compressions, text):
-    """Separate restart, repeated text and no-progress compression factors.
-
-    The two-compress/equal-text trajectory remains generated, with no new
-    exclusion: these controls must not disguise its missing user occurrence.
-    """
+    """Separate restart, repeated text and no-progress compression factors."""
     from tests.invariants.test_exactly_once_machine import RestartMachine
 
     machine = RestartMachine()
@@ -772,6 +768,80 @@ def test_restart_repeated_prompt_controls(cold, compressions, text):
         machine.new_turn(text, False, 0, False, "lookup")
         assert len(machine.occurrences) == 6
         assert machine.occurrences[0]["timestamp"] != machine.occurrences[-2]["timestamp"]
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+class RecompressionUserCollapsed(AssertionError):
+    """Only #1328's second repeated user missing, with every other row ordered."""
+
+
+@pytest.mark.xfail(strict=True, reason="#1328: no-progress recompression drops a fresh repeated user",
+                   raises=RecompressionUserCollapsed)
+def test_restart_repeated_user_1328():
+    """Engine API seed; the CLI refuses manual compression under four rows."""
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        for text in ("alpha", "next prompt"):
+            machine.new_turn(text, False, 0, False, "lookup")
+            machine.exactly_once()
+        machine.compress()
+        machine.exactly_once()
+        assert machine.engine._last_compression_status == "compacted"
+        previous = deepcopy(machine.host)
+        machine.compress()
+        machine.exactly_once()
+        assert machine.engine._last_compression_status == "sanitized"
+        assert machine.host == previous
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        expected = list(map(identity, machine.occurrences))
+        assert len(expected) == 6
+        assert expected[0] == expected[-2]
+        assert machine.occurrences[0]["timestamp"] != machine.occurrences[-2]["timestamp"]
+        actual = list(map(identity, machine.rows()))
+        try:
+            machine.exactly_once()
+        except AssertionError as error:
+            if actual == expected[:-2] + expected[-1:]:
+                raise RecompressionUserCollapsed(str(error)) from error
+            raise
+    finally:
+        machine.teardown()
+
+
+@settings(PROFILE)
+@given(case=st.sampled_from(("known-open", "distinct-text", "no-compress", "one-compress", "four-row", "tool-tail")),
+       cold=st.booleans())
+def test_restart_recompression_generated_controls(case, cold):
+    """Generate the passing neighbors; the guard must deliver their final turn."""
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        if cold:
+            machine.cold_resume()
+        else:
+            machine.new_turn("next prompt", False, 2 if case == "tool-tail" else 0, False, "lookup")
+        if case == "four-row":
+            machine.engine._config.fresh_tail_count = 4
+            machine.engine.protect_last_n = 4
+            machine.new_turn("third prompt", False, 0, False, "lookup")
+        elif case == "tool-tail" and cold:
+            machine.new_turn("tool prompt", False, 2, False, "lookup")
+        compressions = {"no-compress": 0, "one-compress": 1}.get(case, 2)
+        for _ in range(compressions):
+            if case == "four-row":
+                assert len(machine.host) >= 4
+            machine.compress()
+            machine.exactly_once()
+        delivered = len(machine.occurrences)
+        machine.new_turn("alpha 2" if case == "distinct-text" else "alpha", False, 0, False, "lookup")
+        assert len(machine.occurrences) == delivered + (0 if case == "known-open" else 2)
         machine.exactly_once()
     finally:
         machine.teardown()
