@@ -53,8 +53,8 @@ def diagnostic_engine(tmp_path):
     ("stale_tasks", "remedy"),
     [
         (["summary"], "/lcm embed warmup, then /lcm embed backfill --apply"),
-        (["chunk"], "/lcm embed warmup, then /lcm embed backfill --corpus chunks --apply"),
-        (["summary", "chunk"], "/lcm embed warmup, then /lcm embed backfill --corpus both --apply"),
+        (["chunk"], "/lcm embed warmup, then /lcm embed backfill --corpus chunks --apply --confirm-raw-text"),
+        (["summary", "chunk"], "/lcm embed warmup, then /lcm embed backfill --corpus both --apply --confirm-raw-text"),
     ],
 )
 def test_doctor_stale_corpus_remedy_on_every_surface(diagnostic_engine, monkeypatch, stale_tasks, remedy):
@@ -78,6 +78,11 @@ def test_doctor_stale_corpus_remedy_on_every_surface(diagnostic_engine, monkeypa
         "embedding_identity_stale: stored vectors use an older embedding privacy "
         f"revision; run {remedy}"
     )
+    if "chunk" in stale_tasks:
+        reason += (
+            "; --confirm-raw-text acknowledges sending raw message text to the "
+            "'voyage' cloud embedding provider"
+        )
     assert emitted["detail"]["reason"] == reason
     text = handle_lcm_command("doctor", engine)
     assert f"embedding_provider_health: warn ({reason})" in text
@@ -109,9 +114,7 @@ def test_named_doctor_backfill_rebuilds_stale_chunks(engine, monkeypatch, stale_
     detail = tools._embedding_provider_health_check(engine)["detail"]
     warmup, backfill = detail["remedy"].split(", then ")
     assert "status: ready" in handle_lcm_command(warmup.removeprefix("/lcm "), engine)
-    # Cloud chunk backfill still requires the operator's separate raw-text consent.
-    if "--corpus" in backfill:
-        backfill += " --confirm-raw-text"
+    # Execute the emitted arguments unchanged; the handler receives the text after /lcm.
     result = handle_lcm_command(backfill.removeprefix("/lcm "), engine)
     assert "status: complete" in result
     conn = sqlite3.connect(engine._store.db_path)
@@ -616,7 +619,11 @@ def test_doctor_reports_a_stale_chunk_identity_when_chunk_vectors_exist(engine, 
         assert check["status"] == "warn"
         assert check["detail"]["stale_tasks"] == expected
         corpus = "both" if "summary" in expected else "chunks"
-        assert check["detail"]["reason"] == REASON.replace("backfill --apply", f"backfill --corpus {corpus} --apply")
+        assert check["detail"]["reason"] == (
+            REASON.replace("backfill --apply", f"backfill --corpus {corpus} --apply --confirm-raw-text")
+            + "; --confirm-raw-text acknowledges sending raw message text to the "
+            "'voyage' cloud embedding provider"
+        )
 
 
 @pytest.mark.parametrize("orphan", ["vector", "source"])
