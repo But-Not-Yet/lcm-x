@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 lcm_tools = importlib.import_module("hermes_lcm.tools")
+expansion_evidence = importlib.import_module("hermes_lcm.expansion_evidence")
 
 
 def test_expansion_continuation_shapes(monkeypatch: Any) -> None:
@@ -106,7 +107,7 @@ def test_expansion_omitted_raw_cursor(monkeypatch: Any) -> None:
 
 def test_expansion_empty_provenance_bytes() -> None:
     """Pin the serialized envelope and unknown-value normalization."""
-    evidence = lcm_tools._build_expand_query_evidence(
+    evidence = expansion_evidence._build_expand_query_evidence(
         [], session_id="active", session_ids=["archive"], scope_kind="unexpected",
         context_truncated=True, synthesis_status="unexpected",
     )
