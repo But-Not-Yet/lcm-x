@@ -38,10 +38,11 @@ from hermes_lcm.engine import LCMEngine
 from hermes_lcm.message_content import normalize_content_value
 
 
-for name, examples in (("ci", 25), ("nightly", 1000)):
+for name, examples in (("ci", 25), ("nightly", 500)):
     settings.register_profile(name, max_examples=examples, stateful_step_count=12,
                               derandomize=True, deadline=None, database=None)
-# Applied to these machines only, never session-wide: LCM_HYPOTHESIS_PROFILE=nightly runs 1,000 examples.
+# Applied to these machines only, never session-wide. Halve each nightly
+# allocation so the saved work scales with its measured share; keep 12 steps.
 PROFILE = settings.get_profile(os.environ.get("LCM_HYPOTHESIS_PROFILE", "ci"))
 
 

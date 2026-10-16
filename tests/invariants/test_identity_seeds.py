@@ -745,6 +745,38 @@ def test_restart_replay_resume_append(point):
         machine.teardown()
 
 
+@pytest.mark.parametrize("cold", [False, True], ids=["warm", "cold"])
+@pytest.mark.parametrize(("compressions", "text"), [
+    (0, "alpha"), (1, "alpha"), (2, "alpha 2"),
+], ids=["no-compress", "one-compress", "two-compress-distinct"])
+def test_restart_repeated_prompt_controls(cold, compressions, text):
+    """Separate restart, repeated text and no-progress compression factors.
+
+    The two-compress/equal-text trajectory remains generated, with no new
+    exclusion: these controls must not disguise its missing user occurrence.
+    """
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.exactly_once()
+        if cold:
+            machine.cold_resume()
+        else:
+            machine.new_turn("next prompt", False, 0, False, "lookup")
+        machine.exactly_once()
+        for _ in range(compressions):
+            machine.compress()
+            machine.exactly_once()
+        machine.new_turn(text, False, 0, False, "lookup")
+        assert len(machine.occurrences) == 6
+        assert machine.occurrences[0]["timestamp"] != machine.occurrences[-2]["timestamp"]
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
 class RestartScaffoldStored(AssertionError):
     """Only the unchanged ledger plus one restored carrier stored as a source."""
 
