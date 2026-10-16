@@ -1682,10 +1682,10 @@ class LCMEngine(
         hold = _SWEEP_BUDGET_HOLD_SECONDS if seconds is None else min(_SWEEP_BUDGET_HOLD_SECONDS, max(1.0, seconds))
         self._sweep_budget_hold_until = time.monotonic() + hold
         self._sweep_budget_hold_conversation = self._hold_conversation_key()  # #618
-        self._sweep_budget_hold_turn_paced = turn_paced
-        if turn_paced:
+        if turn_paced and not self._sweep_budget_hold_turn_paced:
             logger.info("LCM hung summary hold armed until turn end (cap %.0fs): %s",
                         hold, self._hung_summary_strike[1])
+        self._sweep_budget_hold_turn_paced = turn_paced
 
     def _hold_conversation_key(self) -> str:
         """#618: the conversation a #608 hold belongs to."""
