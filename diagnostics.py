@@ -205,6 +205,13 @@ def doctor_guidance_for_check(check: dict[str, Any]) -> dict[str, Any] | None:
         command = "safe to ignore if compaction proceeds normally; inspect lcm_status only if pressure stays high or compaction loops"
         warning_only = True
         rationale = "context pressure is an operating state, not persisted-state corruption"
+    elif name == "compaction_progress":
+        command = ("inspect lcm_status zero_leaf_streak and the 'LCM compaction stop' lines: reason= names what stops "
+                   "the leaf, and for a retained occurrence blocked= gives its store_id, role and kind; stored rows stay intact and "
+                   "reachable (lcm_grep / lcm_expand); a new session clears a stop that persists")
+        warning_only = True
+        rationale = ("over-threshold passes that store no leaf leave the session over its threshold, so every turn pays "
+                     "for the whole prompt; this is an operating state, not persisted-state corruption")
     elif name == "survival_fit":
         detail = detail if isinstance(detail, dict) else {}
         within = ("to a 0.24.x version older than v0.24.5, that plugin cannot compact stored rows that a survival fit "
