@@ -7,7 +7,7 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 ## Unreleased
 
 - Fix: `/lcm rotate apply` is refused on Hermes because it reloads its own transcript after a restart; use `/compress here N` to summarise everything except the most recent N messages. (#1141)
-- Fix: when chunk vectors carry a stale embedding identity, `lcm_doctor` now advises `/lcm embed backfill --corpus chunks --apply` (or `--corpus both` when summaries are stale too), so following its advice rebuilds the chunk vectors. The summary-only advice is unchanged. (#896)
+- Fix: when chunk vectors carry a stale embedding identity, `lcm_doctor` now advises `/lcm embed backfill --corpus chunks --apply --confirm-raw-text` (or `--corpus both --apply --confirm-raw-text` when summaries are stale too) for cloud providers. Repeat the backfill apply until it reports `remaining: 0` to rebuild all selected vectors. The summary-only command is unchanged; its advice gains only the repeat guidance. (#896)
 
 ## v0.27.0 (summary quality)
 
