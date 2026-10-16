@@ -206,6 +206,8 @@ class ForegroundBudget:
         self.progress = ""
         self.stop_reason = ""  # the reason of the last stop(), for the stop line with the sweep off
         self.leaves, self.first_call_started, self.last_call_ended = 0, None, None
+        self.host = 0.0  # D5: seconds inside the host's native compressor (a bypassed session), not LCM work
+        self.selected = False  # #1162: this compaction selected a leaf chunk (its zero-leaf pass counts)
 
     @property
     def usable_deadline(self) -> float:
