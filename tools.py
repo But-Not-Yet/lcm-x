@@ -7999,6 +7999,7 @@ def _embedding_provider_health_check(engine: "LCMEngine") -> dict[str, Any]:
                 "reason": (
                     "embedding_identity_stale: stored vectors use an older embedding privacy "
                     f"revision; run {remedy}{consent_note}"
+                    "; repeat the backfill apply until it reports remaining: 0"
                 ),
                 "impact": "lcm_recall skips the stale semantic arm until the profile is re-registered",
                 "remedy": remedy,
