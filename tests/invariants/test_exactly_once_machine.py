@@ -17,6 +17,7 @@ from collections import Counter
 from copy import deepcopy
 import json
 import os
+import sqlite3
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -94,28 +95,6 @@ def reprojected_user_input(aliases, host, operation):
 
 
 KNOWN_OPEN[503] = reprojected_user_input
-
-UNPROVEN_ROTATION = "UNFILED: no-progress rotation leaves an empty child without replay proof"
-WARM_ROTATION_AUDIT = "UNFILED: warm rotation audits the adopted tail without host ancestry"
-
-
-def unproven_rotation_input(unproven, operation):
-    """Only ingestion after a no-rewrite rotation with no child commit proof."""
-    return unproven and operation in ("new_turn", "replay", "compress", "rotate", "cold_resume")
-
-
-def warm_rotation_audit_input(pending, operation):
-    """First warm ingest of a changed rotation view, before a cold bind clears its cache.
-
-    The callback-only host has no state.db ancestry for the identity audit;
-    the inherited pre-compress cache still describes the parent's input.
-    """
-    return pending and operation in ("new_turn", "replay", "compress", "rotate")
-
-
-KNOWN_OPEN[UNPROVEN_ROTATION] = unproven_rotation_input
-KNOWN_OPEN[WARM_ROTATION_AUDIT] = warm_rotation_audit_input
-
 
 def ambiguous_unstamped_tool_window_259(host, ledger):
     """#259 permits duplication of an unproven, truncated tool-only window.
@@ -374,11 +353,26 @@ class RotationMachine(ExactlyOnceMachine):
     def __init__(self):
         self.session_id = "identity-session"
         self.session_ids = [self.session_id]
-        self.unproven_rotation = False
-        self.pending_rotation_audit = False
         super().__init__()
 
+    def _publish_host_session(self, child, parent=None):
+        """Publish the host ancestry atomically, before LCM sees the child."""
+        home = self.home / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(home / "state.db")
+        try:
+            with connection:
+                connection.execute("CREATE TABLE IF NOT EXISTS sessions "
+                                   "(id TEXT PRIMARY KEY, parent_session_id TEXT, end_reason TEXT)")
+                if parent is not None:
+                    connection.execute("UPDATE sessions SET end_reason = 'compression' WHERE id = ?", (parent,))
+                connection.execute("INSERT INTO sessions VALUES (?, ?, NULL)", (child, parent))
+        finally:
+            connection.close()
+
     def start_engine(self):
+        if not (self.home / "home" / "state.db").exists():
+            self._publish_host_session(self.session_id)
         engine = LCMEngine(config=LCMConfig(database_path=str(self.home / "lcm.db"),
                                           fresh_tail_count=2, leaf_chunk_tokens=16),
                            hermes_home=str(self.home / "home"))
@@ -397,54 +391,27 @@ class RotationMachine(ExactlyOnceMachine):
     @precondition(lambda self: bool(self.host))
     @rule()
     def rotate(self):
-        if self._rotation_excluded("rotate"):
-            return
         previous = deepcopy(self.host)
         compressed = self.engine.compress(self.host, current_tokens=self.engine.threshold_tokens + 1, force=True)
         if self.engine._last_compression_status == "sanitized" and compressed != previous:
             self.stale_proof = True
         elif self.engine._last_compression_status == "compacted":
             self.stale_proof = False
+        # Hermes rejects candidates unchanged even after removing its DB marker.
+        def without_persisted(rows):
+            return [{key: value for key, value in row.items() if key != "_db_persisted"} for row in rows]
+
+        if compressed == previous or without_persisted(compressed) == without_persisted(previous):
+            self.host = previous
+            return
         self.engine.on_session_end(self.session_id, previous)
         child = f"identity-session-{len(self.session_ids)}"
+        self._publish_host_session(child, self.session_id)
         self.engine.on_session_start(child, platform="cli", conversation_id="identity-conversation",
-                                     context_length=200_000, boundary_reason="compression",
-                                     old_session_id=self.session_id)
+                                     boundary_reason="compression", old_session_id=self.session_id)
         self.session_id = child
         self.session_ids.append(child)
         self.host = compressed
-        self.unproven_rotation = compressed == previous
-        self.pending_rotation_audit = compressed != previous
-
-    def _rotation_excluded(self, operation):
-        return (KNOWN_OPEN[UNPROVEN_ROTATION](self.unproven_rotation, operation)
-                or KNOWN_OPEN[WARM_ROTATION_AUDIT](self.pending_rotation_audit, operation))
-
-    @precondition(lambda self: bool(self.host))
-    @rule()
-    def cold_resume(self):
-        if not self._rotation_excluded("cold_resume"):
-            super().cold_resume()
-            if not self.stale_proof:
-                self.pending_rotation_audit = False
-
-    @precondition(lambda self: bool(self.host))
-    @rule()
-    def replay(self):
-        if not self._rotation_excluded("replay"):
-            super().replay()
-
-    @precondition(lambda self: bool(self.host))
-    @rule()
-    def compress(self):
-        if not self._rotation_excluded("compress"):
-            super().compress()
-
-    @rule(text=TEXT, structured=st.booleans(), tool_count=st.integers(0, 3),
-          retry=st.booleans(), tool_name=st.sampled_from(("lookup", "inspect")))
-    def new_turn(self, text, structured, tool_count, retry, tool_name):
-        if not self._rotation_excluded("new_turn"):
-            super().new_turn(text, structured, tool_count, retry, tool_name)
 
 
 TestRotation = RotationMachine.TestCase
