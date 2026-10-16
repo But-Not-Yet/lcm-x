@@ -106,12 +106,7 @@ def _retrieve(
     return stores[0], dags[0], result
 
 
-@pytest.mark.parametrize("path", [
-    pytest.param("grep", marks=pytest.mark.xfail(
-        strict=True, reason="grep assigns _db_lock instead of MessageStore._write_lock",
-    )),
-    "summary",
-])
+@pytest.mark.parametrize("path", ["grep", "summary"])
 def test_read_clones_own_the_actual_store_and_dag_locks(
     retrieval_engine: SimpleNamespace, inline_deadline: None,
     monkeypatch: pytest.MonkeyPatch, path: str,
