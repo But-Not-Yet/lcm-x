@@ -8,7 +8,7 @@ Ground truth confirmed. The W3B-ARME artifact settles the central dispute in all
 
 **Author:** program architect (Opus) · **Date:** 2026-07-24 · **Status:** predeclared, pre-build
 **Inputs synthesized:** reader-contract proposal (M1–M4) · W3.5-QD retrieval proposal (QD1–QD4) · C4 precision-rerank proposal (tier0/tier1/guardrail) + all three adversarial critiques
-**Ground-truth files read for this spec:** `PROGRAM-ARCHITECTURE.md` §6b/§6c/§6d · `artifacts/W3B-ARME-UNKNOWNS-REDUCIBILITY.md` (both at `/Volumes/LEXAR/Codex/session-notes/2026-07-23/hermes-benchprog-h1/`)
+**Ground-truth files read for this spec:** `PROGRAM-ARCHITECTURE.md` §6b/§6c/§6d · `artifacts/W3B-ARME-UNKNOWNS-REDUCIBILITY.md` (both at `${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}/runs/2026-07-23/hermes-benchprog-h1/`)
 
 ---
 

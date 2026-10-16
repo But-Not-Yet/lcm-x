@@ -1,4 +1,8 @@
 # RUN LOG — append-only registry of every benchmark run (owner directive 2026-08-02)
+
+**Superseded:** no entries since 2026-09-05. The scoreboard
+(`bench/scoreboard/results.jsonl`) plus per-run result cards are the record.
+
 Format: `id | date(UTC) | benchmark/tier | config (one line) | artifacts | status → result`
 Older lineage (R1→R2) is indexed by finding docs; this log is authoritative from R3 onward.
 
@@ -9,7 +13,7 @@ Older lineage (R1→R2) is indexed by finding docs; this log is authoritative fr
 - locomo-aa-20260730T202131Z-a-prime | 2026-08-02 | same declared config, fresh stores | same pins | …/a-prime | RUNNING (ingest)
 - lme-m-smoke-1 | 2026-08-02 | LME-V1 MEDIUM 25q SMOKE (timing pilot) | PR #198 instrument (prepare+prepared-dir), VOYAGE embeddings (owner steer — frontier stack), label m provenance | session-notes/2026-08-02/hermes-lme-m-smoke/artifacts | LAUNCHING
 - locomo-aa-20260730T202131Z-a-prime | STATUS UPDATE 2026-08-02 | (see entry above) | — | …/a-prime | DONE → A/A′ discordance 69/1,986 (3.47%), aggregate spread 0.76 pts (F48 §4.6); declared-config row banked
-- lme-m-smoke-1 | STATUS UPDATE 2026-08-02 | (see entry above) | — | /Volumes/LEXAR/hermes-work/lme-runs/m-smoke-1 | RUNNING since 02:39Z (~13/25 questions by 03:00Z; timings drive the shard plan)
+- lme-m-smoke-1 | STATUS UPDATE 2026-08-02 | (see entry above) | — | ${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}/hermes-work/lme-runs/m-smoke-1 | RUNNING since 02:39Z (~13/25 questions by 03:00Z; timings drive the shard plan)
 - 436-sanity-slice | 2026-08-02 | LME-V2 web-batch1 60q PAIRED (owner-ordered) | pre a2f519a vs post fa00ec9 (maintainer remediation on #436), official_unit_runner + failclose --compare, qwen3.5-9b reader / gpt-5.2 evaluator | session-notes/2026-08-02/436-sanity-slice | RUNNING (post arm)
 - fts-inertness-decomp | 2026-08-02 | zero-spend analysis (LoCoMo declared-run artifacts) | H1–H4 decomposition, read-only stores | session-notes/2026-08-02/fts-inertness | DONE → F49: LCM_FTS_PROSE_MODE never set; feature off at runtime; H1/H3/H4 refuted
 - b3-pc-classification | 2026-08-02 | zero-spend analysis (SPEC-B3-PREMISE-CHECK §3) | turn-text intersection over 300 adversarial misses, gates pre-declared | session-notes/2026-08-02/b3-premise-check | DONE → FINDING-B3-PC: E+R− 85.3% ≥60% gate → premise HOLDS, reader-side lever

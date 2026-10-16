@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from bench.instruments.scale389.archive_regression import (
@@ -9,21 +11,22 @@ from bench.instruments.scale389.archive_regression import (
     DEFAULT_SIDECAR,
     run_regression,
 )
+from bench.tools.benchpaths import bench_path
 
 
 @pytest.mark.skipif(
-    not all(
-        path.exists()
+    not os.environ.get("LCMX_BENCH_ROOT") or not all(
+        bench_path(path).exists()
         for path in (DEFAULT_RESULTS, DEFAULT_QEVAL, DEFAULT_DATASET, DEFAULT_SIDECAR)
     ),
     reason="the machine-local read-only F34 archive is unavailable",
 )
 def test_archived_f34_outputs_reproduce_and_turn_join_is_non_degenerate():
     result = run_regression(
-        DEFAULT_RESULTS,
-        DEFAULT_QEVAL,
-        DEFAULT_DATASET,
-        DEFAULT_SIDECAR,
+        bench_path(DEFAULT_RESULTS),
+        bench_path(DEFAULT_QEVAL),
+        bench_path(DEFAULT_DATASET),
+        bench_path(DEFAULT_SIDECAR),
     )
 
     assert result["archive_read_only"] is True
