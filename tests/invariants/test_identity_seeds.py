@@ -528,7 +528,74 @@ def test_gateway_reset_retains_deliveries_across_fresh_engines():
 
 
 class CliResetReplayStored(AssertionError):
-    """Only an occurrence-oracle failure after the CLI bare reset."""
+    """Only the exact #1306 stale-owner or skipped-delivery row shapes."""
+
+
+def assert_cli_reset_occurrences(ledgers, stored, old, new, start):
+    errors = []
+    for conversation, ledger in ledgers.items():
+        rows = stored[conversation]
+        try:
+            assert_occurrences(ledger, rows)
+            assert all(row["session_id"] == conversation for row in rows), "session ownership"
+        except AssertionError as error:
+            errors.append(f"{conversation}: {error}")
+    if not errors:
+        return
+    # #1306 leaves the ended conversation intact. Alpha/beta can be ingested
+    # there by the failed compress; gamma is skipped. The hooks can also skip
+    # every post-/new delivery. No partial loss, duplicate or reorder qualifies.
+    actual_old = list(map(identity, stored[old]))
+    expected_old = list(map(identity, ledgers[old]))
+    before_compress = list(map(identity, ledgers[new][:-2]))
+    if (not start and not stored[new]
+            and all(row["session_id"] == old for row in stored[old])
+            and actual_old in (expected_old, expected_old + before_compress)):
+        raise CliResetReplayStored("\n".join(errors))
+    raise AssertionError("\n".join(errors))
+
+
+@pytest.mark.parametrize("post_new_count", [0, 4])
+def test_cli_reset_classifier_accepts_only_named_shapes(post_new_count):
+    ledgers = {"old": [{"role": "user", "content": "before"}],
+               "new": [{"role": "user", "content": str(i)} for i in range(6)]}
+    stored = {"old": [dict(row, session_id="old") for row in
+                      ledgers["old"] + ledgers["new"][:post_new_count]], "new": []}
+    with pytest.raises(CliResetReplayStored):
+        assert_cli_reset_occurrences(ledgers, stored, "old", "new", False)
+
+
+@pytest.mark.parametrize("corruption", ["old-loss", "old-duplicate", "old-order", "partial-new-loss",
+                                        "new-row", "wrong-owner", "explicit-start"])
+def test_cli_reset_classifier_rejects_other_mismatches(corruption, monkeypatch):
+    ledgers = {"old": [{"role": "user", "content": "before"}],
+               "new": [{"role": "user", "content": str(i)} for i in range(6)]}
+    stored = {"old": [dict(row, session_id="old") for row in
+                      ledgers["old"] + ledgers["new"][:4]], "new": []}
+    if corruption == "old-loss":
+        stored["old"].pop(0)
+    elif corruption == "old-duplicate":
+        stored["old"].insert(0, stored["old"][0])
+    elif corruption == "old-order":
+        stored["old"].reverse()
+    elif corruption == "partial-new-loss":
+        stored["old"].pop()
+    elif corruption == "new-row":
+        stored["new"].append(dict(ledgers["new"][-1], session_id="new"))
+    elif corruption == "wrong-owner":
+        stored["old"][-1]["session_id"] = "new"
+    checked = []
+    oracle = assert_occurrences
+
+    def check(ledger, rows):
+        checked.append(ledger)
+        oracle(ledger, rows)
+
+    monkeypatch.setattr(sys.modules[__name__], "assert_occurrences", check)
+    with pytest.raises(AssertionError) as caught:
+        assert_cli_reset_occurrences(ledgers, stored, "old", "new", corruption == "explicit-start")
+    assert type(caught.value) is AssertionError
+    assert checked == list(ledgers.values())
 
 
 @pytest.mark.parametrize("start", [
@@ -622,17 +689,14 @@ def test_cli_new_post_llm_compress_replay(start, caplog, monkeypatch):
         turn(new, "gamma")
         if not start:
             assert "resident_engine_conflict" in caplog.text
-        for conversation, ledger in ledgers.items():
+        stored = {}
+        for conversation in ledgers:
             cursor = machine.engine._store.connection.execute(
-                "SELECT role, content, tool_call_id, tool_calls FROM messages "
+                "SELECT role, content, tool_call_id, tool_calls, session_id FROM messages "
                 "WHERE conversation_id = ? ORDER BY store_id", (conversation,))
-            rows = [dict(zip((column[0] for column in cursor.description), row)) for row in cursor.fetchall()]
-            try:
-                assert_occurrences(ledger, rows)
-            except AssertionError as error:
-                if not start:
-                    raise CliResetReplayStored(str(error)) from error
-                raise
+            stored[conversation] = [dict(zip((column[0] for column in cursor.description), row))
+                                    for row in cursor.fetchall()]
+        assert_cli_reset_occurrences(ledgers, stored, old, new, start)
     finally:
         if prototype is not None:
             prototype.shutdown()

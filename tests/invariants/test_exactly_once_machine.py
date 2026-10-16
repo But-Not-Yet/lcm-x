@@ -505,12 +505,21 @@ class GatewayResetMachine(ExactlyOnceMachine):
         engine.on_session_start(self.session_id, platform="telegram", conversation_id="identity-conversation", context_length=200_000)
         return engine
 
+    @rule(text=TEXT, structured=st.booleans(), tool_count=st.integers(0, 3),
+          retry=st.booleans(), tool_name=st.sampled_from(("lookup", "inspect")))
+    def new_turn(self, text, structured, tool_count, retry, tool_name):
+        delivered = len(self.occurrences)
+        super().new_turn(text, structured, tool_count, retry, tool_name)
+        for occurrence in self.occurrences[delivered:]:
+            occurrence["session_id"] = self.session_id
+
     def rows(self):
         cur = self.engine._store.connection.execute(
             "SELECT role, content, tool_call_id, tool_calls, session_id FROM messages "
             "WHERE conversation_id = ? ORDER BY store_id", ("identity-conversation",))
         rows = [dict(zip((c[0] for c in cur.description), r)) for r in cur.fetchall()]
-        assert all(r["session_id"] in self.session_ids for r in rows)
+        if len(rows) == len(self.occurrences):  # a lost or extra row is the oracle's to report, with its diagnosis
+            assert [r["session_id"] for r in rows] == [r["session_id"] for r in self.occurrences], "session ownership"
         others = self.engine._store.connection.execute(
             "SELECT count(*) FROM messages WHERE conversation_id != ?", ("identity-conversation",)).fetchone()[0]
         assert others == 0, others
