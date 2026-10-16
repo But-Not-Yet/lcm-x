@@ -94,7 +94,7 @@ def _compress_auxiliary(engine: Any) -> None:
 @pytest.mark.xfail(
     strict=True,
     raises=AssertionError,
-    reason="UNFILED: auxiliary compress clears the foreground commit proof",
+    reason="#1291: auxiliary compress clears the foreground commit proof",
 )
 def test_auxiliary_compress_preserves_foreground_commit_proof(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -110,7 +110,7 @@ def test_auxiliary_compress_preserves_foreground_commit_proof(
     pytest.param(True, id="shared-child", marks=pytest.mark.xfail(
         strict=True,
         raises=AssertionError,
-        reason="UNFILED: auxiliary compress clears the foreground commit proof",
+        reason="#1291: auxiliary compress clears the foreground commit proof",
     )),
 ])
 def test_host_commit_stores_each_foreground_row_once(
