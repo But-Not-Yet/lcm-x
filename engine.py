@@ -155,6 +155,7 @@ from .reconcile import _emission_identity
 from .reconcile import _has_lossy_redacted_identity, _merge_append_cut, _proof_user_identity
 from .compaction import CompactionMixin
 from .compaction_request import CompactionRequest
+from .compress_run import CompressRun
 from .identity_anchor import IdentityAnchorMixin, _raw_remainder, identity_anchor_enabled
 from .host_uid import HostUidShadowMixin
 from .host_uid_emit import carry_identity, identity_emit_enabled, record_absorbed_message, sync_cached_host_metadata
@@ -794,7 +795,7 @@ class LCMEngine(
         # _assemble_context also serves tests and recovery paths directly, so
         # keep anchoring opt-in rather than changing its public behavior.
         self._pending_context_anchor_messages: Optional[List[Dict[str, Any]]] = None
-        self._current_compress_store_ids_by_message_id: dict[int, int] = {}
+        self._compress_run = CompressRun()
         self._current_compress_placeholder_identity_counts: dict[tuple[str, str, str, str], int] = {}
         self._last_active_replay_source_identities: list[tuple[Any, ...]] = []
         self._last_active_replay_messages: list[Dict[str, Any]] = []
@@ -1315,6 +1316,14 @@ class LCMEngine(
         return self.last_compression_status == "noop"
 
     # Compatibility views for existing tests and parent-state snapshots.
+    @property
+    def _current_compress_store_ids_by_message_id(self) -> dict[int, int]:
+        return self._compress_run.store_ids_by_message_id
+
+    @_current_compress_store_ids_by_message_id.setter
+    def _current_compress_store_ids_by_message_id(self, value: dict[int, int]) -> None:
+        self._compress_run.store_ids_by_message_id = value
+
     @property
     def _preflight_cleanup_only_due_to_boundary_cooldown(self) -> bool:
         return self._compaction_request.cleanup_only_due_to_boundary_cooldown
@@ -5418,7 +5427,7 @@ class LCMEngine(
         has_externalized_placeholder = self._content_has_externalized_placeholder_ref(content)
         mapped_from_active_placeholder = False
         if store_id is None:
-            store_id = self._current_compress_store_ids_by_message_id.get(id(msg))
+            store_id = self._compress_run.store_ids_by_message_id.get(id(msg))
             mapped_from_active_placeholder = has_externalized_placeholder and store_id is not None
         if store_id is None:
             return False
@@ -5980,17 +5989,15 @@ class LCMEngine(
         scan_start = 0 if self._ingest_cursor_needs_reconcile else cursor
         ignored_original_messages = [False] * n
         if self._compiled_ignore_message_patterns:
-            previous_store_id_map = self._current_compress_store_ids_by_message_id
-            self._current_compress_store_ids_by_message_id = self._get_store_id_map_for_messages(messages)
-            try:
+            store_id_scope = self._compress_run.preserve_store_ids()
+            self._compress_run.store_ids_by_message_id = self._get_store_id_map_for_messages(messages)
+            with store_id_scope:
                 for idx in range(scan_start, n):
                     mapped_ignore = self._mapped_stored_row_matches_ignore_message_patterns(messages[idx])
                     ignored_original_messages[idx] = (
                         self._matches_ignore_message_patterns(messages[idx])
                         or mapped_ignore
                     )
-            finally:
-                self._current_compress_store_ids_by_message_id = previous_store_id_map
         externalize_messages = [False] * n
         prefer_existing_externalized = [False] * n
         for idx in range(scan_start, n):

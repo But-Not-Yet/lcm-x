@@ -1035,7 +1035,7 @@ class IdentityAnchorMixin:
           row it re-flushed later before it): coverage would skip that occurrence. The chunk takes it."""
         if not chunk or len(chunk) >= len(candidates) or not identity_anchor_enabled():
             return chunk
-        full_map, self._identity_anchor_text_memo = self._current_compress_store_ids_by_message_id or {}, {}
+        full_map, self._identity_anchor_text_memo = self._compress_run.store_ids_by_message_id or {}, {}
         end = len(chunk)
         if all(self._identity_anchor_covered_view(message, full_map) for message in chunk):
             while end < len(candidates) and self._identity_anchor_covered_view(candidates[end], full_map):
