@@ -6,6 +6,7 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
+- Fix: `/lcm rotate apply` is refused on Hermes because it reloads its own transcript after a restart; use `/compress here N` to summarise everything except the most recent N messages. (#1141)
 - Fix: refuse leaf chunks without durable source lineage before extraction or summarization, avoiding paid retries while preserving the active transcript; repeat passes warn once per conversation and frontier. (#1141)
 
 ## v0.27.0 (summary quality)
