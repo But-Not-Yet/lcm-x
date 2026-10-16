@@ -1795,7 +1795,7 @@
     "scripts/lcm_longmemeval.py": 668,
     "scripts/lcm_steady_state_bench.py": 71,
     "scripts/lcm_stress_check.py": 64,
-    "scripts/maintainability/report.py": 293,
+    "scripts/maintainability/report.py": 342,
     "scripts/maintainer_gate.py": 430,
     "scripts/measure_assertion_store.py": 213,
     "search_query.py": 483,
@@ -2019,7 +2019,7 @@
     "tests/test_longmemeval_medium.py": 643,
     "tests/test_longmemeval_medium_r2_cli.py": 401,
     "tests/test_longmemeval_medium_r2_core.py": 725,
-    "tests/test_maintainability_report.py": 135,
+    "tests/test_maintainability_report.py": 257,
     "tests/test_maintainer_gate.py": 522,
     "tests/test_native_publication_fallback.py": 970,
     "tests/test_o2_native_recovery_removed.py": 134,
@@ -28176,121 +28176,142 @@
     "scripts/maintainability/report.py::Scan.__init__": {
       "branches": 0,
       "cc": 1,
-      "line": 41,
+      "line": 47,
       "loc": 6,
       "statements": 5
     },
     "scripts/maintainability/report.py::Scan.imports": {
       "branches": 3,
       "cc": 4,
-      "line": 108,
+      "line": 114,
       "loc": 5,
       "statements": 3
     },
     "scripts/maintainability/report.py::Scan.site": {
       "branches": 0,
       "cc": 1,
-      "line": 48,
+      "line": 54,
       "loc": 5,
       "statements": 4
     },
     "scripts/maintainability/report.py::Scan.visit_Attribute": {
       "branches": 3,
       "cc": 4,
-      "line": 78,
+      "line": 84,
       "loc": 12,
       "statements": 8
     },
     "scripts/maintainability/report.py::Scan.visit_ClassDef": {
       "branches": 0,
       "cc": 1,
-      "line": 54,
+      "line": 60,
       "loc": 10,
       "statements": 7
     },
     "scripts/maintainability/report.py::Scan.visit_Constant": {
       "branches": 3,
       "cc": 4,
-      "line": 119,
+      "line": 131,
       "loc": 10,
       "statements": 7
     },
     "scripts/maintainability/report.py::Scan.visit_Expr": {
-      "branches": 1,
-      "cc": 2,
-      "line": 114,
-      "loc": 4,
-      "statements": 2
+      "branches": 4,
+      "cc": 5,
+      "line": 120,
+      "loc": 10,
+      "statements": 6
     },
     "scripts/maintainability/report.py::Scan.visit_FunctionDef": {
       "branches": 0,
       "cc": 1,
-      "line": 65,
+      "line": 71,
       "loc": 10,
       "statements": 6
     },
     "scripts/maintainability/report.py::Scan.visit_Import": {
       "branches": 0,
       "cc": 1,
-      "line": 105,
+      "line": 111,
       "loc": 2,
       "statements": 1
     },
     "scripts/maintainability/report.py::Scan.visit_ImportFrom": {
       "branches": 6,
       "cc": 6,
-      "line": 91,
+      "line": 97,
       "loc": 13,
       "statements": 11
     },
     "scripts/maintainability/report.py::collect": {
       "branches": 9,
       "cc": 10,
-      "line": 158,
+      "line": 170,
       "loc": 51,
       "statements": 36
     },
     "scripts/maintainability/report.py::compare": {
       "branches": 5,
       "cc": 5,
-      "line": 211,
-      "loc": 25,
-      "statements": 9
+      "line": 247,
+      "loc": 32,
+      "statements": 13
     },
     "scripts/maintainability/report.py::is_production": {
       "branches": 0,
       "cc": 1,
-      "line": 36,
+      "line": 42,
       "loc": 2,
       "statements": 0
+    },
+    "scripts/maintainability/report.py::load_lifetimes": {
+      "branches": 3,
+      "cc": 4,
+      "line": 223,
+      "loc": 11,
+      "statements": 9
     },
     "scripts/maintainability/report.py::main": {
       "branches": 8,
       "cc": 8,
-      "line": 258,
-      "loc": 32,
-      "statements": 29
+      "line": 303,
+      "loc": 36,
+      "statements": 32
     },
     "scripts/maintainability/report.py::markdown": {
       "branches": 3,
       "cc": 4,
-      "line": 238,
-      "loc": 18,
-      "statements": 13
+      "line": 281,
+      "loc": 20,
+      "statements": 15
     },
     "scripts/maintainability/report.py::python_files": {
       "branches": 3,
-      "cc": 4,
-      "line": 28,
-      "loc": 6,
-      "statements": 3
+      "cc": 6,
+      "line": 29,
+      "loc": 11,
+      "statements": 6
+    },
+    "scripts/maintainability/report.py::python_files.unreadable": {
+      "branches": 1,
+      "cc": 2,
+      "line": 30,
+      "loc": 4,
+      "statements": 2
     },
     "scripts/maintainability/report.py::ruff_metrics": {
       "branches": 5,
       "cc": 6,
-      "line": 131,
+      "line": 143,
       "loc": 25,
       "statements": 15
+    },
+    "scripts/maintainability/report.py::valid_lifetime": {
+      "branches": 3,
+      "cc": 4,
+      "line": 236,
+      "loc": 9,
+      "statements": 5
     },
     "scripts/maintainer_gate.py::_base_blockers": {
       "branches": 14,
@@ -77775,47 +77796,117 @@
       "loc": 3,
       "statements": 2
     },
+    "tests/test_maintainability_report.py::lifetime_tree": {
+      "branches": 0,
+      "cc": 1,
+      "line": 189,
+      "loc": 12,
+      "statements": 6
+    },
     "tests/test_maintainability_report.py::run": {
       "branches": 0,
       "cc": 1,
-      "line": 17,
+      "line": 20,
       "loc": 8,
       "statements": 2
+    },
+    "tests/test_maintainability_report.py::test_ddl_evaluated_inside_a_standalone_f_string_is_reported": {
+      "branches": 0,
+      "cc": 1,
+      "line": 181,
+      "loc": 6,
+      "statements": 3
     },
     "tests/test_maintainability_report.py::test_growth_and_baseline_round_trip": {
       "branches": 0,
       "cc": 1,
-      "line": 35,
-      "loc": 19,
-      "statements": 15
+      "line": 39,
+      "loc": 22,
+      "statements": 18
     },
     "tests/test_maintainability_report.py::test_incomplete_collection_is_report_only": {
       "branches": 0,
       "cc": 1,
-      "line": 126,
+      "line": 133,
       "loc": 10,
+      "statements": 9
+    },
+    "tests/test_maintainability_report.py::test_invalid_and_stale_lifetimes": {
+      "branches": 0,
+      "cc": 1,
+      "line": 229,
+      "loc": 6,
+      "statements": 5
+    },
+    "tests/test_maintainability_report.py::test_lifetime_markdown_keeps_all_categories_with_many_changes": {
+      "branches": 1,
+      "cc": 2,
+      "line": 247,
+      "loc": 11,
       "statements": 9
     },
     "tests/test_maintainability_report.py::test_metric_contracts_and_growth": {
       "branches": 0,
       "cc": 1,
-      "line": 56,
+      "line": 63,
       "loc": 60,
       "statements": 25
+    },
+    "tests/test_maintainability_report.py::test_missing_lifetime_file_warns_once": {
+      "branches": 0,
+      "cc": 1,
+      "line": 237,
+      "loc": 8,
+      "statements": 7
+    },
+    "tests/test_maintainability_report.py::test_new_attribute_with_lifetime": {
+      "branches": 0,
+      "cc": 1,
+      "line": 214,
+      "loc": 8,
+      "statements": 7
+    },
+    "tests/test_maintainability_report.py::test_new_attribute_without_lifetime": {
+      "branches": 0,
+      "cc": 1,
+      "line": 203,
+      "loc": 7,
+      "statements": 6
     },
     "tests/test_maintainability_report.py::test_new_complex_short_function": {
       "branches": 0,
       "cc": 1,
-      "line": 118,
+      "line": 125,
       "loc": 6,
       "statements": 5
     },
     "tests/test_maintainability_report.py::test_repository_baseline": {
       "branches": 0,
       "cc": 1,
-      "line": 27,
-      "loc": 6,
+      "line": 30,
+      "loc": 7,
       "statements": 5
+    },
+    "tests/test_maintainability_report.py::test_standalone_f_string_is_not_ddl": {
+      "branches": 0,
+      "cc": 1,
+      "line": 160,
+      "loc": 7,
+      "statements": 3
+    },
+    "tests/test_maintainability_report.py::test_unreadable_directory_blocks_the_baseline_write": {
+      "branches": 1,
+      "cc": 1,
+      "line": 146,
+      "loc": 12,
+      "statements": 12
+    },
+    "tests/test_maintainability_report.py::test_write_replaces_an_incompatible_baseline": {
+      "branches": 0,
+      "cc": 1,
+      "line": 169,
+      "loc": 10,
+      "statements": 9
     },
     "tests/test_maintainer_gate.py::exact_authorization": {
       "branches": 0,
