@@ -11,8 +11,10 @@ One migration (the `conversation_id` columns) exists twice. These rules stop the
    - the new on-disk format;
    - the oldest reader that can still open it;
    - the release in which the old format's code path can be removed.
-3. **Test both directions.** Each migration gets a forward test (an older database opens and upgrades) and a rollback test (the
-   previous release still opens the upgraded database, or the PR says why it cannot), in the compat suite (`tests/compat`).
+3. **Test both directions.** Each migration gets a forward test (an older database opens and upgrades) and a rollback test, in
+   the compat suite (`tests/compat`). The rollback test shows that the previous release still opens the upgraded database. If the
+   new format is intentionally incompatible, it is a negative test instead: the previous release refuses the database cleanly (no
+   partial open, no writes, the file unchanged). An explanation alone never replaces the test.
 4. **One migration, one place.** Do not copy an existing migration; call the function that already performs it.
 
 When transaction ownership is consolidated, a compat registry file (format → oldest reader → removal version) replaces the PR-body
