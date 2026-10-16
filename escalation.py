@@ -207,6 +207,7 @@ class ForegroundBudget:
         self.stop_reason = ""  # the reason of the last stop(), for the stop line with the sweep off
         self.leaves, self.first_call_started, self.last_call_ended = 0, None, None
         self.pre_leaf = None  # #1127: the PhaseSqlTrace of the pre-leaf phase while it runs
+        self.host = 0.0  # D5: seconds inside the host's native compressor (a bypassed session), not LCM work
 
     @property
     def usable_deadline(self) -> float:

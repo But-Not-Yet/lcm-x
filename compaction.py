@@ -563,6 +563,9 @@ class CompactionMixin:
         self._last_hidden_backlog = None
         self._compress_forced_overflow = False
         budget = self._foreground_budget = self._new_foreground_budget()  # #605 K1: the clock starts here
+        thread_context = getattr(self, "_thread_context", None)  # D5: per thread; the engine is shared with live children
+        if thread_context is not None:
+            thread_context.foreground_budget = budget
         returned = None
         try:
             budget.pre_leaf = PhaseSqlTrace()  # #1127: timed until the first leaf call, or the stop before one
@@ -665,6 +668,8 @@ class CompactionMixin:
             self._last_compress_leaves = (self._hold_conversation_key(), budget.leaves)
             self._compress_forced_overflow = False
             self._foreground_budget = None
+            if thread_context is not None:
+                thread_context.foreground_budget = None
             self._finish_foreground_budget(budget, returned)
 
     def _pre_leaf_span(self, name: str, started: float) -> None:
@@ -705,7 +710,7 @@ class CompactionMixin:
         try:
             ended = time.monotonic()
             elapsed = ended - budget.t0
-            pre, calls, finalize = elapsed, 0.0, 0.0
+            pre, calls, finalize = elapsed - budget.host, 0.0, 0.0  # D5: the host's wait is host=, not pre=
             if budget.last_call_ended is not None:
                 pre, calls = budget.first_call_started - budget.t0, budget.last_call_ended - budget.first_call_started
                 finalize = ended - budget.last_call_ended
@@ -719,8 +724,9 @@ class CompactionMixin:
             if exited:  # #671: the free cuts reached the target before any model call
                 reason = "stub_first_exit"
             logger.info("LCM compaction stop: reason=%s leaves=%d progress=%s elapsed=%.1fs pre=%.1fs calls=%.1fs "
-                        "finalize=%.1fs backlog_tokens=%d%s", reason, budget.leaves, budget.progress or "none", elapsed,
+                        "finalize=%.1fs backlog_tokens=%d%s%s", reason, budget.leaves, budget.progress or "none", elapsed,
                         pre, calls, finalize, self._raw_backlog_tokens(result) if isinstance(result, list) else 0,
+                        f" host={budget.host:.1f}s" if budget.host > 0 else "",
                         " tokens_before={tokens_before} tokens_after={tokens_after} target={target_tokens} "
                         "backlog_rows={backlog_rows}".format(**exited) if exited else "")
         except Exception:

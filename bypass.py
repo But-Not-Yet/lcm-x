@@ -10,6 +10,7 @@ unchanged.
 
 import importlib
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from .message_analysis import _assistant_tool_call_ids
@@ -436,6 +437,13 @@ class BypassMixin:
         compacted = head + [marker] + tail
         return self._trim_bypass_compacted_to_cap(compacted, target_tokens)
 
+    def _book_host_compressor_seconds(self, started: float) -> None:
+        """D5: book the host compressor's wait on this thread's foreground budget, shown as ``host=`` on the stop
+        line; the engine is shared with live children, so the budget is per thread, never ``_foreground_budget``."""
+        budget = getattr(getattr(self, "_thread_context", None), "foreground_budget", None)
+        if budget is not None:
+            budget.host += max(0.0, time.monotonic() - started)
+
     def _compress_lcm_bypassed_session(
         self,
         messages: List[Dict[str, Any]],
@@ -483,6 +491,7 @@ class BypassMixin:
 
         self._sync_host_fallback_compressor(compressor)
         before_count = int(getattr(compressor, "compression_count", 0) or 0)
+        host_started = time.monotonic()
         try:
             try:
                 compacted = compressor.compress(
@@ -498,6 +507,7 @@ class BypassMixin:
                     focus_topic=focus_topic,
                 )
         except Exception as exc:
+            self._book_host_compressor_seconds(host_started)
             self._mirror_host_fallback_state(compressor)
             logger.warning(
                 "LCM Hermes native ContextCompressor failed for bypassed %s %s; using deterministic trim: %s",
@@ -512,6 +522,7 @@ class BypassMixin:
                 self.compression_count += 1
                 self._last_compress_aborted = False
             return compacted
+        self._book_host_compressor_seconds(host_started)
         self._mirror_host_fallback_state(compressor)
         after_count = int(getattr(compressor, "compression_count", before_count) or before_count)
         self.compression_count += max(1, after_count - before_count)
