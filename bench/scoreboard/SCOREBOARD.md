@@ -2,7 +2,7 @@
 
 Every number ships with its full run config, variance, fail-close accounting, and known dataset defects — rows that cannot meet the standard do not render.
 
-Generated from `results.jsonl` (sha256: `f6dc0d8aabefec632c32c3d381dfbc8b9c0e9fece0afa347bfbc2d9ef7be4496`, rows: 52)
+Generated from `results.jsonl` (sha256: `9415e097b44266120506a25efc887c92004f7c8cb1eb99db198cc7c3d2517e30`, rows: 53)
 
 ## Summary
 
@@ -23,6 +23,7 @@ Generated from `results.jsonl` (sha256: `f6dc0d8aabefec632c32c3d381dfbc8b9c0e9fe
 | LoCoMo (locomo10, 1,986q) | accuracy | 67.4% (1,339/1,986 MemScore) | F | 2026-08-26 | [details](#locomo10-1986-b3a-2026-08-26) |
 | LoCoMo (locomo10, 1,986q) | accuracy | 54.6% (1,085/1,986 MemScore) | F | 2026-08-02 | [details](#locomo10-1986-declared-2026-08-02) |
 | ~~LoCoMo (locomo10, 1,986q)~~ | ~~accuracy~~ | ~~47.0% (MemScore)~~ | ~~F~~ | ~~2026-07-30~~ | ~~[details](#locomo10-1986-arm-a-2026-07-30)~~ → [successor](#locomo10-1986-declared-2026-08-02) |
+| LongMemEval-M (R1-M, LOCAL, lcm_recall) | r10 | 0.9038 vs OFF 0.8733; +0.0305 (paired, p 0.0006) | P | 2026-10-16 | [details](#r1m-local-recall-r10-v0270-2026-10-16) |
 | LongMemEval-M (R1-M, OFF, fts) | per_question_flips | 0 | P | 2026-10-16 | [details](#r1m-off-fts-flips-v0270-2026-10-16) |
 | LongMemEval-M (R1-M, OFF, fts) | p50_ms | 11 | P | 2026-10-09 | [details](#r1m-off-fts-p50_ms-v0262-2026-10-09) |
 | LongMemEval-M (R1-M, OFF, fts) | p90_ms | 18 | P | 2026-10-09 | [details](#r1m-off-fts-p90_ms-v0262-2026-10-09) |
@@ -1609,6 +1610,65 @@ not specified in Phase D scorecard latency cell; see Phase C receipt
 - D5 gauntlet cells PASS; max bar 145 s.
 - Backfill date is the release publication date; the scorecard does not state the run completion day.
 - Release scorecard transcription only; fields not specified there remain explicitly unknown. No customer-profile behaviour is proven.
+
+### <a id="r1m-local-recall-r10-v0270-2026-10-16"></a>r1m-local-recall-r10-v0270-2026-10-16
+
+**id:**
+r1m-local-recall-r10-v0270-2026-10-16
+
+**benchmark:**
+LongMemEval-M (R1-M, LOCAL, lcm_recall)
+
+**metric:**
+r10
+
+**value:**
+0.9038
+
+**display:**
+0.9038 vs OFF 0.8733; +0.0305 (paired, p 0.0006)
+
+**tier:**
+P
+
+**date:**
+2026-10-16
+
+**system_commit:**
+v0.27.0-rc8 (4e603ed65f137a909606afccfc735c691e363d25); GA tree adds release notes only
+
+**harness_commit:**
+scripts/lcm_longmemeval.py at the same tree (4e603ed65f137a909606afccfc735c691e363d25), stub provider for OFF, fastembed provider for LOCAL
+
+**judge:**
+n/a (instrument)
+
+**reader:**
+n/a (instrument)
+
+**retrieval_config:**
+R1-M, LongMemEval-M, 500 questions; embeddings LOCAL: fastembed BAAI/bge-small-en-v1.5 on CPU (HF offline, pre-warmed cache, 0 misses), otherwise product defaults including the full-text anchor; no fleet overlay. OFF arm in the same run: product defaults, embeddings off
+
+**dataset_exposure:**
+none documented; no new dataset audit
+
+**breakdown:**
+LOCAL R@1 0.4512, R@5 0.8346, R@10 0.9038, NDCG@10 0.7955 (OFF 0.4523 / 0.8049 / 0.8733 / 0.7776); per category R@10 delta: multi-session +0.046, temporal-reasoning +0.041, single-session-preference +0.167, worst single-session-user -0.0156
+
+**variance:**
+paired LOCAL vs OFF over 470 questions: 49 wins / 20 losses / 401 ties, exact sign test p 0.0006; LOCAL A/A prime 0 of 100 discordant; OFF arm 0 per-question differences vs the 2026-10-10 OFF row; LOCAL 0 per-question differences vs the 2026-10-10 LOCAL row
+
+**failclose:**
+470 scored + 30 abstention-excluded + 0 failed = 500 in each arm
+
+**evidence:**
+- https://github.com/electricsheephq/lcm-x/releases/download/v0.27.0-rc8/LOCAL-RECALL-RECEIPT.md
+
+**caveats:**
+- Retrieval recall only; no QA answer accuracy.
+- One run on one machine under other load; lcm_recall latency p50/p90/max OFF 77/163/384 ms, LOCAL 125/238/950 ms, recorded and not judged.
+- Pre-warmed embedding cache; cold-cache embedding cost is not measured.
+- Advisory claim class: it gated the managed fleet's per-profile LOCAL turn-on, not the GA. Nothing about customer sessions is proven.
 
 ### <a id="r1m-off-fts-flips-v0270-2026-10-16"></a>r1m-off-fts-flips-v0270-2026-10-16
 
