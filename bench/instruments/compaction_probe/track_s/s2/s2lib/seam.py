@@ -23,7 +23,8 @@ LIMIT_RE = re.compile(r"429|usage limit|rate limit|too many requests", re.I)  # 
 def set_fault(mode=None):
     """Reset the optional per-run fault; absent mode leaves legacy receipts untouched."""
     global _FAULT
-    _FAULT = None if mode is None else {"mode": mode, "event_index": 3, "faulted_turns": [],
+    _FAULT = None if mode is None else {"mode": mode, "calling_event": 3, "calling_events": 0,
+                                       "event_index": None, "start_turn": None, "faulted_turns": [],
                                        "faulted_calls": 0, "effective_sleep_s": []}
     set_event(0, None)
 
@@ -31,11 +32,10 @@ def set_event(index, turn):
     """1-based compress invocation, including forced/cleanup-only events."""
     if _FAULT is not None:
         _FAULT.update(current_event=index, current_turn=turn, event_calls=0)
-        if index == 3:
-            _FAULT["start_turn"] = turn
 
 def fault_receipt():
-    return {k: _FAULT[k] for k in ("mode", "event_index", "faulted_turns", "faulted_calls", "effective_sleep_s")}
+    return {k: _FAULT[k] for k in ("mode", "calling_event", "event_index", "start_turn",
+                                  "faulted_turns", "faulted_calls", "effective_sleep_s")}
 
 def load_engine(arm=None):
     """Register the worktree as `hermes_lcm` (package __init__ not executed, as the harness and tests do)."""
@@ -126,8 +126,12 @@ def call_llm(**kwargs):
     try:
         if _FAULT is not None and kwargs.get("task") == "compression":
             _FAULT["event_calls"] += 1
+            if _FAULT["event_calls"] == 1:
+                _FAULT["calling_events"] += 1
+                if _FAULT["calling_events"] == 3:
+                    _FAULT.update(start_turn=_FAULT["current_turn"], event_index=_FAULT["current_event"])
             start, turn = _FAULT.get("start_turn"), _FAULT["current_turn"]
-            fire = (_FAULT["mode"] == "T" and _FAULT["current_event"] == 3 and _FAULT["event_calls"] == 1)
+            fire = (_FAULT["mode"] == "T" and _FAULT["calling_events"] == 3 and _FAULT["event_calls"] == 1)
             fire = fire or (_FAULT["mode"] == "P" and start is not None and start <= turn <= start + 1)
             if fire:
                 sleep_s = float(os.environ.get("S2_FAULT_SLEEP_S", timeout))

@@ -20,10 +20,11 @@ Runs, stores, material, logs, credentials, and receipts are never source artifac
 ## 1096-H hang cell (opt-in)
 
 `s2/run_s_lcmx.py --fault-hang T|P` injects a host-deadline `TimeoutError` before
-the summary lane. Events are counted from 1, including forced and cleanup-only
-compressions. T faults only the first summary call of event 3. P faults every
-summary call in event 3's user turn and the next user turn. Faulted calls carry
-`fault`; `summary.json.fault_hang` records mode, event index, distinct faulted
+the summary lane. The anchor is the 3rd compaction event that makes a summary call
+(cleanup-only passes do not count). T faults only its first summary call. P faults
+every summary call in that event's user turn and the next user turn. Faulted calls carry
+`fault`; `summary.json.fault_hang` records mode, calling event (3), raw event index,
+start turn (both null if never reached), distinct faulted
 turns, call count, and `effective_sleep_s` (one requested wall sleep per fault).
 With the flag absent, no fault keys are added. All lanes support the seam,
 including `--lane fake --reader fake` for offline wiring checks.
@@ -34,6 +35,7 @@ classification. The classification smoke must use the full timeout against
 the pinned product, without changing product code or its clock.
 
 `decision/run_pmw_cell.sh` accepts `FAULT` empty, T or P (anything else exits 2).
+It exits 2 if `S2_FAULT_SLEEP_S` is set, even empty.
 Run each variant on both pinned product arms with fresh output roots, identical
 material and seeds, and `--turn-end-notify` (the runner supplies it). This differs
 from historical rc8: turn-end notifications also release existing turn-paced holds.
@@ -45,15 +47,19 @@ as `mixed`. These fields do not change D7's six bars or exit codes.
 ```bash
 python3 -B "$KIT/decision/hang_cell_verdict.py" \
   --base "$BASE_OUT/pmw-read.json" --candidate "$CANDIDATE_OUT/pmw-read.json" \
+  --base-sha "$BASE_SHA" --candidate-sha "$CANDIDATE_SHA" \
   --variant T --json "$VERDICT_OUT"
 ```
 
 Repeat with `--variant P` and its paired receipts. Exit 0 is PASS, 1 FAIL,
 2 INVALID. T requires one fault per run in each arm and passes with candidate
 dropped rows zero and long waits <= base. P permits different positive per-run
-fault counts between arms and passes with candidate long waits <= base + 1 and
-at most one long wait per turn. Missing/incomplete receipts, absent faults or
-wrong modes are INVALID. Both arms' D7 bars, fits, drops, frequency, waited
+fault counts between arms and passes when every run has candidate long waits <=
+base + 1 and at most one long wait per turn. The verdict includes a per-run comparison.
+Missing/incomplete receipts, absent faults, wrong modes or different run-id sets
+are INVALID. Each input needs a sibling `cell.json` matching its declared product
+SHA and variant; the cells must agree on seeds, kit SHA and arm.
+Both arms' D7 bars, fits, drops, frequency, waited
 share, mean/max turn wait and cp-304 retention are always reported.
 
 ## Generate material

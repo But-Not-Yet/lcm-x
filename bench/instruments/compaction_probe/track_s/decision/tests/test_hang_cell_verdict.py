@@ -16,15 +16,30 @@ def receipt(mode, counts=(1, 1)):
                 pooled=dict(synthetic=dict(runs=2, faulted_calls=sum(counts), fault_mode=mode, long_waits=2,
                     max_long_waits_in_one_turn=1, max_turn_wait_s=115.0, dropped_rows=0, survival_fits=0,
                     c_per_100=10.0, waited_turn_share=0.1, mean_turn_wait_s=12.0, facts_304_mean=0.5)),
-                per_run={f"synthetic|d{n}-r1": dict(status="DONE", fault_mode=mode, faulted_calls=c)
+                per_run={f"synthetic|d{n}-r1": dict(status="DONE", fault_mode=mode, faulted_calls=c,
+                                                long_waits=1, max_long_waits_in_one_turn=1)
                          for n, c in enumerate(counts, 1)})
 
 
-def invoke(tmp_path, mode, base, candidate):
+def invoke(tmp_path, mode, base, candidate, bad_cell=None):
     for name, data in (("base", base), ("candidate", candidate)):
-        (tmp_path / f"{name}.json").write_text(json.dumps(data))
+        directory = tmp_path / name
+        directory.mkdir()
+        (directory / "pmw-read.json").write_text(json.dumps(data))
+        cell = dict(product_sha=f"{name}-sha", fault=mode, seeds=[1, 2], kit_sha="kit-sha", arm="synthetic")
+        if bad_cell and bad_cell[0] == name:
+            key, value = bad_cell[1:]
+            if key == "missing":
+                continue
+            if key == "unreadable":
+                (directory / "cell.json").write_text("{")
+                continue
+            cell[key] = value
+        (directory / "cell.json").write_text(json.dumps(cell))
     output = tmp_path / "verdict.json"
-    rc = v.main(["--base", str(tmp_path / "base.json"), "--candidate", str(tmp_path / "candidate.json"),
+    rc = v.main(["--base", str(tmp_path / "base/pmw-read.json"),
+                 "--candidate", str(tmp_path / "candidate/pmw-read.json"),
+                 "--base-sha", "base-sha", "--candidate-sha", "candidate-sha",
                  "--variant", mode, "--json", str(output)])
     return rc, json.loads(output.read_text())
 
@@ -35,6 +50,7 @@ def test_pass_and_d7_never_gates(tmp_path, mode):
     candidate = receipt(mode, (2, 1)) if mode == "P" else copy.deepcopy(base)
     if mode == "P":
         candidate["pooled"]["synthetic"].update(long_waits=3, dropped_rows=42)
+        candidate["per_run"]["synthetic|d1-r1"]["long_waits"] = 2
     rc, out = invoke(tmp_path, mode, base, candidate)
     assert rc == 0 and out["result"] == "PASS"
     assert out["base"]["d7"]["result"] == "FAIL"
@@ -42,10 +58,16 @@ def test_pass_and_d7_never_gates(tmp_path, mode):
 
 
 @pytest.mark.parametrize("mode,change", [("T", dict(dropped_rows=1)), ("T", dict(long_waits=3)),
-                                        ("P", dict(long_waits=4)), ("P", dict(max_long_waits_in_one_turn=2))])
+                                        ("P", dict(long_waits=3)), ("P", dict(max_long_waits_in_one_turn=2))])
 def test_fail(tmp_path, mode, change):
     base, candidate = receipt(mode), receipt(mode)
-    candidate["pooled"]["synthetic"].update(change)
+    if mode == "P":
+        candidate["per_run"]["synthetic|d1-r1"].update(change)
+        candidate["pooled"]["synthetic"].update(
+            long_waits=sum(run["long_waits"] for run in candidate["per_run"].values()),
+            max_long_waits_in_one_turn=max(run["max_long_waits_in_one_turn"] for run in candidate["per_run"].values()))
+    else:
+        candidate["pooled"]["synthetic"].update(change)
     assert invoke(tmp_path, mode, base, candidate)[0] == 1
 
 
@@ -79,7 +101,36 @@ def test_t_rejects_uneven_counts_even_with_equal_pool(tmp_path):
     assert invoke(tmp_path, "T", receipt("T"), receipt("T", (0, 2)))[0] == 2
 
 
+def test_p_allows_one_extra_wait_per_run(tmp_path):
+    base, candidate = receipt("P"), receipt("P", (2, 2))
+    candidate["pooled"]["synthetic"]["long_waits"] = 4
+    for data, waits in ((base, 1), (candidate, 2)):
+        for run in data["per_run"].values():
+            run.update(long_waits=waits, max_long_waits_in_one_turn=1)
+    rc, out = invoke(tmp_path, "P", base, candidate)
+    assert rc == 0
+    assert out["per_run"] == {run_id: dict(base=dict(long_waits=1, max_long_waits_in_one_turn=1),
+                                         candidate=dict(long_waits=2, max_long_waits_in_one_turn=1))
+                             for run_id in base["per_run"]}
+
+
+@pytest.mark.parametrize("mode", ["T", "P"])
+def test_invalid_different_run_ids(tmp_path, mode):
+    base, candidate = receipt(mode), receipt(mode)
+    candidate["per_run"]["synthetic|d3-r1"] = candidate["per_run"].pop("synthetic|d1-r1")
+    assert invoke(tmp_path, mode, base, candidate)[0] == 2
+
+
+@pytest.mark.parametrize("mode", ["T", "P"])
+@pytest.mark.parametrize("side", ["base", "candidate"])
+@pytest.mark.parametrize("key,value", [("missing", None), ("unreadable", None), ("product_sha", "wrong"),
+                                       ("fault", "wrong"), ("seeds", [2, 3]), ("kit_sha", "wrong"), ("arm", "wrong")])
+def test_invalid_cell_identity(tmp_path, mode, side, key, value):
+    assert invoke(tmp_path, mode, receipt(mode), receipt(mode), (side, key, value))[0] == 2
+
+
 def test_invalid_json(tmp_path):
     (tmp_path / "bad.json").write_text("{")
     assert v.main(["--base", str(tmp_path / "bad.json"), "--candidate", str(tmp_path / "missing.json"),
+                   "--base-sha", "base-sha", "--candidate-sha", "candidate-sha",
                    "--variant", "T", "--json", str(tmp_path / "out.json")]) == 2

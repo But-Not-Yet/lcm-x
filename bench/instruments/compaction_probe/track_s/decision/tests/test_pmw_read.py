@@ -190,6 +190,7 @@ def test_pre_crossing_and_reported_figures(cell):
 @pytest.mark.parametrize("mode,expected,fault", [("pass", 0, ""), ("pass", 0, "T"), ("pass", 0, "P"),
                                                 ("fail", 7, ""), ("limit", 3, ""),
                                                 ("dirty-tracked", 2, ""), ("dirty-untracked", 2, ""),
+                                                ("short-sleep", 2, "T"), ("empty-sleep", 2, "P"),
                                                 ("short-seeds", 0, ""), ("other-arm", 0, "")])
 def test_runner_sequence_and_limit(tmp_path, mode, expected, fault):
     kit = tmp_path / "kit"
@@ -229,9 +230,15 @@ def test_runner_sequence_and_limit(tmp_path, mode, expected, fault):
         env["SEEDS"] = "1 2"
     elif mode == "other-arm":
         env["ARM"] = "synthetic"
+    elif mode in ("short-sleep", "empty-sleep"):
+        env["S2_FAULT_SLEEP_S"] = "0.01" if mode == "short-sleep" else ""
     result = subprocess.run(["bash", str(DECISION / "run_pmw_cell.sh")], env=env, capture_output=True, text=True, timeout=15)
     assert result.returncode == expected, result.stderr
     sequence = Path(env["OUT"]) / "sequence"
+    if mode in ("short-sleep", "empty-sleep"):
+        assert "S2_FAULT_SLEEP_S" in result.stderr
+        assert not Path(env["OUT"]).exists()
+        return
     if mode.startswith("dirty-"):
         assert str(kit) in result.stderr
         assert not Path(env["OUT"]).exists()  # rejected before starting runs
