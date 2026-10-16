@@ -112,7 +112,7 @@ def test_shallow_copy_matches_default_dict_and_aliases(engine: Any) -> None:
     engine._compress_commit_proof = {"consulted": False}
     engine._last_emission_descriptors = {"rows": []}
     # The default shallow-copy state transfer, independent of __copy__.
-    default = type(engine).__new__(type(engine))
+    default = object.__new__(type(engine))
     default.__dict__.update(engine.__dict__)
     clone = copy.copy(engine)
     assert clone.__dict__.keys() == default.__dict__.keys()
@@ -162,4 +162,62 @@ def test_shallow_copy_of_uninitialized_engine_keeps_missing_names() -> None:
 def test_engine_has_no_custom_pickle_hooks_or_slots() -> None:
     for cls in LCMEngine.__mro__:
         if cls is not object:
-            assert not {"__getstate__", "__setstate__", "__reduce__", "__reduce_ex__", "__slots__"}.intersection(vars(cls))
+            assert not {"__getstate__", "__setstate__", "__reduce__", "__reduce_ex__"}.intersection(vars(cls))
+            assert not vars(cls).get("__slots__")
+
+
+@pytest.mark.parametrize("mode", ["clone", "deepcopy", "shallow"])
+def test_copies_own_distinct_frontier_holders(engine: Any, mode: str) -> None:
+    clone = (engine.clone_for_agent() if mode == "clone" else
+             copy.deepcopy(engine) if mode == "deepcopy" else copy.copy(engine))
+    try:
+        assert clone._frontier is not engine._frontier
+    finally:
+        if mode != "shallow":
+            clone.shutdown()
+
+
+def test_holder_has_only_five_fields_and_properties_forward(engine: Any) -> None:
+    from dataclasses import fields
+
+    from hermes_lcm.frontier_state import FrontierState
+
+    mapping = {
+        "_ingest_cursor": "cursor",
+        "_ingest_cursor_needs_reconcile": "needs_reconcile",
+        "_last_compacted_store_id": "compacted_store_id",
+        "_compress_commit_proof": "commit_proof",
+        "_last_emission_descriptors": "emission_descriptors",
+    }
+    assert {field.name for field in fields(FrontierState)} == set(mapping.values())
+    assert isinstance(engine._frontier, FrontierState)
+    state = FrontierState()
+    for legacy, field in mapping.items():
+        assert getattr(state, field) is DEFAULTS[legacy]
+        value: Any = {"identity": []} if "proof" in field or "descriptors" in field else 1234
+        setattr(engine, legacy, value)
+        assert getattr(engine._frontier, field) is value
+        setattr(engine._frontier, field, DEFAULTS[legacy])
+        assert getattr(engine, legacy) is DEFAULTS[legacy]
+
+
+def test_holder_exists_before_first_legacy_init_assignment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    holders: list[Any] = []
+
+    def record(instance: Any, name: str, value: Any) -> None:
+        if name in DEFAULTS:
+            holders.append(instance._frontier)
+        object.__setattr__(instance, name, value)
+
+    monkeypatch.setattr(LCMEngine, "__setattr__", record)
+    instance = LCMEngine(
+        config=LCMConfig(database_path=str(tmp_path / "lcm.db")),
+        hermes_home=str(tmp_path / "home"),
+    )
+    try:
+        assert len(holders) == 5
+        assert all(holder is instance._frontier for holder in holders)
+    finally:
+        instance.shutdown()
