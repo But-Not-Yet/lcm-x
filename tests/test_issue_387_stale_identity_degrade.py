@@ -24,7 +24,11 @@ REASON = (
     "embedding_identity_stale: stored vectors use an older embedding privacy "
     "revision; run /lcm embed warmup, then /lcm embed backfill --apply"
 )
-REPEAT_GUIDANCE = "; repeat the backfill apply until it reports remaining: 0"
+REPEAT_GUIDANCE = (
+    "; repeat the backfill apply only while remaining is above 0 and each run lowers it, "
+    "but stop and inspect its warnings and details on status: partial, status: error, "
+    "status: failed, or if remaining stops falling"
+)
 TEXT = "Zebrawood orchard has a beagle puppy named Biscuit."
 
 
@@ -173,6 +177,42 @@ def test_named_doctor_backfill_rebuilds_stale_chunks(engine, monkeypatch, stale_
         finally:
             conn.close()
     assert instances["voyage-context-4"].calls == [[TEXT], [TEXT]]
+
+
+def test_doctor_guidance_stops_when_backfill_leaves_overcap_rows_pending(engine, monkeypatch):
+    from tests.test_embedding_backfill import FakeProvider
+
+    _seed(engine, "old")
+    monkeypatch.setenv("VOYAGE_API_KEY", "synthetic-test-key")
+    reason = tools._embedding_provider_health_check(engine)["detail"]["reason"]
+    _seed(engine, "matching")
+    node_id = engine._dag.add_node(SummaryNode(
+        session_id="session-a", depth=0, summary=TEXT,
+        source_ids=[engine.store_id], source_type="messages", created_at=2, latest_at=2,
+    ))
+    provider = FakeProvider()
+    provider.provider_id = "voyage"
+    provider.model_id = engine._config.embedding_model
+
+    def skip_overcap(texts):
+        provider.calls.append(list(texts))
+        provider.last_skipped_documents = list(range(len(texts)))
+        return []
+
+    provider.embed_documents = skip_overcap
+    monkeypatch.setattr(command_mod, "resolve_provider", lambda _config, **_kw: provider)
+    monkeypatch.setattr(command_mod, "count_tokens", lambda text: len(str(text)))
+    for _ in range(2):
+        result = handle_lcm_command("embed backfill --apply", engine)
+        assert "status: partial" in result
+        assert "embedded: 0" in result
+        assert "skipped_overcap: 1" in result
+        assert "remaining: 1" in result
+        assert f"skipped_detail: node_id={node_id} reason=provider_document_token_cap" in result
+    assert provider.calls == [[TEXT], [TEXT]]
+    assert "only while remaining is above 0 and each run lowers it" in reason
+    assert "stop and inspect its warnings and details on status: partial, status: error" in reason
+    assert "status: failed, or if remaining stops falling" in reason
 
 
 class CloudProvider:

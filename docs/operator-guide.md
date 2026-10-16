@@ -662,8 +662,10 @@ warmup registers the profile (run
 `/lcm embed warmup` then `/lcm embed backfill --apply`, adding `--corpus chunks`, or
 `--corpus both`, when the doctor's `stale_tasks` lists `chunk`; LCM never re-embeds
 automatically). Cloud providers also require `--confirm-raw-text` on every chunk or
-combined apply. Inspect the doctor's complete `remedy` and consent warning, then repeat
-the backfill apply until it reports `remaining: 0`. Under the explicit opt-out the
+combined apply. Inspect the doctor's complete `remedy` and consent warning.
+Repeat the backfill apply only while `remaining` is above 0 and each run lowers it.
+Stop on `status: partial`, `status: error`, or `status: failed`, or if `remaining`
+stops falling, and inspect the warnings, errors, and detail output. Under the explicit opt-out the
 pattern catalog is not part of the `privacy:off` identity, so catalog edits alone
 change nothing until you opt back in. Durable messages, summaries, FTS rows, and payloads are not
 rewritten by this provider boundary.
@@ -1194,8 +1196,10 @@ uses gross list price and does not subtract account-specific free tokens.
 
 Apply mode is safe to resume. Rows already embedded for the current registered
 profile are skipped by the discovery query, and a run that stops leaves its
-unwritten rows pending for the next invocation. Repeat the backfill apply until
-it reports `remaining: 0`. The command serializes apply
+unwritten rows pending for the next invocation. Repeat the backfill apply only
+while `remaining` is above 0 and each run lowers it. Stop on `status: partial`,
+`status: error`, or `status: failed`, or if `remaining` stops falling, and inspect
+the warnings, errors, and detail output. The command serializes apply
 runs with a single-flight claim; a crashed claim becomes eligible for takeover
 after 10 minutes. Provider calls occur before per-row SQLite writes, and each
 row is committed independently, so one malformed row does not roll back the
@@ -1233,8 +1237,10 @@ error/traceback content. The v0.23.1 cloud boundary transforms configured
 sensitive-pattern matches before transport, but it cannot classify every
 possible sensitive fact. When the provider is a cloud provider (e.g. Voyage),
 `--corpus chunks|both --apply` **refuses** unless you also pass
-`--confirm-raw-text` on every apply. Repeat the apply until it reports `remaining: 0`.
-FastEmbed is in-process and exempt. The shipped Ollama
+`--confirm-raw-text` on every apply. Repeat the backfill apply only while `remaining`
+is above 0 and each run lowers it. Stop on `status: partial`, `status: error`, or
+`status: failed`, or if `remaining` stops falling, and inspect the warnings, errors,
+and detail output. FastEmbed is in-process and exempt. The shipped Ollama
 provider is also exempt from the cloud gate, so use raw-chunk backfill only with
 a verified trusted local/loopback endpoint; #337 tracks endpoint-aware locality.
 Historical source remains unchanged; only provider input is transformed. See
