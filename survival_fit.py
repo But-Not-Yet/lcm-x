@@ -28,6 +28,7 @@ import hashlib
 import logging
 import re
 import time
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .host_uid import _valid_uid
@@ -82,6 +83,19 @@ def _host_estimate(messages) -> Optional[int]:
         return int(estimate_messages_tokens_rough(messages))
     except Exception:
         return None
+
+
+@dataclass(frozen=True)
+class FitPlan:
+    """A selected fit and the original prefix rows needed by its caller's apply step."""
+
+    fitted: List[Dict[str, Any]]
+    count: int
+    ids: List[int]
+    projected: bool
+    notice: str
+    emergency: bool
+    emergency_span: List[Dict[str, Any]]
 
 
 def survival_reserve_fraction(config: Any) -> float:
@@ -220,28 +234,9 @@ class SurvivalFitMixin:
         if cut is None:
             return result
         fitted, count, ids, projected, notice = cut
-        after = self._survival_measure(fitted)
-        if after >= before:  # nothing stored could leave: the list is already as small as it gets
-            logger.warning("LCM survival fit could not shorten the list (before=%d, budget=%d, reason=%s)",
-                           before, budget, reason)
-            self._survival_record(reason, 0, [], before, before, budget, False, "", shortened=False)
-            return result
-        if emergency and any(all(m is not row for m in fitted) for row in result[system:prefix]):
-            logger.warning("LCM survival fit dropped the summary prefix (emergency: prefix=%d tokens, budget=%d)",
-                           self._survival_measure(result[system:prefix]), budget)
-        if after_exception or not persisted:
-            self._ingest_cursor, self._ingest_cursor_needs_reconcile = 0, True
-        else:
-            self._ingest_cursor = len(fitted)
-        if after > budget:  # still the best list available: returned, but never reported as within budget
-            logger.warning("LCM survival fit could not reach budget (after=%d, budget=%d, reason=%s)", after, budget, reason)
-        self._survival_record(reason, count, ids, before, after, budget, projected, notice, warn_user=not exit_fit)
-        formed = getattr(self, "_survival_cut_carrier", None)
-        if formed is not None:  # #1000: the re-formed carrier is LCM's emission, as assembly registers its own;
-            merged, span, store_id = formed  # the proof finalizes it apart from the pending candidates (output order)
-            self._survival_fit_emission = {"kind": "carrier", "span": span, "retained_source": {"store_id": store_id},
-                                           "full_identity": _emission_identity(merged), "row": merged}
-        return fitted
+        plan = FitPlan(fitted, count, ids, projected, notice, emergency, result[system:prefix])
+        return self._apply_survival_fit(result, plan, before, budget, reason,
+                                        after_exception=after_exception, persisted=persisted, exit_fit=exit_fit)
 
     def _survival_summary_identity(self, row: dict, summary: str, uid, proof_kind: str, absorbed_from=None, taken=()) -> dict:
         """The survival summary part (B1's gate): the carrier's engine uid, else a minted ``survival_summary``
@@ -589,3 +584,31 @@ class SurvivalFitMixin:
         if not pending or pending[0] != str(self._conversation_id or self._session_id or ""):
             return None  # R6-4: another conversation's warning is never delivered here
         return pending[1]
+
+    def _apply_survival_fit(self, result, plan: FitPlan, before: int, budget: int, reason: str, *,
+                            after_exception: bool, persisted: bool, exit_fit: bool):
+        """Apply the selected fit's diagnostics, cursor updates and carrier registration."""
+        fitted, count, ids, projected, notice = plan.fitted, plan.count, plan.ids, plan.projected, plan.notice
+        emergency = plan.emergency
+        after = self._survival_measure(fitted)
+        if after >= before:  # nothing stored could leave: the list is already as small as it gets
+            logger.warning("LCM survival fit could not shorten the list (before=%d, budget=%d, reason=%s)",
+                           before, budget, reason)
+            self._survival_record(reason, 0, [], before, before, budget, False, "", shortened=False)
+            return result
+        if emergency and any(all(m is not row for m in fitted) for row in plan.emergency_span):
+            logger.warning("LCM survival fit dropped the summary prefix (emergency: prefix=%d tokens, budget=%d)",
+                           self._survival_measure(plan.emergency_span), budget)
+        if after_exception or not persisted:
+            self._ingest_cursor, self._ingest_cursor_needs_reconcile = 0, True
+        else:
+            self._ingest_cursor = len(fitted)
+        if after > budget:  # still the best list available: returned, but never reported as within budget
+            logger.warning("LCM survival fit could not reach budget (after=%d, budget=%d, reason=%s)", after, budget, reason)
+        self._survival_record(reason, count, ids, before, after, budget, projected, notice, warn_user=not exit_fit)
+        formed = getattr(self, "_survival_cut_carrier", None)
+        if formed is not None:  # #1000: the re-formed carrier is LCM's emission, as assembly registers its own;
+            merged, span, store_id = formed  # the proof finalizes it apart from the pending candidates (output order)
+            self._survival_fit_emission = {"kind": "carrier", "span": span, "retained_source": {"store_id": store_id},
+                                           "full_identity": _emission_identity(merged), "row": merged}
+        return fitted
