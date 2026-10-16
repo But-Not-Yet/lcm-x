@@ -1,7 +1,7 @@
 # Refactor window
 
 Structural refactors land in a protected window between a GA tag and the next rc1, so the next release gauntlet covers them.
-After the v0.27.0 GA the window is 5 working days, before v0.28 feature work.
+After the v0.27.0 GA the window is 5 working days, before v0.29 feature work.
 
 ## What may land in the window
 - PRs labelled `refactor-only`: one move or one extraction each, with no behaviour change.
@@ -24,12 +24,12 @@ After the v0.27.0 GA the window is 5 working days, before v0.28 feature work.
 9. **Name the invariants.** The PR body lists the IDs from [docs/invariants.md](../invariants.md) that the moved code serves,
    and the characterization tests that pin them.
 
-## Order for the first window (v0.27.0 GA → v0.27.1 rc1 / v0.28)
+## Order for the first window (v0.27.0 GA → v0.28.0 rc1 / v0.29)
 1. Bypassed-child parent-state proof and rebind equivalence (tests) — they gate every per-compress state-lifetime change.
 2. Verified footgun fixes (each with its probe flipping from xfail to pass).
 3. Survival-fit projection codec extraction, after the survival contract and projection replay tests. survival_fit.py has the
    fewest open PRs touching it of the turn-path modules.
 4. Assembly planner extractions (`select_prefix`, `select_tail`) only after the queued engine.py PRs have merged.
 
-Background compaction (#787) default-on is planned for v0.30.0. Its slice 1 (default off) merges in the v0.27.1 queue. Per-call
+Background compaction (#787) default-on is planned for v0.31.0. Its slice 1 (default off) merges in the v0.28.0 queue. Per-call
 compaction-state refactors are not accelerated for it, and compaction.py refactors rebase after it.
