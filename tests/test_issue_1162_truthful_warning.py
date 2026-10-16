@@ -6,6 +6,7 @@ import pytest
 import hermes_lcm.escalation as escalation
 import hermes_lcm.survival_fit as survival
 from hermes_lcm.command import handle_lcm_command
+from hermes_lcm.dag import SummaryNode
 from hermes_lcm.lifecycle_state import LifecyclePublicationConflictError
 from hermes_lcm.tools import lcm_doctor, lcm_grep, lcm_load_session, lcm_status
 from tests import test_issue_581_582_store_complete_survival as fit
@@ -96,6 +97,9 @@ def test_regression_tool_doctor_cause(no_call):
     assert check["detail"]["last_cause"] == engine._last_compression_noop_reason
     guidance = next(item for item in report["guidance"] if item["check"] == "survival_fit")
     assert engine._last_compression_noop_reason in guidance["rationale"]
+    assert "could not publish" not in guidance["rationale"]
+    assert report["overall"] == "warnings"
+    assert "status: action-recommended" in handle_lcm_command("doctor", engine)
 
 
 def test_control_fitted_rows_remain_retrievable(no_call):
@@ -160,12 +164,166 @@ def test_control_publication_reason_is_unchanged(publication):
     assert publication._last_survival_fit["reason"] == counter["last_reason"] == "publication_invariant_conflict"
 
 
-@pytest.mark.parametrize("reason", ["sanitized", "compacted", "unknown", "sqlite_publication_locked",
-                                  "lifecycle_binding_changed", "exception:TimeoutError"])
-def test_regression_unproven_reason_is_neutral(tmp_path, reason):
+@pytest.mark.parametrize("reason", ["sqlite_publication_locked", "lifecycle_binding_changed",
+                                  "publication_invariant_conflict"])
+def test_regression_unproven_reason_is_neutral(tmp_path, monkeypatch, host_estimator, reason):
+    engine = fit._engine(tmp_path, context_length=fit.WINDOW)
+    monkeypatch.setattr(escalation, "_invoke_summary_llm", lambda *a, **k: "")
+
+    def publication_stop(messages, **kwargs):
+        # The pass attempted a call that failed, then hit a publication stop.
+        budget = engine._foreground_call_budget()
+        escalation._invoke_summary_llm_chain("source", 10, budget=budget)
+        monkeypatch.setattr(escalation, "_invoke_summary_llm", _timeout)
+        escalation._invoke_summary_llm_chain("source", 10, budget=budget)
+        engine._last_compression_status = "noop"
+        engine._survival_fit_reason = reason
+        return messages
+
+    monkeypatch.setattr(engine, "_compress_impl", publication_stop)
+    try:
+        view = fit._long_view()
+        engine.ingest(view)
+        engine.compress(view, current_tokens=host_estimator(view))
+        record = engine._last_survival_fit
+        assert record["reason"] == reason
+        assert "cause" not in record
+        assert engine._survival_fit_pending_warning[1] == FITTED.format(n=record["dropped_rows"])
+    finally:
+        engine.shutdown()
+
+
+def _timeout(*args, **kwargs):
+    raise TimeoutError("synthetic summary timeout")
+
+
+@pytest.mark.parametrize("sweep", [False, True])
+def test_second_compaction_timeout(tmp_path, monkeypatch, host_estimator, sweep):
+    engine = fit._engine(tmp_path, context_length=fit.WINDOW,
+                         threshold_full_sweep_enabled=sweep, l3_truncate_tokens=1)
+    failing = False
+    calls = []
+
+    def summarize(*args, **kwargs):
+        calls.append(failing)
+        if failing:
+            return _timeout()
+        return "Earlier turns.\nExpand for details about: turns"
+
+    monkeypatch.setattr(escalation, "_invoke_summary_llm", summarize)
+    try:
+        view = fit._long_view(turns=6)
+        engine.ingest(view)
+        first = engine.compress(view, current_tokens=host_estimator(view))
+        engine._survival_fit_warned.clear()
+        engine._survival_fit_pending_warning = engine._last_survival_fit = None
+        engine._no_progress_hold = None
+        engine._sweep_budget_hold_until = 0
+        engine.note_turn_complete()
+        extra = [row for i in range(6, 30) for row in fit._turn(f"L{i}", 10.0 * i, tool=i % 3 == 0)]
+        failing = True
+        view = [*first, *extra]
+        engine.compress(view, current_tokens=host_estimator(view))
+        assert False in calls and True in calls
+        assert engine._last_compression_status in {"sanitized", "compacted"}
+        assert engine._survival_fit_pending_warning[1] == FAILED.format(
+            n=engine._last_survival_fit["dropped_rows"])
+        assert engine._last_survival_fit["cause"] == "summary call failed: TimeoutError"
+    finally:
+        engine.shutdown()
+
+
+def test_primary_timeout_then_fallback_rejection(tmp_path, monkeypatch, host_estimator):
+    engine = fit._engine(tmp_path, context_length=fit.WINDOW, summary_fallback_models=["fb"])
+    calls = []
+
+    def summarize(*args, model="", **kwargs):
+        calls.append(model)
+        return "" if model == "fb" else _timeout()
+
+    monkeypatch.setattr(escalation, "_invoke_summary_llm", summarize)
+    try:
+        view = fit._long_view()
+        engine.ingest(view)
+        engine.compress(view, current_tokens=host_estimator(view))
+        assert "" in calls and "fb" in calls
+        assert escalation._summary_call.error is None
+        assert engine._survival_fit_pending_warning[1] == FAILED.format(
+            n=engine._last_survival_fit["dropped_rows"])
+        assert engine._last_survival_fit["cause"] == "summary call failed: TimeoutError"
+    finally:
+        engine.shutdown()
+
+
+@pytest.mark.parametrize("status,mode", [("sanitized", "normal"), ("compacted", "normal"),
+                         ("overflow_recovery", "recovery"), ("error", "normal"),
+                         ("exception:RuntimeError", "normal"), ("noop", "exit")])
+def test_pass_failure_inheritance(tmp_path, monkeypatch, host_estimator, status, mode):
+    engine = fit._engine(tmp_path, context_length=100_000 if mode == "exit" else fit.WINDOW)
+    monkeypatch.setattr(escalation, "_invoke_summary_llm", _timeout)
+
+    def stopped(messages, **kwargs):
+        escalation._invoke_summary_llm_chain("source", 10, budget=engine._foreground_call_budget())
+        # A later successful attempt must not erase the pass failure either.
+        monkeypatch.setattr(escalation, "_invoke_summary_llm", lambda *a, **k: "usable summary")
+        escalation._invoke_summary_llm_chain("source", 10, budget=engine._foreground_call_budget())
+        engine._foreground_budget = None  # another thread clearing the engine-wide budget is irrelevant
+        if status.startswith("exception:"):
+            raise RuntimeError("synthetic compaction exception")
+        engine._last_compression_status = status
+        return messages
+
+    monkeypatch.setattr(engine, "_compress_impl", stopped)
+    try:
+        view = fit._long_view()
+        engine.ingest(view)
+        if mode == "exit":
+            ids = [r["store_id"] for r in fit._rows(engine)]
+            engine._dag.add_node(SummaryNode(session_id="S", summary="Earlier turns", source_ids=ids))
+            engine.threshold_tokens = host_estimator(view) // 2
+        engine.compress(view, current_tokens=host_estimator(view), bypass_cooldown=mode == "recovery")
+        record = engine._last_survival_fit
+        prefix = {"normal": "", "recovery": "recovery_attempt:", "exit": "exit_fit:"}[mode]
+        assert record["reason"] == prefix + status
+        assert record["cause"] == "summary call failed: TimeoutError"
+        assert engine._store.read_metadata_json(survival.SURVIVAL_FIT_COUNTER_KEY)["last_cause"] == record["cause"]
+        if mode == "exit":
+            assert engine._survival_fit_pending_warning is None
+        else:
+            assert engine._survival_fit_pending_warning[1] == FAILED.format(n=record["dropped_rows"])
+    finally:
+        engine.shutdown()
+
+
+@pytest.mark.parametrize("boundary", ["reset", "start", "rollover"])
+def test_status_drops_previous_session_fit(no_call, boundary):
+    engine, _, _ = no_call
+    assert json.loads(lcm_status({}, engine=engine))["last_survival_fit"] is not None
+    if boundary == "reset":
+        engine.on_session_reset()
+    elif boundary == "start":
+        engine.on_session_start("S2", conversation_id="conv2")
+    else:
+        engine.rollover_session("S", "S2", previous_messages=[], context_length=20_000)
+    assert json.loads(lcm_status({}, engine=engine))["last_survival_fit"] is None
+
+
+@pytest.mark.parametrize("record,expected", [({"count": 0, "projected_count": 0}, False),
+                         ({"count": 0}, False), ({"count": 1, "projected_count": 0}, True),
+                         ({"count": 0, "count_lost": True}, True),
+                         ({"count": 0, "projected_count": 1}, True), ({"count": "damaged"}, True)])
+def test_doctor_surfaces_agree(tmp_path, record, expected):
     engine = retained._engine(tmp_path, False)
     try:
-        engine._survival_record(reason, 1, [], 900, 500, 600, False, "")
-        assert engine._survival_fit_pending_warning[1] == FITTED.format(n=1)
+        engine.ingest([{"role": "user", "content": "ordinary stored turn"}])
+        baseline_command_status = handle_lcm_command("doctor", engine).splitlines()[1]
+        baseline_tool_status = json.loads(lcm_doctor({}, engine=engine))["overall"]
+        engine._store.write_metadata_json([survival.SURVIVAL_FIT_COUNTER_KEY], json.dumps(record))
+        command = handle_lcm_command("doctor", engine)
+        tool = json.loads(lcm_doctor({}, engine=engine))
+        assert any(c["check"] == "survival_fit" for c in tool["checks"]) == expected
+        assert ("survival_fit: applied" in command) == expected
+        assert tool["overall"] == ("warnings" if expected else baseline_tool_status)
+        assert command.splitlines()[1] == ("status: action-recommended" if expected else baseline_command_status)
     finally:
         engine.shutdown()

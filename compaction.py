@@ -614,6 +614,8 @@ class CompactionMixin:
                 result = messages
             reason = self._survival_fit_reason or str(self._last_compression_status or "unknown")
             result = self._survival_fit(messages, result, current_tokens,
+                                        summary_failure=budget.summary_failure if not self._survival_fit_reason else "",
+                                        fit_cause=self._last_compression_noop_reason if not self._survival_fit_reason else "",
                                         **self._survival_fit_args(messages, current_tokens, reason, bypass_cooldown,
                                                                   automatic=not force and not self._compress_forced_overflow
                                                                   and self._last_compression_status != "error"))
@@ -651,6 +653,7 @@ class CompactionMixin:
                     self._store.rollback_pending_write()
                     reason = f"exception:{type(exc).__name__}"
                     fitted = self._survival_fit(messages, messages, current_tokens, after_exception=True,
+                                                summary_failure=budget.summary_failure if not self._survival_fit_reason else "",
                                                 **self._survival_fit_args(messages, current_tokens, reason,
                                                                           bypass_cooldown))
                 except Exception:

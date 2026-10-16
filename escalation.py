@@ -208,6 +208,7 @@ class ForegroundBudget:
         self.leaves, self.first_call_started, self.last_call_ended = 0, None, None
         self.host = 0.0  # D5: seconds inside the host's native compressor (a bypassed session), not LCM work
         self.selected = False  # #1162: this compaction selected a leaf chunk (its zero-leaf pass counts)
+        self.summary_failure = ""  # #1162: sticky across every summary call/route in this pass
 
     @property
     def usable_deadline(self) -> float:
@@ -1055,6 +1056,8 @@ def _invoke_summary_llm_chain(
             _summary_call.stream_deadline = None
         route, error = dict(_summary_call.route or {}), _summary_call.error
         if budget is not None:
+            if error is not None:
+                budget.summary_failure = f"summary call failed: {type(error).__name__}"
             ended = time.monotonic()
             budget.record_call(route_key, started, ended)
             if result is None and _is_budget_cut(error, budget, budget_bound, ended - started, call_timeout,
