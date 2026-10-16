@@ -161,8 +161,9 @@ def test_host_commit_stores_each_foreground_row_once(
               f"duplicates={len(duplicates)} lost={len(lost)}")
         print(f"duplicate_rows={[(role, content.removesuffix(PAD)) for role, content in duplicates]}")
         print(boundary[0])
-        if not proof_intact and actual != expected:
-            raise ForegroundProofCleared("foreground rows changed after the commit proof was cleared")
+        # #1291's symptom is re-stored rows with none lost; a lost row is a new failure, not this one.
+        if not proof_intact and duplicates and not lost:
+            raise ForegroundProofCleared("foreground rows were stored again after the commit proof was cleared")
         assert actual == expected
         assert not duplicates and not lost
         assert rows_at_end == rows_after_adoption == len(original)
