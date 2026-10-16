@@ -18,6 +18,7 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 - Fix: deadline-guarded vector reads retain the pooled store's matrix caches, so repeated KNN calls reuse unchanged matrices. (#1206)
 - Fix: non-sweep admission uses the working leaf size, and oversized indivisible leaves retry with the existing 8,000-token input clip. Leaf target defaults remain fixed at 2,000 tokens; ratio-only settings pinned by equal MIN and MAX warn, and the min-only reset warning names `LCM_LEAF_TARGET_MAX_TOKENS`. (#1134, #1132, #1138)
 - Change: bounded session-end raw-flush warnings report the pre-attempt pending message count as `unflushed=N`, without message content; resume recovery and the never-resumed tail window are pinned by tests. No retry or timeout change. (#1160)
+- Fix: a stub-first exit (#671) that the host adopts now writes the durable commit proof for the list it returns, so a cold rebind (gateway restart, resume) no longer stores the summary head as a new raw row and then stops every compaction on "leaf would end before an unresolved retained occurrence". The exit no longer gives a carrier head (summary plus the first user row) a second copy of the summary prefix. On the upgrade restart, a store that already holds a proof left stale this way reconciles as a store with no proof does, for the LCM-emitted head only. A store that an earlier cold bind already wedged is not repaired. (#1116, #671)
 
 ## v0.27.0 (summary quality)
 

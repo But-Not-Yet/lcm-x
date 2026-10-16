@@ -737,6 +737,7 @@ class LCMEngine(
         # #671: the latest stub-first exit (tokens before/after, target, backlog rows) and this compress()'s.
         self._last_stub_first_exit: Optional[dict[str, int]] = None
         self._stub_first_exit_now: Optional[dict[str, int]] = None
+        self._compress_calls = 0  # #1116: which compress() a stub-first proof came from
         self._last_compression_status = "idle"
         self._last_compression_noop_reason = ""
         # Ingest-failure tracking. The core promise is that nothing is ever
@@ -3527,6 +3528,17 @@ class LCMEngine(
         self._apply_session_start_metadata(session_id, kwargs)
         self._last_compacted_store_id = int(state.current_frontier_store_id or 0)
         proof = self._compress_commit_proof
+        if (
+            proof
+            and proof.get("stub_first")
+            and proof.get("stub_first_compress_call") == self._compress_calls  # the call whose list was committed
+            and proof.get("session_id") == session_id
+            and proof.get("conversation_id") == self._conversation_id
+            and not (proof.get("published") or proof.get("native") or proof.get("recovery") or proof.get("filtered"))
+        ):
+            # #1116: Hermes fires this boundary only after it committed the compression, so the stub-first list
+            # compress() handed it is the host's now: its proof becomes durable, as the rotation re-key does.
+            self._persist_compress_commit_proof(proof, last_store_id=proof.get("stub_first_last_store_id"))
         cursor_proven = bool(
             proof
             and proof.get("session_id") == session_id
@@ -3896,7 +3908,7 @@ class LCMEngine(
                     emission["scope"] = {**(emission.get("scope") or {}), "session_id": session_id}
             commit_proof["input"] = None
             if (commit_proof.get("published") or commit_proof.get("native") or commit_proof.get("recovery")
-                    or commit_proof.get("filtered")):
+                    or commit_proof.get("filtered") or commit_proof.get("stub_first")):
                 self._persist_compress_commit_proof(commit_proof)
         elif can_reassign:
             # No transferred commit proof (proof creation failed, an end that
