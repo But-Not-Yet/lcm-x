@@ -72,7 +72,15 @@ DURABLE_URL = re.compile(
 def _durable_url(value: str) -> bool:
     if not DURABLE_URL.fullmatch(value):
         return False
-    return not any(part in {".", ".."} for part in unquote(urlsplit(value).path).split("/"))
+    path = urlsplit(value).path
+    for _ in range(3):  # nested encodings (%252e) decode in more than one pass
+        decoded = unquote(path)
+        if decoded == path:
+            break
+        path = decoded
+    else:
+        return False  # still changing after three passes: not a durable path
+    return not any(part in {".", ".."} for part in path.split("/"))
 
 
 class ScoreboardError(ValueError):

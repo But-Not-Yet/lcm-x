@@ -322,6 +322,8 @@ def test_sha_blob_accepts_line_anchor(tmp_path, suffix):
     "https://github.com/example/project/releases/download/v1/..",
     "https://github.com/./project/releases/download/v1/RESULT.md",
     "https://github.com/example/project/blob/" + "a" * 40 + "/%2e%2e/A.md",
+    "https://github.com/example/project/blob/" + "a" * 40 + "/%252e%252e/A.md",
+    "https://github.com/example/project/blob/" + "a" * 40 + "/%25252e%25252e/A.md",
 ])
 def test_durable_evidence_rejects_dot_segments(tmp_path, capsys, url):
     row = _row("dot-segments", date="2026-10-16")
