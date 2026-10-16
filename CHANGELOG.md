@@ -8,7 +8,7 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ### Deprecated
 
-- `LCM_CACHE_FRIENDLY_CONDENSATION_ENABLED` and `LCM_LARGE_OUTPUT_TRANSCRIPT_GC_ENABLED` are deprecated for v0.27.1 and will be removed in v0.28.0 (#1246). Enabling either adds one `config_source_warnings` entry shown by status and doctor; behavior is unchanged until removal.
+- `LCM_CACHE_FRIENDLY_CONDENSATION_ENABLED` and `LCM_LARGE_OUTPUT_TRANSCRIPT_GC_ENABLED` are deprecated in v0.28.0 and will be removed in v0.29.0 (#1246). Enabling either adds one `config_source_warnings` entry shown by `/lcm status`, `lcm_status` and the `lcm_doctor` configuration check; behavior is unchanged until removal.
 
 ## v0.27.0 (summary quality)
 
