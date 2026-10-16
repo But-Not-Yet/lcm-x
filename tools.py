@@ -8694,6 +8694,7 @@ def lcm_status(args: Dict[str, Any], **kwargs) -> str:
         "threshold_full_sweep": full_status.get("threshold_full_sweep"),
         "last_stub_first_exit": full_status.get("last_stub_first_exit"),
         "no_progress_hold": full_status.get("no_progress_hold"),
+        "zero_leaf_streak": full_status.get("zero_leaf_streak"),  # #1162
         "model": full_status.get("model", ""),
         "provider": full_status.get("provider", ""),
         "raw_context_length": full_status.get("raw_context_length", engine.context_length),
@@ -9189,6 +9190,14 @@ def lcm_doctor(args: Dict[str, Any], **kwargs) -> str:
             "status": "pass" if usage_pct < threshold_pct else "warn",
             "detail": f"{usage_pct}% used, compaction triggers at {threshold_pct}%",
         })
+
+    # 8. Compaction progress (#1162): consecutive over-threshold passes that stored no leaf
+    streak = engine._zero_leaf_streak_status() if hasattr(engine, "_zero_leaf_streak_status") else None
+    checks.append({
+        "check": "compaction_progress",
+        "status": "warn" if streak and streak.get("passes", 0) >= 3 else "pass",
+        "detail": streak or {"passes": 0},
+    })
 
     overall = "healthy"
     if any(ch["status"] == "fail" for ch in checks):
