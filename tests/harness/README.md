@@ -34,8 +34,9 @@ Migrate existing tests only when a PR already touches them; no bulk migration.
   including the sentinel prefix; a prefix that cannot fit raises `ValueError`.
 - `host_call(engine, view, *, retry_on_overflow=True)` ingests, counts, checks
   pressure as the host does (`should_compress`, then, below the threshold and unblocked,
-  `should_compress_preflight`), compresses, then retries once with cooldown bypass on
-  window overflow.
+  `should_compress_preflight`), skips the automatic compress when the engine type's
+  `_automatic_compression_blocked` gate holds it (a no-progress or sweep hold, as the host's
+  breaker gate does), compresses, then retries once with cooldown bypass on window overflow.
   It returns `HostCall(view, sent_tokens, compressed, retried, overflow_failed)`;
   `compressed` means compression was invoked (possibly a no-op). Zero is an
   unknown window. Counts use the configured counter; pin it for offline tests.
