@@ -177,6 +177,10 @@ change.
    - **The four statements no test runs** need a targeted test before the slice that moves them: the descriptor clear on a
      rotation binding mismatch (3860), the bypassed-source boundary reset (4121-4122) and the reconcile-probe fallback (5278).
    - **Ordering.** These are the next exactly-once operations, or targeted seeds where an operation is not host-shaped.
+   - **Status (draft #1307).** All four never-run writes are now executed, and mutations of 3860, 4121 and 5278 fail. 4122
+     (`_last_compacted_store_id = 0` from a bypassed source) is a redundant write: `_bind_lifecycle_state` (engine.py:2442)
+     overwrites it with no reader in between. The slice that moves it carries it verbatim, with that argument in place of a test.
+     Removing it is a separate, reviewed decision.
 
 ## 8. Not in scope
 
