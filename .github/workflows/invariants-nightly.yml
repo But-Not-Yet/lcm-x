@@ -10,10 +10,80 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  # One job per state machine (TestCase class) and per file of plain tests, so each stays far below the job timeout as
+  # machines are added. The shard list is collected, so a new machine gets its own job without editing this file.
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      shards: ${{ steps.collect.outputs.shards }}
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+      HERMES_DISABLE_LAZY_INSTALLS: "1"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with: {python-version: "3.12"}
+      - run: pip install pytest numpy hypothesis==6.141.1
+      # keep identical to ci.yml's stub step
+      - name: Stub hermes-agent ABC
+        run: |
+          mkdir -p agent
+          cat > agent/__init__.py <<'STUB'
+          STUB
+          cat > agent/context_engine.py <<'STUB'
+          """Minimal stub of hermes-agent ContextEngine ABC for CI."""
+          class ContextEngine:
+              """Base class stub — just enough for LCMEngine to import."""
+              def __init__(self, **kwargs):
+                  self.compression_count = 0
+                  self.last_prompt_tokens = 0
+              def compress(self, messages, current_tokens=None, **kwargs):
+                  raise NotImplementedError
+              def on_session_start(self, session_id, **kwargs):
+                  pass
+              def on_session_end(self, **kwargs):
+                  pass
+              def on_session_reset(self):
+                  self.compression_count = 0
+                  self.last_prompt_tokens = 0
+              def get_tool_schemas(self):
+                  return []
+              def handle_tool_call(self, name, args, **kwargs):
+                  raise NotImplementedError
+              def get_status(self):
+                  return {}
+          STUB
+
+      - name: Collect shards
+        id: collect
+        run: |
+          python -m pytest tests/invariants --co -q -p no:randomly > "$RUNNER_TEMP/collect.txt"
+          python3 - "$RUNNER_TEMP/collect.txt" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          shards = []
+          for line in open(sys.argv[1]):
+              parts = line.strip().split("::")
+              at = parts[0].find("tests/invariants/")
+              if len(parts) < 2 or at < 0:
+                  continue
+              parts[0] = parts[0][at:]  # node ids may carry a rootdir prefix
+              key = "::".join(parts[:2]) if parts[1][:1].isupper() else parts[0]
+              if key not in shards:
+                  shards.append(key)
+          assert shards, "no invariant tests collected"
+          print("shards=" + json.dumps(shards))
+          PY
   invariants:
+    needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 30
     continue-on-error: ${{ github.event_name == 'pull_request' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     env:
       PYTHONPATH: ${{ github.workspace }}
       HERMES_DISABLE_LAZY_INSTALLS: "1"
@@ -54,13 +124,15 @@ jobs:
           STUB
 
       - name: Run nightly invariants
+        env:
+          SHARD: ${{ matrix.shard }}
         run: |
           set +e
-          LCM_HYPOTHESIS_PROFILE=nightly python -m pytest tests/invariants -q -rx -p no:randomly 2>&1 | tee "$RUNNER_TEMP/invariants-pytest.log"
+          LCM_HYPOTHESIS_PROFILE=nightly python -m pytest "$SHARD" -q -rx -p no:randomly 2>&1 | tee "$RUNNER_TEMP/invariants-pytest.log"
           result=${PIPESTATUS[0]}
-          { tail -n 1 "$RUNNER_TEMP/invariants-pytest.log"; echo "pytest exit code: $result"; } >> "$GITHUB_STEP_SUMMARY"
+          { echo "$SHARD"; tail -n 1 "$RUNNER_TEMP/invariants-pytest.log"; echo "pytest exit code: $result"; } >> "$GITHUB_STEP_SUMMARY"
           exit "$result"
       - name: Preserve Hypothesis examples on failure
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with: {name: invariants-hypothesis, path: .hypothesis, include-hidden-files: true}
+        with: {name: "invariants-hypothesis-${{ strategy.job-index }}", path: .hypothesis, include-hidden-files: true}
