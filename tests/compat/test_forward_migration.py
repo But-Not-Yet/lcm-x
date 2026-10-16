@@ -13,7 +13,8 @@ from tests.compat.helpers import config_for, run_old
 DIGEST = r'''
 import hashlib as _hashlib
 def message_digest(rows):
-    fields = [(r.get("role"), r.get("content"), r.get("tool_call_id"), r.get("observed_at")) for r in rows]
+    fields = [(r.get("role"), r.get("content"), r.get("tool_call_id"), r.get("tool_calls"), r.get("tool_name"),
+               r.get("observed_at")) for r in rows]
     return _hashlib.sha256(json.dumps(fields, sort_keys=True, default=str).encode()).hexdigest()
 '''
 
