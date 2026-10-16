@@ -134,3 +134,33 @@ def test_status_router_uses_command_patch(tmp_path: Path, monkeypatch: pytest.Mo
     engine = status_engine(tmp_path, "bound", monkeypatch)
     monkeypatch.setattr(command, "_status_text", lambda value: "patched status")
     assert command.handle_lcm_command("status", engine) == "patched status"
+
+
+def test_status_reexports_point_to_extracted_module() -> None:
+    from hermes_lcm import command_status
+
+    assert command._status_text is command_status._status_text
+    assert command._embedding_maintenance_status_lines is command_status._embedding_maintenance_status_lines
+
+
+def test_render_status_needs_no_live_reads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from hermes_lcm.command_status import collect_status, render_status
+
+    engine = status_engine(tmp_path, "rotation", monkeypatch)
+    engine._config.embeddings_enabled = True
+    monkeypatch.setattr(command, "_embedding_maintenance_status_lines", lambda value: ["embedding snapshot"])
+    facts = collect_status(engine)
+    expected = render_status(facts)
+    engine.__dict__.clear()
+
+    def unexpected_read(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("rendering must only read collected facts")
+
+    with monkeypatch.context() as patch:
+        for name in ("stem_index_status", "sensitive_pattern_status", "_embedding_maintenance_status_lines"):
+            patch.setattr(command, name, unexpected_read)
+        patch.setattr(Path, "exists", unexpected_read)
+        patch.setattr(Path, "stat", unexpected_read)
+        assert render_status(facts) == expected
+        assert render_status(facts) == expected
+    assert expected.endswith("\nembedding snapshot")
