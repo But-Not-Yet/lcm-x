@@ -141,6 +141,8 @@ from .reconcile import _COMPACTION_COMMIT_PROOF_METADATA_PREFIX, ReconcileMixin,
 from .reconcile import _emission_identity
 from .reconcile import _has_lossy_redacted_identity, _merge_append_cut, _proof_user_identity
 from .compaction import CompactionMixin
+from .compaction_request import CompactionRequest
+from .compress_run import CompressRun
 from .identity_anchor import IdentityAnchorMixin, _raw_remainder, identity_anchor_enabled
 from .host_uid import HostUidShadowMixin
 from .host_uid_emit import carry_identity, identity_emit_enabled, record_absorbed_message, sync_cached_host_metadata
@@ -771,25 +773,16 @@ class LCMEngine(
         self._last_compress_leaves: Optional[tuple[str, int]] = None  # #597: latest call, bound conversation
         self._last_hidden_backlog: Optional[HiddenBacklog] = None  # #597: latest check in this compress()
         self._hidden_backlog_unknown_warned: set[str] = set()
-        # #618: one-shot from compress(): a hold is active at the survival ceiling, so the pass only fits.
-        self._hold_fit_only_requested = False
+        self._compaction_request = CompactionRequest()
         self._no_progress_candidate = False  # set by _compress_impl for compress()
         self._objective_only_noop = False
         self._compress_dropped_ignored_rows = False  # #1013: this compress() dropped ignored rows
         self._last_gate_tokens = 0  # the latest should_compress/preflight observation
-        # #651 one-shot handoff: preflight asked for maintenance below the host
-        # threshold, so the automatic compress() that follows is cleanup-only.
-        self._preflight_below_threshold_cleanup_only = False
-        # #677 one-shot: any preflight request; compress() makes it cleanup-only below the host's count.
-        self._preflight_automatic_request = False
-        # One-shot handoff from preflight: adopt an already-durable replay
-        # cleanup during boundary cooldown without running summary work.
-        self._preflight_cleanup_only_due_to_boundary_cooldown = False
         # Temporary source window used only while compress() assembles context.
         # _assemble_context also serves tests and recovery paths directly, so
         # keep anchoring opt-in rather than changing its public behavior.
         self._pending_context_anchor_messages: Optional[List[Dict[str, Any]]] = None
-        self._current_compress_store_ids_by_message_id: dict[int, int] = {}
+        self._compress_run = CompressRun()
         self._current_compress_placeholder_identity_counts: dict[tuple[str, str, str, str], int] = {}
         self._last_active_replay_source_identities: list[tuple[Any, ...]] = []
         self._last_active_replay_messages: list[Dict[str, Any]] = []
@@ -1271,6 +1264,47 @@ class LCMEngine(
         """Whether the most recent compression/preflight decision was a no-op."""
         return self.last_compression_status == "noop"
 
+    # Compatibility views for existing tests and parent-state snapshots.
+    @property
+    def _current_compress_store_ids_by_message_id(self) -> dict[int, int]:
+        return self._compress_run.store_ids_by_message_id
+
+    @_current_compress_store_ids_by_message_id.setter
+    def _current_compress_store_ids_by_message_id(self, value: dict[int, int]) -> None:
+        self._compress_run.store_ids_by_message_id = value
+
+    @property
+    def _preflight_cleanup_only_due_to_boundary_cooldown(self) -> bool:
+        return self._compaction_request.cleanup_only_due_to_boundary_cooldown
+
+    @_preflight_cleanup_only_due_to_boundary_cooldown.setter
+    def _preflight_cleanup_only_due_to_boundary_cooldown(self, value: bool) -> None:
+        self._compaction_request.cleanup_only_due_to_boundary_cooldown = value
+
+    @property
+    def _preflight_below_threshold_cleanup_only(self) -> bool:
+        return self._compaction_request.below_threshold_cleanup_only
+
+    @_preflight_below_threshold_cleanup_only.setter
+    def _preflight_below_threshold_cleanup_only(self, value: bool) -> None:
+        self._compaction_request.below_threshold_cleanup_only = value
+
+    @property
+    def _preflight_automatic_request(self) -> bool:
+        return self._compaction_request.automatic_request
+
+    @_preflight_automatic_request.setter
+    def _preflight_automatic_request(self, value: bool) -> None:
+        self._compaction_request.automatic_request = value
+
+    @property
+    def _hold_fit_only_requested(self) -> bool:
+        return self._compaction_request.hold_fit_only_requested
+
+    @_hold_fit_only_requested.setter
+    def _hold_fit_only_requested(self, value: bool) -> None:
+        self._compaction_request.hold_fit_only_requested = value
+
     def _mark_preflight_compression_requested(
         self,
         *,
@@ -1288,7 +1322,7 @@ class LCMEngine(
         """
         self._last_compression_status = "pending"
         self._last_compression_noop_reason = ""
-        self._preflight_automatic_request = True
+        self._compaction_request.automatic_request = True
         if not depends_on_pressure_yield:
             self._pressure_yield_invocation_verdict = "clear"
         return True
@@ -1774,7 +1808,7 @@ class LCMEngine(
         (``ignore_cooldown``), a pending below-threshold cleanup-only pass, forced overflow and the survival
         ceiling are never blocked; the hold governs LCM-managed compaction only, never a bypassed session.
         #625: the #608 sweep hold blocks the same way."""
-        if ignore_cooldown or self._preflight_below_threshold_cleanup_only:
+        if ignore_cooldown or self._compaction_request.below_threshold_cleanup_only:
             return False
         tokens = max(int(self.last_prompt_tokens or 0), self._last_gate_tokens)
         return self._no_progress_hold_blocks(tokens) or self._sweep_budget_hold_blocks(tokens)
@@ -5307,7 +5341,7 @@ class LCMEngine(
         has_externalized_placeholder = self._content_has_externalized_placeholder_ref(content)
         mapped_from_active_placeholder = False
         if store_id is None:
-            store_id = self._current_compress_store_ids_by_message_id.get(id(msg))
+            store_id = self._compress_run.store_ids_by_message_id.get(id(msg))
             mapped_from_active_placeholder = has_externalized_placeholder and store_id is not None
         if store_id is None:
             return False
@@ -5869,17 +5903,15 @@ class LCMEngine(
         scan_start = 0 if self._ingest_cursor_needs_reconcile else cursor
         ignored_original_messages = [False] * n
         if self._compiled_ignore_message_patterns:
-            previous_store_id_map = self._current_compress_store_ids_by_message_id
-            self._current_compress_store_ids_by_message_id = self._get_store_id_map_for_messages(messages)
-            try:
+            store_id_scope = self._compress_run.preserve_store_ids()
+            self._compress_run.store_ids_by_message_id = self._get_store_id_map_for_messages(messages)
+            with store_id_scope:
                 for idx in range(scan_start, n):
                     mapped_ignore = self._mapped_stored_row_matches_ignore_message_patterns(messages[idx])
                     ignored_original_messages[idx] = (
                         self._matches_ignore_message_patterns(messages[idx])
                         or mapped_ignore
                     )
-            finally:
-                self._current_compress_store_ids_by_message_id = previous_store_id_map
         externalize_messages = [False] * n
         prefer_existing_externalized = [False] * n
         for idx in range(scan_start, n):
