@@ -445,3 +445,18 @@ def test_f1244r_projection_verifies_marked_head_and_tail(head, tail, tampered):
     cand["out"][0]["content"] = "wrong" + content if tampered else content
     failures = compare(case, ga, cand)
     assert [row["oracle"] for row in failures] == (["P_USER_ROWS"] if tampered else [])
+
+
+@pytest.mark.parametrize("marked", [False, True])
+def test_f1244r_user_token_evidence_survives_removed_timestamps(marked):
+    import re
+    from types import SimpleNamespace
+    from .driver import user_row_evidence
+    source = dict(role="user", content="⟦rsource.0⟧ request", timestamp=10.0)
+    content = ("[LCM survival fit: this user message (80 tokens) is stored verbatim as store id 1; "
+               "lcm_expand / lcm_grep reach the full text. (projection 1200/600)]") if marked else source["content"]
+    view = [dict(role="user", content=content)]
+    pattern = re.compile(r"this (user) message \((\d+) tokens\).*store id (\d+);")
+    store = SimpleNamespace(get=lambda sid: source if sid == 1 else None)
+    evidence = user_row_evidence(view, [source], lambda row: len(row["content"]), lambda text: text, pattern, store)
+    assert evidence == {"0": dict(tokens=len(content), marked=marked, preserved=not marked)}

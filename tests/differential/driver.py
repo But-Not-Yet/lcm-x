@@ -68,6 +68,33 @@ def pair_errors(rows):
     return errors + [f"missing-result:{cid}" for cid in sorted(calls - results)]
 
 
+def user_row_evidence(view, original, count_tokens, normalize, mark_re, store):
+    """Bind user token counts to input row sentinels, even when a mark hides them."""
+    by_tag = {}
+    for row in view:
+        if row.get("role") != "user":
+            continue
+        text = normalize(row.get("content")) or ""
+        match = mark_re.search(text) if mark_re is not None else None
+        stored = store.get(int(match[3])) if match is not None and match[1] == "user" else None
+        for tag in census(row) + (census(stored) if stored and stored["role"] == "user" else []):
+            if tag.startswith("⟦r"):
+                by_tag[tag] = (row, stored, match)
+    evidence = {}
+    for i, source in enumerate(original):
+        if source.get("role") != "user":
+            continue
+        found = next((by_tag[tag] for tag in census(source) if tag.startswith("⟦r") and tag in by_tag), None)
+        if found is None:
+            continue
+        row, stored, match = found
+        marked = bool(stored and stored["role"] == "user"
+                      and normalize(stored.get("content")) == normalize(source.get("content")))
+        evidence[str(i)] = dict(tokens=count_tokens(row), marked=marked,
+                                preserved=row.get("content") == source.get("content") and match is None)
+    return evidence
+
+
 def load_tree(tree):
     spec = importlib.util.spec_from_file_location("hermes_lcm", tree / "__init__.py", submodule_search_locations=[str(tree)])
     sys.modules["hermes_lcm"] = importlib.util.module_from_spec(spec)
@@ -157,23 +184,7 @@ def run_case(case, modules, directory, initial_missing, baseline_config="bare"):
                 and mark_re.fullmatch(normalize(row.get("content")) or "")]
 
     def user_rows(view, original):
-        """Stable synthetic timestamps bind row-token evidence across both trees."""
-        by_stamp = {row.get("timestamp"): row for row in view if row.get("role") == "user"}
-        evidence = {}
-        for i, source in enumerate(original):
-            if source.get("role") != "user":
-                continue
-            row = by_stamp.get(source.get("timestamp"))
-            if row is None:
-                continue
-            text = normalize(row.get("content")) or ""
-            match = mark_re.search(text) if mark_re is not None else None
-            stored = engine._store.get(int(match[3])) if match is not None and match[1] == "user" else None
-            marked = bool(stored and stored["role"] == "user"
-                          and normalize(stored.get("content")) == normalize(source.get("content")))
-            evidence[str(i)] = dict(tokens=tokens.count_message_tokens(row), marked=marked,
-                                    preserved=row.get("content") == source.get("content") and match is None)
-        return evidence
+        return user_row_evidence(view, original, tokens.count_message_tokens, normalize, mark_re, engine._store)
 
     try:
         if case["layer"] == "projection":
