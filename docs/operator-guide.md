@@ -352,7 +352,20 @@ run `lcm_status` or `/lcm status` again for live per-session fields.
 
 ## Configuration
 
+The [generated scalar environment reference](../skills/hermes-lcm/references/configuration.md#generated-scalar-environment-reference) lists every scalar registry key, type, declared default, diagnostic range/choice, and deprecation release. The tables below provide behavior and tuning guidance.
+
 Most installs only need `plugins.enabled` and `context.engine: lcm-x`.
+
+Malformed boolean, integer, or float values in the uniform `LCM_*` field loader
+keep the default and appear in `config_source_warnings` in `lcm_status` JSON,
+`/lcm status`, and the `lcm_doctor` configuration check. For example,
+`LCM_SURVIVAL_FIT=flase` keeps `true` and reports the key, a representation of the
+raw value limited to 40 characters, and the value used. Empty or whitespace-only
+values in that loader keep the default without a warning.
+Range warnings (`LCM_CONTEXT_THRESHOLD`, `LCM_SURVIVAL_RESERVE`, `LCM_LEAF_CHUNK_TOKENS`, `LCM_SUMMARY_TIMEOUT_MS`), choice warnings (`LCM_EMBEDDING_PROVIDER`, `LCM_PREANSWER_EVIDENCE_MODE`, `LCM_EMBEDDING_STORAGE_DTYPE`), and dropped-input warnings (`LCM_EMPTY_LIFECYCLE_GC_MAX_AGE_HOURS`, `LCM_RECALL_ARM_WEIGHTS`, `LCM_MODEL_THRESHOLDS`) use the same channel without changing values or consumer fallbacks.
+Two deprecated keys, `LCM_CACHE_FRIENDLY_CONDENSATION_ENABLED` and
+`LCM_LARGE_OUTPUT_TRANSCRIPT_GC_ENABLED`, add one deprecation warning on the same channel when
+enabled. Their behavior is unchanged until their removal in v0.29.0 (#1246).
 
 `compression.target_ratio` and the host's other built-in-compressor ratios belong
 to the host's built-in compressor and are not read by LCM-X. How much one LCM-X
@@ -394,7 +407,7 @@ Useful environment variables:
 | `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUBBING_ENABLED` | `true` | Replace token-heavy textual tool results with recoverable externalized refs in active replay; current-turn ingest is immediate and historical assembly respects the protected fresh tail; requires large-output externalization |
 | `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUB_THRESHOLD_TOKENS` | `10000` | First-sight threshold: a new tool result over this many tokens is stubbed at ingest |
 | `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUB_AGED_THRESHOLD_TOKENS` | `2000` | Aged tier: at a compaction, a tool result outside the fresh tail is stubbed from this many tokens (`0` = the first-sight threshold; never above it) |
-| `LCM_LARGE_OUTPUT_TRANSCRIPT_GC_ENABLED` | `false` | Rewrite already-externalized summarized tool rows to compact placeholders |
+| `LCM_LARGE_OUTPUT_TRANSCRIPT_GC_ENABLED` | `false` | Rewrite already-externalized summarized tool rows to compact placeholders; deprecated since v0.28.0, removed in v0.29.0 (#1246). Enabling it adds a config warning; behavior is unchanged until removal |
 | `LCM_CRITICAL_BUDGET_PRESSURE_RATIO` | `0.0` | Disabled at `0.0`; when set, permits critical-pressure bypasses for bounded deferred catch-up and cache-friendly follow-on condensation only |
 | `LCM_SURVIVAL_FIT` | `true` | When compaction cannot bring the returned list under the model window (a publication failure, a sweep deadline, a lock), drop the oldest whole user turns from live context until it fits; an oversized newest turn gets a bounded projection. Nothing is deleted: the rows stay stored and reachable with `lcm_grep` / `lcm_load_session`. Logs `LCM survival fit applied`, warns the user once, and `/lcm doctor` reports `survival_fit` |
 | `LCM_SURVIVAL_RESERVE` | `0.15` | Share of the model window the survival fit keeps free for the response and host overhead (the fit target is window x (1 - reserve), minus the observed host overhead) |
@@ -659,9 +672,15 @@ change keeps existing vectors ineligible until re-embedded. `lcm_recall` serves 
 hits with `degraded=true` and an `embedding_identity_stale:` reason; `lcm_grep` semantic
 mode falls back to full-text, and `lcm_doctor` warns. Backfill still refuses until a new
 warmup registers the profile (run
-`/lcm embed warmup` then `/lcm embed backfill --apply`; LCM never re-embeds
-automatically). Under the explicit opt-out the pattern catalog is not part of the
-`privacy:off` identity, so catalog edits alone change nothing until you opt back in. Durable messages, summaries, FTS rows, and payloads are not
+`/lcm embed warmup` then `/lcm embed backfill --apply`, adding `--corpus chunks`, or
+`--corpus both`, when the doctor's `stale_tasks` lists `chunk`; LCM never re-embeds
+automatically). Cloud providers also require `--confirm-raw-text` on every chunk or
+combined apply. Inspect the doctor's complete `remedy` and consent warning.
+Repeat the backfill apply only while `remaining` is above 0 and each run lowers it.
+Stop on `status: partial`, `status: error`, or `status: failed`, or if `remaining`
+stops falling, and inspect the warnings, errors, and detail output. Under the explicit opt-out the
+pattern catalog is not part of the `privacy:off` identity, so catalog edits alone
+change nothing until you opt back in. Durable messages, summaries, FTS rows, and payloads are not
 rewritten by this provider boundary.
 
 The cloud gate applies to provider identity `voyage`/`voyageai` and
@@ -1191,7 +1210,10 @@ uses gross list price and does not subtract account-specific free tokens.
 
 Apply mode is safe to resume. Rows already embedded for the current registered
 profile are skipped by the discovery query, and a run that stops leaves its
-unwritten rows pending for the next invocation. The command serializes apply
+unwritten rows pending for the next invocation. Repeat the backfill apply only
+while `remaining` is above 0 and each run lowers it. Stop on `status: partial`,
+`status: error`, or `status: failed`, or if `remaining` stops falling, and inspect
+the warnings, errors, and detail output. The command serializes apply
 runs with a single-flight claim; a crashed claim becomes eligible for takeover
 after 10 minutes. Provider calls occur before per-row SQLite writes, and each
 row is committed independently, so one malformed row does not roll back the
@@ -1213,7 +1235,8 @@ provider-error, and row-write-error exit paths.
   `--policy` (`conversational` | `heads` | `full`), used for verbatim/chunk-KNN
   recall. This is a **separate corpus with its own backfill run** — a
   summary-only backfill leaves it empty, and verbatim/chunk recall returns
-  nothing beyond FTS until you run `--corpus chunks --apply` as well.
+  nothing beyond FTS until you run `--corpus chunks --apply` as well (with
+  `--confirm-raw-text` on every apply for cloud providers).
 - `both` — runs the summary backfill, then the chunk backfill, in one command.
 
 ```bash
@@ -1228,7 +1251,10 @@ error/traceback content. The v0.23.1 cloud boundary transforms configured
 sensitive-pattern matches before transport, but it cannot classify every
 possible sensitive fact. When the provider is a cloud provider (e.g. Voyage),
 `--corpus chunks|both --apply` **refuses** unless you also pass
-`--confirm-raw-text`. FastEmbed is in-process and exempt. The shipped Ollama
+`--confirm-raw-text` on every apply. Repeat the backfill apply only while `remaining`
+is above 0 and each run lowers it. Stop on `status: partial`, `status: error`, or
+`status: failed`, or if `remaining` stops falling, and inspect the warnings, errors,
+and detail output. FastEmbed is in-process and exempt. The shipped Ollama
 provider is also exempt from the cloud gate, so use raw-chunk backfill only with
 a verified trusted local/loopback endpoint; #337 tracks endpoint-aware locality.
 Historical source remains unchanged; only provider input is transformed. See
