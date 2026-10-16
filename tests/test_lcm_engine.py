@@ -15687,6 +15687,61 @@ class TestSessionRollover:
         assert normal_state.last_finalized_session_id == "reused-session"
         assert engine.current_session_id == "foreground-2"
 
+    def test_auxiliary_boundary_preserves_suppressed_foreground_marker(self, tmp_path, caplog):
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        engine = LCMEngine(
+            config=LCMConfig(database_path=str(tmp_path / "suppressed-foreground-boundary.db")),
+            hermes_home=str(hermes_home),
+        )
+        try:
+            engine.on_session_start("foreground-session", platform="cli", context_length=200000)
+            child = self._start_host_child(
+                engine, hermes_home, "reused-session", "foreground-session",
+            )
+            child.on_session_end(engine, [])
+            engine.on_session_start(
+                "reused-session", platform="cli", conversation_id="normal-conversation",
+                context_length=200000,
+            )
+            engine.ingest([{"role": "user", "content": "normal prefix must remain"}])
+            assert engine._auxiliary_lineage_suppressed_as_foreground("reused-session")
+            assert engine._active_auxiliary_session_ids() == set()
+            assert engine._known_auxiliary_lineage_session_ids() == {"reused-session"}
+
+            # A new host frame explicitly continues the reused foreground session.
+            continuation = self.HostAgentFrame("aux-continuation", "reused-session", hermes_home)
+            caplog.clear()
+            with caplog.at_level(logging.INFO, logger=lcm_engine.__name__):
+                continuation.on_compression_boundary_from(engine, old_session_id="reused-session")
+
+            assert engine._auxiliary_foreground_reused_session_ids == {"reused-session"}
+            assert engine._auxiliary_lineage_suppressed_as_foreground("reused-session")
+            assert engine._active_auxiliary_session_ids() == {"aux-continuation"}
+            assert engine._known_auxiliary_lineage_session_ids() == {
+                "reused-session", "aux-continuation",
+            }
+            assert set(engine._auxiliary_session_generations) == {"aux-continuation"}
+            assert engine._auxiliary_last_prompt_tokens == {}
+            assert engine.current_session_id == "reused-session"
+            assert engine._conversation_id == "normal-conversation"
+            assert [row["content"] for row in engine._store.get_range("reused-session")] == [
+                "normal prefix must remain",
+            ]
+            assert engine._store.get_session_count("aux-continuation") == 0
+            assert [
+                (record.levelname, record.getMessage())
+                for record in caplog.records if record.name == lcm_engine.__name__
+            ] == [
+                (
+                    "INFO",
+                    "LCM auxiliary session reused-session compressed to aux-continuation"
+                    " — keeping boundary stateless",
+                ),
+            ]
+        finally:
+            engine.shutdown()
+
     def test_stale_auxiliary_boundary_preserves_off_current_reused_normal_suffix(self, tmp_path):
         hermes_home = tmp_path / "hermes-home"
         hermes_home.mkdir()
