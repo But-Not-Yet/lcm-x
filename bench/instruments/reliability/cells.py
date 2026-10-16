@@ -171,14 +171,13 @@ def default_window_cells() -> list[dict]:
                 assistant={"real_usage": True}, bars=[*BARS, "C1"],
                 doc="Default 75% trigger; 101 turns of about 2,300 tokens at 64k; "
                     "C1 fails when over half the model calls after the first commit follow a commit.")]
-    out.append(cell("default-window/64k-large-objective", [], in_place=True, window=64000,
-                    turns=40, repeat=400, user={"repeat_from": {"2": 3630, "3": 400}}, lcm_env={},
-                    assistant={"real_usage": True}, min_compactions=2, bars=["B1", "B2", "F4"],
+    out.append(cell("default-window/objective-1221", [], in_place=True, window=32768,
+                    turns=2, repeat=1, lcm_env={}, final_compaction_check=False,
+                    assistant={"real_usage": True}, min_compactions=1, bars=["B1", "B2", "F4"],
                     tool_plan=[{"turns": [2], "calls": [{"name": "read_file", "args": {
-                        "path": f"{{files}}/big-{k:02d}.txt"}}]} for k in range(1, 25)],
-                    big_files=24, big_lines=57,
-                    doc="Current objective (turn 2 after a short setup) about 20,873 tokens, above the 13,600-token prefix-budget floor at 64k; "
-                        "distinct reads in that turn push it outside the 24k fresh tail, then ordinary traffic. "
+                        "path": f"~/objective-1221/big-{k:02d}.txt"}}]} for k in range(1, 12)],
+                    doc="#1221 real-host fix control: short setup, one plain 12k objective, then 11 distinct reads. "
+                        "Rc5 publishes a multi-row leaf covering the objective and omits it on the next request; rc6 keeps it. "
                         "F4 requires the complete current request in the first model request after each commit."))
     return out
 
@@ -307,7 +306,7 @@ def validate(c: dict) -> None:
     assert c["transport"] in TRANSPORTS, c["id"]
     assert set(c["bars"]) <= set(BARS + DRAIN_BARS + ("C1", "F4")), c["id"]
     assert {f["kind"] for f in c["faults"]} <= FAULTS, c["id"]
-    assert c["window"] in (32000, 64000, 128000, 1000000), c["id"]
+    assert c["window"] in (32000, 32768, 64000, 128000, 1000000), c["id"]
     assert all(t in ISSUES or t in (483, 494, 519) for t in c["targets"]), c["id"]
     # Native recovery was removed (O2): only a native-on-off cell (an older lcm-x ref with it ON) may set it.
     assert not c["native_recovery"] or c.get("from_ref"), c["id"]

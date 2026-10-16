@@ -210,8 +210,7 @@ opts into both behaviors. No existing cell definition or nightly selection chang
 
 Both use `lcm_env={}` (unlike `None`, which selects `tight()`). Their generated
 host config omits the harness's usual `compression.threshold: 0.8`, so the plugin
-uses each ref's shipped default: rc8 is 0.75, while the parent of the optimized
-defaults is 0.35. No LCM tuning override is injected.
+uses each ref's shipped defaults. No LCM tuning override is injected.
 
 - `default-window/64k-cadence`: 101 turns, 400 filler repeats per user
   (about 2,300 tokens), 300 repeats per fake summary (about 1,750 tokens).
@@ -220,45 +219,28 @@ defaults is 0.35. No LCM tuning override is injected.
   turn 104 at rc8, after its last automatic commit at 103, and B4 publishes.
   The culprit still commits on every closing turn through 104, so its B4 is
   INCONCLUSIVE even though C1 fails. This part of acceptance remains unmet.
-- `default-window/64k-large-objective`: a short setup, then the **current**
-  request on turn 2 has 3,630 filler repeats (about 20,873 tokens). Twenty-four
-  distinct reads in that turn (57 lines each, below the default 12,000-character
-  externalization threshold) push it outside the fresh tail; ordinary traffic
-  continues through turn 40. The setup avoids the independent sole-user anchor.
-  Only **B1, B2 and F4** gate this cell. Survival fitting is its designed fallback,
-  so B8 does not gate it; the other bars remain diagnostics.
+- `default-window/objective-1221`: a 32,768-token window, one short setup
+  request/reply, then one plain user objective of about 12,020 fallback tokens
+  on turn 2 (the fixed `plan ` document from #1221's engine regression).
+  Eleven sequential real `read_file` calls read deterministic numbered records:
+  24,000 characters, 16,000 characters, then nine files of 7,400 characters.
+  The host supplies line numbers and JSON formatting. Fixed
+  `~/objective-1221/big-NN.txt` tool arguments resolve inside the cell's private
+  HOME; output/scratch path lengths do not enter those arguments. No DAG state
+  is injected and no final forced `/compress` is used. Only **B1, B2 and F4**
+  gate this cell. B8 is excluded because survival fitting is the designed fallback.
+  F4 checks the complete current request, not merely its synthetic turn tag.
 
-The 32K cadence candidate was removed: within 400 turns it never reaches the
-historical every-call regime, and its B8 failure is not a C1 detector.
+The old `default-window/64k-large-objective` cell was removed: all four historical
+refs passed its three calibration attempts, so it was not a #1221 detector.
+The 32K cadence candidate was removed earlier: within 400 turns it never reached
+the historical every-call regime, and its B8 failure was not a C1 detector.
 
-The #930 default prefix budget is dynamic, not a fixed 64K constant. At the
-older `112388f7` implementation (`engine.py:7826`) it is
-`max(C - O - A - T, C // 4)`: `C` is the survival ceiling, `O` assembly overhead,
-`A` leading anchors and `T` the selected tail. With the default 15% reserve,
-`C=54,400` and the floor is **13,600** at 64,000. At rc8 (`engine.py:8127`),
-`T` also accounts for repaired tool pairs and enabled recall reserves its budget.
-Exceeding the floor alone does not prove that an objective exceeds the dynamic
-bound. Rc6/rc8 exempt an over-bound objective from summary pruning.
-
-Only the cadence cell declares **C1**: in ordered `transcript.jsonl`, begin at
-the first non-final chat `compaction` with status `compacted` or `host_native`.
-Each later `provider_request` counts once in the denominator, including the first
-following that commit. Count it once in the numerator if at least one commit
-occurred since the preceding request. Noops do not clear a pending commit;
-multiple commits before a request still count once. Final/cron records do not
-count. Fail when `2 * preceded_by_compaction > model_calls`; no measured calls
-is INCONCLUSIVE. This absolute bound is independent of the backtest refs.
-C1 also fails released v0.26.2 at 64K (48/81 in the original 100-turn cell), so
-it measures excessive cadence rather than identifying #1139 specifically.
-
-Only the objective cell declares the R1 **F4** equivalent: for every non-final
-committed chat compaction, the first following model request must contain the
-complete current user request in one message. `probe.request_contains` performs
-the literal check; metadata stores a boolean and tag presence, never request text.
-A tag alone cannot pass. A missing complete request fails; absent telemetry or a
-commit without a following request is INCONCLUSIVE. Synthetic controls prove an
-absent full request fails, a noop retains the pending commit, and a trailing
-commit stays unknown. R2 continuity diagnostics are unchanged.
+C1 fails when more than half the model calls after the first automatic committed
+compaction are immediately preceded by a commit. Count one main provider request
+per call, ignore final/cron commits, and keep the pending commit through a noop.
+A trailing commit with no following request makes the evidence INCONCLUSIVE.
+C1 also flags v0.26.2 at 64K (48/81); it measures cadence, not #1139 specifically.
 
 B1/B2 map a held row beginning with the exact generated objective-marker line
 `[Current user objective preserved from compacted history]` plus a newline back
@@ -266,51 +248,34 @@ to that attempt's persisted original. The carrier is a generated projection,
 not a new stored user row. Quoted markers, other carrier types and similar text
 are not mapped. A real duplicate original still fails B1/B2.
 
-**Backtest status: not admitted.** With shipped defaults, the #1221 onset pair
-is `207092cd` (parent) / `10e10d82` (optimized defaults), followed by the
-`bd46fd9f` fix and rc8 `4e603ed6`; `7defa0b0` / `112388f7` predate those defaults.
-In this revision the objective remained GREEN on all four refs after three
-parameter attempts, so it does **not** detect #1221. Calibration stopped without
-loosening a bar. Cadence separates `2c6dfef9` RED (C1 64/85) from `86fc834e`
-GREEN (17/84), `09e32580` and rc8 GREEN (31/85), but the culprit's B4 remains
-INCONCLUSIVE. These observations do not satisfy the complete acceptance bar or
-justify pre-rc promotion. Gate telemetry records token estimates,
-thresholds, tool rounds and compression input message counts for further diagnosis.
+### #1221 controls and mechanism
 
-The A2c mechanism check found that `10e10d82` is a defaults-onset comparison,
-not a RED/GREEN engine-assembly pair with `207092cd`. Running the rc6 regression's
-`objective_scenario` and assembly body unchanged on both trees gives **zero**
-objective rows on both; `bd46fd9f` gives one. With the regression's character
-fallback, the objective is 12,012 tokens and its 20-row tail is 18,950 tokens.
-The prefix-bound code is identical across the onset pair
-(`10e10d82:engine.py:8027–8084`); injecting the same DAG state bypasses the
-defaults and timing differences that a host backtest must exercise.
+Use the fix controls: rc5 `76769913` RED, rc6 `bd46fd9f` GREEN and rc8
+`4e603ed6` GREEN. The defaults-onset date remains **unknown**. The former
+`207092cd` / `10e10d82` comparison cannot serve as this detector's RED/GREEN
+pair: their prefix-bound code is identical. Rc5 ships 24,000-token leaves
+(`76769913:config.py:670`), dynamic sizing off (`:689`), a 24-row/24K fresh tail
+(`:651–654`) and a 0.75 trigger (`:672`). The selector uses the fixed leaf budget
+(`compaction.py:525–553`); the full sweep selects raw rows outside that tail
+(`:1800,:1850–1857`).
 
-The requested multi-row objective leaf also cannot come from ordinary
-oldest-first selection at that culprit's shipped defaults: its leaf size is
-**8,000**, with dynamic sizing off (`config.py:670,689`), rather than rc5's
-24,000. A plain 12K user row starts a singleton chunk: the selector stops before
-adding it to any preceding rows and before adding a following row
-(`compaction.py:539–552`). The tool-group repair does not extend a plain user
-row. Direct selection confirms this for both the regression history and an
-objective-first history; a 24K selection combines the rows instead.
+The normal host sequence first crosses 24,576 at tool round 2, after 21,910
+below / 26,398 above: margins 2,666 / 1,822 tokens on all three control refs.
+That pass no-ops with no leaf. Round 3 reaches 28,441 and publishes leaf 1 over
+stored rows [1, 2, 3]:
+the earlier user, its assistant reply and the current objective. Rc5's next
+assembly omits the objective; the first subsequent provider request fails F4.
+The plain row has no smaller fallback, and the default prefix bound skips its
+oversized anchor (`76769913:engine.py:8127–8166`). The fix preserves it and
+lets survival fitting handle the whole list. Engine-direct regression coverage
+also remains in `tests/test_issue_1221_objective_default_bound.py`, added by rc6.
 
-A real-host diagnostic at 32,768 also encountered early no-op/survival-fit
-passes before the requested state. This does not establish universal host
-unreachability for #1221, including later pre-fix trees with 24K leaves. A2c
-therefore stopped at its mechanism gate, before parameter calibration; it adds
-no `default-window/32k-objective-1221` cell and retains the existing opt-in
-64K objective cell. Detector and path-margin admission remain unproven.
-
-Frozen-parameter path replays used output and scratch paths of 97 versus 212
-characters. First committed compression input counts were identical: 19 messages
-at the onset/fixed/rc8 refs, 23 at the parent (whose initial three-message pass
-is a noop). At the 48,000-token refs, short-path observations bracketed the first
-trigger at 46,735 / 49,681 tokens; long paths gave 46,821 / 49,768. The minimum
-margin was 1,179 tokens. The parent's first 22,400-token gate was above by
-3,661 / 3,747 tokens, but its preceding below-threshold gate was not recorded.
-This is path-stability evidence, not the missing RED positive control or a
-complete measured margin bracket on every ref.
+Path replays with output lengths 97 / 200 and scratch-root lengths 97 / 205
+characters have identical crossing rounds, compression inputs and verdicts on
+all three refs. Raw host estimates shift by 81 tokens: the long-path bracket is
+21,991 / 26,479, still at least 1,903 above and 2,585 below. This proves stable
+triggering messages and verdicts, not path-invariant token accounting. Both cells
+remain opt-in; these in-process controls do not establish release readiness.
 
 ## Positive controls
 `controls.py` holds each control's refs, hosts, cells and expected red/green pattern; `run_matrix.py --control
