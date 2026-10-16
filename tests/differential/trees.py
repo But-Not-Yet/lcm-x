@@ -12,6 +12,7 @@ BASELINES = {
     "v0.26.2": "6800cf45ad05280e6cf6fa9e1ad96c62b7132646",
     "v0.27.0": "c67d7633d963a2ffd24cf90995189ee58e2f88c7",
 }
+BASELINE_CONFIG = {"v0.26.2": "managed", "v0.27.0": "bare"}
 
 
 class PrerequisiteUnavailable(RuntimeError):
