@@ -10,6 +10,7 @@ import logging
 import re
 import sqlite3
 import threading
+from contextlib import nullcontext
 
 import pytest
 
@@ -196,3 +197,32 @@ def test_an_ingest_that_raises_on_the_lock_still_records_its_span(tmp_path, summ
         assert type(engine._store._conn) is sqlite3.Connection
     finally:
         engine.shutdown()
+
+
+class _SlowExit:
+    """A connection stand-in whose ``with`` exit (the implicit COMMIT or ROLLBACK) takes 1.5 s on a fake clock."""
+
+    def __init__(self, clock: list[float]):
+        self.clock = clock
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.clock[0] += 1.5
+        return False
+
+
+@pytest.mark.parametrize("raised,sql", [(False, "COMMIT"), (True, "ROLLBACK")])
+def test_a_slow_with_block_exit_is_a_slow_statement(monkeypatch, raised, sql):
+    import hermes_lcm.sqlite_util as sqlite_util
+
+    clock = [100.0]
+    monkeypatch.setattr(sqlite_util, "_monotonic", lambda: clock[0])
+    trace = sqlite_util.PhaseSqlTrace()
+    proxy = sqlite_util._TimedConnection(_SlowExit(clock), trace)
+    with pytest.raises(RuntimeError) if raised else nullcontext():
+        with proxy:
+            if raised:
+                raise RuntimeError("the block failed")
+    assert (trace.slow_count, trace.slow_seconds, trace.slowest_sql) == (1, 1.5, sql)

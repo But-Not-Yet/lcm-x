@@ -201,8 +201,9 @@ class _TimedConnection:
         self._lcm_real.__enter__()
         return self
 
-    def __exit__(self, *exc):
-        return self._lcm_real.__exit__(*exc)
+    def __exit__(self, *exc):  # a ``with conn:`` block ends in an implicit COMMIT or ROLLBACK, which can wait too
+        return self._lcm_trace.timed(lambda _sql, *args: self._lcm_real.__exit__(*args),
+                                     "ROLLBACK" if exc and exc[0] is not None else "COMMIT", *exc)
 
     def execute(self, sql, parameters=()):  # the hot path: two clock reads per statement
         started = _monotonic()
