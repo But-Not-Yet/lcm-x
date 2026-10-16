@@ -18,6 +18,8 @@ import hermes_lcm.engine as lcm_engine
 import hermes_lcm.tools as lcm_tools
 
 from agent.context_engine import ContextEngine
+from tests.timing_helpers import ContentionProbe
+
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.dag import SummaryNode
 from hermes_lcm.engine import LCMEngine
@@ -218,6 +220,8 @@ def test_shutdown_closes_lifecycle_store(tmp_path):
 def test_stable_active_use_blocks_rebind_and_keeps_ingest_in_original_session(tmp_path):
     config = LCMConfig(database_path=str(tmp_path / "stable-active-use.db"))
     engine = LCMEngine(config=config)
+    probe = ContentionProbe(engine._stable_use_lock)
+    engine._stable_use_lock = probe
     use_started = threading.Event()
     release_use = threading.Event()
     rebind_started = threading.Event()
@@ -257,7 +261,8 @@ def test_stable_active_use_blocks_rebind_and_keeps_ingest_in_original_session(tm
         assert use_started.wait(timeout=2)
         rebind_thread.start()
         assert rebind_started.wait(timeout=2)
-        assert not rebind_finished.wait(timeout=0.05)
+        assert probe.contended.wait(timeout=10), "competing lifecycle call never attempted the held lock"
+        assert not rebind_finished.is_set()
         assert engine.bound_session_id == "session-a"
 
         release_use.set()
@@ -323,15 +328,19 @@ def test_stable_active_use_blocks_rebind_and_keeps_ingest_in_original_session(tm
 def test_shutdown_waits_for_stable_use_and_is_terminal_and_idempotent(tmp_path):
     config = LCMConfig(database_path=str(tmp_path / "stable-shutdown.db"))
     engine = LCMEngine(config=config)
+    probe = ContentionProbe(engine._stable_use_lock)
+    engine._stable_use_lock = probe
     operation_started = threading.Event()
     release_operation = threading.Event()
     shutdown_finished = threading.Event()
+    probe.release_guard = release_operation
+    use_thread = shutdown_thread = None
     try:
         engine.on_session_start("session-a", conversation_id="conversation-a")
 
         def hold_engine(selected):
             operation_started.set()
-            assert release_operation.wait(timeout=2)
+            assert release_operation.wait(timeout=20), "test did not release the active operation"
 
         use_thread = threading.Thread(
             target=lambda: use_active_lcm_engine(
@@ -346,11 +355,16 @@ def test_shutdown_waits_for_stable_use_and_is_terminal_and_idempotent(tmp_path):
         use_thread.start()
         assert operation_started.wait(timeout=2)
         shutdown_thread.start()
-        assert not shutdown_finished.wait(timeout=0.05)
+        assert probe.contended.wait(timeout=10), "competing lifecycle call never attempted the held lock"
+        assert probe.attempts == [(True, -1)], "shutdown must acquire with blocking=True and no timeout"
+        assert not probe.acquired.is_set(), "shutdown acquired before the active operation was released"
+        assert not shutdown_finished.is_set()
 
         release_operation.set()
         use_thread.join(timeout=2)
         shutdown_thread.join(timeout=2)
+        assert probe.acquired.is_set(), "shutdown never completed its blocking acquire"
+        assert not probe.returned_before_release
         assert shutdown_finished.is_set()
         engine.shutdown()
 
@@ -358,6 +372,10 @@ def test_shutdown_waits_for_stable_use_and_is_terminal_and_idempotent(tmp_path):
         assert closed.status is ActiveEngineUseStatus.CLOSED_ENGINE
     finally:
         release_operation.set()
+        if use_thread is not None and use_thread.ident is not None:
+            use_thread.join(timeout=10)
+        if shutdown_thread is not None and shutdown_thread.ident is not None:
+            shutdown_thread.join(timeout=10)
         engine.shutdown()
 
 
@@ -13708,24 +13726,35 @@ class TestSessionRollover:
 
         assert "LCM session-end lifecycle finalization interrupted" in caplog.text
 
-    def test_on_session_end_returns_quickly_under_real_sqlite_writer_lock(self, engine, caplog):
+    def test_on_session_end_returns_quickly_under_real_sqlite_writer_lock(self, engine, caplog, monkeypatch, latency_check):
         engine.on_session_start("test-session", platform="discord")
         engine._store._conn.execute("PRAGMA busy_timeout=750")
         engine._lifecycle._conn.execute("PRAGMA busy_timeout=750")
+        original_timeout = lcm_engine._temporary_sqlite_busy_timeout
+        timeout_args = []
+
+        def recorded_timeout(connections, timeout_ms):
+            timeout_args.append(timeout_ms)
+            assert timeout_ms == 50
+            return original_timeout(connections, timeout_ms)
+
+        monkeypatch.setattr(lcm_engine, "_temporary_sqlite_busy_timeout", recorded_timeout)
 
         locker = sqlite3.connect(str(engine._store.db_path), timeout=1.0, isolation_level=None)
         locker.execute("PRAGMA journal_mode=WAL")
         locker.execute("BEGIN IMMEDIATE")
         try:
-            started = time.monotonic()
+            started = time.monotonic() if latency_check else None
             with caplog.at_level(logging.WARNING):
                 engine.on_session_end("test-session", [{"role": "user", "content": "hello"}])
-            elapsed = time.monotonic() - started
+            elapsed = time.monotonic() - started if latency_check else None
         finally:
             locker.execute("ROLLBACK")
             locker.close()
 
-        assert elapsed < 0.3
+        if latency_check:
+            assert elapsed < 0.3
+        assert timeout_args == [50]
         assert engine._store._conn.execute("PRAGMA busy_timeout").fetchone()[0] == 750
         assert engine._lifecycle._conn.execute("PRAGMA busy_timeout").fetchone()[0] == 750
         assert "LCM session-end raw-message ingest skipped due to SQLite lock" in caplog.text
