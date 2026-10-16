@@ -1101,6 +1101,20 @@ def test_default_window_cadence_half_boundary(tmp_path, committed, expected):
     assert out["numbers"]["C1"] == {"model_calls": 4, "preceded_by_compaction": committed}
 
 
+@pytest.mark.parametrize("committed,expected", [(1, "INCONCLUSIVE"), (2, "INCONCLUSIVE"), (3, "FAIL")])
+def test_default_window_cadence_trailing_commit_is_inconclusive(tmp_path, committed, expected):
+    # A commit with no observed model call after it never scores PASS. The missing call can only add a call that a
+    # commit preceded, so a FAIL stands: 2 of 4 would PASS, but 3 of 5 fails.
+    events = clean_events(4)
+    for i in range(4):
+        if i < committed:
+            events.append({"event": "compaction", "compression_status": "compacted", "turn": i + 1})
+        events.append({"event": "provider_request", "turn": i + 1})
+    events.append({"event": "compaction", "compression_status": "compacted", "turn": 5})
+    out = make(tmp_path, rows=clean_rows(4), events=events, passes=0, bars=["C1"])
+    assert out["verdict"] == expected
+
+
 @pytest.mark.parametrize("present,expected", [(True, "PASS"), (False, "FAIL"), (None, "INCONCLUSIVE")])
 def test_default_window_objective_requires_request_bytes(tmp_path, present, expected):
     events = clean_events()
