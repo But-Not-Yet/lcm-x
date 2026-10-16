@@ -36,11 +36,22 @@ jobs:
             if (add.length) await github.rest.issues.addLabels({ ...repo, issue_number: number, labels: add });
 
             // Skip the reminder only when BOTH are present: a plugin version (semver or commit sha) AND a Hermes
-            // version, read from the form's "Hermes version" field or a "Hermes [Agent] vX.Y" string. A rare
-            // needless reminder is acceptable.
-            const hasPlugin = /\bv?\d+\.\d+\.\d+\b/.test(body) || /\b[0-9a-f]{7,40}\b/.test(body);
-            const hermesField = (body.match(/### Hermes version[ \t]*\n+([^\n#][^\n]*)/) || [])[1] || '';
-            const hasHermes = /\d+\.\d+/.test(hermesField) || /\bhermes(?: agent)?\s+v?\d+\.\d+/i.test(body);
+            // version. A form issue is judged field by field, so a Hermes version cannot stand in for the plugin
+            // version; an empty, "_No response_" or "unknown" field counts as missing. Only an issue without the
+            // form's headings (CLI/API filings) falls back to the whole body. A rare needless reminder is acceptable.
+            const field = (name) => {
+              const m = body.match(new RegExp('^###[ \\t]+' + name + '[ \\t]*\\r?\\n([\\s\\S]*?)(?=^###[ \\t]|(?![\\s\\S]))', 'm'));
+              if (!m) return null;
+              const value = m[1].trim();
+              return /^(_no response_|unknown|n\/a|none|-)?$/i.test(value) ? '' : value;
+            };
+            const versionRe = /\bv?\d+\.\d+\.\d+\b|\b[0-9a-f]{7,40}\b/;
+            const pluginField = field('Plugin version');
+            const hermesField = field('Hermes version');
+            const hasPlugin = pluginField !== null ? versionRe.test(pluginField) : versionRe.test(body);
+            const hasHermes = hermesField !== null
+              ? /\d+\.\d+/.test(hermesField)
+              : /\bhermes(?: agent)?\s+v?\d+\.\d+/i.test(body);
             if (hasPlugin && hasHermes) return;
 
             const marker = '<!-- lcm-x-issue-intake -->';
