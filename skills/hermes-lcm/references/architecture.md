@@ -49,7 +49,9 @@ Chunk apply commands on cloud providers also require `--confirm-raw-text` on
 every invocation. This flag acknowledges sending raw message text to the named
 cloud provider, even with provider-input privacy enabled; inspect the doctor's
 emitted `remedy` and consent warning before applying it.
-Repeat the backfill apply until it reports `remaining: 0`.
+Repeat the backfill apply only while `remaining` is above 0 and each run lowers it.
+Stop on `status: partial`, `status: error`, or `status: failed`, or if `remaining`
+stops falling, and inspect the warnings, errors, and detail output.
 
 With embeddings on and a registered profile, new leaf summaries are embedded by a bounded
 background pass after each published leaf summary and on session bind; new message chunks are
