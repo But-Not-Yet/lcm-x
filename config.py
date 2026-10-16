@@ -722,7 +722,9 @@ class LCMConfig:
     l3_truncate_tokens: int = 512
 
     # -- Assembly guardrails ---
-    # Hard cap for the assembled active context (0 = disabled)
+    # Hard cap for the assembled active context (0 = disabled). Exception (#1162): keep the newest visible
+    # assistant reply beyond the cap when it would otherwise be dropped before being summarised.
+    # Hermes re-adds that reply after compaction anyway; keeping it here puts it in the right place.
     max_assembly_tokens: int = 0
     # Reserve this many tokens from the model context window before assembly
     # (0 = disabled). Effective cap becomes context_length - reserve_tokens_floor.
