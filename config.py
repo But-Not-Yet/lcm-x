@@ -1304,6 +1304,13 @@ class LCMConfig:
                 if os.environ.get(spec.env_key, "").strip() and len(config_source_warnings) == warning_count:
                     _warn_env_range(spec.name, value, config_source_warnings)
             setattr(c, spec.name, value)
+            if value is True and spec.name in (
+                "cache_friendly_condensation_enabled", "large_output_transcript_gc_enabled",
+            ):
+                config_source_warnings.append(
+                    f"deprecated: {spec.env_key} is set; this experiment is removed in v0.29.0 (#1246). "
+                    "Until then it behaves as before."
+                )
 
         # Pattern-list overrides carry a source sidecar and stay explicit.
         raw_sensitive_patterns = os.environ.get("LCM_SENSITIVE_PATTERNS")
