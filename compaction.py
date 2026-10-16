@@ -110,9 +110,9 @@ class CompactionMixin:
             return self._should_compress_preflight_impl(messages)
 
     def _should_compress_preflight_impl(self, messages):
-        self._preflight_cleanup_only_due_to_boundary_cooldown = False
-        self._preflight_below_threshold_cleanup_only = False
-        self._preflight_automatic_request = False
+        self._compaction_request.cleanup_only_due_to_boundary_cooldown = False
+        self._compaction_request.below_threshold_cleanup_only = False
+        self._compaction_request.automatic_request = False
         self._maybe_reclassify_late_auxiliary_before_compaction_write()
         if self._bypasses_lcm_context_management():
             # Bypassed traffic observes nothing about the pressured session's
@@ -195,7 +195,7 @@ class CompactionMixin:
                     not force_overflow_requested
                     and self._compression_boundary_cooldown_active()
                 ):
-                    self._preflight_cleanup_only_due_to_boundary_cooldown = True
+                    self._compaction_request.cleanup_only_due_to_boundary_cooldown = True
                 if not force_overflow_requested and max(rough, replay_rough) < self.threshold_tokens:
                     return self._mark_below_threshold_maintenance()
                 return self._mark_preflight_compression_requested()
@@ -322,7 +322,7 @@ class CompactionMixin:
     def _mark_below_threshold_maintenance(self, **kwargs: Any) -> bool:
         """#651: a request below the host threshold is maintenance; the automatic compress() it asks for is
         cleanup-only (compress() rechecks its own tokens against the threshold)."""
-        self._preflight_below_threshold_cleanup_only = self.threshold_tokens > 0
+        self._compaction_request.below_threshold_cleanup_only = self.threshold_tokens > 0
         return self._mark_preflight_compression_requested(**kwargs)
 
     def _replay_diff_requests_ingest_cleanup(
@@ -578,17 +578,17 @@ class CompactionMixin:
             self._no_progress_candidate = False
             self._stub_first_exit_now = self._last_stub_first_exit = None  # #671: the latest compaction only
             if bypass_cooldown:  # #651: a host recovery attempt is never cleanup-only maintenance
-                self._preflight_below_threshold_cleanup_only = self._preflight_automatic_request = False
+                self._compaction_request.below_threshold_cleanup_only = self._compaction_request.automatic_request = False
                 # #684: nor held by a boundary cooldown.
-                self._preflight_cleanup_only_due_to_boundary_cooldown = False
+                self._compaction_request.cleanup_only_due_to_boundary_cooldown = False
             elif not force and self._no_progress_hold_active() and self._no_progress_hold_blocks(
                     current_tokens if current_tokens is not None else count_messages_tokens(messages)):
                 # #677: an automatic call the #651 hold blocks (a caller that skipped the host gate) is held
                 # maintenance; the survival ceiling and forced overflow are never blocked, so they summarise.
-                self._preflight_below_threshold_cleanup_only = True
+                self._compaction_request.below_threshold_cleanup_only = True
             # #618 item 3: at or over the survival ceiling a held automatic call runs no sweep, only the fit below
             # (forced overflow is decided in _compress_impl and still summarises).
-            self._hold_fit_only_requested = bool(not force and not bypass_cooldown and self._hold_fit_only_applies(
+            self._compaction_request.hold_fit_only_requested = bool(not force and not bypass_cooldown and self._hold_fit_only_applies(
                 current_tokens if current_tokens is not None else count_messages_tokens(messages)))
             with self._fresh_tail_pressure_yield_invocation():
                 result = self._compress_impl(
@@ -1273,17 +1273,17 @@ class CompactionMixin:
         # Consume them before every early return so a later unrelated turn can
         # never inherit stale cleanup-only state.
         boundary_cleanup_only_requested = bool(
-            self._preflight_cleanup_only_due_to_boundary_cooldown
+            self._compaction_request.cleanup_only_due_to_boundary_cooldown
         )
         below_threshold_cleanup_only_requested = bool(
-            self._preflight_below_threshold_cleanup_only
+            self._compaction_request.below_threshold_cleanup_only
         )
-        automatic_preflight_requested = bool(self._preflight_automatic_request)
-        hold_fit_only_requested = bool(self._hold_fit_only_requested)
-        self._preflight_cleanup_only_due_to_boundary_cooldown = False
-        self._preflight_below_threshold_cleanup_only = False
-        self._preflight_automatic_request = False
-        self._hold_fit_only_requested = False
+        automatic_preflight_requested = bool(self._compaction_request.automatic_request)
+        hold_fit_only_requested = bool(self._compaction_request.hold_fit_only_requested)
+        self._compaction_request.cleanup_only_due_to_boundary_cooldown = False
+        self._compaction_request.below_threshold_cleanup_only = False
+        self._compaction_request.automatic_request = False
+        self._compaction_request.hold_fit_only_requested = False
 
         if not messages:
             self._last_compression_status = "noop"
