@@ -2323,18 +2323,29 @@ def test_recall_event_time_read_is_skipped_once_the_deadline_is_spent(
     assert payload == expected
 
 
-def test_recall_event_time_read_cannot_outlive_the_deadline(recall_engine, monkeypatch):
+def test_recall_event_time_read_cannot_outlive_the_deadline(recall_engine, monkeypatch, latency_check):
     _seed_event_time_rows(recall_engine)
     recall_engine._config.recall_query_timeout_s = 1.0
     connect_timeouts = []
+    read_errors = []
+    now = [0.0]
+    if not latency_check:
+        monkeypatch.setattr(time, "monotonic", lambda: now[0])
 
     def blocked_read(conn):
-        # A read that would never finish on its own: only the request deadline
-        # (the private connection's progress handler) can end it.
-        conn.execute(
-            "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n) "
-            "SELECT count(*) FROM n"
-        ).fetchall()
+        # Only the private connection's progress handler can end the timed read.
+        # The logical-clock case has a cap as a hang guard for a missing handler.
+        if not latency_check:
+            now[0] += 2.0
+        guard = " WHERE x < 10000000" if not latency_check else ""
+        try:
+            conn.execute(
+                "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n" + guard + ") "
+                "SELECT count(*) FROM n"
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            read_errors.append(str(exc))
+            raise
 
     def recorded_connect(*args, **kwargs):
         connect_timeouts.append(kwargs.get("timeout"))
@@ -2343,14 +2354,16 @@ def test_recall_event_time_read_cannot_outlive_the_deadline(recall_engine, monke
         )
 
     _patched_event_time_rows(monkeypatch, connect=recorded_connect)
-    started = time.monotonic()
+    started = time.monotonic() if latency_check else None
     payload = json.loads(
         lcm_tools.lcm_recall(
             {"query": "kanban dashboard sprint", "limit": 25}, engine=recall_engine
         )
     )
-    elapsed = time.monotonic() - started
-    assert elapsed < 1.0 + 0.5
+    if latency_check:
+        assert time.monotonic() - started < 1.0 + 0.5
+    else:
+        assert len(read_errors) == 1 and "interrupt" in read_errors[0].lower()
     assert payload["hits"]
     assert not any("event_time" in hit for hit in payload["hits"])
     assert payload["event_time_unavailable"] is True

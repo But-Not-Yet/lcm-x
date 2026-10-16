@@ -1,5 +1,6 @@
 """Occurrence seeds for compress, recovery, rotation, retries and stale proofs."""
 from copy import deepcopy
+import json
 import re
 import subprocess
 import sys
@@ -8,7 +9,7 @@ import types
 import pytest
 
 pytest.importorskip("hypothesis")
-from hypothesis import settings, strategies as st
+from hypothesis import given, settings, strategies as st
 from hypothesis.stateful import invariant, rule, run_state_machine_as_test
 
 from tests.invariants.test_exactly_once_machine import (
@@ -104,6 +105,54 @@ def test_oracle_checks_order_and_assistant_tool_metadata():
         expected = dict(assistant, tool_calls=[{"id": "call", "function": {"name": "lookup"}}])
         with pytest.raises(AssertionError, match="collapses="):
             assert_occurrences([expected], [dict(assistant, tool_calls=[changed])])
+
+
+@pytest.mark.parametrize("field", ["arguments", "type"])
+def test_oracle_keeps_tool_payloads_distinct(field):
+    call = {"id": "call", "type": "function", "function": {"name": "lookup", "arguments": '{"query":1}'}}
+    other = deepcopy(call)
+    if field == "arguments":
+        other["function"]["arguments"] = '{"query":2}'
+    else:
+        other["type"] = "changed"
+    expected = {"role": "assistant", "content": "calling", "tool_calls": [call]}
+    changed = dict(expected, tool_calls=[other])
+    assert identity(expected) != identity(changed)
+    with pytest.raises(AssertionError, match="collapses="):
+        assert_occurrences([expected, changed], [expected, expected])
+
+
+def test_oracle_normalizes_json_arguments_only():
+    def row(arguments):
+        return {"role": "assistant", "tool_calls": [{"id": "call", "type": "function",
+                "function": {"name": "lookup", "arguments": arguments}}]}
+
+    assert_occurrences([row('{"b": [2, 3], "a":1}')], [row('{"a": 1, "b":[2,3]}')])
+    for raw in ("invalid JSON", "", None, 7, {"raw": "object"},
+                ' {"x":1,"x":2} ', '{"nested":[{"x":1,"x":2}]}'):
+        assert identity(row(raw))[-1][0][-1] == raw
+    with pytest.raises(AssertionError, match="collapses="):
+        assert_occurrences([row('{"x":1,"x":2}')], [row('{"x":2}')])
+
+
+def test_rotation_tool_arguments_and_active_ownership():
+    machine = RotationMachine()
+    try:
+        for _ in range(2):
+            machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.rotate()
+        assert machine.session_id != "identity-session"
+        machine.new_turn("alpha", False, 3, False, "lookup",
+                         ('{"query":2}', '{"query":0}', '{"query":1}'))
+        calls = machine.occurrences[-5]["tool_calls"]
+        assert len({json.loads(call["function"]["arguments"])["query"] for call in calls}) == 3
+        assert [row["session_id"] for row in machine.rows()] == [
+            "identity-session"] * 4 + [machine.session_id] * 6
+        for operation in (machine.replay, machine.cold_resume):
+            operation()
+            machine.exactly_once()
+    finally:
+        machine.teardown()
 
 
 def test_compress_replay_resume_append():
@@ -226,13 +275,28 @@ def test_rotation_no_progress_fires_no_hooks(marker_only):
         def unexpected_hook(*args, **kwargs):
             pytest.fail("unchanged compression must not fire session hooks")
 
-        machine.patch.setattr(machine.engine, "compress", unchanged)
-        machine.patch.setattr(machine.engine, "on_session_end", unexpected_hook)
-        machine.patch.setattr(machine.engine, "on_session_start", unexpected_hook)
-        machine.rotate()
+        with machine.patch.context() as patch:
+            patch.setattr(machine.engine, "compress", unchanged)
+            patch.setattr(machine.engine, "on_session_end", unexpected_hook)
+            patch.setattr(machine.engine, "on_session_start", unexpected_hook)
+            machine.rotate()
         assert machine.host == previous
         assert machine.session_ids == ["identity-session"]
-        assert machine.stale_proof == marker_only
+        cold_restarts = 0
+        start = machine.start_engine
+
+        def counted_start():
+            nonlocal cold_restarts
+            cold_restarts += 1
+            return start()
+
+        machine.patch.setattr(machine, "start_engine", counted_start)
+        old_engine = machine.engine
+        machine.cold_resume()
+        print(f"marker_only={marker_only}; cold_restarts={cold_restarts}")
+        assert cold_restarts == 1
+        assert machine.engine is not old_engine
+        assert not machine.stale_proof
         machine.exactly_once()
     finally:
         machine.teardown()
@@ -468,7 +532,640 @@ def test_known_open_exclusions_track_their_strict_xfails():
                    for parameter in mark.args[1] if hasattr(parameter, "marks")
                    for mark in parameter.marks if mark.name == "xfail" and mark.kwargs.get("strict"))
     xfailed = {int(found.group(1)) for reason in reasons if (found := re.match(r"#(\d+)", reason))}
+    xfailed.update(reason for reason in reasons if re.match(r"(?:#\d+:|UNFILED: )", reason))
     assert set(KNOWN_OPEN) <= xfailed, (set(KNOWN_OPEN) - xfailed)
+
+
+@pytest.mark.parametrize("in_place", [True, False], ids=["in-place", "rotation"])
+def test_host_merge_replay_resume_append(in_place):
+    from tests.invariants.test_exactly_once_machine import HostMergeMachine
+
+    machine = HostMergeMachine()
+    try:
+        for _ in range(3):
+            machine.new_turn("alpha", False, 0, False, "lookup")
+        ledger = deepcopy(machine.occurrences)
+        machine.host_merge(in_place)
+        assert machine.occurrences == ledger
+        assert machine.host[0].get("_merged_turn_prefix")
+        machine.exactly_once()
+        machine.new_turn("same text", False, 0, False, "lookup")
+        machine.exactly_once()
+        machine.replay()
+        machine.exactly_once()
+        machine.cold_resume()
+        machine.exactly_once()
+        machine.new_turn("βeta", True, 1, False, "inspect")
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+def test_gateway_reset_retains_deliveries_across_fresh_engines():
+    from tests.invariants.test_exactly_once_machine import GatewayResetMachine
+
+    machine = GatewayResetMachine()
+    try:
+        for _ in range(3):
+            machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.compress()
+        machine.exactly_once()
+        for _ in range(2):
+            ledger = deepcopy(machine.occurrences)
+            old_engine = machine.engine
+            machine.reset()
+            assert machine.engine is not old_engine
+            assert machine.host == []
+            assert machine.occurrences == ledger
+            assert machine.engine.current_conversation_id == "identity-conversation"
+            machine.exactly_once()
+            for _ in range(2):
+                machine.new_turn("alpha", False, 0, False, "lookup")
+                machine.exactly_once()
+            machine.compress()
+            machine.exactly_once()
+            machine.replay()
+            machine.exactly_once()
+            machine.cold_resume()
+            machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+class CliResetReplayStored(AssertionError):
+    """Only the exact #1306 stale-owner or skipped-delivery row shapes."""
+
+
+def assert_cli_reset_occurrences(ledgers, stored, old, new, start):
+    errors = []
+    for conversation, ledger in ledgers.items():
+        rows = stored[conversation]
+        try:
+            assert_occurrences(ledger, rows)
+            assert all(row["session_id"] == conversation for row in rows), "session ownership"
+        except AssertionError as error:
+            errors.append(f"{conversation}: {error}")
+    if not errors:
+        return
+    # #1306 leaves the ended conversation intact. Alpha/beta can be ingested
+    # there by the failed compress; gamma is skipped. The hooks can also skip
+    # every post-/new delivery. No partial loss, duplicate or reorder qualifies.
+    actual_old = list(map(identity, stored[old]))
+    expected_old = list(map(identity, ledgers[old]))
+    before_compress = list(map(identity, ledgers[new][:-2]))
+    if (not start and not stored[new]
+            and all(row["session_id"] == old for row in stored[old])
+            and actual_old in (expected_old, expected_old + before_compress)):
+        raise CliResetReplayStored("\n".join(errors))
+    raise AssertionError("\n".join(errors))
+
+
+@pytest.mark.parametrize("post_new_count", [0, 4])
+def test_cli_reset_classifier_accepts_only_named_shapes(post_new_count):
+    ledgers = {"old": [{"role": "user", "content": "before"}],
+               "new": [{"role": "user", "content": str(i)} for i in range(6)]}
+    stored = {"old": [dict(row, session_id="old") for row in
+                      ledgers["old"] + ledgers["new"][:post_new_count]], "new": []}
+    with pytest.raises(CliResetReplayStored):
+        assert_cli_reset_occurrences(ledgers, stored, "old", "new", False)
+
+
+@pytest.mark.parametrize("corruption", ["old-loss", "old-duplicate", "old-order", "partial-new-loss",
+                                        "new-row", "wrong-owner", "explicit-start"])
+def test_cli_reset_classifier_rejects_other_mismatches(corruption, monkeypatch):
+    ledgers = {"old": [{"role": "user", "content": "before"}],
+               "new": [{"role": "user", "content": str(i)} for i in range(6)]}
+    stored = {"old": [dict(row, session_id="old") for row in
+                      ledgers["old"] + ledgers["new"][:4]], "new": []}
+    if corruption == "old-loss":
+        stored["old"].pop(0)
+    elif corruption == "old-duplicate":
+        stored["old"].insert(0, stored["old"][0])
+    elif corruption == "old-order":
+        stored["old"].reverse()
+    elif corruption == "partial-new-loss":
+        stored["old"].pop()
+    elif corruption == "new-row":
+        stored["new"].append(dict(ledgers["new"][-1], session_id="new"))
+    elif corruption == "wrong-owner":
+        stored["old"][-1]["session_id"] = "new"
+    checked = []
+    oracle = assert_occurrences
+
+    def check(ledger, rows):
+        checked.append(ledger)
+        oracle(ledger, rows)
+
+    monkeypatch.setattr(sys.modules[__name__], "assert_occurrences", check)
+    with pytest.raises(AssertionError) as caught:
+        assert_cli_reset_occurrences(ledgers, stored, "old", "new", corruption == "explicit-start")
+    assert type(caught.value) is AssertionError
+    assert checked == list(ledgers.values())
+
+
+@pytest.mark.parametrize("start", [
+    pytest.param(False, id="bare-new", marks=pytest.mark.xfail(
+        strict=True, reason="#1306: CLI /new keeps LCM bound to the ended session",
+        raises=CliResetReplayStored)),
+    pytest.param(True, id="explicit-start-control"),
+])
+def test_cli_new_post_llm_compress_replay(start, caplog, monkeypatch):
+    """Real CLI: two turns, /new, two turns, unchanged /compress, final turn.
+
+    Deliveries belong to the host's persisted session, even when LCM writes
+    them elsewhere. The control supplies only the missing start after /new.
+    """
+    import importlib.util
+    import hermes_lcm
+
+    # conftest exposes submodules without executing the plugin entry point.
+    spec = importlib.util.spec_from_file_location("hermes_lcm", hermes_lcm.__file__)
+    plugin = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(plugin)
+    from hermes_lcm.config import LCMConfig
+    from hermes_lcm.engine import LCMEngine
+    from hermes_lcm import plugin_identity
+    import sqlite3
+
+    def start_cli(machine):
+        RotationMachine._publish_host_session(machine, "identity-session")
+        engine = LCMEngine(config=LCMConfig(database_path=str(machine.home / "lcm.db"),
+                                           fresh_tail_count=2, leaf_chunk_tokens=64),
+                           hermes_home=str(machine.home / "home"))
+        engine.on_session_start("identity-session", platform="cli", context_length=8192)
+        return engine
+
+    monkeypatch.setattr(ExactlyOnceMachine, "start_engine", start_cli)
+    machine = ExactlyOnceMachine()
+    prototype = None
+    try:
+        config = machine.engine._config
+        old, new = "identity-session", "identity-reset-1"
+        hooks, engines = {}, []
+        machine.patch.setattr(LCMConfig, "from_env", classmethod(lambda cls: config))
+        machine.patch.setenv("HERMES_HOME", str(machine.home / "home"))
+        machine.patch.setattr(plugin_identity, "load_hermes_config", lambda: {})
+        machine.patch.setattr(plugin, "_warn_if_embedding_provider_unavailable", lambda config: None)
+        plugin.register(types.SimpleNamespace(register_context_engine=engines.append,
+                                              register_hook=lambda name, hook: hooks.update({name: hook})))
+        prototype = engines[0]
+        ledgers = {old: [], new: []}
+
+        def turn(session, text):
+            batch = [machine.stamp({"role": "user", "content": text}),
+                     machine.stamp({"role": "assistant", "content": f"answer {text}"})]
+            machine.host.extend(batch)
+            ledgers[session].extend(deepcopy(batch))
+            # CLI passes the session ID, no gateway key or context_compressor.
+            hooks["post_llm_call"](session_id=session, conversation_history=machine.host, platform="cli")
+
+        for text in ("before-one", "before-two"):
+            turn(old, text)
+        machine.engine.on_session_end(old, machine.host)
+        with sqlite3.connect(machine.home / "home" / "state.db") as connection:
+            connection.execute("UPDATE sessions SET end_reason = 'new_session' WHERE id = ?", (old,))
+            connection.execute("INSERT INTO sessions VALUES (?, NULL, NULL)", (new,))
+        machine.host = []
+        machine.engine.on_session_reset()
+        if start:
+            machine.engine.on_session_start(new, platform="cli", context_length=8192)
+        caplog.clear()
+        for text in ("alpha", "beta"):
+            turn(new, text)
+        if not start:
+            assert "resident_engine_conflict" in caplog.text
+            assert machine.engine._store.connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 4
+        previous = deepcopy(machine.host)
+        compressed = machine.engine.compress(machine.host, current_tokens=machine.engine.threshold_tokens + 1,
+                                             force=True)
+        if start:
+            assert machine.engine._last_compression_status == "compacted"
+            assert compressed != previous
+            machine.engine.on_session_end(new, previous)
+            machine.engine.on_session_start(new, platform="cli", boundary_reason="compression", old_session_id=new)
+            machine.host = compressed
+        else:
+            assert machine.engine._last_compression_status == "error"
+            assert machine.engine._survival_fit_reason == "lifecycle_binding_changed"
+            assert compressed == previous
+            assert machine.host == previous
+            # Real CLI sees unchanged output and skips both boundary hooks.
+        caplog.clear()
+        turn(new, "gamma")
+        if not start:
+            assert "resident_engine_conflict" in caplog.text
+        stored = {}
+        for conversation in ledgers:
+            cursor = machine.engine._store.connection.execute(
+                "SELECT role, content, tool_call_id, tool_calls, session_id FROM messages "
+                "WHERE conversation_id = ? ORDER BY store_id", (conversation,))
+            stored[conversation] = [dict(zip((column[0] for column in cursor.description), row))
+                                    for row in cursor.fetchall()]
+        # A row under any other conversation is a new failure, never the #1306 shape the xfail names.
+        outside = machine.engine._store.connection.execute(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id IS NULL OR conversation_id NOT IN "
+            f"({', '.join('?' * len(ledgers))})", tuple(ledgers)).fetchone()[0]
+        assert outside == 0, f"{outside} rows stored outside the host's conversations"
+        assert_cli_reset_occurrences(ledgers, stored, old, new, start)
+    finally:
+        if prototype is not None:
+            prototype.shutdown()
+        machine.teardown()
+
+
+@pytest.mark.parametrize("point", ["in-place", "rotation-ended", "user-persisted"])
+def test_restart_replay_resume_append(point):
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    try:
+        for text in ("alpha", "same text"):
+            machine.new_turn(text, False, 0, False, "lookup")
+        engine = machine.engine
+        if point == "user-persisted":
+            # A structured next prompt is not merged with the pending plain
+            # user. Both are delivered at the next completed turn, with no
+            # cold-start ingest. The plain/plain #849 shape is seeded below.
+            user = machine.stamp({"role": "user", "content": "interrupted user"})
+            machine.host.append(user)
+            machine.occurrences.append(dict(deepcopy(user), session_id=machine.session_id))
+            machine._persist_host_view(machine.session_id, machine.host)
+            machine._restart_from_host()
+            assert all("message_uid" not in row for row in machine.host)
+            machine.new_turn("βeta", True, 0, False, "lookup")
+        else:
+            machine.restart(point, "interrupted user")
+        assert machine.engine is not engine
+        assert machine.engine._session_id == machine.session_id
+        assert len(machine.session_ids) == 1
+        machine.exactly_once()
+        for operation in (machine.replay, machine.cold_resume):
+            operation()
+            machine.exactly_once()
+        machine.new_turn("βeta", True, 1, False, "inspect")
+        machine.exactly_once()
+        machine.rotate()
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+@pytest.mark.parametrize("cold", [False, True], ids=["warm", "cold"])
+@pytest.mark.parametrize(("compressions", "text"), [
+    (0, "alpha"), (1, "alpha"), (2, "alpha 2"),
+], ids=["no-compress", "one-compress", "two-compress-distinct"])
+def test_restart_repeated_prompt_controls(cold, compressions, text):
+    """Separate restart, repeated text and no-progress compression factors."""
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.exactly_once()
+        if cold:
+            machine.cold_resume()
+        else:
+            machine.new_turn("next prompt", False, 0, False, "lookup")
+        machine.exactly_once()
+        for _ in range(compressions):
+            machine.compress()
+            machine.exactly_once()
+        machine.new_turn(text, False, 0, False, "lookup")
+        assert len(machine.occurrences) == 6
+        assert machine.occurrences[0]["timestamp"] != machine.occurrences[-2]["timestamp"]
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+class RecompressionUserCollapsed(AssertionError):
+    """Only #1328's second repeated user missing, with every other row ordered."""
+
+
+@pytest.mark.xfail(strict=True, reason="#1328: no-progress recompression drops a fresh repeated user",
+                   raises=RecompressionUserCollapsed)
+def test_restart_repeated_user_1328():
+    """Engine API seed; the CLI refuses manual compression under four rows."""
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        for text in ("alpha", "next prompt"):
+            machine.new_turn(text, False, 0, False, "lookup")
+            machine.exactly_once()
+        machine.compress()
+        machine.exactly_once()
+        assert machine.engine._last_compression_status == "compacted"
+        previous = deepcopy(machine.host)
+        machine.compress()
+        machine.exactly_once()
+        assert machine.engine._last_compression_status == "sanitized"
+        assert machine.host == previous
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        expected = list(map(identity, machine.occurrences))
+        assert len(expected) == 6
+        assert expected[0] == expected[-2]
+        assert machine.occurrences[0]["timestamp"] != machine.occurrences[-2]["timestamp"]
+        actual = list(map(identity, machine.rows()))
+        try:
+            machine.exactly_once()
+        except AssertionError as error:
+            if actual == expected[:-2] + expected[-1:]:
+                raise RecompressionUserCollapsed(str(error)) from error
+            raise
+    finally:
+        machine.teardown()
+
+
+class ReplayUserCollapsed(AssertionError):
+    """Only #1328's final repeated user missing after an unchanged replay."""
+
+
+@pytest.mark.xfail(strict=True, reason="#1328: unchanged replay consumes the fresh repeated user's proof",
+                   raises=ReplayUserCollapsed)
+def test_restart_replay_user_1328():
+    """Engine API seed; the CLI refuses manual compression under four rows."""
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.exactly_once()
+        machine.cold_resume()
+        machine.exactly_once()
+        machine.compress()
+        machine.exactly_once()
+        assert machine.engine._last_compression_status == "compacted"
+        proof = machine.engine._compress_commit_proof
+        assert proof and proof.get("emissions")
+        previous = deepcopy(machine.host)
+        machine.replay()
+        machine.exactly_once()
+        assert machine.host == previous
+        assert machine.engine._compress_commit_proof is None
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        expected = list(map(identity, machine.occurrences))
+        assert len(expected) == 6
+        assert expected[0] == expected[-2]
+        assert machine.occurrences[0]["timestamp"] != machine.occurrences[-2]["timestamp"]
+        actual = list(map(identity, machine.rows()))
+        try:
+            machine.exactly_once()
+        except AssertionError as error:
+            if actual == expected[:-2] + expected[-1:]:
+                raise ReplayUserCollapsed(str(error)) from error
+            raise
+    finally:
+        machine.teardown()
+
+
+class ReplayToolTailUserCollapsed(AssertionError):
+    """Only the final repeated user missing from the nine-row tool-tail trace."""
+
+
+@pytest.mark.xfail(strict=True, reason="#1328: tool-tail replay consumes the fresh repeated user's proof",
+                   raises=ReplayToolTailUserCollapsed)
+def test_restart_replay_tool_tail_user_1328():
+    """T(alpha), T(next prompt with two tools), compress, replay, T(alpha)."""
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.new_turn("next prompt", False, 2, False, "lookup")
+        machine.exactly_once()
+        machine.compress()
+        machine.exactly_once()
+        assert machine.engine._last_compression_status == "compacted"
+        proof = machine.engine._compress_commit_proof
+        assert proof and proof.get("emissions")
+        previous = deepcopy(machine.host)
+        machine.replay()
+        machine.exactly_once()
+        assert machine.host == previous
+        assert machine.engine._compress_commit_proof is None
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        expected = list(map(identity, machine.occurrences))
+        assert len(expected) == 9
+        assert expected[0] == expected[-2]
+        assert machine.occurrences[0]["timestamp"] != machine.occurrences[-2]["timestamp"]
+        actual = list(map(identity, machine.rows()))
+        try:
+            machine.exactly_once()
+        except AssertionError as error:
+            if actual == expected[:-2] + expected[-1:]:
+                raise ReplayToolTailUserCollapsed(str(error)) from error
+            raise
+    finally:
+        machine.teardown()
+
+
+@settings(PROFILE)
+@given(case=st.sampled_from(("known-open", "distinct-text", "no-compress", "one-compress", "four-row", "tool-tail")),
+       cold=st.booleans())
+def test_restart_recompression_generated_controls(case, cold):
+    """Passing neighbors bypass guards; known-open inputs skip delivery."""
+    from tests.invariants.test_exactly_once_machine import KNOWN_OPEN, RestartMachine
+
+    machine = RestartMachine()
+    known_open = case == "known-open"
+    machine.include_known_open = not known_open
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        if cold:
+            machine.cold_resume()
+        else:
+            machine.new_turn("next prompt", False, 2 if case == "tool-tail" else 0, False, "lookup")
+        if case == "four-row":
+            machine.engine._config.fresh_tail_count = 4
+            machine.engine.protect_last_n = 4
+            machine.new_turn("third prompt", False, 0, False, "lookup")
+        elif case == "tool-tail" and cold:
+            machine.new_turn("tool prompt", False, 2, False, "lookup")
+        compressions = {"no-compress": 0, "one-compress": 1}.get(case, 2)
+        for _ in range(compressions):
+            if case == "four-row":
+                assert len(machine.host) >= 4
+            machine.compress()
+            machine.exactly_once()
+        delivered = len(machine.occurrences)
+        text = "alpha 2" if case == "distinct-text" else "alpha"
+        user = dict(role="user", content=text, timestamp=float(machine.sequence + 1))
+        assert bool(KNOWN_OPEN[1328](machine.proof_lost_view == machine.host,
+                    machine.engine._compress_commit_proof, machine.host, machine.occurrences, user)) == known_open
+        machine.new_turn(text, False, 0, False, "lookup")
+        assert len(machine.occurrences) == delivered + (0 if known_open else 2)
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+@settings(PROFILE)
+@given(case=st.sampled_from(("known-open", "no-compress", "new-turn", "distinct-text", "tool-tail", "four-row")),
+       cold=st.booleans())
+def test_restart_replay_generated_controls(case, cold):
+    """Replay neighbors bypass guards; equal-identity triggers skip delivery."""
+    from tests.invariants.test_exactly_once_machine import KNOWN_OPEN, RestartMachine
+
+    machine = RestartMachine()
+    known_open = case in ("known-open", "tool-tail")
+    machine.include_known_open = not known_open
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        if cold:
+            machine.cold_resume()
+        else:
+            machine.new_turn("next prompt", False, 2 if case == "tool-tail" else 0, False, "lookup")
+        if case == "four-row":
+            machine.engine._config.fresh_tail_count = 4
+            machine.engine.protect_last_n = 4
+            machine.new_turn("third prompt", False, 0, False, "lookup")
+        elif case == "tool-tail" and cold:
+            machine.new_turn("tool prompt", False, 2, False, "lookup")
+        machine.exactly_once()
+        if case != "no-compress":
+            machine.compress()
+            machine.exactly_once()
+            assert machine.engine._last_compression_status == "compacted"
+        if case == "new-turn":
+            machine.new_turn("intervening prompt", False, 0, False, "lookup")
+            machine.exactly_once()
+        else:
+            previous = deepcopy(machine.host)
+            machine.replay()
+            assert machine.host == previous
+            machine.exactly_once()
+        delivered = len(machine.occurrences)
+        text = "alpha 2" if case == "distinct-text" else "alpha"
+        user = dict(role="user", content=text, timestamp=float(machine.sequence + 1))
+        assert bool(KNOWN_OPEN[1328](machine.proof_lost_view == machine.host,
+                    machine.engine._compress_commit_proof, machine.host, machine.occurrences, user)) == known_open
+        machine.new_turn(text, False, 0, False, "lookup")
+        assert len(machine.occurrences) == delivered + (0 if known_open else 2)
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+class RestartScaffoldStored(AssertionError):
+    """Only the unchanged ledger plus one restored carrier stored as a source."""
+
+
+def check_restart_scaffold(machine):
+    expected, actual = list(map(identity, machine.occurrences)), list(map(identity, machine.rows()))
+    try:
+        machine.exactly_once()
+    except AssertionError as error:
+        if actual == expected[:-2] + [identity(machine.host[0])] + expected[-2:]:
+            raise RestartScaffoldStored(str(error)) from error
+        raise
+
+
+@pytest.mark.xfail(strict=True, reason="#1286: cold published child lacks its parent emission proof",
+                   raises=RestartScaffoldStored)
+def test_restart_published_child_without_start_proof():
+    """Non-default compression.in_place=False; check the next completed turn."""
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        for _ in range(2):
+            machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.exactly_once()
+        machine.restart("rotation-published", "alpha")
+        check_restart_scaffold(machine)
+    finally:
+        machine.teardown()
+
+
+def test_restart_published_child_after_start_control(monkeypatch):
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    cold = machine._restart_from_host
+
+    def after_start():
+        child = machine.session_ids[-1]
+        machine.engine.on_session_start(child, platform="cli", conversation_id="identity-conversation",
+                                         boundary_reason="compression", old_session_id=machine.session_id)
+        cold()
+
+    monkeypatch.setattr(machine, "_restart_from_host", after_start)
+    try:
+        for _ in range(2):
+            machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.restart("rotation-published", "alpha")
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+@pytest.mark.parametrize("point", ["in-place", "rotation-ended"])
+@pytest.mark.xfail(strict=True, reason="#1286: unadopted compaction supersedes the durable input emission",
+                   raises=RestartScaffoldStored)
+def test_restart_before_recompression_adoption(point):
+    """Default in-place window, plus rotation-ended with in_place=False."""
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.new_turn("alpha", False, 1, False, "lookup")
+        machine.rotate()
+        machine.exactly_once()
+        machine.restart(point, "alpha")
+        check_restart_scaffold(machine)
+    finally:
+        machine.teardown()
+
+
+@pytest.mark.parametrize("point", ["in-place", "rotation-ended"])
+def test_restart_before_recompression_adoption_control(point):
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.rotate()
+        machine.exactly_once()
+        machine.restart(point, "alpha")
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+class RestartMergedStored(AssertionError):
+    """Only the new prompt replaced by the host's held-plus-new composite."""
+
+
+@pytest.mark.xfail(strict=True, reason="#849: unanswered persisted user merges with the next completed turn",
+                   raises=RestartMergedStored)
+def test_restart_pending_prompt_849():
+    """Minimal no-duplicate variant: T(alpha), pending X, restart, completed Y."""
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.restart("user-persisted", "X pending")
+        expected, actual = list(map(identity, machine.occurrences)), list(map(identity, machine.rows()))
+        try:
+            machine.exactly_once()
+        except AssertionError as error:
+            if actual == expected[:-3] + [identity(machine.host[-2]), expected[-1]]:
+                raise RestartMergedStored(str(error)) from error
+            raise
+    finally:
+        machine.teardown()
 
 
 _LEAK_PROBE = """

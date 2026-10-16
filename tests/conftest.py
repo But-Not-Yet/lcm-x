@@ -69,6 +69,12 @@ def load_cli():
 import pytest  # noqa: E402
 
 
+@pytest.fixture(params=[False, pytest.param(True, marks=pytest.mark.latency, id="latency")], ids=["correctness", "latency"])
+def latency_check(request):
+    """Keep correctness in PR CI; enable elapsed bounds only in the nightly cell."""
+    return request.param
+
+
 def pytest_report_header(config):
     return [
         f"LCM import failure: {name}: {type(exc).__name__}: {exc}"
