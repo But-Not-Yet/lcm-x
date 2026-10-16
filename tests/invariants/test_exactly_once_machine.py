@@ -560,21 +560,23 @@ TestGatewayReset = GatewayResetMachine.TestCase
 TestGatewayReset.settings = PROFILE
 
 
-RESTART_CHILD = "UNFILED: cold published child lacks its parent emission proof"
+RESTART_CHILD = "#1286: cold published child lacks its parent emission proof"
 
 
-def interrupted_child_start(point, include_known_open):
+def interrupted_child_start(point, host, prior_emission, include_known_open):
     """The host published the child but no compression start re-keyed its proof.
 
-    This is a trajectory boundary, evaluated before restart, never a predicate
-    over the replay result. The strict seed and warm-start control exercise it.
+    Two delivered turns can emit the first head; an adopted prior emission
+    can be re-rendered. Both need the missing child-start re-key. Check that
+    trajectory BEFORE compress, so an excluded restart changes no live proof.
     """
-    return point == "rotation-published" and not include_known_open
+    return (point == "rotation-published" and not include_known_open
+            and (prior_emission or sum(row.get("role") == "user" for row in host) >= 2))
 
 
 KNOWN_OPEN[RESTART_CHILD] = interrupted_child_start
 
-RESTART_SUPERSEDED = "UNFILED: unadopted compaction supersedes the durable input emission"
+RESTART_SUPERSEDED = "#1286: unadopted compaction supersedes the durable input emission"
 
 
 def interrupted_recompression(point, prior_emission, include_known_open):
@@ -588,16 +590,20 @@ def interrupted_recompression(point, prior_emission, include_known_open):
 
 KNOWN_OPEN[RESTART_SUPERSEDED] = interrupted_recompression
 
-RESTART_REPEAT = "UNFILED: restart merges a repeated pending prompt into an unsplit source row"
+RESTART_PENDING = "#849: unanswered persisted user merges with the next completed turn"
 
 
-def repeated_pending_prompt(point, host, text, include_known_open):
-    """A second persisted prompt repeats the unanswered tail at a new stamp."""
-    return (point == "user-persisted" and bool(host) and host[-1].get("role") == "user"
-            and host[-1].get("content") == text and not include_known_open)
+def unanswered_before_next_turn(point, host, include_known_open):
+    """A fresh pending user has no ingest donor before the next prompt's repair.
+
+    The restart rule observes the next completed turn, not a fabricated cold
+    ingest. Its two plain prompts become one row, including without a duplicate.
+    """
+    return (point == "user-persisted" and bool(host) and host[-1].get("role") == "assistant"
+            and not include_known_open)
 
 
-KNOWN_OPEN[RESTART_REPEAT] = repeated_pending_prompt
+KNOWN_OPEN[RESTART_PENDING] = unanswered_before_next_turn
 
 
 class RestartMachine(RotationMachine):
@@ -654,10 +660,47 @@ class RestartMachine(RotationMachine):
         self.session_id = session
         self.host = merge_host_users([dict(row, _db_persisted=True) for row in json.loads(payload)])
         self.engine = self.start_engine()
-        # Advance to the first replay ingest, as cold_resume does. The host's
-        # start hook itself does not ingest the restored message list.
-        self.engine.ingest(self.host)
+        # r34.10 cold start only binds; post_llm_call delivers the next
+        # completed turn, after per-request role repair. Never ingest here.
         self.stale_proof = False
+
+    @rule(text=TEXT, structured=st.booleans(), tool_count=st.integers(0, 3),
+          retry=st.booleans(), tool_name=st.sampled_from(("lookup", "inspect")))
+    def new_turn(self, text, structured, tool_count, retry, tool_name):
+        user = self.stamp({"role": "user", "content": (
+            [{"type": "text", "text": text}, {"type": "text", "text": "part two"}]
+            if structured else text)})
+        if retry and len(self.host) >= 4 and self.host[-2]["role"] == "user":
+            user["content"] = deepcopy(self.host[-2]["content"])
+        is_retry = retry and retry_resend_1179(self.host, user)
+        if is_retry and not self.include_known_open and KNOWN_OPEN[1179](self.host, user):
+            return
+        if is_retry:
+            self.host = self.host[:-2]
+        self.retry_occurrence_index = len(self.occurrences) if is_retry else None
+        self.host.append(user)
+        self.occurrences.append(deepcopy(user))
+        self.host = merge_host_users(self.host)
+        batch = []
+        calls = [{"id": f"call-{self.sequence}-{i}", "type": "function",
+                  "function": {"name": tool_name, "arguments": "{}"}} for i in range(tool_count)]
+        if calls:
+            batch.append(self.stamp({"role": "assistant", "content": "calling", "tool_calls": calls}))
+            batch.extend(self.stamp({"role": "tool", "content": f"result {i}", "tool_call_id": call["id"]})
+                         for i, call in enumerate(calls))
+        batch.append(self.stamp({"role": "assistant", "content": f"answer {text} occurrence {self.sequence}"}))
+        self.host.extend(batch)
+        self.occurrences.extend(deepcopy(batch))
+        self.engine.ingest(self.host)
+
+    @precondition(lambda self: bool(self.host))
+    @rule()
+    def cold_resume(self):
+        if KNOWN_OPEN[1286](self.stale_proof, "cold_resume"):
+            return
+        self._persist_host_view(self.session_id, self.host)
+        self._restart_from_host()
+        self.new_turn("next prompt", False, 0, False, "lookup")
 
     @precondition(lambda self: bool(self.host))
     @rule(point=st.sampled_from(("in-place", "rotation-ended", "rotation-published", "user-persisted")),
@@ -667,11 +710,12 @@ class RestartMachine(RotationMachine):
         # BEFORE the transition; never exclude from the observed store rows.
         if KNOWN_OPEN[1286](self.stale_proof, "cold_resume"):
             return
-        if KNOWN_OPEN[RESTART_CHILD](point, self.include_known_open):
-            return
-        if KNOWN_OPEN[RESTART_REPEAT](point, self.host, text, self.include_known_open):
+        if KNOWN_OPEN[RESTART_PENDING](point, self.host, self.include_known_open):
             return
         prior_proof = self.engine._durable_commit_proof_payload() or {}
+        if KNOWN_OPEN[RESTART_CHILD](point, self.host, bool(prior_proof.get("emissions")),
+                                     self.include_known_open):
+            return
         if KNOWN_OPEN[RESTART_SUPERSEDED](point, bool(prior_proof.get("emissions")), self.include_known_open):
             return
         self._persist_host_view(self.session_id, self.host)
@@ -695,6 +739,10 @@ class RestartMachine(RotationMachine):
                     self._persist_host_view(child, compressed, parent=self.session_id)
                     self.session_ids.append(child)
         self._restart_from_host()
+        # One generated transition includes the next completed turn. The
+        # unchanged oracle then checks all persisted deliveries after their
+        # first host-reachable ingest, never an unanswered intermediate state.
+        self.new_turn("next prompt", False, 0, False, "lookup")
 
 
 TestRestart = RestartMachine.TestCase
