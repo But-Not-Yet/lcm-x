@@ -8,7 +8,7 @@ import types
 import pytest
 
 pytest.importorskip("hypothesis")
-from hypothesis import settings, strategies as st
+from hypothesis import given, settings, strategies as st
 from hypothesis.stateful import invariant, rule, run_state_machine_as_test
 
 from tests.invariants.test_exactly_once_machine import (
@@ -468,6 +468,7 @@ def test_known_open_exclusions_track_their_strict_xfails():
                    for parameter in mark.args[1] if hasattr(parameter, "marks")
                    for mark in parameter.marks if mark.name == "xfail" and mark.kwargs.get("strict"))
     xfailed = {int(found.group(1)) for reason in reasons if (found := re.match(r"#(\d+)", reason))}
+    xfailed.update(reason for reason in reasons if re.match(r"(?:#\d+:|UNFILED: )", reason))
     assert set(KNOWN_OPEN) <= xfailed, (set(KNOWN_OPEN) - xfailed)
 
 
@@ -705,6 +706,401 @@ def test_cli_new_post_llm_compress_replay(start, caplog, monkeypatch):
     finally:
         if prototype is not None:
             prototype.shutdown()
+        machine.teardown()
+
+
+@pytest.mark.parametrize("point", ["in-place", "rotation-ended", "user-persisted"])
+def test_restart_replay_resume_append(point):
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    try:
+        for text in ("alpha", "same text"):
+            machine.new_turn(text, False, 0, False, "lookup")
+        engine = machine.engine
+        if point == "user-persisted":
+            # A structured next prompt is not merged with the pending plain
+            # user. Both are delivered at the next completed turn, with no
+            # cold-start ingest. The plain/plain #849 shape is seeded below.
+            user = machine.stamp({"role": "user", "content": "interrupted user"})
+            machine.host.append(user)
+            machine.occurrences.append(deepcopy(user))
+            machine._persist_host_view(machine.session_id, machine.host)
+            machine._restart_from_host()
+            assert all("message_uid" not in row for row in machine.host)
+            machine.new_turn("βeta", True, 0, False, "lookup")
+        else:
+            machine.restart(point, "interrupted user")
+        assert machine.engine is not engine
+        assert machine.engine._session_id == machine.session_id
+        assert len(machine.session_ids) == 1
+        machine.exactly_once()
+        for operation in (machine.replay, machine.cold_resume):
+            operation()
+            machine.exactly_once()
+        machine.new_turn("βeta", True, 1, False, "inspect")
+        machine.exactly_once()
+        machine.rotate()
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+@pytest.mark.parametrize("cold", [False, True], ids=["warm", "cold"])
+@pytest.mark.parametrize(("compressions", "text"), [
+    (0, "alpha"), (1, "alpha"), (2, "alpha 2"),
+], ids=["no-compress", "one-compress", "two-compress-distinct"])
+def test_restart_repeated_prompt_controls(cold, compressions, text):
+    """Separate restart, repeated text and no-progress compression factors."""
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.exactly_once()
+        if cold:
+            machine.cold_resume()
+        else:
+            machine.new_turn("next prompt", False, 0, False, "lookup")
+        machine.exactly_once()
+        for _ in range(compressions):
+            machine.compress()
+            machine.exactly_once()
+        machine.new_turn(text, False, 0, False, "lookup")
+        assert len(machine.occurrences) == 6
+        assert machine.occurrences[0]["timestamp"] != machine.occurrences[-2]["timestamp"]
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+class RecompressionUserCollapsed(AssertionError):
+    """Only #1328's second repeated user missing, with every other row ordered."""
+
+
+@pytest.mark.xfail(strict=True, reason="#1328: no-progress recompression drops a fresh repeated user",
+                   raises=RecompressionUserCollapsed)
+def test_restart_repeated_user_1328():
+    """Engine API seed; the CLI refuses manual compression under four rows."""
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        for text in ("alpha", "next prompt"):
+            machine.new_turn(text, False, 0, False, "lookup")
+            machine.exactly_once()
+        machine.compress()
+        machine.exactly_once()
+        assert machine.engine._last_compression_status == "compacted"
+        previous = deepcopy(machine.host)
+        machine.compress()
+        machine.exactly_once()
+        assert machine.engine._last_compression_status == "sanitized"
+        assert machine.host == previous
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        expected = list(map(identity, machine.occurrences))
+        assert len(expected) == 6
+        assert expected[0] == expected[-2]
+        assert machine.occurrences[0]["timestamp"] != machine.occurrences[-2]["timestamp"]
+        actual = list(map(identity, machine.rows()))
+        try:
+            machine.exactly_once()
+        except AssertionError as error:
+            if actual == expected[:-2] + expected[-1:]:
+                raise RecompressionUserCollapsed(str(error)) from error
+            raise
+    finally:
+        machine.teardown()
+
+
+class ReplayUserCollapsed(AssertionError):
+    """Only #1328's final repeated user missing after an unchanged replay."""
+
+
+@pytest.mark.xfail(strict=True, reason="#1328: unchanged replay consumes the fresh repeated user's proof",
+                   raises=ReplayUserCollapsed)
+def test_restart_replay_user_1328():
+    """Engine API seed; the CLI refuses manual compression under four rows."""
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.exactly_once()
+        machine.cold_resume()
+        machine.exactly_once()
+        machine.compress()
+        machine.exactly_once()
+        assert machine.engine._last_compression_status == "compacted"
+        proof = machine.engine._compress_commit_proof
+        assert proof and proof.get("emissions")
+        previous = deepcopy(machine.host)
+        machine.replay()
+        machine.exactly_once()
+        assert machine.host == previous
+        assert machine.engine._compress_commit_proof is None
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        expected = list(map(identity, machine.occurrences))
+        assert len(expected) == 6
+        assert expected[0] == expected[-2]
+        assert machine.occurrences[0]["timestamp"] != machine.occurrences[-2]["timestamp"]
+        actual = list(map(identity, machine.rows()))
+        try:
+            machine.exactly_once()
+        except AssertionError as error:
+            if actual == expected[:-2] + expected[-1:]:
+                raise ReplayUserCollapsed(str(error)) from error
+            raise
+    finally:
+        machine.teardown()
+
+
+class ReplayToolTailUserCollapsed(AssertionError):
+    """Only the final repeated user missing from the nine-row tool-tail trace."""
+
+
+@pytest.mark.xfail(strict=True, reason="#1328: tool-tail replay consumes the fresh repeated user's proof",
+                   raises=ReplayToolTailUserCollapsed)
+def test_restart_replay_tool_tail_user_1328():
+    """T(alpha), T(next prompt with two tools), compress, replay, T(alpha)."""
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.new_turn("next prompt", False, 2, False, "lookup")
+        machine.exactly_once()
+        machine.compress()
+        machine.exactly_once()
+        assert machine.engine._last_compression_status == "compacted"
+        proof = machine.engine._compress_commit_proof
+        assert proof and proof.get("emissions")
+        previous = deepcopy(machine.host)
+        machine.replay()
+        machine.exactly_once()
+        assert machine.host == previous
+        assert machine.engine._compress_commit_proof is None
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        expected = list(map(identity, machine.occurrences))
+        assert len(expected) == 9
+        assert expected[0] == expected[-2]
+        assert machine.occurrences[0]["timestamp"] != machine.occurrences[-2]["timestamp"]
+        actual = list(map(identity, machine.rows()))
+        try:
+            machine.exactly_once()
+        except AssertionError as error:
+            if actual == expected[:-2] + expected[-1:]:
+                raise ReplayToolTailUserCollapsed(str(error)) from error
+            raise
+    finally:
+        machine.teardown()
+
+
+@settings(PROFILE)
+@given(case=st.sampled_from(("known-open", "distinct-text", "no-compress", "one-compress", "four-row", "tool-tail")),
+       cold=st.booleans())
+def test_restart_recompression_generated_controls(case, cold):
+    """Passing neighbors bypass guards; known-open inputs skip delivery."""
+    from tests.invariants.test_exactly_once_machine import KNOWN_OPEN, RestartMachine
+
+    machine = RestartMachine()
+    known_open = case == "known-open"
+    machine.include_known_open = not known_open
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        if cold:
+            machine.cold_resume()
+        else:
+            machine.new_turn("next prompt", False, 2 if case == "tool-tail" else 0, False, "lookup")
+        if case == "four-row":
+            machine.engine._config.fresh_tail_count = 4
+            machine.engine.protect_last_n = 4
+            machine.new_turn("third prompt", False, 0, False, "lookup")
+        elif case == "tool-tail" and cold:
+            machine.new_turn("tool prompt", False, 2, False, "lookup")
+        compressions = {"no-compress": 0, "one-compress": 1}.get(case, 2)
+        for _ in range(compressions):
+            if case == "four-row":
+                assert len(machine.host) >= 4
+            machine.compress()
+            machine.exactly_once()
+        delivered = len(machine.occurrences)
+        text = "alpha 2" if case == "distinct-text" else "alpha"
+        user = dict(role="user", content=text, timestamp=float(machine.sequence + 1))
+        assert bool(KNOWN_OPEN[1328](machine.proof_lost_view == machine.host,
+                    machine.engine._compress_commit_proof, machine.host, machine.occurrences, user)) == known_open
+        machine.new_turn(text, False, 0, False, "lookup")
+        assert len(machine.occurrences) == delivered + (0 if known_open else 2)
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+@settings(PROFILE)
+@given(case=st.sampled_from(("known-open", "no-compress", "new-turn", "distinct-text", "tool-tail", "four-row")),
+       cold=st.booleans())
+def test_restart_replay_generated_controls(case, cold):
+    """Replay neighbors bypass guards; equal-identity triggers skip delivery."""
+    from tests.invariants.test_exactly_once_machine import KNOWN_OPEN, RestartMachine
+
+    machine = RestartMachine()
+    known_open = case in ("known-open", "tool-tail")
+    machine.include_known_open = not known_open
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        if cold:
+            machine.cold_resume()
+        else:
+            machine.new_turn("next prompt", False, 2 if case == "tool-tail" else 0, False, "lookup")
+        if case == "four-row":
+            machine.engine._config.fresh_tail_count = 4
+            machine.engine.protect_last_n = 4
+            machine.new_turn("third prompt", False, 0, False, "lookup")
+        elif case == "tool-tail" and cold:
+            machine.new_turn("tool prompt", False, 2, False, "lookup")
+        machine.exactly_once()
+        if case != "no-compress":
+            machine.compress()
+            machine.exactly_once()
+            assert machine.engine._last_compression_status == "compacted"
+        if case == "new-turn":
+            machine.new_turn("intervening prompt", False, 0, False, "lookup")
+            machine.exactly_once()
+        else:
+            previous = deepcopy(machine.host)
+            machine.replay()
+            assert machine.host == previous
+            machine.exactly_once()
+        delivered = len(machine.occurrences)
+        text = "alpha 2" if case == "distinct-text" else "alpha"
+        user = dict(role="user", content=text, timestamp=float(machine.sequence + 1))
+        assert bool(KNOWN_OPEN[1328](machine.proof_lost_view == machine.host,
+                    machine.engine._compress_commit_proof, machine.host, machine.occurrences, user)) == known_open
+        machine.new_turn(text, False, 0, False, "lookup")
+        assert len(machine.occurrences) == delivered + (0 if known_open else 2)
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+class RestartScaffoldStored(AssertionError):
+    """Only the unchanged ledger plus one restored carrier stored as a source."""
+
+
+def check_restart_scaffold(machine):
+    expected, actual = list(map(identity, machine.occurrences)), list(map(identity, machine.rows()))
+    try:
+        machine.exactly_once()
+    except AssertionError as error:
+        if actual == expected[:-2] + [identity(machine.host[0])] + expected[-2:]:
+            raise RestartScaffoldStored(str(error)) from error
+        raise
+
+
+@pytest.mark.xfail(strict=True, reason="#1286: cold published child lacks its parent emission proof",
+                   raises=RestartScaffoldStored)
+def test_restart_published_child_without_start_proof():
+    """Non-default compression.in_place=False; check the next completed turn."""
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        for _ in range(2):
+            machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.exactly_once()
+        machine.restart("rotation-published", "alpha")
+        check_restart_scaffold(machine)
+    finally:
+        machine.teardown()
+
+
+def test_restart_published_child_after_start_control(monkeypatch):
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    cold = machine._restart_from_host
+
+    def after_start():
+        child = machine.session_ids[-1]
+        machine.engine.on_session_start(child, platform="cli", conversation_id="identity-conversation",
+                                         boundary_reason="compression", old_session_id=machine.session_id)
+        cold()
+
+    monkeypatch.setattr(machine, "_restart_from_host", after_start)
+    try:
+        for _ in range(2):
+            machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.restart("rotation-published", "alpha")
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+@pytest.mark.parametrize("point", ["in-place", "rotation-ended"])
+@pytest.mark.xfail(strict=True, reason="#1286: unadopted compaction supersedes the durable input emission",
+                   raises=RestartScaffoldStored)
+def test_restart_before_recompression_adoption(point):
+    """Default in-place window, plus rotation-ended with in_place=False."""
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.new_turn("alpha", False, 1, False, "lookup")
+        machine.rotate()
+        machine.exactly_once()
+        machine.restart(point, "alpha")
+        check_restart_scaffold(machine)
+    finally:
+        machine.teardown()
+
+
+@pytest.mark.parametrize("point", ["in-place", "rotation-ended"])
+def test_restart_before_recompression_adoption_control(point):
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.rotate()
+        machine.exactly_once()
+        machine.restart(point, "alpha")
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+class RestartMergedStored(AssertionError):
+    """Only the new prompt replaced by the host's held-plus-new composite."""
+
+
+@pytest.mark.xfail(strict=True, reason="#849: unanswered persisted user merges with the next completed turn",
+                   raises=RestartMergedStored)
+def test_restart_pending_prompt_849():
+    """Minimal no-duplicate variant: T(alpha), pending X, restart, completed Y."""
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.restart("user-persisted", "X pending")
+        expected, actual = list(map(identity, machine.occurrences)), list(map(identity, machine.rows()))
+        try:
+            machine.exactly_once()
+        except AssertionError as error:
+            if actual == expected[:-3] + [identity(machine.host[-2]), expected[-1]]:
+                raise RestartMergedStored(str(error)) from error
+            raise
+    finally:
         machine.teardown()
 
 
