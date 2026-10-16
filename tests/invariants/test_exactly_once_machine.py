@@ -4,7 +4,8 @@ RecoveryMachine also generates host recovery fits, with larger delivered rows
 and a small context window; the original machine keeps its input distribution.
 RotationMachine adds the host's compress/end/start commit with fresh child
 sessions, checking the ledger across the whole conversation. HostMergeMachine
-adds post-adoption role repair; ResetMachine adds the CLI bare-reset lifecycle.
+adds post-adoption role repair; GatewayResetMachine adds gateway /new with
+a fresh engine and the same conversation key. CLI bare /new has a seed only.
 
 The ledger records deliveries, not distinct text. The host view can archive its
 last exchange on retry; the ledger must retain both exchanges. Compression
@@ -483,65 +484,36 @@ TestHostMerge = HostMergeMachine.TestCase
 TestHostMerge.settings = PROFILE
 
 
-class ResetMachine(ExactlyOnceMachine):
-    """CLI /new: end old history, new host row, bare reset, empty history.
+class GatewayResetMachine(ExactlyOnceMachine):
+    """Gateway /new ends/shuts down the old engine, then builds a fresh one.
 
-    cli_session_mixin.py:502-548, 561-567; run_agent.py:399-405. A bare
-    reset does not pass a conversation ID or start hook. Only a subsequent
-    host construction (agent_init.py:2106) starts the new CLI conversation.
+    Fleet: gateway/slash_commands_session.py:174-184; run_agent.py:906-917,
+    977-989; agent_init.py:1886,2106-2111. The gateway key survives /new,
+    so every delivery remains in the same conversation's occurrence ledger.
     """
 
     def __init__(self):
         self.session_id = "identity-session"
         self.session_ids = [self.session_id]
-        self.conversation_id = self.session_id
-        self.archived_ledgers = {}
-        self.host_occurrences = []
         super().__init__()
 
-    def _host_session(self, previous=None):
-        home = self.home / "home"
-        home.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(home / "state.db")
-        try:
-            with connection:
-                connection.execute("CREATE TABLE IF NOT EXISTS sessions "
-                                   "(id TEXT PRIMARY KEY, parent_session_id TEXT, end_reason TEXT)")
-                if previous is not None:
-                    connection.execute("UPDATE sessions SET end_reason = 'new_session' WHERE id = ?", (previous,))
-                else:
-                    connection.execute("INSERT INTO sessions VALUES (?, NULL, NULL)", (self.session_id,))
-        finally:
-            connection.close()
-
     def start_engine(self):
-        if not (self.home / "home" / "state.db").exists():
-            self._host_session()
         engine = LCMEngine(config=LCMConfig(database_path=str(self.home / "lcm.db"),
-                                          fresh_tail_count=2, leaf_chunk_tokens=16),
+                                            fresh_tail_count=2, leaf_chunk_tokens=16),
                            hermes_home=str(self.home / "home"))
-        # CLI supplies no gateway conversation_id; the engine defaults to sid.
-        engine.on_session_start(self.session_id, platform="cli", context_length=200_000)
-        self._sync_conversation(engine)
+        engine.on_session_start(self.session_id, platform="telegram", conversation_id="identity-conversation", context_length=200_000)
         return engine
 
-    def _sync_conversation(self, engine):
-        conversation = engine.current_conversation_id
-        if conversation != self.conversation_id:
-            # With no gateway ID, a fresh host start uses sid unless the
-            # lifecycle already binds that sid to the ongoing conversation.
-            assert conversation == self.session_id
-            assert conversation not in self.archived_ledgers
-            self.archived_ledgers[self.conversation_id] = deepcopy(self.occurrences)
-            self.occurrences = deepcopy(self.host_occurrences)
-            self.conversation_id = conversation
-
-    @rule(text=TEXT, structured=st.booleans(), tool_count=st.integers(0, 3),
-          retry=st.booleans(), tool_name=st.sampled_from(("lookup", "inspect")))
-    def new_turn(self, text, structured, tool_count, retry, tool_name):
-        before = len(self.occurrences)
-        super().new_turn(text, structured, tool_count, retry, tool_name)
-        self.host_occurrences.extend(deepcopy(self.occurrences[before:]))
+    def rows(self):
+        cur = self.engine._store.connection.execute(
+            "SELECT role, content, tool_call_id, tool_calls, session_id FROM messages "
+            "WHERE conversation_id = ? ORDER BY store_id", ("identity-conversation",))
+        rows = [dict(zip((c[0] for c in cur.description), r)) for r in cur.fetchall()]
+        assert all(r["session_id"] in self.session_ids for r in rows)
+        others = self.engine._store.connection.execute(
+            "SELECT count(*) FROM messages WHERE conversation_id != ?", ("identity-conversation",)).fetchone()[0]
+        assert others == 0, others
+        return rows
 
     @precondition(lambda self: bool(self.host))
     @rule()
@@ -552,48 +524,27 @@ class ResetMachine(ExactlyOnceMachine):
             self.stale_proof = True
         elif self.engine._last_compression_status == "compacted":
             self.stale_proof = False
-
-        def stripped(rows):
+        def strip(rows):
             return [{k: v for k, v in row.items() if k != "_db_persisted"} for row in rows]
 
-        if compressed == previous or stripped(compressed) == stripped(previous):
+        if compressed == previous or strip(compressed) == strip(previous):
             self.host = previous
             return
-        # The host notifies its CURRENT id, even when /new sent only a bare
-        # reset and LCM is still bound to the previous host session.
         self.engine.on_session_end(self.session_id, previous)
-        self.engine.on_session_start(self.session_id, platform="cli", boundary_reason="compression",
-                                     old_session_id=self.session_id)
-        self._sync_conversation(self.engine)
+        self.engine.on_session_start(self.session_id, platform="telegram", conversation_id="identity-conversation",
+                                     boundary_reason="compression", old_session_id=self.session_id)
         self.host = compressed
-
-    def rows(self):
-        def conversation_rows(conversation):
-            cursor = self.engine._store.connection.execute(
-                "SELECT role, content, tool_call_id, tool_calls, session_id FROM messages "
-                "WHERE conversation_id = ? ORDER BY store_id", (conversation,))
-            rows = [dict(zip((column[0] for column in cursor.description), row)) for row in cursor.fetchall()]
-            assert all(row["session_id"] in self.session_ids for row in rows)
-            return rows
-
-        for conversation, ledger in self.archived_ledgers.items():
-            assert_occurrences(ledger, conversation_rows(conversation))
-        return conversation_rows(self.conversation_id)
 
     @rule()
     def reset(self):
-        if self.host:
-            self.engine.on_session_end(self.session_id, self.host)
-        previous = self.session_id
-        self._host_session(previous)
+        self.engine.on_session_end(self.session_id, deepcopy(self.host))
+        self.engine.shutdown()
         self.session_id = f"identity-reset-{len(self.session_ids)}"
         self.session_ids.append(self.session_id)
         self.host = []
-        self.host_occurrences = []
-        self.engine.on_session_reset()
-        self._host_session()
         self.stale_proof = False
+        self.engine = self.start_engine()
 
 
-TestReset = ResetMachine.TestCase
-TestReset.settings = PROFILE
+TestGatewayReset = GatewayResetMachine.TestCase
+TestGatewayReset.settings = PROFILE

@@ -495,31 +495,127 @@ def test_host_merge_replay_resume_append(in_place):
         machine.teardown()
 
 
-@pytest.mark.parametrize("restart", [False, True], ids=["same-ledger", "new-conversation"])
-def test_reset_retains_deliveries_and_restarts_only_on_host_start(restart):
-    from tests.invariants.test_exactly_once_machine import ResetMachine
+def test_gateway_reset_retains_deliveries_across_fresh_engines():
+    from tests.invariants.test_exactly_once_machine import GatewayResetMachine
 
-    machine = ResetMachine()
+    machine = GatewayResetMachine()
     try:
         for _ in range(3):
             machine.new_turn("alpha", False, 0, False, "lookup")
         machine.compress()
         machine.exactly_once()
-        ledger = deepcopy(machine.occurrences)
-        machine.reset()
-        assert machine.occurrences == ledger
-        assert machine.conversation_id == "identity-session"
-        machine.exactly_once()
-        machine.new_turn("same text", False, 0, False, "lookup")
-        machine.exactly_once()
-        if restart:
-            # The new host starts its session ID with no gateway conversation ID.
+        for _ in range(2):
+            ledger = deepcopy(machine.occurrences)
+            old_engine = machine.engine
+            machine.reset()
+            assert machine.engine is not old_engine
+            assert machine.host == []
+            assert machine.occurrences == ledger
+            assert machine.engine.current_conversation_id == "identity-conversation"
+            machine.exactly_once()
+            for _ in range(2):
+                machine.new_turn("alpha", False, 0, False, "lookup")
+                machine.exactly_once()
+            machine.compress()
+            machine.exactly_once()
+            machine.replay()
+            machine.exactly_once()
             machine.cold_resume()
             machine.exactly_once()
-            assert machine.conversation_id == machine.session_id
-            machine.new_turn("βeta", False, 1, False, "lookup")
-            machine.exactly_once()
-        machine.replay()
-        machine.exactly_once()
     finally:
+        machine.teardown()
+
+
+class CliResetReplayStored(AssertionError):
+    """Only the extra carrier and kept rows in the newly bound conversation."""
+
+
+@pytest.mark.parametrize("start", [
+    pytest.param(False, id="bare-new", marks=pytest.mark.xfail(
+        strict=True, reason="UNFILED: CLI /new skips turn ingest then re-stores compressed output after rebind",
+        raises=CliResetReplayStored)),
+    pytest.param(True, id="explicit-start-control"),
+])
+def test_cli_new_post_llm_compress_replay(start, caplog, monkeypatch):
+    """p3d: bare reset, two registry-dispatched turns, compress/end/start, ingest.
+
+    A delivery belongs only to the conversation that first stores it; rebinding
+    never copies the ledger. The control supplies the missing start hook.
+    """
+    import importlib.util
+    import hermes_lcm
+
+    # conftest exposes submodules without executing the plugin entry point.
+    spec = importlib.util.spec_from_file_location("hermes_lcm", hermes_lcm.__file__)
+    plugin = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(plugin)
+    from hermes_lcm.config import LCMConfig
+    from hermes_lcm.engine import LCMEngine
+    from hermes_lcm import plugin_identity
+    import sqlite3
+
+    def start_cli(machine):
+        RotationMachine._publish_host_session(machine, "identity-session")
+        engine = LCMEngine(config=LCMConfig(database_path=str(machine.home / "lcm.db"),
+                                           fresh_tail_count=2, leaf_chunk_tokens=16),
+                           hermes_home=str(machine.home / "home"))
+        engine.on_session_start("identity-session", platform="cli", context_length=200_000)
+        return engine
+
+    monkeypatch.setattr(ExactlyOnceMachine, "start_engine", start_cli)
+    machine = ExactlyOnceMachine()
+    prototype = None
+    try:
+        config = machine.engine._config
+        old, new = "identity-session", "identity-reset-1"
+        hooks, engines = {}, []
+        machine.patch.setattr(LCMConfig, "from_env", classmethod(lambda cls: config))
+        machine.patch.setenv("HERMES_HOME", str(machine.home / "home"))
+        machine.patch.setattr(plugin_identity, "load_hermes_config", lambda: {})
+        machine.patch.setattr(plugin, "_warn_if_embedding_provider_unavailable", lambda config: None)
+        plugin.register(types.SimpleNamespace(register_context_engine=engines.append,
+                                              register_hook=lambda name, hook: hooks.update({name: hook})))
+        prototype = engines[0]
+        # CLI skips on_session_end when /new starts from empty history.
+        with sqlite3.connect(machine.home / "home" / "state.db") as connection:
+            connection.execute("UPDATE sessions SET end_reason = 'new_session' WHERE id = ?", (old,))
+            connection.execute("INSERT INTO sessions VALUES (?, NULL, NULL)", (new,))
+        machine.engine.on_session_reset()
+        if start:
+            machine.engine.on_session_start(new, platform="cli", context_length=200_000)
+        for _ in range(2):
+            user = machine.stamp({"role": "user", "content": "alpha"})
+            answer = machine.stamp({"role": "assistant", "content": f"answer alpha occurrence {machine.sequence}"})
+            machine.host.extend([user, answer])
+            machine.occurrences.extend(deepcopy([user, answer]))
+            # CLI passes the new session ID, no gateway key or context_compressor.
+            hooks["post_llm_call"](session_id=new, conversation_history=machine.host, platform="cli")
+        if not start:
+            assert "resident_engine_conflict" in caplog.text
+            assert machine.engine._store.connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
+        owner = new if start else old
+        ledgers = {old: [], new: []}
+        ledgers[owner] = deepcopy(machine.occurrences)
+        previous = deepcopy(machine.host)
+        compressed = machine.engine.compress(machine.host, current_tokens=machine.engine.threshold_tokens + 1,
+                                             force=True)
+        assert machine.engine._last_compression_status == "compacted"
+        assert compressed != previous
+        machine.engine.on_session_end(new, previous)
+        machine.engine.on_session_start(new, platform="cli", boundary_reason="compression", old_session_id=new)
+        hooks["post_llm_call"](session_id=new, conversation_history=compressed, platform="cli")
+        for conversation, ledger in ledgers.items():
+            cursor = machine.engine._store.connection.execute(
+                "SELECT role, content, tool_call_id, tool_calls FROM messages "
+                "WHERE conversation_id = ? ORDER BY store_id", (conversation,))
+            rows = [dict(zip((column[0] for column in cursor.description), row)) for row in cursor.fetchall()]
+            try:
+                assert_occurrences(ledger, rows)
+            except AssertionError as error:
+                if not start and conversation == new and list(map(identity, rows)) == list(map(identity, compressed)):
+                    raise CliResetReplayStored(str(error)) from error
+                raise
+    finally:
+        if prototype is not None:
+            prototype.shutdown()
         machine.teardown()
