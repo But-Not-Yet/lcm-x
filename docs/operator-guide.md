@@ -325,6 +325,16 @@ prepends the policy. The canonical file and digest source is
 
 ## Troubleshooting
 
+### Session-end warning says `final messages may be absent`
+
+The interrupted or SQLite-lock raw-flush warning includes `unflushed=N`: the
+pending message count before the final ingest attempt, without message content.
+The outer ingest/finalize warning includes the same field only when ingest has
+not finished. The session-end SQLite busy timeout stays 50 ms. Resuming the same
+session and ingesting its full history recovers the missing tail without
+duplicates; starting a different session does not recover a never-resumed tail.
+This field measures that known window (#1160); it adds no retry or durable marker.
+
 ### `hermes plugins` shows `lcm-x (not found)` but LCM tools exist
 
 If `plugins.enabled` contains `hermes-lcm-x`, `context.engine: lcm-x` is set, and

@@ -17,6 +17,7 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 - Fix: a summary route that hangs for the whole foreground budget window opens its circuit immediately, so the next compaction can use a fallback route. Partial-window budget cuts still leave the circuit closed. (#1137)
 - Fix: deadline-guarded vector reads retain the pooled store's matrix caches, so repeated KNN calls reuse unchanged matrices. (#1206)
 - Fix: non-sweep admission uses the working leaf size, and oversized indivisible leaves retry with the existing 8,000-token input clip. Leaf target defaults remain fixed at 2,000 tokens; ratio-only settings pinned by equal MIN and MAX warn, and the min-only reset warning names `LCM_LEAF_TARGET_MAX_TOKENS`. (#1134, #1132, #1138)
+- Change: bounded session-end raw-flush warnings report the pre-attempt pending message count as `unflushed=N`, without message content; resume recovery and the never-resumed tail window are pinned by tests. No retry or timeout change. (#1160)
 
 ## v0.27.0 (summary quality)
 
