@@ -1072,8 +1072,7 @@ class IdentityAnchorMixin:
             self._store.add_message_relations(groups)
         for row, message in plan.get("ws", ()) if remainder_ids is None else ():
             self._record_ws_host_rewrite(row, message)
-        for store_id, stamp in plan["backfill"] if remainder_ids is None else ():
-            self._store.backfill_observed_at(store_id, stamp)
+        self._store.backfill_observed_at_many(plan["backfill"] if remainder_ids is None else ())
         if remainder_ids is None and plan["carry"]:
             self._register_identity_anchor_carry(plan["carry"])
 
