@@ -25,6 +25,7 @@ from .db_bootstrap import (
     refuse_schema_version_too_new,
     run_versioned_migrations,
 )
+from .sqlite_session import ConnectionPolicy, open_connection
 
 
 _OWNERSHIP_QUERY_MAX_RANGES = 200
@@ -107,15 +108,16 @@ class LifecycleStateStore:
         self._init_db()
 
     def _init_db(self) -> None:
-        self._conn = sqlite3.connect(
-            str(self.db_path),
-            timeout=30.0,
-            check_same_thread=False,
-            isolation_level=None,
-        )
-        refuse_schema_version_too_new(self._conn)
-        configure_connection(self._conn)
-        self._conn.row_factory = sqlite3.Row
+        open_connection(ConnectionPolicy(
+            database=str(self.db_path),
+            connect_kwargs=(
+                ("timeout", 30.0), ("check_same_thread", False), ("isolation_level", None),
+            ),
+            before_row_factory=(refuse_schema_version_too_new, configure_connection),
+            row_factory=sqlite3.Row,
+            on_open=lambda conn: setattr(self, "_conn", conn),
+            on_setup_error=None,
+        ))
         run_versioned_migrations(self._conn)
         self._conn.commit()
 
