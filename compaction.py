@@ -2284,7 +2284,14 @@ class CompactionMixin:
                     ", ".join(f"{step}={seconds:.1f}s" for step, seconds in sweep_step_seconds.items()),
                 )
                 if not force_overflow and pre_leaf_condensation_passes == 0:  # #909: stored condensation is progress
-                    self._start_sweep_budget_hold()
+                    if self._hung_summary_route_has_fallback(budget):
+                        self._no_progress_candidate = False  # let the next automatic pass try the fallback
+                        logger.info(
+                            "LCM skipping sweep budget hold: hung summary route %s opened its circuit; "
+                            "fallback route available", budget.hung_route,
+                        )
+                    else:
+                        self._start_sweep_budget_hold()
             self._refresh_raw_backlog_debt(
                 working_messages,
                 observed_tokens=observed_prompt_tokens,

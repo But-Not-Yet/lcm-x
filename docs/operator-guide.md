@@ -471,6 +471,12 @@ source. A route opens with `LCM summary route circuit opened for <route> after N
 `... after N rejected result(s)`. Contract rejections append `contract=<check>` to `reason=no_content` and emit
 the content-free INFO line `LCM summary contract shape: check=<check> last_line=<list|heading|bold|trailing|missing|other>`.
 
+A budget-bound call that hangs after receiving at least 90% of the full usable window opens its route's
+circuit immediately (#1137). That window is the smaller of the configured summary timeout and the hard
+foreground budget minus the finalize and leaf reserves. It logs one WARNING per opening naming the route
+and saying it used the whole window. The current compaction still stops on its budget; a fallback route
+can run on the next compaction. A cut after receiving only a partial window leaves the circuit unchanged.
+
 When a leaf's own level 1 and level 2 results are rejected and the survival fit can keep the request under the
 window, the compaction writes no leaf and no node for it and keeps its rows for a later pass (#652). A level 3
 leaf, a deterministic cut of its source that keeps the start and the end, is still written when the cut is the
@@ -499,7 +505,7 @@ together, or make `model.provider` and `model.default` a pair the provider can s
 that fails the same way logs at DEBUG; a successful summary ends the episode. Other failures keep the threshold and
 cooldown above. `lcm_status` reports the circuit as `summary_route`: `state` (`open` while every summary route is
 refused, else `closed`), `seconds_left`, and for the primary route `last_error_class` (`config_error`,
-`provider_failure`, `rejected` or null after a success) and the `provider` and `model` the host reported.
+`provider_failure`, `hung`, `rejected` or null after a success) and the `provider` and `model` the host reported.
 
 Each new leaf and condensed node records the level that produced it (1, 2 or 3) and the model that answered
 (`""` for the host's default route, `deterministic` for level 3) in the `summary_node_provenance` table.
