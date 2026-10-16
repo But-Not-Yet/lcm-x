@@ -140,8 +140,9 @@ def render_status(facts: StatusFacts) -> str:
         f"sensitive_patterns: {', '.join(protection.get('patterns') or []) or '(none)'}",
         f"sensitive_patterns_source: {protection.get('source', 'default')}",
         # Filter classification for current_session_id (the foreground view).
-        # Use the captured foreground properties so these rows stay consistent
-        # with the session_id row above, even while a side channel is bound.
+        # When a side channel is in flight, get_status() reports the bound
+        # session's flags; collect_status reads the engine properties instead
+        # so this row stays consistent with the session_id row above.
         f"session_ignored: {_fmt_bool(facts.session_ignored)}",
         f"session_stateless: {_fmt_bool(facts.session_stateless)}",
         f"side_channel_active: {_fmt_bool(facts.side_channel_active)}",
