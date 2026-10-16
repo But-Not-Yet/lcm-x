@@ -298,7 +298,6 @@ class AuxiliarySessionMixin:
         new_session_id: str,
         *,
         preserve_old_session: bool = False,
-        preserve_old_foreground_marker: bool = False,
     ) -> None:
         generation = self._in_process_auxiliary_caller_generation(new_session_id)
         if generation and self._auxiliary_generation_is_retired(new_session_id, generation):
