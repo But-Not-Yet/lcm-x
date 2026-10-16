@@ -142,10 +142,13 @@ class FakeProvider:
                 if route_of("POST", self.path) != "completion":
                     return self.unrouted()
                 want = int(self.headers.get("Content-Length") or 0)
+                receive_start_ns = time.monotonic_ns()
                 raw = self.rfile.read(want)
-                if len(raw) < want:  # the client died mid-send (a harness SIGKILL): logged, never parsed or served
+                receive_end_ns = time.monotonic_ns()
+                if len(raw) < want:  # client closed mid-send; accounting checks whether a harness kill explains it
                     return provider.log(rid=provider.next_rid(), ts=time.time(), method="POST", path=self.path,
-                                        route="completion", role=None, truncated=[len(raw), want])
+                                        route="completion", role=None, truncated=[len(raw), want],
+                                        receive_start_ns=receive_start_ns, receive_end_ns=receive_end_ns)
                 return provider.serve(self, json.loads(raw or b"{}"), COMPLETION_PATHS[self.path])
 
             def unrouted(self):
