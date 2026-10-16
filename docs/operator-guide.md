@@ -783,12 +783,14 @@ The current runtime preset dry-run previews are:
 # codex_gpt_long_context: near-272k GPT/Codex routes
 LCM_CONTEXT_THRESHOLD=0.75
 LCM_FRESH_TAIL_COUNT=24
-LCM_LEAF_CHUNK_TOKENS=8000
+LCM_LEAF_CHUNK_TOKENS=24000
+LCM_LEAF_TARGET_MAX_TOKENS=2000
 
 # codex_spark_context: near-128k GPT-5.3 Codex Spark routes
 LCM_CONTEXT_THRESHOLD=0.75
 LCM_FRESH_TAIL_COUNT=16
-LCM_LEAF_CHUNK_TOKENS=8000
+LCM_LEAF_CHUNK_TOKENS=24000
+LCM_LEAF_TARGET_MAX_TOKENS=2000
 ```
 
 ### Migrating off gpt-5.4 (codex-auth retirement 2026-08-31)
@@ -799,8 +801,7 @@ unchanged: its 272K window assumption is correct for both gpt-5.6 routes.
 [FINDING-F59](../bench/FINDING-F59-COMPACTION-PILOT-P0.md) recommends
 single-session LCM for long runs and records the measured regime guidance.
 
-`target_after_compaction=0.55` is still benchmark provenance, not a runtime
-setting, because the engine does not expose that live knob yet.
+The presets no longer carry `target_after_compaction`; the v0.27.1 low-water mark is part of background preparation (#787) and is off by default.
 
 For dashboards and agents, `lcm_status` also exposes the same information under
 `preset_suggestion` as read-only JSON: suggested preset name/family, selection
