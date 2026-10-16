@@ -7,10 +7,12 @@ Migrate existing tests only when a PR already touches them; no bulk migration.
 - `make_engine(tmp_path, *, window=None, session_id="S", conversation_id=None,
   platform="cli", **overrides)` uses fresh `LCMConfig()` defaults, an isolated
   `lcm.db`, and engine `hermes_home=tmp_path/"home"`. Unknown config names raise
-  `AttributeError`. Only a supplied window starts the session.
+  `AttributeError`. `database_path` cannot be overridden and raises `TypeError`.
+  Only a supplied window starts the session.
 - `engine_context(...)` accepts the same arguments and always shuts down.
-- `pin_char_counter(monkeypatch)` pins `_encoder_ready=True`, `_encoder=None`,
-  isolates the token cache, and disables the host estimator. This uses the real
+- `pin_char_counter(monkeypatch)` pins `_encoder_ready=True`, `_encoder=None` and
+  `_get_encoder` (so an encoder load still running from an earlier test cannot switch
+  counters), isolates the token cache, and disables the host estimator. This uses the real
   fallback through imported aliases, as in the estimate case of
   `test_issue_947_clipped_no_verbatim.py` and the offline differential drivers;
   host-estimator isolation follows `test_issue_628_summary_circuit.py`.
@@ -31,7 +33,9 @@ Migrate existing tests only when a PR already touches them; no bulk migration.
 - `prose(chars, seed=0, *, sentinel="")` returns exactly `chars` seeded characters,
   including the sentinel prefix; a prefix that cannot fit raises `ValueError`.
 - `host_call(engine, view, *, retry_on_overflow=True)` ingests, counts, checks
-  pressure, compresses, then retries once with cooldown bypass on window overflow.
+  pressure as the host does (`should_compress`, then, below the threshold and unblocked,
+  `should_compress_preflight`), compresses, then retries once with cooldown bypass on
+  window overflow.
   It returns `HostCall(view, sent_tokens, compressed, retried, overflow_failed)`;
   `compressed` means compression was invoked (possibly a no-op). Zero is an
   unknown window. Counts use the configured counter; pin it for offline tests.
