@@ -62,6 +62,8 @@ def pair_errors(rows):
             cid = row.get("tool_call_id")
             if cid not in calls:
                 errors.append(f"result-before-call:{cid}")
+            if cid in results:
+                errors.append(f"duplicate-result:{cid}")
             results.add(cid)
     return errors + [f"missing-result:{cid}" for cid in sorted(calls - results)]
 
@@ -154,6 +156,25 @@ def run_case(case, modules, directory, initial_missing, baseline_config="bare"):
         return [i for i, row in enumerate(view) if row.get("role") == "user" and mark_re is not None
                 and mark_re.fullmatch(normalize(row.get("content")) or "")]
 
+    def user_rows(view, original):
+        """Stable synthetic timestamps bind row-token evidence across both trees."""
+        by_stamp = {row.get("timestamp"): row for row in view if row.get("role") == "user"}
+        evidence = {}
+        for i, source in enumerate(original):
+            if source.get("role") != "user":
+                continue
+            row = by_stamp.get(source.get("timestamp"))
+            if row is None:
+                continue
+            text = normalize(row.get("content")) or ""
+            match = mark_re.search(text) if mark_re is not None else None
+            stored = engine._store.get(int(match[3])) if match is not None and match[1] == "user" else None
+            marked = bool(stored and stored["role"] == "user"
+                          and normalize(stored.get("content")) == normalize(source.get("content")))
+            evidence[str(i)] = dict(tokens=tokens.count_message_tokens(row), marked=marked,
+                                    preserved=row.get("content") == source.get("content") and match is None)
+        return evidence
+
     try:
         if case["layer"] == "projection":
             needed = ("_store", "_survival_projection", "_survival_measure")
@@ -171,6 +192,10 @@ def run_case(case, modules, directory, initial_missing, baseline_config="bare"):
             mutated = turn != before
             return dict(id=case["id"], out=out, out_tokens=engine._survival_measure(out),
                         in_tokens=engine._survival_measure(before), limit=case["limit"], user_marks=marks(out),
+                        user_rows=user_rows(out, before),
+                        user_sources={str(i): dict(store_id=ids.get(id(turn[i])), tokens=tokens.count_message_tokens(row),
+                                                   text=normalize(row.get("content")) or "")
+                                      for i, row in enumerate(before) if row.get("role") == "user"},
                         user_changed=[i for i, (a, b) in enumerate(zip(turn, out)) if a["role"] == "user" and a is not b],
                         ext=[i for i, row in enumerate(case["rows"]) if row["ext"]],
                         unstored=[i for i, row in enumerate(case["rows"]) if not row["is_stored"]],
@@ -221,6 +246,7 @@ def run_case(case, modules, directory, initial_missing, baseline_config="bare"):
             visible = visible_sentinels(view, produced)
             sent_calls.append(dict(input_tokens=prompt, tokens=sent, rows=len(view), compress_runs=runs, summarizer_calls=calls[0] - start_calls,
                                    overflow_recovery_failed=failed, sentinels=sorted(visible), user_marks=marks(view),
+                                   user_rows=user_rows(view, produced),
                                    pair_errors=pair_errors(view)))
             if hasattr(engine, "update_from_response"):
                 engine.update_from_response({"prompt_tokens": sent, "completion_tokens": 50})

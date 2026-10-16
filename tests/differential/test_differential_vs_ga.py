@@ -110,10 +110,13 @@ from .oracles import compare
 
 def test_projection_delta_is_only_fit_with_ga_user_marks():
     case = dict(layer="projection", limit=100)
-    ga = dict(out_tokens=90, user_marks=[0], input_mutated=False)
-    cand = dict(out_tokens=110, user_marks=[], input_mutated=False)
+    ga = dict(out_tokens=90, user_marks=[0], input_mutated=False,
+              user_rows={"0": dict(tokens=40, marked=True, preserved=False)})
+    cand = dict(out_tokens=110, user_marks=[], input_mutated=False,
+                user_rows={"0": dict(tokens=60, marked=False, preserved=True)})
     assert compare(case, ga, cand, baseline="v0.26.2")[0]["delta"] == "D916_GA_MARKED_USER"
     ga["user_marks"] = []
+    ga["user_rows"] = {}
     assert compare(case, ga, cand, baseline="v0.26.2")[0]["delta"] is None
     cand.update(user_marks=[0], input_mutated=True)
     assert {row["oracle"] for row in compare(case, ga, cand, baseline="v0.26.2")} == {"R1", "P_USER", "P_INPUT"}
@@ -139,8 +142,10 @@ def test_public_oracles_and_delta_do_not_hide_absolute_failures():
 ])
 def test_shipped_delta_is_not_absorbed_by_new_ga(tokens, marks, oracle, delta_id):
     case = dict(layer="projection", limit=100)
-    ga = dict(out_tokens=90, user_marks=[0], input_mutated=False)
-    cand = dict(out_tokens=tokens, user_marks=marks, input_mutated=False)
+    ga = dict(out_tokens=90, user_marks=[0], input_mutated=False,
+              user_rows={"0": dict(tokens=40, marked=True, preserved=False)})
+    cand = dict(out_tokens=tokens, user_marks=marks, input_mutated=False,
+                user_rows={"0": dict(tokens=40 if marks else 60, marked=bool(marks), preserved=not marks)})
     legacy = compare(case, ga, cand, baseline="v0.26.2")
     detail = [0] if oracle == "P_USER" else dict(ga=90, candidate=110, limit=100)
     assert legacy == [dict(oracle=oracle, detail=detail, delta=delta_id)]
@@ -274,21 +279,24 @@ def test_i1123_40k_delta_is_a_separate_exact_cell():
 def test_i1233_delta_is_only_projection_user_marks_already_in_ga():
     from .ACCEPTED_DELTAS import last_resort_user_mark
     case = dict(layer="projection", limit=100)
-    ga = dict(out_tokens=90, user_marks=[0, 2], input_mutated=False)
+    ga = dict(out_tokens=90, user_marks=[0, 2], input_mutated=False,
+              user_rows={str(i): dict(tokens=40, marked=True, preserved=False) for i in (0, 2)})
     cand = dict(out_tokens=90, user_marks=[2, 0], input_mutated=False)
     assert compare(case, ga, cand, baseline="v0.26.2") == [dict(oracle="P_USER", detail=[2, 0], delta="D1233_LAST_RESORT_USER_MARK")]
-    cand = dict(out_tokens=90, user_marks=[2], input_mutated=False)
+    cand = dict(out_tokens=90, user_marks=[2], input_mutated=False,
+                user_rows={"0": dict(tokens=60, marked=False, preserved=True),
+                           "2": dict(tokens=40, marked=True, preserved=False)})
     assert compare(case, ga, cand, baseline="v0.26.2")[0]["delta"] == "D1233_LAST_RESORT_USER_MARK"
     cand["out_tokens"] = 101
     assert compare(case, ga, cand, baseline="v0.26.2") == [
         dict(oracle="R1", detail=dict(ga=90, candidate=101, limit=100), delta="D916_GA_MARKED_USER"),
         dict(oracle="P_USER", detail=[2], delta=None),
     ]
-    cand.update(out_tokens=100, user_marks=[0, 2])
+    cand.update(out_tokens=100, user_marks=[0, 2], user_rows=deepcopy(ga["user_rows"]))
     assert compare(case, ga, cand, baseline="v0.26.2")[0]["delta"] == "D1233_LAST_RESORT_USER_MARK"
     cand["out_tokens"] = 101
     failures = compare(case, ga, cand, baseline="v0.26.2")
-    assert failures == [dict(oracle="R1", detail=dict(ga=90, candidate=101, limit=100), delta="D916_GA_MARKED_USER"),
+    assert failures == [dict(oracle="R1", detail=dict(ga=90, candidate=101, limit=100), delta=None),
                         dict(oracle="P_USER", detail=[0, 2], delta=None)]
     ga["out_tokens"] = 101
     assert compare(case, ga, cand, baseline="v0.26.2")[0]["delta"] == "D1233_LAST_RESORT_USER_MARK"
@@ -297,3 +305,143 @@ def test_i1233_delta_is_only_projection_user_marks_already_in_ga():
     cand["user_marks"] = []
     assert not last_resort_user_mark(case, ga, cand)
     assert compare(case, ga, cand, baseline="v0.26.2") == []
+
+
+def projection_row_fixture():
+    rows = [dict(role="user", content="first request", timestamp=10.0),
+            dict(role="assistant", content="reply", timestamp=11.0),
+            dict(role="user", content="second request", timestamp=12.0)]
+    case = dict(layer="projection", limit=100, rows=[dict(message=row) for row in rows])
+    record = dict(out=deepcopy(rows), out_tokens=90, user_marks=[], input_mutated=False,
+                  user_sources={str(i): dict(store_id=i + 1, tokens=80, text=row["content"])
+                                for i, row in enumerate(rows) if row["role"] == "user"})
+    return case, record
+
+
+@pytest.mark.parametrize("mutation", ["dropped", "truncated", "swapped", "replaced", "wrong-source"])
+def test_f1244r_projection_requires_every_user_row_in_order(mutation):
+    case, ga = projection_row_fixture()
+    cand = deepcopy(ga)
+    if mutation == "dropped":
+        cand["out"].pop(0)
+    elif mutation == "truncated":
+        cand["out"][0]["content"] = "first"
+    elif mutation == "swapped":
+        cand["out"][0], cand["out"][2] = cand["out"][2], cand["out"][0]
+    elif mutation == "replaced":
+        cand["out"][0]["content"] = "other request"
+    else:
+        cand["out"][0]["content"] = (
+            "[LCM survival fit: this user message (80 tokens) is stored verbatim as store id 3; "
+            "lcm_expand / lcm_grep reach the full text. (projection 1200/600)]")
+    failures = compare(case, ga, cand)
+    assert [row["oracle"] for row in failures] == ["P_USER_ROWS"]
+    assert failures[0]["detail"] == ([2] if mutation == "swapped" else [0])
+    assert failures[0]["delta"] is None
+
+
+@pytest.mark.parametrize("marked", [False, True])
+def test_f1244r_projection_accepts_identical_or_same_row_mark(marked):
+    case, ga = projection_row_fixture()
+    cand = deepcopy(ga)
+    if marked:
+        cand["out"][0]["content"] = (
+            "[LCM survival fit: this user message (80 tokens) is stored verbatim as store id 1; "
+            "lcm_expand / lcm_grep reach the full text. (projection 1200/600)]")
+        ga["user_marks"] = cand["user_marks"] = [0]
+    assert compare(case, ga, cand) == []
+
+
+@pytest.mark.parametrize("change", ["clean", "tracked", "staged", "untracked"])
+def test_f1244r_worktree_identity_records_dirty_bytes(tmp_path, change):
+    import hashlib
+    import subprocess
+    from .run import candidate_identity
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True).stdout
+
+    git("init", "-q")
+    tracked = tmp_path / "source.py"
+    tracked.write_text("original\n")
+    git("add", "source.py")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "fixture")
+    sha = git("rev-parse", "HEAD").decode().strip()
+    assert candidate_identity(tmp_path) == dict(candidate=sha)
+    if change == "clean":
+        return
+    path = tmp_path / "new.py" if change == "untracked" else tracked
+    path.write_text("changed\n")
+    if change == "staged":
+        git("add", "source.py")
+    diff = git("diff", "HEAD")
+    expected_hash = hashlib.sha256(diff + (path.read_bytes() if change == "untracked" else b"")).hexdigest()
+    result = candidate_identity(tmp_path)
+    assert result == dict(candidate=f"{sha}+dirty",
+                          candidate_dirty=dict(files=[path.name], diff_sha256=expected_hash))
+    path.write_text("changed again\n")
+    assert candidate_identity(tmp_path)["candidate_dirty"]["diff_sha256"] != expected_hash
+
+
+@pytest.mark.parametrize("layer", ["projection", "public"])
+@pytest.mark.parametrize("preserved,growth,overflow,matched", [
+    (True, 20, 20, True), (True, 20, 21, False), (False, 20, 10, False), (True, 0, 10, False),
+])
+def test_f1244r_d916_only_absorbs_preserved_user_growth(layer, preserved, growth, overflow, matched):
+    from .ACCEPTED_DELTAS import ga_marked_user
+    case = dict(layer=layer, limit=100, window=100)
+    ga = dict(tokens=90, out_tokens=90, user_marks=[0],
+              user_rows={"0": dict(tokens=40, marked=True, preserved=False)})
+    cand = dict(tokens=100 + overflow, out_tokens=100 + overflow, user_marks=[] if preserved else [0],
+                user_rows={"0": dict(tokens=40 + growth, marked=not preserved, preserved=preserved)})
+    a, b = (ga, cand) if layer == "projection" else (dict(calls=[ga]), dict(calls=[cand]))
+    failure = dict(detail=dict(call=0)) if layer == "public" else None
+    assert ga_marked_user(case, a, b, failure) is matched
+
+
+def test_f1244r_d916_public_checks_only_the_offending_call():
+    from .ACCEPTED_DELTAS import ga_marked_user
+    case = dict(layer="public", window=100)
+    ga_call = dict(tokens=90, user_marks=[0], user_rows={"0": dict(tokens=40, marked=True, preserved=False)})
+    cand_call = dict(tokens=110, user_marks=[], user_rows={"0": dict(tokens=60, marked=False, preserved=True)})
+    ga, cand = dict(calls=[ga_call, ga_call]), dict(calls=[cand_call, dict(ga_call, tokens=110)])
+    assert ga_marked_user(case, ga, cand, dict(detail=dict(call=0)))
+    assert not ga_marked_user(case, ga, cand, dict(detail=dict(call=1)))
+    assert not ga_marked_user(case, ga, cand)
+
+
+def test_f1244r_pair_errors_rejects_duplicate_results():
+    assistant = dict(role="assistant", tool_calls=[dict(id="c")])
+    tool = dict(role="tool", tool_call_id="c", content="result")
+    assert pair_errors([assistant, tool]) == []
+    assert pair_errors([assistant, tool, deepcopy(tool)]) == ["duplicate-result:c"]
+
+
+@pytest.mark.parametrize("layer", ["projection", "public"])
+def test_f1244r_same_user_mark_leaves_assistant_overflow_unexplained(layer):
+    case = dict(layer=layer, limit=100, window=100, steps=[[]])
+    ga_call = dict(out_tokens=90, tokens=90, user_marks=[0], input_mutated=False,
+                   user_rows={"0": dict(tokens=40, marked=True, preserved=False)},
+                   sentinels=[], pair_errors=[], compress_runs=0, summarizer_calls=0)
+    cand_call = dict(ga_call, out_tokens=110, tokens=110)
+    ga, cand = (ga_call, cand_call) if layer == "projection" else (
+        dict(calls=[ga_call], produced=[], stored=[], uncovered_rows=0),
+        dict(calls=[cand_call], produced=[], stored=[], uncovered_rows=0))
+    r1 = [row for row in compare(case, ga, cand, baseline="v0.26.2") if row["oracle"] == "R1"]
+    assert len(r1) == 1
+    assert r1[0]["delta"] is None
+
+
+@pytest.mark.parametrize("head,tail,tampered", [(8, 4, False), (4, 2, False), (4, 2, True)])
+def test_f1244r_projection_verifies_marked_head_and_tail(head, tail, tampered):
+    case, ga = projection_row_fixture()
+    cand = deepcopy(ga)
+    text = cand["out"][0]["content"]
+    marker = ("[LCM survival fit: this user message (80 tokens) is stored verbatim as store id 1; "
+              f"lcm_expand / lcm_grep reach the full text. (projection {head}/{tail})]")
+    content = f"{text[:head]}\n...\n{marker}"
+    if len(text) > 2 * head:
+        content += f"\n...\n{text[-tail:]}"
+    cand["out"][0]["content"] = "wrong" + content if tampered else content
+    failures = compare(case, ga, cand)
+    assert [row["oracle"] for row in failures] == (["P_USER_ROWS"] if tampered else [])
