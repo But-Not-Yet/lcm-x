@@ -2461,7 +2461,8 @@ class TestMessageStore:
         finally:
             lock_conn.rollback()
             lock_conn.close()
-            writer.join(timeout=10)
+            if writer.ident is not None:  # an assertion before start() must not be masked by join()
+                writer.join(timeout=10)
             store._conn.set_trace_callback(None)
         try:
             assert not writer.is_alive()
