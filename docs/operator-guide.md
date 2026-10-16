@@ -306,8 +306,8 @@ Provider Plugins:
 
 Older `v0.23.x` stable tags report `hermes-lcm v0.23.x (15 tools)` and
 engine `lcm`. Version text alone is not release proof; verify the loaded commit
-and tag. `0.27.0` is the identity the next minor release carries: the `v0.27.0-rc1`
-tag carries it first, the gauntlet runs at the last rc tag, and the GA tree is
+and tag. `0.27.0` is the identity of the current stable release: the `v0.27.0-rc1`
+tag carried it first, the gauntlet ran at the last rc tag (`v0.27.0-rc8`), and the GA tree is
 that rc tree plus the GA release-notes file (`v0.26.0` at `867eb587` shipped the same way).
 
 For source checkouts, `lcm_status`, `/lcm status`, `lcm_inspect`,
@@ -353,6 +353,14 @@ run `lcm_status` or `/lcm status` again for live per-session fields.
 ## Configuration
 
 Most installs only need `plugins.enabled` and `context.engine: lcm-x`.
+
+Malformed boolean, integer, or float values in the uniform `LCM_*` field loader
+keep the default and appear in `config_source_warnings` in `lcm_status` JSON,
+`/lcm status`, and the `lcm_doctor` configuration check. For example,
+`LCM_SURVIVAL_FIT=flase` keeps `true` and reports the key, a representation of the
+raw value limited to 40 characters, and the value used. Empty or whitespace-only
+values in that loader keep the default without a warning.
+Range warnings (`LCM_CONTEXT_THRESHOLD`, `LCM_SURVIVAL_RESERVE`, `LCM_LEAF_CHUNK_TOKENS`, `LCM_SUMMARY_TIMEOUT_MS`), choice warnings (`LCM_EMBEDDING_PROVIDER`, `LCM_PREANSWER_EVIDENCE_MODE`, `LCM_EMBEDDING_STORAGE_DTYPE`), and dropped-input warnings (`LCM_EMPTY_LIFECYCLE_GC_MAX_AGE_HOURS`, `LCM_RECALL_ARM_WEIGHTS`, `LCM_MODEL_THRESHOLDS`) use the same channel without changing values or consumer fallbacks.
 
 `compression.target_ratio` and the host's other built-in-compressor ratios belong
 to the host's built-in compressor and are not read by LCM-X. How much one LCM-X
@@ -659,9 +667,15 @@ change keeps existing vectors ineligible until re-embedded. `lcm_recall` serves 
 hits with `degraded=true` and an `embedding_identity_stale:` reason; `lcm_grep` semantic
 mode falls back to full-text, and `lcm_doctor` warns. Backfill still refuses until a new
 warmup registers the profile (run
-`/lcm embed warmup` then `/lcm embed backfill --apply`; LCM never re-embeds
-automatically). Under the explicit opt-out the pattern catalog is not part of the
-`privacy:off` identity, so catalog edits alone change nothing until you opt back in. Durable messages, summaries, FTS rows, and payloads are not
+`/lcm embed warmup` then `/lcm embed backfill --apply`, adding `--corpus chunks`, or
+`--corpus both`, when the doctor's `stale_tasks` lists `chunk`; LCM never re-embeds
+automatically). Cloud providers also require `--confirm-raw-text` on every chunk or
+combined apply. Inspect the doctor's complete `remedy` and consent warning.
+Repeat the backfill apply only while `remaining` is above 0 and each run lowers it.
+Stop on `status: partial`, `status: error`, or `status: failed`, or if `remaining`
+stops falling, and inspect the warnings, errors, and detail output. Under the explicit opt-out the
+pattern catalog is not part of the `privacy:off` identity, so catalog edits alone
+change nothing until you opt back in. Durable messages, summaries, FTS rows, and payloads are not
 rewritten by this provider boundary.
 
 The cloud gate applies to provider identity `voyage`/`voyageai` and
@@ -1124,7 +1138,7 @@ Available commands:
 - `/lcm doctor retention` - read-only retention analysis
 - `/lcm backup` - timestamped SQLite backup. The snapshot holds the database only; copy the externalized payload directory named in the output alongside it when moving a backup to another host.
 - `/lcm rotate` - read-only preview of an in-place tail-preserving compact of the active session
-- `/lcm rotate apply` - backup-first rotate that advances the lifecycle frontier past pre-tail raw messages
+- `/lcm rotate apply` - refused on Hermes (#1141); use `/compress here N`
 - `/lcm embed warmup` - explicitly prepare the configured provider/model and register its vector dimension
 - `/lcm embed backfill [--limit N] [--corpus summary|chunks|both] [--policy conversational|heads|full]` - preview pending embeddings, token use, batches, and estimated cost for a corpus
 - `/lcm embed backfill --apply [--limit N] [--corpus summary|chunks|both] [--policy ...] [--confirm-raw-text]` - populate a bounded set of pending embeddings for a corpus
@@ -1138,44 +1152,22 @@ provider — see *Embedding backfill* below).
 Apply paths are intentionally narrow and backup-first. Start with diagnostics
 before cleanup or repair.
 
-### Rotate: in-place compact without changing session identity
+### Rotate: read-only preview
 
-`/lcm rotate` lets an operator compact a long-running session in place without
-changing `session_id` or `conversation_id`. It is the in-session counterpart to
-Hermes-level `/new` (which starts a new session) and to `/lcm doctor clean`
-(which prunes whole junk sessions).
+`/lcm rotate` previews the tail-preserving frontier for the active session
+without changing `session_id` or `conversation_id`. It reports the configured
+fresh tail, pre-tail message count, current and planned lifecycle frontier, and
+rolling backup path. The preview refuses ignored or stateless sessions.
 
-What rotate does:
+`/lcm rotate apply` is refused on Hermes (#1141): Hermes reloads its own
+transcript after a restart, so advancing the frontier without summaries leaves
+rows LCM-X cannot map. No backup is created and no lifecycle state is changed.
+Use `/compress here N` to summarise everything except the most recent N messages.
+If an earlier LCM-X already rotated this session and Hermes restarted since, compaction can stop on rows below that frontier and `/compress here N` will not repair it: start a new session with `/new` (raw rows stay recoverable via `lcm_load_session`; in-place fix tracked in #1184).
+Raw source rows remain recoverable through `lcm_load_session` and `lcm_expand`.
 
-- preserves the live tail (`LCM_FRESH_TAIL_COUNT` most-recent messages)
-- advances the lifecycle frontier marker past every raw message before the tail,
-  so subsequent bootstrap stops replaying them into the active prompt
-- writes a rolling `*-rotate-latest.sqlite3` backup under the same backup
-  directory as `/lcm backup`, overwriting the previous rotate slot atomically
-  so disk usage stays bounded across repeated rotates
-
-What rotate does not do:
-
-- it does not delete raw messages — pre-tail rows remain in the SQLite store
-  and stay recoverable through `lcm_load_session` and `lcm_expand`, preserving
-  the lossless raw recovery contract
-- it does not invoke the summarization model — rotate is a frontier and backup
-  operation, not a synthesis step. Pre-tail content that was not yet covered by
-  a summary node remains accessible only as raw rows; trigger normal compaction
-  first if you want the pre-tail range covered by summary nodes before rotating
-- it does not change session or conversation identity, run on stateless
-  sessions (`LCM_STATELESS_SESSION_PATTERNS`), or run on ignored sessions
-  (`LCM_IGNORE_SESSION_PATTERNS`) — rotate refuses on both with a clear reason
-
-`lcm_status` and `/lcm status` surface `last_rotate_at` (epoch float, or `null`
-when no rotate has happened) and the rolling backup path so operators can see
-when rotate last ran. The mtime of the rolling backup file is the source of
-truth — no new lifecycle column is added by this feature.
-
-Re-running `/lcm rotate apply` on a session whose frontier is already at or
-ahead of the target boundary reports `status: noop` and is safe to retry.
-A no-op apply does not write a new rolling backup, so the previous
-known-good `*-rotate-latest.sqlite3` snapshot survives idempotent retries.
+`lcm_status` and `/lcm status` still surface `last_rotate_at` and the rolling
+backup path for existing stores.
 
 ## Embedding backfill
 
@@ -1212,7 +1204,10 @@ uses gross list price and does not subtract account-specific free tokens.
 
 Apply mode is safe to resume. Rows already embedded for the current registered
 profile are skipped by the discovery query, and a run that stops leaves its
-unwritten rows pending for the next invocation. The command serializes apply
+unwritten rows pending for the next invocation. Repeat the backfill apply only
+while `remaining` is above 0 and each run lowers it. Stop on `status: partial`,
+`status: error`, or `status: failed`, or if `remaining` stops falling, and inspect
+the warnings, errors, and detail output. The command serializes apply
 runs with a single-flight claim; a crashed claim becomes eligible for takeover
 after 10 minutes. Provider calls occur before per-row SQLite writes, and each
 row is committed independently, so one malformed row does not roll back the
@@ -1234,7 +1229,8 @@ provider-error, and row-write-error exit paths.
   `--policy` (`conversational` | `heads` | `full`), used for verbatim/chunk-KNN
   recall. This is a **separate corpus with its own backfill run** — a
   summary-only backfill leaves it empty, and verbatim/chunk recall returns
-  nothing beyond FTS until you run `--corpus chunks --apply` as well.
+  nothing beyond FTS until you run `--corpus chunks --apply` as well (with
+  `--confirm-raw-text` on every apply for cloud providers).
 - `both` — runs the summary backfill, then the chunk backfill, in one command.
 
 ```bash
@@ -1249,7 +1245,10 @@ error/traceback content. The v0.23.1 cloud boundary transforms configured
 sensitive-pattern matches before transport, but it cannot classify every
 possible sensitive fact. When the provider is a cloud provider (e.g. Voyage),
 `--corpus chunks|both --apply` **refuses** unless you also pass
-`--confirm-raw-text`. FastEmbed is in-process and exempt. The shipped Ollama
+`--confirm-raw-text` on every apply. Repeat the backfill apply only while `remaining`
+is above 0 and each run lowers it. Stop on `status: partial`, `status: error`, or
+`status: failed`, or if `remaining` stops falling, and inspect the warnings, errors,
+and detail output. FastEmbed is in-process and exempt. The shipped Ollama
 provider is also exempt from the cloud gate, so use raw-chunk backfill only with
 a verified trusted local/loopback endpoint; #337 tracks endpoint-aware locality.
 Historical source remains unchanged; only provider input is transformed. See
