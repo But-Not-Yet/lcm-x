@@ -11,6 +11,7 @@ import pytest
 from hermes_lcm.escalation import SummaryCircuitBreaker
 from tests.test_issue_605_foreground_budget import _engine, _view
 from tests import test_issue_1137_hung_route_circuit as hung_route
+from tests.test_issue_909_condensation_starves_leaf import _frontier
 
 SUMMARY = hung_route.SUMMARY
 _provider = hung_route._provider
@@ -116,6 +117,50 @@ def test_no_turn_end_keeps_the_600_second_backstop(episode, clock):
     _pass(engine, result)
     assert len(calls) == 2 and engine._no_progress_hold_active()
     assert not engine._sweep_budget_hold_turn_paced  # no turn end did not erase strike 1
+
+
+@pytest.mark.parametrize("late_pass", ["forced_overflow", "pre_leaf_condensation"])
+def test_expired_turn_paced_hold_cannot_release_a_later_hang(episode, monkeypatch, clock, late_pass):
+    engine, calls, view = episode
+    result = _pass(engine, view)
+    assert len(calls) == 1 and engine._sweep_budget_hold_turn_paced
+    clock.offset += 601  # no turn end before the original hold and circuit expire
+    assert not engine._sweep_budget_hold_active()
+    assert engine._summary_circuit_breaker.allows("m1")
+
+    if late_pass == "forced_overflow":
+        engine.compress(result, current_tokens=200_001)
+        assert len(calls) == 2
+    else:
+        source_ids = _frontier(engine)
+        # Keep the timing estimate cold so pre-leaf condensation has its reserved leaf window.
+        monkeypatch.setattr(engine._foreground_estimates, "call_estimate", lambda route, ceiling: 30.0)
+        hung = hung_route.escalation._invoke_summary_llm
+
+        def condense_then_hang(prompt, max_tokens, model="", timeout=None, reasoning_effort=""):
+            if len(calls) == 1:
+                calls.append((model, timeout))
+                return SUMMARY
+            return hung(prompt, max_tokens, model=model, timeout=timeout, reasoning_effort=reasoning_effort)
+
+        monkeypatch.setattr("hermes_lcm.escalation._invoke_summary_llm", condense_then_hang)
+        _pass(engine, result)
+        telemetry = engine.get_status()["threshold_full_sweep"]
+        assert telemetry["pre_leaf_condensation_passes"] == 1
+        assert telemetry["leaf_passes"] == 0
+        assert len(calls) == 3
+        assert all(engine._dag.get_node(node_id) is not None for node_id in source_ids)
+
+    assert engine._sweep_budget_hold_turn_paced  # neither path re-armed the expired hold
+    breaker = engine._summary_circuit_breaker
+    assert breaker.route_status(["m1"])["last_error_class"] == "hung"
+    assert not breaker.allows("m1")
+    calls_before_turn_end = len(calls)
+    engine.note_turn_complete()
+    circuit_still_open = not breaker.allows("m1")
+    _pass(engine, result)
+    assert len(calls) == calls_before_turn_end  # no summary call inside the new 300 s cooldown
+    assert circuit_still_open
 
 
 @pytest.mark.parametrize("reset", ["conversation", "session", "profile"])

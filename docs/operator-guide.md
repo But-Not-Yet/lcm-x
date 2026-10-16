@@ -480,6 +480,9 @@ When no other route is usable, the first hang since the conversation's last stor
 compaction until foreground turn end, with a 600 s backstop (#1096). At turn end only that conversation's
 hung circuit is released for one ordinary retry; bypassed sessions cannot release it. A second hang keeps
 the 600 s sweep and no-progress holds. Without turn-end notifications the backstop applies as before.
+A hang waived because a fallback route was usable also counts as the conversation's first hang, so a
+later sole-route hang before a leaf is stored takes the 600 s path. On a first hang, `lcm_status` shows
+the sweep hold but no no-progress hold; the 600 s backstop applies to the sweep hold.
 A stored leaf or conversation/session reset clears the strike. Other circuit errors and hold reasons,
 forced overflow and survival-ceiling exemptions are unchanged. INFO logs name the route at arm and release.
 

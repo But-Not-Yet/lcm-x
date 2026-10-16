@@ -6,7 +6,7 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
-- Fix: the first hung summary route without a usable alternative holds compaction until foreground turn end, then permits one ordinary retry. A repeat hang retains the 600 s holds; hosts without turn-end notifications retain the backstop. No new setting. (#1096)
+- Fix: the first hung summary route without a usable alternative holds compaction until foreground turn end, then permits one ordinary retry. A repeat hang retains the 600 s holds; hosts without turn-end notifications retain the backstop. A hang waived because a fallback route was usable also counts as the conversation's first hang, so a later sole-route hang before a leaf is stored takes the 600 s path. On a first hang, `lcm_status` shows the sweep hold but no no-progress hold; the 600 s backstop applies to the sweep hold. No new setting. (#1096)
 
 - Fix: a summary route that hangs for the whole foreground budget window opens its circuit immediately, so the next compaction can use a fallback route. Partial-window budget cuts still leave the circuit closed. (#1137)
 
