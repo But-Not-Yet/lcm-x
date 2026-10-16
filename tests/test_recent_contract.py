@@ -10,6 +10,7 @@ from typing import Any, cast
 import pytest
 
 from hermes_lcm import recent as recent_module
+from hermes_lcm import evidence_tools
 from hermes_lcm import tools
 from hermes_lcm.engine import LCMEngine
 from hermes_lcm.rollup_periods import parse_recent_period
@@ -104,18 +105,76 @@ def test_recent_missing_engine_error_bytes() -> None:
     assert tools.lcm_recent({}) == '{"error": "LCM engine not initialized"}'
 
 
-def test_tools_facade_does_not_reexport_recent_private_helpers() -> None:
+def test_tools_facade_does_not_reexport_recent_private_helpers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Public tool facades and other modules' load-bearing exports are allowed.
-    private_helpers = {
-        name for name, value in vars(recent_module).items()
-        if name.startswith("_") and inspect.isfunction(value)
-        and value.__module__ == recent_module.__name__
-    }
-    assert private_helpers
-    assert private_helpers.isdisjoint(vars(tools))
-    assert not {
-        name for name, value in vars(tools).items()
-        if name.startswith("_") and inspect.isfunction(value)
-        and value.__module__ == recent_module.__name__
-    }
+    for family in (recent_module, evidence_tools):
+        private_helpers = {
+            name for name, value in vars(family).items()
+            if name.startswith("_") and inspect.isfunction(value)
+            and value.__module__ == family.__name__
+        }
+        assert private_helpers
+        assert private_helpers.isdisjoint(vars(tools))
+        assert not {
+            name for name, value in vars(tools).items()
+            if name.startswith("_") and inspect.isfunction(value)
+            and value.__module__ == family.__name__
+        }
     assert callable(tools.lcm_recent)
+
+    # Keep this existing guard's ID while characterizing the next facade family.
+    for handler in (
+        tools.lcm_query_state, tools.lcm_compute, tools.lcm_evidence_pack,
+        tools.lcm_compile_evidence, tools.lcm_retrieve,
+    ):
+        assert handler({}) == '{"error": "LCM engine not initialized"}'
+        assert handler.__module__ == "hermes_lcm.tools"
+
+    engine = SimpleNamespace()
+    assert tools.lcm_query_state({}, engine=engine) == json.dumps({
+        "status": "disabled",
+        "error": "V4 assertions are not enabled for this profile",
+    })
+    assert tools.lcm_compile_evidence({"mode": "invalid"}, engine=engine) == (
+        '{"error": "mode must be one of: proposal, auto"}'
+    )
+    assert tools.lcm_retrieve({}, engine=engine) == json.dumps({
+        "status": "disabled",
+        "reason": "adaptive retrieval is disabled",
+        "enable_with": "LCM_ADAPTIVE_RETRIEVAL_ENABLED=true",
+        "provenance": {"controller": {
+            "transport": "deterministic_local", "provider": "none", "model": "none",
+        }},
+    })
+
+    from hermes_lcm import evidence_compiler, evidence_pack
+
+    calls: list[dict[str, Any]] = []
+
+    def recall(args: dict[str, Any], **kwargs: Any) -> str:
+        assert kwargs["engine"] is engine
+        calls.append(args)
+        return "exact café evidence"
+
+    def pack(args: dict[str, Any], **kwargs: Any) -> str:
+        assert kwargs["engine"] is engine
+        return str(kwargs["retrieve"]({"query": args["question"]}))
+
+    def compile_result(question: str, **kwargs: Any) -> dict[str, Any]:
+        assert kwargs["engine"] is engine
+        return {"evidence": kwargs["retrieve"]({"query": question})}
+
+    monkeypatch.setattr(tools, "lcm_recall", recall)
+    monkeypatch.setattr(evidence_pack, "build_evidence_pack", pack)
+    monkeypatch.setattr(evidence_compiler, "compile_evidence", compile_result)
+    monkeypatch.setattr(evidence_compiler, "compile_preanswer_evidence", compile_result)
+    assert tools.lcm_evidence_pack({"question": "bounded"}, engine=engine) == (
+        "exact café evidence"
+    )
+    for mode in ("proposal", "auto"):
+        assert tools.lcm_compile_evidence(
+            {"question": "bounded", "mode": mode}, engine=engine,
+        ) == '{"evidence": "exact café evidence"}'
+    assert calls == [{"query": "bounded"}] * 3
