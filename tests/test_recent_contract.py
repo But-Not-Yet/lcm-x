@@ -1,6 +1,7 @@
 """Pin recent-family response bytes and failure logging before extraction."""
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from types import SimpleNamespace
@@ -8,7 +9,7 @@ from typing import Any, cast
 
 import pytest
 
-from hermes_lcm import tools as recent_module
+from hermes_lcm import recent as recent_module
 from hermes_lcm import tools
 from hermes_lcm.engine import LCMEngine
 from hermes_lcm.rollup_periods import parse_recent_period
@@ -101,3 +102,20 @@ def test_recent_scope_preserves_current_and_finalized_order() -> None:
 
 def test_recent_missing_engine_error_bytes() -> None:
     assert tools.lcm_recent({}) == '{"error": "LCM engine not initialized"}'
+
+
+def test_tools_facade_does_not_reexport_recent_private_helpers() -> None:
+    # Public tool facades and other modules' load-bearing exports are allowed.
+    private_helpers = {
+        name for name, value in vars(recent_module).items()
+        if name.startswith("_") and inspect.isfunction(value)
+        and value.__module__ == recent_module.__name__
+    }
+    assert private_helpers
+    assert private_helpers.isdisjoint(vars(tools))
+    assert not {
+        name for name, value in vars(tools).items()
+        if name.startswith("_") and inspect.isfunction(value)
+        and value.__module__ == recent_module.__name__
+    }
+    assert callable(tools.lcm_recent)
