@@ -111,9 +111,9 @@ class CompactionMixin:
             return self._should_compress_preflight_impl(messages)
 
     def _should_compress_preflight_impl(self, messages):
-        self._preflight_cleanup_only_due_to_boundary_cooldown = False
-        self._preflight_below_threshold_cleanup_only = False
-        self._preflight_automatic_request = False
+        self._compaction_request.cleanup_only_due_to_boundary_cooldown = False
+        self._compaction_request.below_threshold_cleanup_only = False
+        self._compaction_request.automatic_request = False
         self._maybe_reclassify_late_auxiliary_before_compaction_write()
         if self._bypasses_lcm_context_management():
             # Bypassed traffic observes nothing about the pressured session's
@@ -197,7 +197,7 @@ class CompactionMixin:
                     not force_overflow_requested
                     and self._compression_boundary_cooldown_active()
                 ):
-                    self._preflight_cleanup_only_due_to_boundary_cooldown = True
+                    self._compaction_request.cleanup_only_due_to_boundary_cooldown = True
                 if not force_overflow_requested and max(rough, replay_rough) < self.threshold_tokens:
                     return self._mark_below_threshold_maintenance()
                 return self._mark_preflight_compression_requested()
@@ -324,7 +324,7 @@ class CompactionMixin:
     def _mark_below_threshold_maintenance(self, **kwargs: Any) -> bool:
         """#651: a request below the host threshold is maintenance; the automatic compress() it asks for is
         cleanup-only (compress() rechecks its own tokens against the threshold)."""
-        self._preflight_below_threshold_cleanup_only = self.threshold_tokens > 0
+        self._compaction_request.below_threshold_cleanup_only = self.threshold_tokens > 0
         return self._mark_preflight_compression_requested(**kwargs)
 
     def _replay_diff_requests_ingest_cleanup(
@@ -367,20 +367,18 @@ class CompactionMixin:
         leading_anchor_count = self._leading_anchor_count(messages)
         if fresh_tail_start <= leading_anchor_count:
             return False
-        previous_store_id_map = self._current_compress_store_ids_by_message_id
+        store_id_scope = self._compress_run.preserve_store_ids()
         occurrences, v4 = self._replay_occurrences(messages)  # the complete list, sliced (A2, F5)
-        self._current_compress_store_ids_by_message_id = self._get_store_id_map_for_messages(
+        self._compress_run.store_ids_by_message_id = self._get_store_id_map_for_messages(
             messages[leading_anchor_count:fresh_tail_start],
             occurrences[leading_anchor_count:fresh_tail_start] if v4 else None,
         )
-        try:
+        with store_id_scope:
             return any(
                 self._matches_ignore_message_patterns(msg)
                 or self._mapped_stored_row_matches_ignore_message_patterns(msg)
                 for msg in messages[leading_anchor_count:fresh_tail_start]
             )
-        finally:
-            self._current_compress_store_ids_by_message_id = previous_store_id_map
 
     def _leaf_compaction_candidate_status(
         self,
@@ -456,12 +454,12 @@ class CompactionMixin:
             return False, "no eligible raw backlog outside fresh tail", 0
         generated_placeholder_hashes = self._load_generated_ignored_placeholder_hashes()
         if self._compiled_ignore_message_patterns or generated_placeholder_hashes:
-            previous_store_id_map = self._current_compress_store_ids_by_message_id
+            store_id_scope = self._compress_run.preserve_store_ids()
             occurrences, v4 = self._replay_occurrences(messages)  # the complete list, sliced (A2, F5)
-            self._current_compress_store_ids_by_message_id = self._get_store_id_map_for_messages(
+            self._compress_run.store_ids_by_message_id = self._get_store_id_map_for_messages(
                 candidate_raw, occurrences[leading_anchor_count:fresh_tail_start] if v4 else None
             )
-            try:
+            with store_id_scope:
                 filtered_candidate_raw: list[Dict[str, Any]] = []
                 for msg in candidate_raw:
                     content_text = text_content_for_pattern_matching(msg.get("content")) or ""
@@ -479,8 +477,6 @@ class CompactionMixin:
                     ):
                         continue
                     filtered_candidate_raw.append(msg)
-            finally:
-                self._current_compress_store_ids_by_message_id = previous_store_id_map
             candidate_raw = filtered_candidate_raw
             if not candidate_raw:
                 return False, "no eligible raw backlog outside fresh tail", 0
@@ -580,17 +576,17 @@ class CompactionMixin:
             self._no_progress_candidate = False
             self._stub_first_exit_now = self._last_stub_first_exit = None  # #671: the latest compaction only
             if bypass_cooldown:  # #651: a host recovery attempt is never cleanup-only maintenance
-                self._preflight_below_threshold_cleanup_only = self._preflight_automatic_request = False
+                self._compaction_request.below_threshold_cleanup_only = self._compaction_request.automatic_request = False
                 # #684: nor held by a boundary cooldown.
-                self._preflight_cleanup_only_due_to_boundary_cooldown = False
+                self._compaction_request.cleanup_only_due_to_boundary_cooldown = False
             elif not force and self._no_progress_hold_active() and self._no_progress_hold_blocks(
                     current_tokens if current_tokens is not None else count_messages_tokens(messages)):
                 # #677: an automatic call the #651 hold blocks (a caller that skipped the host gate) is held
                 # maintenance; the survival ceiling and forced overflow are never blocked, so they summarise.
-                self._preflight_below_threshold_cleanup_only = True
+                self._compaction_request.below_threshold_cleanup_only = True
             # #618 item 3: at or over the survival ceiling a held automatic call runs no sweep, only the fit below
             # (forced overflow is decided in _compress_impl and still summarises).
-            self._hold_fit_only_requested = bool(not force and not bypass_cooldown and self._hold_fit_only_applies(
+            self._compaction_request.hold_fit_only_requested = bool(not force and not bypass_cooldown and self._hold_fit_only_applies(
                 current_tokens if current_tokens is not None else count_messages_tokens(messages)))
             with self._fresh_tail_pressure_yield_invocation():
                 result = self._compress_impl(
@@ -678,6 +674,8 @@ class CompactionMixin:
         context = self._thread_context
         state = self._bypass_compress_state()
         budget = context.foreground_budget = self._new_foreground_budget()
+        outer_minted = vars(context).get("bypass_minted_engine_uids")  # a nested pass restores the enclosing tracker
+        context.bypass_minted_engine_uids = []  # never recorded: this pass drops only the uids it minted
         returned = None
         state["_last_compression_status"] = "running"
         state["_last_compression_noop_reason"] = ""
@@ -710,6 +708,13 @@ class CompactionMixin:
             raise
         finally:
             context.foreground_budget = None
+            minted = vars(context).pop("bypass_minted_engine_uids", None) or ()
+            if outer_minted is not None:
+                context.bypass_minted_engine_uids = outer_minted
+            pending = self.__dict__.get("_engine_uids_pending")
+            if pending is not None:
+                for uid in minted:
+                    pending.pop(uid, None)
             self._finish_foreground_budget(budget, returned)
 
     def _new_foreground_budget(self) -> ForegroundBudget:
@@ -1297,17 +1302,17 @@ class CompactionMixin:
         # Consume them before every early return so a later unrelated turn can
         # never inherit stale cleanup-only state.
         boundary_cleanup_only_requested = bool(
-            self._preflight_cleanup_only_due_to_boundary_cooldown
+            self._compaction_request.cleanup_only_due_to_boundary_cooldown
         )
         below_threshold_cleanup_only_requested = bool(
-            self._preflight_below_threshold_cleanup_only
+            self._compaction_request.below_threshold_cleanup_only
         )
-        automatic_preflight_requested = bool(self._preflight_automatic_request)
-        hold_fit_only_requested = bool(self._hold_fit_only_requested)
-        self._preflight_cleanup_only_due_to_boundary_cooldown = False
-        self._preflight_below_threshold_cleanup_only = False
-        self._preflight_automatic_request = False
-        self._hold_fit_only_requested = False
+        automatic_preflight_requested = bool(self._compaction_request.automatic_request)
+        hold_fit_only_requested = bool(self._compaction_request.hold_fit_only_requested)
+        self._compaction_request.cleanup_only_due_to_boundary_cooldown = False
+        self._compaction_request.below_threshold_cleanup_only = False
+        self._compaction_request.automatic_request = False
+        self._compaction_request.hold_fit_only_requested = False
 
         if not messages:
             self._last_compression_status = "noop"
@@ -1746,7 +1751,7 @@ class CompactionMixin:
 
             if candidate_start < fresh_tail_start:
                 step_started = time.monotonic() if threshold_full_sweep_active else 0.0
-                self._current_compress_store_ids_by_message_id = (
+                self._compress_run.store_ids_by_message_id = (
                     premapped_store_ids
                     if premapped_store_ids is not None
                     else self._get_store_id_map_for_messages(working_messages[leading_anchor_count:])
@@ -1788,7 +1793,7 @@ class CompactionMixin:
                         or generated_volatile_placeholder
                     ):
                         mapped_store_id = (
-                            self._current_compress_store_ids_by_message_id.get(
+                            self._compress_run.store_ids_by_message_id.get(
                                 id(working_msg)
                             )
                         )
@@ -1994,7 +1999,7 @@ class CompactionMixin:
             self._store_complete_excluded, self._store_complete_cut, self._store_complete_blocked = [], False, None
             step_started = time.monotonic() if threshold_full_sweep_active else 0.0
             anchored_input = self._identity_anchor_summary_input(
-                selected_input, self._current_compress_store_ids_by_message_id, working_messages, selected_raw_chunk,
+                selected_input, self._compress_run.store_ids_by_message_id, working_messages, selected_raw_chunk,
                 budget=max(1, int(self._config.leaf_chunk_tokens)), accounted_ids=publication_excluded_store_ids,
             )
             if threshold_full_sweep_active and sweep_step_done("identity_anchor", step_started) >= sweep_deadline:
@@ -2117,7 +2122,7 @@ class CompactionMixin:
             source_lineage_chunk = [
                 message for message in source_lookup_chunk if id(message) not in dependent_reply_message_ids
             ]
-            full_map = self._current_compress_store_ids_by_message_id  # #535: the pass maps the whole list
+            full_map = self._compress_run.store_ids_by_message_id  # #535: the pass maps the whole list
             source_store_ids = self._get_store_ids_for_messages(source_lineage_chunk, full_map)
             source_store_ids = sorted(dict.fromkeys(source_store_ids + anchor_claimed_ids))
             consumed_store_ids = self._get_store_ids_for_messages(source_lookup_chunk, full_map)
