@@ -468,3 +468,58 @@ def test_known_open_exclusions_track_their_strict_xfails():
                    for mark in parameter.marks if mark.name == "xfail" and mark.kwargs.get("strict"))
     xfailed = {int(found.group(1)) for reason in reasons if (found := re.match(r"#(\d+)", reason))}
     assert set(KNOWN_OPEN) <= xfailed, (set(KNOWN_OPEN) - xfailed)
+
+
+@pytest.mark.parametrize("in_place", [True, False], ids=["in-place", "rotation"])
+def test_host_merge_replay_resume_append(in_place):
+    from tests.invariants.test_exactly_once_machine import HostMergeMachine
+
+    machine = HostMergeMachine()
+    try:
+        for _ in range(3):
+            machine.new_turn("alpha", False, 0, False, "lookup")
+        ledger = deepcopy(machine.occurrences)
+        machine.host_merge(in_place)
+        assert machine.occurrences == ledger
+        assert machine.host[0].get("_merged_turn_prefix")
+        machine.exactly_once()
+        machine.new_turn("same text", False, 0, False, "lookup")
+        machine.exactly_once()
+        machine.replay()
+        machine.exactly_once()
+        machine.cold_resume()
+        machine.exactly_once()
+        machine.new_turn("βeta", True, 1, False, "inspect")
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+@pytest.mark.parametrize("restart", [False, True], ids=["same-ledger", "new-conversation"])
+def test_reset_retains_deliveries_and_restarts_only_on_host_start(restart):
+    from tests.invariants.test_exactly_once_machine import ResetMachine
+
+    machine = ResetMachine()
+    try:
+        for _ in range(3):
+            machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.compress()
+        machine.exactly_once()
+        ledger = deepcopy(machine.occurrences)
+        machine.reset()
+        assert machine.occurrences == ledger
+        assert machine.conversation_id == "identity-session"
+        machine.exactly_once()
+        machine.new_turn("same text", False, 0, False, "lookup")
+        machine.exactly_once()
+        if restart:
+            # The new host starts its session ID with no gateway conversation ID.
+            machine.cold_resume()
+            machine.exactly_once()
+            assert machine.conversation_id == machine.session_id
+            machine.new_turn("βeta", False, 1, False, "lookup")
+            machine.exactly_once()
+        machine.replay()
+        machine.exactly_once()
+    finally:
+        machine.teardown()
