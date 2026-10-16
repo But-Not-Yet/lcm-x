@@ -1,6 +1,6 @@
 # LCM-X vision
 
-**The memory layer agents think with. Nothing is ever lost.**
+**The memory layer agents think with. Nothing is lost by default.**
 
 LCM-X keeps a lossless record of everything an agent sees and does. Today it runs the context window from that record and lets the agent recall the exact source. It is becoming the layer that derives active memory from the record, puts the right evidence in front of the model unasked, and serves any harness.
 
@@ -13,12 +13,12 @@ This page states what we are building and how we will know it works. The [roadma
 
 ## The promise
 
-1. **Nothing is lost.**
+1. **Nothing is lost by default.**
    - Raw rows are stored once and kept, and every summary and derived memory links back to the rows it came from.
    - The one rewrite is a cleanup (on by default from v0.27.0) that moves a large tool output into a file and leaves a reference the agent can expand.
    - Two opt-ins discard content by design: durable sensitive-pattern redaction (`LCM_SENSITIVE_PATTERNS_ENABLED`) and message ignore patterns (`LCM_IGNORE_MESSAGE_PATTERNS`).
 2. **The right evidence at the right moment.**
-   - Recall finds what matters across months of history. Full-text search is built in today; local semantic search is built in from v0.28.0 and on by default from v0.29.0, and a built-in reranker follows in v0.29.0 once it passes its measurement (today reranking needs the Voyage cloud provider).
+   - Recall finds what matters across months of history. Full-text search is built in today; local semantic search is built in from v0.28.0 and on by default from v0.29.0 if it passes its measurement, and a built-in reranker follows in v0.29.0 once it passes its measurement (today reranking needs the Voyage cloud provider).
    - Next (v0.31.0): evidence the agent needs is put in front of it before it answers, not only when it thinks to search.
    - The agent can always open the exact source behind what it was shown.
 3. **Memory that grows.**
@@ -38,7 +38,7 @@ This page states what we are building and how we will know it works. The [roadma
 - **A durable store** (SQLite) with:
   - a summary DAG;
   - externalized large outputs;
-  - full-text search, with optional semantic search and cloud reranking today; local semantic search (built in from v0.28.0, on by default from v0.29.0), a built-in reranker (v0.29.0) and source-linked derived memory (v0.30.0) next.
+  - full-text search, with optional semantic search and cloud reranking today; local semantic search (built in from v0.28.0, on by default from v0.29.0 if it passes its measurement), a built-in reranker (v0.29.0) and source-linked derived memory (v0.30.0) next.
 - **Agent tools** (`lcm_*`), **operator commands** (`/lcm`, the doctor), and, from v0.30.0, a service endpoint so other harnesses can read the same memory (writes from other harnesses in v0.32.0).
 
 ## What LCM-X is not
@@ -54,7 +54,7 @@ This page states what we are building and how we will know it works. The [roadma
   - A feature becomes the default when it passes one pre-declared, paired measurement on held-out questions, read by a frontier model.
   - The measurement must show a significant gain in evidence or answer quality.
   - It ships on even when it uses more tokens; we publish tokens per query beside every number, and every default can be turned off. Token cost is not a gate; losslessness and the user's wait are.
-- **Built in, not bolted on.** From v0.28.0 the default install includes local semantic search, on by default from v0.29.0; from v0.29.0 also a local reranker, if it passes its measurement. Cloud providers are optional upgrades.
+- **Built in, not bolted on.** From v0.28.0 the default install includes local semantic search, on by default from v0.29.0 if it passes its measurement; from v0.29.0 also a local reranker, if it passes its measurement. Cloud providers are optional upgrades.
 - **The user's wait is a product metric.** Compaction time and prompt-cache breaks count as much as summary quality.
 - **Default configuration is the product.** The numbers we publish are for the configuration users actually run, beside our best configuration and labelled as such.
 - **Frontier-first measurement.** Our own benchmark rows use current frontier models as readers and judges, and we publish the protocol and the reasons. Where a shared-reader board (every system run with the same reader and judge by someone other than the vendor) fixes its own models, we enter it on its terms.
@@ -68,7 +68,7 @@ This page states what we are building and how we will know it works. The [roadma
 
 | Horizon | Goal | Done when |
 |---|---|---|
-| **H1 — compaction you don't notice** | Fast, correct compaction, prepared in the background and published at the threshold | Compaction p90 ≤ 60 s and never above 120 s; visible wait p90 ≤ 5 s; no loss or duplicate rows across two consecutive minors |
+| **H1 — compaction you don't notice** | Fast, correct compaction, prepared in the background and published at the threshold | Exit targets, not release gates (the release spec holds the gates): LCM-owned compaction time p90 ≤ 60 s and never above 120 s; visible wait p90 ≤ 5 s; no loss or duplicate rows across two consecutive minors |
 | **H2 — memory that wins** | Built-in semantic search and reranking, agentic recall, sender and time provenance, and source-linked derived memory | LCM-X places first on the shared-reader boards it enters (long-horizon, agentic and in-host), with frontier-model rows published for the shipped default |
 | **H3 — one memory, any harness** | A memory service with an MCP endpoint and adapters, so one record serves several harnesses | Hermes and a second harness share one memory through restarts with stable identities and no duplicate rows; then more adapters and portable export |
 | **H4 — memory for agents in the world** | Research: events with time, place and modality, for agents and robots that act over days | One measured use before any schema commitment |
@@ -82,6 +82,6 @@ This page states what we are building and how we will know it works. The [roadma
   - Agentic rows (the reader drives LCM-X's tools) and single-retrieval rows are reported separately.
 - **Shared-reader boards.** We submit the shipped default to boards that run every system with the same models, and report where we place.
 - **Compaction parity.** Facts kept, instruction continuity and compaction wall time against other compaction systems, on the same material, three seeds.
-- **Lifecycle reliability.** Every release candidate runs a real-host gauntlet (install, upgrade, rollback, restart, rotation, long sessions). Only a candidate that passes becomes GA.
+- **Lifecycle reliability.** Every release candidate runs a real-host gauntlet (install, upgrade, rollback, restart, rotation, long sessions). Only a candidate that passes the [release spec](bench/specs/RELEASE-READINESS-V1.md) becomes GA; an exception is a release-manager decision disclosed in the release notes (v0.27.0 shipped with two, and #1305 adds the rule to the spec).
 
 See the [benchmark methodology](benchmarks/METHODOLOGY.md) and [benchmark vision and attribution](bench/VISION-AND-ATTRIBUTION.md).
