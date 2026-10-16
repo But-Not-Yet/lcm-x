@@ -13,9 +13,9 @@ import time
 
 import pytest
 
-from hermes_lcm import db_bootstrap, lifecycle_state, vector_store
+from hermes_lcm import dag, db_bootstrap, lifecycle_state, store, vector_store
 from hermes_lcm.assertion_store import AssertionStore
-from hermes_lcm.dag import SummaryDAG
+from hermes_lcm.dag import SummaryDAG, SummaryNode
 from hermes_lcm.lifecycle_state import LifecycleStateStore
 from hermes_lcm.query_view_store import QueryViewStore
 from hermes_lcm.rollup_store import RollupStore
@@ -24,12 +24,17 @@ from hermes_lcm.trajectory_store import CorpusIdentity, TrajectoryStore
 from hermes_lcm.vector_store import VectorStore
 
 
-WRITABLE_CASES = ("trajectory", "assertion", "rollup", "query_view", "lifecycle", "vector")
-CASES = ("trajectory", "trajectory_ro", "assertion", "assertion_ro", "rollup", "query_view", "lifecycle", "vector")
+CORE_CASES = ("store", "dag")
+WRITABLE_CASES = ("trajectory", "assertion", "rollup", "query_view", "lifecycle", "vector", *CORE_CASES)
+CASES = ("trajectory", "trajectory_ro", "assertion", "assertion_ro", "rollup", "query_view", "lifecycle", "vector", *CORE_CASES)
 GOLDEN = Path(__file__).with_name("fixtures") / "connection_recipes.json"
 
 
 def recipe_trace(events):
+    # The core stores retain SQLite's tuple rows, with no row_factory assignment.
+    if not any(event[:2] == ["set", "row_factory"] for event in events):
+        end = next(i for i, event in enumerate(events) if event[0] == "executescript")
+        return events[:end] + [["executescript", events[end][1].split()[0].upper()]]
     end = next(i for i, event in enumerate(events) if event[:2] == ["set", "row_factory"])
     boundary = events[end + 1]
     assert boundary[0] in ("execute", "executescript")
@@ -46,6 +51,10 @@ def golden_traces():
             f"{prefix}_{kind}"
             for prefix in ("future", "failure")
             for kind in WRITABLE_CASES
+        } | {
+            f"lifetime_{kind}_{state}"
+            for kind in CORE_CASES
+            for state in ("fresh", "existing")
         }
         assert set(traces) == expected, "Regenerate by running the entire test file"
         lines = ["{"]
@@ -94,6 +103,7 @@ def construct(kind, path):
     return {
         "rollup": RollupStore, "query_view": QueryViewStore,
         "lifecycle": LifecycleStateStore, "vector": VectorStore,
+        "store": MessageStore, "dag": SummaryDAG,
     }[kind](path)
 
 
@@ -279,3 +289,87 @@ def test_live_bootstrap_bindings_order_and_connection_lifetime(kind, tmp_path, m
         assert events.count(["close"]) == 1
     finally:
         store.close()
+
+
+@pytest.mark.parametrize("kind", CORE_CASES)
+@pytest.mark.parametrize("state", ("fresh", "existing"))
+def test_core_schema_write_and_close_trace(kind, state, tmp_path, monkeypatch, check_trace):
+    """Pin schema ownership, tuple rows, IMMEDIATE writes and close ordering."""
+    module, cls = {"store": (store, MessageStore), "dag": (dag, SummaryDAG)}[kind]
+    path = tmp_path / "core.db"
+    if state == "existing":
+        construct(kind, path).close()
+    owner = cls.__new__(cls)
+    events, connections = trace_connections(monkeypatch, path)
+
+    def observe(name, original):
+        def call(conn, *args):
+            assert owner.connection is conn
+            assert conn.row_factory is None
+            events.append(["helper", name])
+            return original(conn, *args)
+        return call
+
+    for attribute in (
+        "refuse_schema_version_too_new", "configure_connection",
+        "ensure_external_content_fts", "run_versioned_migrations",
+    ):
+        monkeypatch.setattr(module, attribute, observe(attribute, getattr(module, attribute)))
+    if kind == "store":
+        monkeypatch.setattr(module, "ensure_message_stem_fts", observe(
+            "ensure_message_stem_fts", module.ensure_message_stem_fts,
+        ))
+
+    def observe_method(name, original):
+        def call(self):
+            assert self is owner
+            events.append(["helper", name])
+            return original(self)
+        return call
+
+    helpers = ("_ensure_source_column", "_ensure_time_contract_columns") if kind == "store" else (
+        "_ensure_source_window_columns",
+    )
+    for attribute in helpers:
+        monkeypatch.setattr(cls, attribute, observe_method(attribute, getattr(cls, attribute)))
+
+    try:
+        cls.__init__(owner, path)
+        assert len(connections) == 1
+        conn = connections[0]
+        assert owner.connection is conn
+        assert conn.isolation_level == "IMMEDIATE"
+        assert conn.row_factory is None
+        assert not conn.in_transaction
+
+        def transaction(sql):
+            if sql.startswith(("BEGIN", "COMMIT", "ROLLBACK")):
+                events.append(["transaction", sql])
+
+        conn.set_trace_callback(transaction)
+        events.append(["write"])
+        if kind == "store":
+            row_id = owner._append_protected_batch(
+                "session", [{"role": "user", "content": "recipe write"}],
+            )[0]
+            assert owner.get(row_id)["content"] == "recipe write"
+        else:
+            row_id = owner.add_node(SummaryNode(session_id="session", summary="recipe write"))
+            assert owner.get_node(row_id).summary == "recipe write"
+        assert not conn.in_transaction
+        assert [event for event in events if event[0] == "transaction"] == [
+            ["transaction", "BEGIN IMMEDIATE"], ["transaction", "COMMIT"],
+        ]
+        owner.close()
+        owner.close()
+        assert owner.connection is None
+        assert events.count(["close"]) == 1
+        assert events[-2:] == [["execute", "PRAGMA wal_checkpoint(PASSIVE)", []], ["close"]]
+        trace = [
+            event for event in events
+            if event[0] in ("helper", "commit", "transaction", "write", "close")
+            or event[:2] == ["execute", "PRAGMA wal_checkpoint(PASSIVE)"]
+        ]
+        check_trace(f"lifetime_{kind}_{state}", trace)
+    finally:
+        owner.close()
