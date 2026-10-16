@@ -10,6 +10,46 @@ The absolute zero-gap expectation is retained as a dedicated strict xfail. Two e
 separately: 40K compress runs and 64K provider calls. No production code changed.
 This is advisory synthetic evidence. It is not a release gate or proof of runtime readiness.
 
+## Repinned to v0.27.0 (2026-10-16)
+
+The default is now `DEFAULT_BASELINE = "v0.27.0"`, pinned to
+`c67d7633d963a2ffd24cf90995189ee58e2f88c7`. The v0.26.2 pin remains selectable.
+All four existing accepted deltas apply only to v0.26.2; predicates and oracles are unchanged.
+Code receipt: `52137e096f6b7ae0eb5c9a9e04f87baf77d0b5c4`; prior harness: `a65e9596`.
+The candidate's product files match v0.27.0. Counts below are raw / unabsorbed oracle events,
+with 74 public cases, 1,000 projection cases and one separate historical #1281 pin.
+
+| Harness / selected baseline | Public | Projection | #1281 pin (v0.26.2) | Pytest | Exit | Wall s |
+|---|---:|---:|---:|---|---:|---:|
+| Prior / v0.26.2 | 2 / 0 | 238 / 0 | 2 / 2 | 27 passed, 3 xfailed | 0 | 116.276 |
+| Repinned / v0.26.2 | 2 / 0 | 238 / 0 | 2 / 2 | 29 passed, 3 xfailed | 0 | 168.426 |
+| Repinned / v0.27.0 default | 2 / 2 | 238 / 238 | 2 / 2 | 26 passed, 3 failed, 3 xfailed | 1 | 196.355 |
+
+The v0.26.2 per-case inputs, driver results (excluding elapsed seconds), oracle events and
+existing test outcomes are identical to the prior harness. Two new unit cases verify that D916
+and D1233 remain unabsorbed under v0.27.0 and the default.
+The default zero-red acceptance condition is **not met**; no new accepted delta hides the findings:
+
+- `i1139_small_window_40k`: C1, uncovered rows GA 0 / candidate 29.
+- `i1139_small_window_64k`: R3, summarizer calls GA 46 / candidate 65.
+  The managed baseline still forces 8K leaves (`driver.py:26`), while v0.27.0 defaults to 24K.
+  Replaying both cases with `--baseline v0.27.0 --baseline-config bare` produces zero raw reds
+  (exit 0, 35.394 seconds). These are configuration differences, not new product-code regressions.
+- Projection: 238 P_USER events, with identical GA/candidate user marks in every case; examples
+  are p0 `[0]`, p1 `[0]` and p12 `[1, 4]`. P_USER is an absolute candidate check (`oracles.py:18`).
+  Scoping D1233 to v0.26.2 exposes this inherited limitation rather than a differential regression.
+
+The #1281 pin was also run against v0.27.0: both trees send 112,193 tokens with user mark `[0]`
+and lack objective/newest; there are zero R2 events, so its old strict xfail becomes a strict XPASS
+(exit 1, 2.521 seconds). Its exact two-R2 expectation therefore remains explicitly on v0.26.2,
+whose baseline sends 112,689 tokens and retains both sentinels. The pin is not weakened.
+Opt-out remains one skipped module (expected exit 5); default collection remains the identical
+7,712-test set. Serial nice-19 command receipts, all case IDs/details, and per-baseline case tables
+are retained in the lane evidence report. The zero-red gate needs a separate decision on baseline
+configuration and inherited absolute P_USER handling; no oracle or configuration policy changed here.
+The full default suite has zero new failures and identical per-test outcomes: both heads report
+7,590 passed, 105 skipped and 19 xfailed (exit 0; prior 474.795 / repinned 503.588 seconds wall).
+
 ## Historical inputs and rc8 (2026-10-16)
 
 The branch merged rc8 `4e603ed65f137a909606afccfc735c691e363d25` with merge commit
