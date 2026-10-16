@@ -8149,8 +8149,17 @@ class LCMEngine(
                             }) <= summary_budget:
                                 summary_parts[0] = anchor_part = candidate
                                 break
+            anchor_exempt = (
+                summary_budget is not None and assembly_cap is None and self._config.survival_fit
+                and part_keys[0] == (-1, None) and count_message_tokens({
+                    "role": summary_role, "content": strip_injected_context_blocks(summary_parts[0]),
+                }) > summary_budget
+            )
             kept_indexes = list(range(len(summary_parts)))
-            if summary_budget is not None:
+            if anchor_exempt:
+                summary_parts[0] = strip_injected_context_blocks(summary_parts[0])
+                kept_indexes = [0]
+            elif summary_budget is not None:
                 # #653: within a depth the newest parts are kept first; kept parts render in the order above.
                 kept_indexes = []
                 for index in sorted(range(len(summary_parts)), key=lambda i: (part_keys[i][0], -i)):
