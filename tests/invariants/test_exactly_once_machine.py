@@ -2,10 +2,12 @@
 
 RecoveryMachine also generates host recovery fits, with larger delivered rows
 and a small context window; the original machine keeps its input distribution.
+RotationMachine adds the host's compress/end/start commit with fresh child
+sessions, checking the ledger across the whole conversation.
 
 The ledger records deliveries, not distinct text. The host view can archive its
 last exchange on retry; the ledger must retain both exchanges. Compression
-changes only the host view. No rotation, host sanitization or arbitrary prefix
+changes only the host view. No host sanitization or arbitrary prefix
 rewrite is generated here. Cold resume excludes only a changed, sanitized
 compression output whose durable proof is stale (#1286), until a compacted pass.
 """
@@ -92,6 +94,27 @@ def reprojected_user_input(aliases, host, operation):
 
 
 KNOWN_OPEN[503] = reprojected_user_input
+
+UNPROVEN_ROTATION = "UNFILED: no-progress rotation leaves an empty child without replay proof"
+WARM_ROTATION_AUDIT = "UNFILED: warm rotation audits the adopted tail without host ancestry"
+
+
+def unproven_rotation_input(unproven, operation):
+    """Only ingestion after a no-rewrite rotation with no child commit proof."""
+    return unproven and operation in ("new_turn", "replay", "compress", "rotate", "cold_resume")
+
+
+def warm_rotation_audit_input(pending, operation):
+    """First warm ingest of a changed rotation view, before a cold bind clears its cache.
+
+    The callback-only host has no state.db ancestry for the identity audit;
+    the inherited pre-compress cache still describes the parent's input.
+    """
+    return pending and operation in ("new_turn", "replay", "compress", "rotate")
+
+
+KNOWN_OPEN[UNPROVEN_ROTATION] = unproven_rotation_input
+KNOWN_OPEN[WARM_ROTATION_AUDIT] = warm_rotation_audit_input
 
 
 def ambiguous_unstamped_tool_window_259(host, ledger):
@@ -343,3 +366,86 @@ class RecoveryMachine(ExactlyOnceMachine):
 
 TestRecovery = RecoveryMachine.TestCase
 TestRecovery.settings = PROFILE
+
+
+class RotationMachine(ExactlyOnceMachine):
+    """The same occurrence ledger across the host's compression session chain."""
+
+    def __init__(self):
+        self.session_id = "identity-session"
+        self.session_ids = [self.session_id]
+        self.unproven_rotation = False
+        self.pending_rotation_audit = False
+        super().__init__()
+
+    def start_engine(self):
+        engine = LCMEngine(config=LCMConfig(database_path=str(self.home / "lcm.db"),
+                                          fresh_tail_count=2, leaf_chunk_tokens=16),
+                           hermes_home=str(self.home / "home"))
+        engine.on_session_start(self.session_id, platform="cli", conversation_id="identity-conversation",
+                                context_length=200_000)
+        return engine
+
+    def rows(self):
+        cursor = self.engine._store.connection.execute(
+            "SELECT role, content, tool_call_id, tool_calls, session_id FROM messages "
+            "WHERE conversation_id = ? ORDER BY store_id", ("identity-conversation",))
+        rows = [dict(zip((column[0] for column in cursor.description), row)) for row in cursor.fetchall()]
+        assert all(row["session_id"] in self.session_ids for row in rows)
+        return rows
+
+    @precondition(lambda self: bool(self.host))
+    @rule()
+    def rotate(self):
+        if self._rotation_excluded("rotate"):
+            return
+        previous = deepcopy(self.host)
+        compressed = self.engine.compress(self.host, current_tokens=self.engine.threshold_tokens + 1, force=True)
+        if self.engine._last_compression_status == "sanitized" and compressed != previous:
+            self.stale_proof = True
+        elif self.engine._last_compression_status == "compacted":
+            self.stale_proof = False
+        self.engine.on_session_end(self.session_id, previous)
+        child = f"identity-session-{len(self.session_ids)}"
+        self.engine.on_session_start(child, platform="cli", conversation_id="identity-conversation",
+                                     context_length=200_000, boundary_reason="compression",
+                                     old_session_id=self.session_id)
+        self.session_id = child
+        self.session_ids.append(child)
+        self.host = compressed
+        self.unproven_rotation = compressed == previous
+        self.pending_rotation_audit = compressed != previous
+
+    def _rotation_excluded(self, operation):
+        return (KNOWN_OPEN[UNPROVEN_ROTATION](self.unproven_rotation, operation)
+                or KNOWN_OPEN[WARM_ROTATION_AUDIT](self.pending_rotation_audit, operation))
+
+    @precondition(lambda self: bool(self.host))
+    @rule()
+    def cold_resume(self):
+        if not self._rotation_excluded("cold_resume"):
+            super().cold_resume()
+            if not self.stale_proof:
+                self.pending_rotation_audit = False
+
+    @precondition(lambda self: bool(self.host))
+    @rule()
+    def replay(self):
+        if not self._rotation_excluded("replay"):
+            super().replay()
+
+    @precondition(lambda self: bool(self.host))
+    @rule()
+    def compress(self):
+        if not self._rotation_excluded("compress"):
+            super().compress()
+
+    @rule(text=TEXT, structured=st.booleans(), tool_count=st.integers(0, 3),
+          retry=st.booleans(), tool_name=st.sampled_from(("lookup", "inspect")))
+    def new_turn(self, text, structured, tool_count, retry, tool_name):
+        if not self._rotation_excluded("new_turn"):
+            super().new_turn(text, structured, tool_count, retry, tool_name)
+
+
+TestRotation = RotationMachine.TestCase
+TestRotation.settings = PROFILE
