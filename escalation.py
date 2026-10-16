@@ -141,6 +141,7 @@ class ForegroundBudget:
         self.slot_taken = self.sweep_active = False
         self.progress = ""
         self.stop_reason = ""  # the reason of the last stop(), for the stop line with the sweep off
+        self.hung_route: str | None = None  # a circuit opened by this pass, not a previous hang
         self.leaves, self.first_call_started, self.last_call_ended = 0, None, None
         self.host = 0.0  # D5: seconds inside the host's native compressor (a bypassed session), not LCM work
         self.selected = False  # #1162: this compaction selected a leaf chunk (its zero-leaf pass counts)
@@ -243,6 +244,21 @@ class SummaryCircuitBreaker:
             self._open_until.pop(key, None)
             self._config_episodes.discard(key)  # #682: a success ends the episode
             self._note(key, None, None)
+
+    def record_hang(self, model: str | None, *, now: float | None = None) -> None:
+        """#1137: a route that used the whole foreground window opens immediately."""
+        key = self._key(model)
+        current_time = time.monotonic() if now is None else now
+        with self._lock:
+            first = self._open_until.get(key, 0.0) <= current_time
+            cooldown = max(0, int(self.cooldown_seconds or 0))
+            self._open_until[key] = current_time + cooldown
+            self._note(key, "hung", None)
+        if first:
+            logger.warning(
+                "LCM summary route circuit opened for %s: route used the whole window; cooldown=%ss",
+                key, cooldown,
+            )
 
     def record_config_error(self, model: str | None, *, route: dict | None = None, error: BaseException | None = None,
                             now: float | None = None, sent_model: str | None = None) -> None:
@@ -1013,7 +1029,20 @@ def _invoke_summary_llm_chain(
             budget.record_call(route_key, started, ended)
             if result is None and _is_budget_cut(error, budget, budget_bound, ended - started, call_timeout,
                                                  deadline_installed):
-                # #605 F4: the budget, not the route, ended the call: no circuit failure, no fallback.
+                # #1137: a full-window hang opens this route for the NEXT compaction.
+                full_window = min(budget.configured_timeout, budget.hard - budget.reserve - budget.leaf_reserve)
+                if not budget_bound:  # the host timeout can be a no-progress window, shorter than the call
+                    full_window = budget.hard - budget.reserve - budget.leaf_reserve
+                used_window = (
+                    (budget_bound and call_timeout >= 0.9 * full_window)
+                    or (deadline_installed and ended >= budget.usable_deadline - 1.0)
+                )
+                if (circuit_breaker is not None and used_window
+                        and ended - started >= 0.9 * full_window):  # an early host fence is not a hang
+                    circuit_breaker.record_hang(route_key)
+                    if not circuit_breaker.allows(route_key):
+                        budget.hung_route = route_key
+                # #605 F4: still stop this compaction, with no time left for a fallback.
                 raise budget.stop("summariser call cut by the foreground budget")
         if circuit_breaker is not None and route:
             circuit_breaker.note_route(route_key, route)

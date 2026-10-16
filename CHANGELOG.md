@@ -11,6 +11,7 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 ### Deprecated
 
 - `LCM_CACHE_FRIENDLY_CONDENSATION_ENABLED` and `LCM_LARGE_OUTPUT_TRANSCRIPT_GC_ENABLED` are deprecated in v0.28.0 and will be removed in v0.29.0 (#1246). Enabling either adds one `config_source_warnings` entry shown by `/lcm status`, `lcm_status` and the `lcm_doctor` configuration check; behavior is unchanged until removal.
+- Fix: a summary route that hangs for the whole foreground budget window opens its circuit immediately, so the next compaction can use a fallback route. Partial-window budget cuts still leave the circuit closed. (#1137)
 
 ## v0.27.0 (summary quality)
 
