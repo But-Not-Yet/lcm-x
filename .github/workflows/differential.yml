@@ -109,7 +109,7 @@ jobs:
                   # unit-test fallback dependency-free. LCMEngine overrides it.
                   self.context_length = context_length
           STUB
-      - run: git fetch --no-tags --depth=1 origin 6800cf45ad05280e6cf6fa9e1ad96c62b7132646
+      - run: git fetch --no-tags --depth=1 origin c67d7633d963a2ffd24cf90995189ee58e2f88c7 6800cf45ad05280e6cf6fa9e1ad96c62b7132646
       - name: Run and report differential
         shell: bash
         run: |
