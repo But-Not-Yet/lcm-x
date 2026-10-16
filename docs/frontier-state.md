@@ -163,7 +163,7 @@ change.
        transfer (engine.py:3837-3867), not the direct writes.
      - The rest of the test suite brings this to 58 of 62.
      - Four statements run in no test: engine.py:3860, 4121-4122 and 5278.
-     - The receipts are recorded with the C4 tracking issue.
+     - The receipts (method, per-statement hit lists) are in a comment on this note's PR.
    - **What reaches the gaps.** Grouped by the host operation that would reach them:
      - rotation without a transferable proof (engine.py:3817-3818 with native recovery digests; 3875-3877 after a failed
        publication or an end that ingested) and the bypassed-source boundary (4121-4122);
