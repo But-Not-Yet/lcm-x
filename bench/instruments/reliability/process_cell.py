@@ -273,8 +273,11 @@ class ProcessCell:
 
     def crash(self, t: int) -> None:
         """Called by the provider while it holds turn t's request: a TRUE mid-turn crash of the host."""
-        self.fire("crash_after_compaction_before_reply", t)
+        kind, phase = "crash_after_compaction_before_reply", self.phase
+        self.fired.add(kind)  # run_phase may observe ProcessGone as soon as the signal is sent
+        kill_monotonic_ns = time.monotonic_ns()
         self.proc.kill()
+        self.fire(kind, t, phase=phase, kill_monotonic_ns=kill_monotonic_ns)
 
     def cancel(self) -> None:
         self.proc.notify("session/cancel", {"sessionId": self.sid})
@@ -447,8 +450,8 @@ def accounting(d: Path, events: list[dict]) -> dict:
     by_role, by_route, unexpected, truncated = {}, {}, [], []
     for r in {r["rid"]: r for r in reqs}.values():
         route = FP.route_of(r.get("method"), r.get("path"))  # re-derived, not trusted from the log
-        if route == "completion" and r.get("truncated"):  # its client was SIGKILLed mid-send: no body, never served
-            truncated.append(r["rid"])
+        if route == "completion" and r.get("truncated"):  # no body, never served; match the receive interval below
+            truncated.append(r)
             continue
         by_route[route] = by_route.get(route, 0) + 1
         if route == "completion":
@@ -459,10 +462,18 @@ def accounting(d: Path, events: list[dict]) -> dict:
                "tool_steps": len({(e["phase"], e["id"].rsplit("_", 1)[0]) for e in events if e["event"] == "tool_issue"}),
                "crash_holds": sum(1 for e in events if e.get("fault") == "crash_after_compaction_before_reply"),
                "unexpected": len({r["rid"] for r in reqs if r.get("unexpected")})}
-    kills = sum(1 for e in events if e.get("event") == "crash")  # every R2 crash is a SIGKILL of the host group
-    unexpected += [{"rid": rid, "route": "truncated"} for rid in truncated[kills:]]  # at most one per kill
+    kills = sorted(e["kill_monotonic_ns"] for e in events
+                   if e.get("event") == "crash" and e.get("kill_monotonic_ns") is not None)
+    matched = set()
+    for kill in kills:
+        candidates = [r for r in truncated if r["rid"] not in matched
+                      and r.get("receive_start_ns") is not None and r.get("receive_end_ns") is not None
+                      and r["receive_start_ns"] <= kill <= r["receive_end_ns"]]
+        if candidates:  # earliest end preserves later kills for requests still receiving then
+            matched.add(min(candidates, key=lambda r: r["receive_end_ns"])["rid"])
+    unexpected += [{"rid": r["rid"], "route": "truncated"} for r in truncated if r["rid"] not in matched]
     return {"requests_by_role": by_role, "requests_by_route": by_route, "unexpected_requests": unexpected[:20],
-            "truncated_requests": truncated,
+            "truncated_requests": [r["rid"] for r in truncated],
             "main_implied": implied, "faults": sorted({(r["rid"], r["fault"]) for r in reqs if r.get("fault")}),
             "ok": by_role.get("main", 0) == sum(implied.values()) and not unexpected}
 
