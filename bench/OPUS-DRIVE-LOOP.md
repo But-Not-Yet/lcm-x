@@ -17,10 +17,10 @@ issues #152 → #107 → the milestone issues), (4) open issues in the wave-3/H6
   `${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}/hermes-work/wt-bench-h1-v2adapter` (branch `bench/h1-v2-adapter`, org fork
   100yenadmin/LongMemEval-V2) — THE authoritative adapter worktree; ignore the other longmemeval checkouts on disk.
 - **Official-run batch machinery + raw results:**
-  `${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}/runs/2026-07-23/hermes-benchprog-h4/artifacts/phase3-openrouter/` (runners+logs)
+  `${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}/Codex/session-notes/2026-07-23/hermes-benchprog-h4/artifacts/phase3-openrouter/` (runners+logs)
   and `.../hermes-benchprog-h4/artifacts/OFFICIAL-FULL-RAW/` (the 125/451 evidence).
 - **Program packet (specs, scratchpad, artifacts incl. `h5-targets.json`, W2A manifests):**
-  `${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}/runs/2026-07-23/hermes-benchprog-h1/` (+ `artifacts/`).
+  `${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}/Codex/session-notes/2026-07-23/hermes-benchprog-h1/` (+ `artifacts/`).
 - **Keys:** macOS keychain; retrieval recipes + service names in `~/.claude/runbooks/hermes-benchmark-ops.md`.
   Never print/log key values.
 - **Gate source of truth:** the ISSUE BODY, always — architecture-doc gate summaries are abbreviations
@@ -90,7 +90,7 @@ irreversible outside our fork.
 - Keepalive sleep-ticks during active waiting phases (session-scoped sentinels; `touch /tmp/worldos_last_tick.
   $CLAUDE_CODE_SESSION_ID; sleep 250; echo tick` as last call; self-extinguishing); dense turns — process every
   landed wake fully and do parallel plan work before ending a turn.
-- Artifacts → ${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}/runs/YYYY-MM-DD/<slug>/artifacts/, never /tmp. Scratchpad =
+- Artifacts → ${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}/Codex/session-notes/YYYY-MM-DD/<slug>/artifacts/, never /tmp. Scratchpad =
   implementation-notes.html in the packet dir; timestamped entries at every decision.
 - ONE WORKTREE PER LANE: never run two agents (or an agent + a run) against the same checkout — a W3b builder commit switched the shared lme-v2-official HEAD mid-P3-run (07-24; harmless only by luck). Dedicated worktree or explicit lock per lane; restore expected branches after any shared-checkout use.
 - GitHub API budget: 5k/hr shared — don't poll gh in tight loops (burned once tonight); use ScheduleWakeup or

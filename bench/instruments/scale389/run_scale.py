@@ -25,7 +25,7 @@ from bench.tools.storefreeze import (  # noqa: E402
 
 SCRIPT = Path(__file__).with_name("phase1a.py")
 DEFAULT_RESULTS = Path(
-    "runs/2026-07-29/hermes-r3-1/artifacts/laneINSTPREP-logs/scale389-results"
+    "Codex/session-notes/2026-07-29/hermes-r3-1/artifacts/laneINSTPREP-logs/scale389-results"
 )
 
 

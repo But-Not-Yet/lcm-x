@@ -21,7 +21,7 @@ from bench.tools.pinverify import sha256_file
 
 DEFAULT_DATASET = Path("hermes-work/longmemeval-data/longmemeval_s")
 DEFAULT_OUTPUT = Path(
-    "runs/2026-07-29/hermes-r3-1/artifacts/laneINSTPREP-logs/scale389-corpus"
+    "Codex/session-notes/2026-07-29/hermes-r3-1/artifacts/laneINSTPREP-logs/scale389-corpus"
 )
 SEED = 20260725
 DEFAULT_SCALES = (500, 2000, 8000, 19829)

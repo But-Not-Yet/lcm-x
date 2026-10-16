@@ -85,7 +85,7 @@ internal protocol costs more and measures a frontier reader that masks the exact
 tolerance) the official reader punishes. Therefore, effective immediately:
 - **Static candidates iterate against the OFFICIAL protocol directly** (60q stratified slices for dev loops at
   ~$0.15, full 451 for gates), using the frozen batch machinery at
-  `${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}/runs/2026-07-23/hermes-benchprog-h4/artifacts/phase3-openrouter/` (harness
+  `${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}/Codex/session-notes/2026-07-23/hermes-benchprog-h4/artifacts/phase3-openrouter/` (harness
   worktree: `${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}/hermes-work/wt-bench-h1-v2adapter`).
 - Sol protocol is demoted to a dev-loop probe and for V1 (whose harness is Sol-native). Sol numbers remain
   non-official-labeled always.
@@ -228,7 +228,7 @@ Goal: official static 125 → ≥193 (42.8-parity) → ≥230 (51.0-parity). Mec
 - **W3a — H5(a) state-level embedding backfill** (recall floor). Backfill Voyage embeddings for pool states so
   zero-pooled-state trajectories are directly reachable. Gate summary (the ISSUE #142 body is the sole complete
   source of truth): pool-entry ≥8/30 on the frozen H5 target set
-  (`${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}/runs/2026-07-23/hermes-benchprog-h1/artifacts/h5-targets.json`); plus the
+  (`${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}/Codex/session-notes/2026-07-23/hermes-benchprog-h1/artifacts/h5-targets.json`); plus the
   delivered-recall, preservation/golden, and latency conditions per #142. Spend: size first (W3a-0, expect low
   single-digit $; hard cap $10 without owner ping; re-meter at 50% of the backfill before continuing).
 - **W3b — compact delivery** (the spurious-unknown killer). Replace 22k bulk contexts with budgeted sharp

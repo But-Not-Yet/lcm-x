@@ -94,12 +94,13 @@ Run `actionlint` when workflows change. Record exact commands and results in the
 ## Results and PR evidence
 
 - A run that yields a citable number ends with a result card (`RESULT-MANIFEST.json`
-  + `RESULT.md`), published to a durable store (a release asset or a private evidence
+  and `RESULT.md`), published to a durable store (a release asset or a private evidence
   store) before raw data is packed.
 - Never cite machine-local paths (home directories, mounted volumes or session-note
   folders) in this repo, PRs, issues or releases.
-- Every PR body has an `## Evidence` block sized to its class; screenshots are only
-  required for visual changes.
+- Every PR body has an `## Evidence` block sized to its class; screenshots only
+  for visual changes; video is never required.
+- Do not name private repositories in this repo, PRs, issues or releases.
 - Closeouts state a claim class and what the result does not prove.
 
 ## Automation Boundary

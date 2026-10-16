@@ -6,7 +6,7 @@ material findings re-verified by independent agents (two of the audit's own refu
 positives, which is why the survivors are credible). 1.39M subagent tokens.
 **Personally reproduced by the architect before acting** (audit_evidence_in_prompt.py, dataset-native
 `has_answer` flags — LongMemEval's own per-turn annotations, present in the local corpus).
-**Audit artifacts:** `${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}/runs/2026-07-28/hermes-program-audit/artifacts/`
+**Audit artifacts:** `${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}/Codex/session-notes/2026-07-28/hermes-program-audit/artifacts/`
 
 ---
 

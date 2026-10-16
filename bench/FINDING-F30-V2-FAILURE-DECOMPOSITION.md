@@ -4,7 +4,7 @@
 `bench-H6-P4-298`), executed by a commissioned deep-analysis agent under the F29 granularity rules; validated by
 independent coverage checks (not partition identities) and a from-scratch reimplementation of the official
 scorer reproducing the recorded score on 226/226 phraseset questions.
-**Artifacts:** `${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}/runs/2026-07-29/hermes-v2-decomposition/artifacts/` (scripts
+**Artifacts:** `${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}/Codex/session-notes/2026-07-29/hermes-v2-decomposition/artifacts/` (scripts
 01–09 + JSON outputs; the 74-question ledger is `08_final_74_ledger.json`).
 
 ---
