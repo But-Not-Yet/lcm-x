@@ -1714,12 +1714,14 @@ class LCMEngine(
             self._config.summary_model, self._config.summary_fallback_models, self._summary_circuit_breaker)
 
     def _hung_summary_route_has_fallback(self, budget: ForegroundBudget) -> bool:
-        """Only this pass's hang can waive its hold, while an alternate fallback is still usable."""
+        """Only this pass's hang can waive its hold, while another route in the chain is still usable
+        (the primary too, when the hang was on a fallback)."""
         return (
             budget.hung_route is not None
             and not self._summary_circuit_breaker.allows(budget.hung_route)
             and any(self._summary_circuit_breaker.allows(model) for model in _summary_model_chain(
-                self._config.summary_model, self._config.summary_fallback_models)[1:])
+                self._config.summary_model, self._config.summary_fallback_models)
+                if model != budget.hung_route)
         )
 
     def _fit_can_rescue(self, force_overflow: bool) -> bool:

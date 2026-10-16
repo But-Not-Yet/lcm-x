@@ -241,3 +241,39 @@ def test_automatic_compaction_holds_only_without_a_hung_route_alternative(
             assert engine._last_compression_status == "compacted"
     finally:
         engine.shutdown()
+
+
+def test_fallback_hang_after_a_quick_primary_failure_retries_the_primary(tmp_path, monkeypatch, clock, caplog):
+    """A primary that fails fast (circuit still closed) stays usable when the fallback hangs: no holds."""
+    from tests.test_issue_605_foreground_budget import _engine, _view
+
+    engine = _engine(tmp_path, summary_model="m1", summary_fallback_models=["m2"], summary_timeout_ms=120_000)
+    calls = []
+
+    def provider(prompt, max_tokens, model="", timeout=None, reasoning_effort=""):
+        calls.append(model)
+        if model == "m1":
+            if calls.count("m1") == 1:
+                raise RuntimeError("upstream returned 502")
+            return SUMMARY
+        clock.offset += escalation._summary_call.stream_deadline - time.monotonic()
+        raise TimeoutError("auxiliary stream timed out at the host compression deadline")
+
+    monkeypatch.setattr(escalation, "_invoke_summary_llm", provider)
+    view = _view()
+    engine.ingest(view)
+    try:
+        with caplog.at_level(logging.INFO, logger="hermes_lcm"):
+            result = engine.compress(view, current_tokens=engine.threshold_tokens + 1)
+        assert calls == ["m1", "m2"]
+        assert engine._summary_circuit_breaker.allows("m1")
+        assert not engine._summary_circuit_breaker.allows("m2")
+        assert not engine._sweep_budget_hold_active()
+        assert not engine._no_progress_hold_active()
+        assert engine.should_compress(engine.threshold_tokens + 1)
+        assert len([r for r in caplog.records if "skipping sweep budget hold" in r.getMessage()]) == 1
+        engine.compress(result, current_tokens=engine.threshold_tokens + 1)
+        assert calls[2] == "m1" and "m2" not in calls[2:]
+        assert engine._last_compression_status == "compacted"
+    finally:
+        engine.shutdown()
