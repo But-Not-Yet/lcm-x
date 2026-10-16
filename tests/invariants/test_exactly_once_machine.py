@@ -27,7 +27,7 @@ from tempfile import TemporaryDirectory
 import pytest
 
 pytest.importorskip("hypothesis")
-from hypothesis import settings, strategies as st
+from hypothesis import Phase, settings, strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, precondition, rule
 
 from hermes_lcm import engine as engine_module
@@ -38,9 +38,12 @@ from hermes_lcm.engine import LCMEngine
 from hermes_lcm.message_content import normalize_content_value
 
 
+# No explain phase: after a failing example (every strict xfail here fails) its line tracer leaves
+# sys.monitoring LINE events set on Python 3.12+, which slows every later test in the session.
+NO_EXPLAIN = tuple(phase for phase in Phase if phase is not Phase.explain)
 for name, examples in (("ci", 25), ("nightly", 500)):
     settings.register_profile(name, max_examples=examples, stateful_step_count=12,
-                              derandomize=True, deadline=None, database=None)
+                              derandomize=True, deadline=None, database=None, phases=NO_EXPLAIN)
 # Applied to these machines only, never session-wide. Halve each nightly
 # allocation so the saved work scales with its measured share; keep 12 steps.
 PROFILE = settings.get_profile(os.environ.get("LCM_HYPOTHESIS_PROFILE", "ci"))

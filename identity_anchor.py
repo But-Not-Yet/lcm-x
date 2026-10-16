@@ -25,12 +25,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sqlite3
 from collections import Counter, defaultdict, deque
 from difflib import SequenceMatcher
 from typing import Any, Dict, Optional
 
+from .config import _parse_bool_env
 from .fresh_tail import tool_group_safe_end
 from .message_content import normalize_content_value, text_content_for_pattern_matching
 from .store import _normalize_observed_at
@@ -50,7 +50,7 @@ _MATCH_WORK_PER_ITEM, _MATCH_WORK_FLOOR = 32, 4096  # matching search budget per
 
 
 def identity_anchor_enabled() -> bool:
-    return (os.environ.get("LCM_IDENTITY_ANCHOR") or "").strip().lower() not in {"0", "false", "no", "off"}
+    return _parse_bool_env("LCM_IDENTITY_ANCHOR", True, unknown=True, true_values=())
 
 
 def _decompositions(content: str, texts: set, *, partial: bool) -> Optional[list]:
@@ -1071,8 +1071,7 @@ class IdentityAnchorMixin:
             self._store.add_message_relations(groups)
         for row, message in plan.get("ws", ()) if remainder_ids is None else ():
             self._record_ws_host_rewrite(row, message)
-        for store_id, stamp in plan["backfill"] if remainder_ids is None else ():
-            self._store.backfill_observed_at(store_id, stamp)
+        self._store.backfill_observed_at_many(plan["backfill"] if remainder_ids is None else ())
         if remainder_ids is None and plan["carry"]:
             self._register_identity_anchor_carry(plan["carry"])
 
