@@ -12652,7 +12652,10 @@ class TestEngineCompress:
             condensation_fanin=2,
             database_path=str(tmp_path / "lcm_cache_friendly_suppress.db"),
         )
-        config.cache_friendly_condensation_enabled = True
+        monkeypatch.setenv("LCM_CACHE_FRIENDLY_CONDENSATION_ENABLED", "true")
+        loaded = LCMConfig.from_env()
+        config.cache_friendly_condensation_enabled = loaded.cache_friendly_condensation_enabled
+        config.config_source_warnings = loaded.config_source_warnings
         config.cache_friendly_min_debt_groups = 2
         engine = LCMEngine(config=config)
         engine._session_id = "test-session"
@@ -26452,6 +26455,10 @@ class TestEngineTools:
             large_output_externalization_threshold_chars=200,
             large_output_transcript_gc_enabled=True,
         )
+        monkeypatch.setenv("LCM_LARGE_OUTPUT_TRANSCRIPT_GC_ENABLED", "true")
+        loaded = LCMConfig.from_env()
+        config.large_output_transcript_gc_enabled = loaded.large_output_transcript_gc_enabled
+        config.config_source_warnings = loaded.config_source_warnings
         engine = LCMEngine(config=config, hermes_home=str(tmp_path / "hermes"))
         engine._session_id = "test-session"
         engine.context_length = 200000
