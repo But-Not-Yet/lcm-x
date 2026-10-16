@@ -1,0 +1,155 @@
+"""Characterize the four C4 frontier writes, including defensive-only paths.
+
+The inspected host starts engines in agent/agent_init.py:2106 and notifies
+compression children in agent/conversation_compression.py:2555, 3445. That
+rotation does not end the engine session; run_agent.py:217 ends real sessions.
+Consequently an end-consumed proof with a changed durable reset epoch needs
+an engine-level setup, rather than a claim that normal host rotation does it.
+"""
+from __future__ import annotations
+
+import importlib
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+# conftest registers the plugin's virtual package; it is not an installed package.
+engine_module = importlib.import_module("hermes_lcm.engine")
+config_module = importlib.import_module("hermes_lcm.config")
+
+
+@pytest.fixture
+def engine(tmp_path: Path) -> Iterator[Any]:
+    instance = engine_module.LCMEngine(
+        config=config_module.LCMConfig(
+            database_path=str(tmp_path / "frontier.db"),
+            large_output_externalization_path=str(tmp_path / "externalized"),
+            fresh_tail_count=3,
+            leaf_chunk_tokens=400,
+            temporal_rollups_enabled=False,
+            stateless_session_patterns=["bypassed-source"],
+        ),
+        hermes_home=str(tmp_path / "home"),
+    )
+    try:
+        yield instance
+    finally:
+        instance.shutdown()
+
+
+def _compact(engine: Any, monkeypatch: pytest.MonkeyPatch) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    def summarize(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        return "Earlier turns summarized. Expand for the original turns.", 1
+
+    monkeypatch.setattr(engine_module, "summarize_with_escalation", summarize)
+    messages: list[dict[str, Any]] = []
+    for index in range(8):
+        messages.extend([
+            {"role": "user", "content": f"Turn {index}: " + "alpha beta gamma delta " * 40},
+            {"role": "assistant", "content": f"Recorded turn {index}."},
+        ])
+    messages.append({"role": "user", "content": "Current question."})
+    engine.ingest(messages)
+    output: list[dict[str, Any]] = engine.compress(list(messages), force=True)
+    assert engine._last_compression_status == "compacted"
+    assert engine._compress_commit_proof is not None
+    assert engine._last_emission_descriptors["emissions"]
+    return messages, output
+
+
+def test_rotation_drops_descriptors_from_a_previous_reset_epoch(
+    engine: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """3860: a durable reset may invalidate an otherwise transferable proof.
+
+    No inspected host sequence interleaves a reset with an end-consumed proof.
+    Exercise the boundary helper with real writer-produced proofs and a real
+    lifecycle reset (the durable operation used by on_session_reset), leaving
+    the source engine's in-memory snapshot intact as another engine would.
+    The public start's final binding filter also clears this stale cache; the
+    helper test isolates the earlier write instead of hiding that redundancy.
+    """
+    engine.on_session_start("parent", platform="acp", context_length=200_000)
+    messages, output = _compact(engine, monkeypatch)
+    engine.on_session_end("parent", messages)
+    state = engine._lifecycle.record_reset(engine._conversation_id)
+    assert state is not None and state.last_reset_at is not None
+    assert engine._compress_commit_proof["end_consumed"]
+    assert engine._last_emission_descriptors["reset_epoch"] is None
+
+    engine._continue_compression_boundary("child", "parent", {"platform": "acp"})
+
+    # A stale cache must not authorize generated-span removal on the helper's
+    # output. The durable reader rejects the old reset epoch as well.
+    occurrences, _ = engine._replay_occurrences(output)
+    assert all(entry.generated_span is None for entry, _identity in occurrences)
+    assert engine._last_emission_descriptors is None
+    assert engine._store.get_session_count("parent") == len(messages)
+    assert engine._store.get_session_count("child") == 0
+
+
+@pytest.mark.parametrize("already_bound", [False, True], ids=["fresh-child", "bound-child"])
+def test_bypassed_source_boundary_restarts_the_cursor(
+    engine: Any, already_bound: bool,
+) -> None:
+    """4121-4122: child adoption with no different previous engine session.
+
+    Host recovery calls start(child, old=parent) at
+    agent/conversation_compression.py:1703; its normal initialization may
+    already have bound that child (agent/agent_init.py:2106). The fresh case
+    also exercises a zero cursor without inventing nonzero initial state.
+    """
+    messages = [{"role": "user", "content": "Existing child turn."}]
+    if already_bound:
+        engine.on_session_start("child", platform="acp")
+        engine.ingest(messages)
+        assert engine._ingest_cursor == 1
+    else:
+        assert engine._session_id == ""
+    engine.on_session_start(
+        "child", platform="acp", boundary_reason="compression", old_session_id="bypassed-source",
+    )
+    assert engine._ingest_cursor == 0
+    assert engine._last_compacted_store_id == 0
+    engine.ingest([*messages, {"role": "assistant", "content": "Bypassed continuation."}])
+    engine.on_session_end("child", messages)
+    assert engine._store.get_session_count("child") == int(already_bound)
+    assert engine._store.get_session_count("bypassed-source") == 0
+    state = engine._lifecycle.get_by_session("child")
+    assert state is not None and state.current_frontier_store_id == 0
+    # 4122 is overwritten by _bind_lifecycle_state (engine.py:2442).
+    # There is no intervening reader: skipping it has no durable consequence.
+
+
+def test_reconcile_probe_failure_trusts_zero_cursor(
+    engine: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """5278: inject only the store probe failure, then let ingest use the store.
+
+    A normal rebind is host-shaped; the store failure is a defensive fault.
+    Current behavior re-stores the replay rather than reconciling it. Pin that
+    consequence without treating duplicate rows as desired future behavior.
+    """
+    engine.on_session_start("session", platform="acp")
+    messages = [
+        {"role": "user", "content": "Durable question."},
+        {"role": "assistant", "content": "Durable answer."},
+    ]
+    engine.ingest(messages)
+
+    def fail_probe(session_id: str) -> int:
+        raise RuntimeError("injected reconciliation probe failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(engine._store, "get_session_count", fail_probe)
+        engine.on_session_start("session", platform="acp")
+    assert engine._ingest_cursor == 0
+    engine.ingest([*messages, {"role": "user", "content": "New question."}])
+    rows = engine._store.get_session_messages("session")
+    assert [row["content"] for row in rows] == [
+        "Durable question.", "Durable answer.",
+        "Durable question.", "Durable answer.", "New question.",
+    ]
+    assert engine._ingest_cursor_needs_reconcile is False
