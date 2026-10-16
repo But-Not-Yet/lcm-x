@@ -177,6 +177,7 @@ from .sqlite_util import (
 )
 from .store import MessageStore
 from .tokens import count_message_tokens, count_messages_tokens, count_tokens
+from .assembly_plan import PrefixBudgetFacts, default_prefix_budget, select_prefix
 from . import tools as lcm_tools
 
 logger = logging.getLogger(__name__)
@@ -8109,15 +8110,13 @@ class LCMEngine(
                 # Measure without externalizing preserved-objective payloads.
                 # Tool-pair repair still reserves any missing-result stubs.
                 measurement_tail = self._sanitize_tool_pairs(list(tail_selected))
-                # The quarter-window floor relies on a later survival fit; without one, use the true remainder.
-                default_budget = max(
-                    ceiling - overhead - count_messages_tokens(result)
-                    - max(count_messages_tokens(tail_selected),
-                          count_messages_tokens(measurement_tail))
-                    # Reserve recall only when its builder can return a row (recall and embeddings on, budget > 0).
-                    - (max(0, int(self._config.proactive_recall_budget_tokens or 0))
-                       if self._config.proactive_recall_enabled and self._config.embeddings_enabled else 0),
-                    ceiling // 4 if self._config.survival_fit else 0,
+                default_budget = default_prefix_budget(
+                    ceiling=ceiling, overhead=overhead, leading_tokens=count_messages_tokens(result),
+                    tail_tokens=count_messages_tokens(tail_selected),
+                    repaired_tail_tokens=count_messages_tokens(measurement_tail),
+                    recall_budget_tokens=self._config.proactive_recall_budget_tokens,
+                    proactive_recall_enabled=self._config.proactive_recall_enabled,
+                    embeddings_enabled=self._config.embeddings_enabled, survival_fit=self._config.survival_fit,
                 )
                 full_prefix = {"role": summary_role, "content": "\n\n---\n\n".join(summary_parts)}
                 if count_message_tokens(full_prefix) > default_budget:
@@ -8135,32 +8134,12 @@ class LCMEngine(
                             }) <= summary_budget:
                                 summary_parts[0] = anchor_part = candidate
                                 break
-            anchor_exempt = (
-                summary_budget is not None and assembly_cap is None and self._config.survival_fit
-                and part_keys[0] == (-1, None) and count_message_tokens({
-                    "role": summary_role, "content": strip_injected_context_blocks(summary_parts[0]),
-                }) > summary_budget
-            )
-            kept_indexes = list(range(len(summary_parts)))
-            if anchor_exempt:
-                summary_parts[0] = strip_injected_context_blocks(summary_parts[0])
-                kept_indexes = [0]
-            elif summary_budget is not None:
-                # #653: within a depth the newest parts are kept first; kept parts render in the order above.
-                kept_indexes = []
-                for index in sorted(range(len(summary_parts)), key=lambda i: (part_keys[i][0], -i)):
-                    candidate = "\n\n---\n\n".join(
-                        strip_injected_context_blocks(summary_parts[i])
-                        if part_keys[i] == (-1, None) and count_message_tokens({
-                            "role": summary_role, "content": summary_parts[i],
-                        }) > summary_budget else summary_parts[i]
-                        for i in sorted(kept_indexes + [index]))
-                    candidate_msg = {"role": summary_role, "content": candidate}
-                    if count_message_tokens(candidate_msg) > summary_budget:
-                        continue
-                    kept_indexes.append(index)
-                kept_indexes.sort()
-            selected_parts = [summary_parts[i] for i in kept_indexes]
+            selection = select_prefix(summary_parts, PrefixBudgetFacts(
+                part_keys=part_keys, summary_role=summary_role, summary_budget=summary_budget,
+                assembly_cap=assembly_cap, survival_fit=self._config.survival_fit,
+                count_message_tokens=count_message_tokens,
+            ))
+            kept_indexes, selected_parts = selection.kept_indexes, selection.selected_parts
             active_summary_node_ids.update(
                 part_keys[i][1] for i in kept_indexes if part_keys[i][1] is not None)
             if selected_parts:
