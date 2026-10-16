@@ -216,3 +216,53 @@ def test_owner_commit_failure_trace(message_store: Any, golden: dict[str, Any], 
         "trace": trace, "error": caught, "in_transaction": conn.in_transaction,
         "metadata": [list(row) for row in conn.execute("SELECT * FROM metadata WHERE key='trace'")],
     })
+
+
+@pytest.mark.parametrize("immediate", [False, True], ids=["implicit", "immediate"])
+@pytest.mark.parametrize("fail", [False, True], ids=["success", "failure"])
+def test_nested_atomic_trace(
+    message_store: Any, golden: dict[str, Any], immediate: bool, fail: bool,
+) -> None:
+    owner = message_store
+    conn: TraceConnection = owner.connection
+    trace = control_trace(conn)
+    error = None
+    try:
+        with owner.atomic(immediate=immediate):
+            with owner.atomic(immediate=immediate):
+                owner.write_metadata_json(["nested"], "{}")
+                owner.backfill_observed_at(1, 10.0)
+                owner.pin(1)
+                if fail:
+                    raise InjectedFailure("nested write")
+    except InjectedFailure as exc:
+        error = str(exc)
+    assert (error is not None) == fail
+    # The nested primitive must produce the same single owner trace captured
+    # from the original explicit transaction, including on propagated failure.
+    expected = golden[f"host_uid_{'failure' if fail else 'success'}"]["trace"]
+    assert trace == expected
+    assert not conn.in_transaction
+    row = conn.execute("SELECT pinned, observed_at FROM messages WHERE store_id=1").fetchone()
+    assert row == ((0, None) if fail else (1, 10.0))
+    assert bool(conn.execute("SELECT 1 FROM metadata WHERE key='nested'").fetchone()) is not fail
+
+
+def test_empty_implicit_atomic_has_no_transaction(message_store: Any, golden: dict[str, Any]) -> None:
+    conn: TraceConnection = message_store.connection
+    trace = control_trace(conn)
+    with message_store.atomic():
+        with message_store.atomic():
+            pass
+    assert trace == golden["schema_1"]["trace"] == []
+
+
+def test_host_uid_still_refuses_an_enclosing_transaction(message_store: Any) -> None:
+    owner = message_store
+    conn: TraceConnection = owner.connection
+    with owner.atomic(immediate=True):
+        owner.write_metadata_json(["pending"], "{}")
+        with pytest.raises(sqlite3.OperationalError, match="host-uid shadow write skipped"):
+            owner._host_uid_write(lambda raw: raw.execute("DELETE FROM metadata WHERE key='pending'"))
+        assert conn.in_transaction
+    assert conn.execute("SELECT value FROM metadata WHERE key='pending'").fetchone() == ("{}",)

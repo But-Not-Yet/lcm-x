@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 import sqlite3
 
@@ -46,3 +47,39 @@ def open_connection(policy: ConnectionPolicy) -> sqlite3.Connection:
             policy.on_setup_error(exc)
         raise
     return conn
+
+
+class TransactionOwner:
+    """Join transactions on one store connection under its existing lock.
+
+    The default retains implicit first-write opening. Explicit owners request
+    BEGIN IMMEDIATE at entry. Savepoints, retry policies and schema scripts
+    retain their existing owners; this primitive does not absorb those paths.
+    """
+
+    def __init__(self, lock: AbstractContextManager[object]) -> None:
+        self._lock = lock
+        self._active_connection: sqlite3.Connection | None = None
+
+    def commit(self, conn: sqlite3.Connection) -> None:
+        """Flush standalone helper writes; an enclosing atomic block flushes itself."""
+        if self._active_connection is None or self._active_connection is not conn:
+            conn.commit()
+
+    @contextmanager
+    def atomic(self, conn: sqlite3.Connection, *, immediate: bool = False) -> Iterator[None]:
+        with self._lock:
+            if self._active_connection is conn:
+                yield
+                return
+            if immediate:
+                conn.execute("BEGIN IMMEDIATE")
+            self._active_connection = conn
+            try:
+                yield
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+            finally:
+                self._active_connection = None
