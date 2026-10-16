@@ -517,7 +517,8 @@ class GatewayResetMachine(ExactlyOnceMachine):
             "SELECT role, content, tool_call_id, tool_calls, session_id FROM messages "
             "WHERE conversation_id = ? ORDER BY store_id", ("identity-conversation",))
         rows = [dict(zip((c[0] for c in cur.description), r)) for r in cur.fetchall()]
-        assert [r["session_id"] for r in rows] == [r["session_id"] for r in self.occurrences], "session ownership"
+        if len(rows) == len(self.occurrences):  # a lost or extra row is the oracle's to report, with its diagnosis
+            assert [r["session_id"] for r in rows] == [r["session_id"] for r in self.occurrences], "session ownership"
         others = self.engine._store.connection.execute(
             "SELECT count(*) FROM messages WHERE conversation_id != ?", ("identity-conversation",)).fetchone()[0]
         assert others == 0, others
