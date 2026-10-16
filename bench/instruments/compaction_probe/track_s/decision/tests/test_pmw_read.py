@@ -110,6 +110,43 @@ def test_missing_run_is_invalid(cell):
     assert result["verdict"]["result"] == "INVALID"
 
 
+@pytest.mark.parametrize("mode", ["no-crossing", "zero-post-turns"])
+def test_requested_run_requires_crossing_turns(cell, mode):
+    # Leave the other run valid: one bad run invalidates the whole cell.
+    path = cell[0] / "lcmx-runs" / ARM / "seed-1/d1-r1/summary.json"
+    summary = json.loads(path.read_text())
+    if mode == "no-crossing":
+        summary["threshold_tokens"] = 101
+    else:
+        for event in summary["events"]:
+            event["turn"] += 20
+    write(path, summary)
+    code, result = invoke(cell)
+    assert code == 2
+    assert result["verdict"]["result"] == "INVALID"
+    assert f"{ARM}|d1-r1" in result["error"]
+    assert result["verdict"]["facts_floor"] == 0.583
+    assert ("no threshold crossing" if mode == "no-crossing" else "zero post-crossing turns") in result["error"]
+
+
+@pytest.mark.parametrize("cp,expected", [(304, 2), (176, 0)])
+def test_incomplete_checkpoint(cell, cp, expected):
+    path = cell[0] / "decision/scores" / f"cp-{cp}" / f"{ARM}.seed-1.d1-r1.json"
+    write(path, dict(metrics=dict(facts_kept=dict(value=0.583, complete=False))))
+    code, result = invoke(cell)
+    assert code == expected
+    if cp == 304:
+        assert result["verdict"]["result"] == "INVALID"
+        assert f"{ARM}|d1-r1" in result["error"] and "incomplete cp-304" in result["error"]
+
+
+@pytest.mark.parametrize("floor", [0.583, 0.584])
+def test_receipt_records_effective_floor(cell, floor, capsys):
+    _, result = invoke(cell, "--facts-floor", str(floor))
+    assert result["verdict"]["facts_floor"] == floor
+    assert json.loads(capsys.readouterr().out)["verdict"]["facts_floor"] == floor
+
+
 @pytest.mark.parametrize("values,expected", [([], None), ([7], 7), (list(range(1, 11)), 9),
                                             ([11, 1, 10, 2, 9, 3, 8, 4, 7, 5, 6], 10)])
 def test_nearest_rank_p90(values, expected):
@@ -150,7 +187,9 @@ def test_pre_crossing_and_reported_figures(cell):
     assert pooled["survival_fits"] == 0
 
 
-@pytest.mark.parametrize("mode,expected", [("pass", 0), ("fail", 7), ("limit", 3)])
+@pytest.mark.parametrize("mode,expected", [("pass", 0), ("fail", 7), ("limit", 3),
+                                         ("dirty-tracked", 2), ("dirty-untracked", 2),
+                                         ("short-seeds", 0), ("other-arm", 0)])
 def test_runner_sequence_and_limit(tmp_path, mode, expected):
     kit = tmp_path / "kit"
     runner = kit / "s2" / "run_s_lcmx.py"
@@ -166,7 +205,16 @@ def test_runner_sequence_and_limit(tmp_path, mode, expected):
             "import sys\n"
             f"with (Path(os.environ['OUT']) / 'sequence').open('a') as f: f.write('{filename} ' + ' '.join(sys.argv[1:]) + '\\n')\n")
     env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "SYSTEMROOT")}
-    # Product preflight uses a tiny clean repository; the kit itself is synthetic.
+    # Product and kit preflights use tiny committed repositories.
+    subprocess.run(["git", "init", "-q", str(kit)], check=True)
+    subprocess.run(["git", "-C", str(kit), "add", "s2", "decision"], check=True)
+    subprocess.run(["git", "-C", str(kit), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                    "commit", "-q", "-m", "synthetic kit"], check=True)
+    kit_sha = subprocess.check_output(["git", "-C", str(kit), "rev-parse", "HEAD"], text=True).strip()
+    if mode == "dirty-tracked":
+        runner.write_text(runner.read_text() + "# dirty\n")
+    elif mode == "dirty-untracked":
+        (kit / "untracked.txt").write_text("dirty\n")
     product = tmp_path / "product"
     subprocess.run(["git", "init", "-q", str(product)], check=True)
     subprocess.run(["git", "-C", str(product), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
@@ -175,14 +223,31 @@ def test_runner_sequence_and_limit(tmp_path, mode, expected):
     env.update(PRODUCT_WT=str(product), PRODUCT_SHA=head, KIT_DIR=str(kit), MATERIAL=str(tmp_path / "material"),
                OUT=str(tmp_path / "out"), PY=sys.executable, GLM_API_KEY="synthetic-unused", SEEDS="1 2 3", PARALLEL="2",
                FACTS_FLOOR="0.772")
+    if mode == "short-seeds":
+        env["SEEDS"] = "1 2"
+    elif mode == "other-arm":
+        env["ARM"] = "synthetic"
     result = subprocess.run(["bash", str(DECISION / "run_pmw_cell.sh")], env=env, capture_output=True, text=True, timeout=15)
     assert result.returncode == expected, result.stderr
     sequence = Path(env["OUT"]) / "sequence"
-    if mode == "pass":
+    if mode.startswith("dirty-"):
+        assert str(kit) in result.stderr
+        assert not Path(env["OUT"]).exists()  # rejected before starting runs
+        return
+    receipt = json.loads((Path(env["OUT"]) / "cell.json").read_text())
+    assert receipt == dict(product_sha=head, kit_sha=kit_sha, arm=env.get("ARM", "LCMX-fleet-rc3"),
+                           seeds=[int(n) for n in env["SEEDS"].split()], facts_floor=0.772,
+                           gating=mode not in ("short-seeds", "other-arm"))
+    if mode in ("short-seeds", "other-arm"):
+        assert "NON-GATING:" in result.stderr
+        assert ("SEEDS" if mode == "short-seeds" else "ARM") in result.stderr
+    else:
+        assert "NON-GATING:" not in result.stderr
+    if expected == 0:
         steps = sequence.read_text().splitlines()
         assert [line.split()[0] for line in steps] == ["score_decision.py", "pmw_read.py"]
         assert "--facts-floor 0.772" in steps[1]  # the declared floor reaches the reader
-        assert len(list((Path(env["OUT"]) / "decision/logs").glob("*.log.wall"))) == 3
+        assert len(list((Path(env["OUT"]) / "decision/logs").glob("*.log.wall"))) == len(receipt["seeds"])
     else:
         assert not sequence.exists()
     if mode == "limit":
