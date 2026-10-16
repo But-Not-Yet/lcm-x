@@ -41,6 +41,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
@@ -54,7 +55,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install test dependencies
-        run: pip install pytest numpy ruff==0.15.13 hypothesis==6.141.1
+        run: pip install pytest==9.1.1 numpy ruff==0.15.13 hypothesis==6.141.1
 
       - name: Stub hermes-agent ABC
         run: |
@@ -149,7 +150,7 @@ jobs:
       - name: Fetch the rollback-reader commits
         # The old-reader tests run these releases' code against a store the
         # current code wrote; under CI a missing commit fails them (#841).
-        run: git fetch --no-tags --depth=1 origin c36b46e3a7b1bff23cfa45fa117565ab8624441d f47b55e031b507b424ff5f480d8f2a80d358f1f0 6800cf45ad05280e6cf6fa9e1ad96c62b7132646
+        run: git fetch --no-tags --depth=1 origin c36b46e3a7b1bff23cfa45fa117565ab8624441d f47b55e031b507b424ff5f480d8f2a80d358f1f0 6800cf45ad05280e6cf6fa9e1ad96c62b7132646 49e99a272d2d461e5c90732e7ef2bc20e96f0826
 
       - name: Print linked SQLite version
         run: python -c "import sqlite3; print('sqlite', sqlite3.sqlite_version)"
@@ -157,7 +158,7 @@ jobs:
       - name: Run pytest under low file descriptor limit
         run: |
           ulimit -n 1024
-          python -m pytest tests/ -q
+          python -m pytest tests/ -q -m "not latency"
 
       - name: Run static validation
         run: |

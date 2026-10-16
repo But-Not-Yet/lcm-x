@@ -553,6 +553,12 @@ _ENV_CHOICES = {
     "embedding_storage_dtype": (("float32", "int8"), str.lower, "ignored; using 'float32'"),
 }
 
+# Deprecation/removal versions shared by the loader and generated reference.
+ENV_FIELD_DEPRECATIONS: dict[str, tuple[str, str]] = {
+    "cache_friendly_condensation_enabled": ("v0.28.0", "v0.29.0"),
+    "large_output_transcript_gc_enabled": ("v0.28.0", "v0.29.0"),
+}
+
 
 def _warn_env_choice(name: str, raw: str, warnings: list[str]) -> None:
     if name not in _ENV_CHOICES or not raw.strip():
@@ -1304,6 +1310,12 @@ class LCMConfig:
                 if os.environ.get(spec.env_key, "").strip() and len(config_source_warnings) == warning_count:
                     _warn_env_range(spec.name, value, config_source_warnings)
             setattr(c, spec.name, value)
+            if value is True and spec.name in ENV_FIELD_DEPRECATIONS:
+                _since, removal = ENV_FIELD_DEPRECATIONS[spec.name]
+                config_source_warnings.append(
+                    f"deprecated: {spec.env_key} is set; this experiment is removed in {removal} (#1246). "
+                    "Until then it behaves as before."
+                )
 
         # Pattern-list overrides carry a source sidecar and stay explicit.
         raw_sensitive_patterns = os.environ.get("LCM_SENSITIVE_PATTERNS")

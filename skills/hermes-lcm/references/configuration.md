@@ -83,6 +83,8 @@ value's representation limited to 40 characters, and states the value used.
 Empty or whitespace-only values in this loader keep the default without warnings.
 Range warnings (`LCM_CONTEXT_THRESHOLD`, `LCM_SURVIVAL_RESERVE`, `LCM_LEAF_CHUNK_TOKENS`, `LCM_SUMMARY_TIMEOUT_MS`), choice warnings (`LCM_EMBEDDING_PROVIDER`, `LCM_PREANSWER_EVIDENCE_MODE`, `LCM_EMBEDDING_STORAGE_DTYPE`), and dropped-input warnings (`LCM_EMPTY_LIFECYCLE_GC_MAX_AGE_HOURS`, `LCM_RECALL_ARM_WEIGHTS`, `LCM_MODEL_THRESHOLDS`) use the same channel without changing values or consumer fallbacks.
 
+`LCM_CACHE_FRIENDLY_CONDENSATION_ENABLED` and `LCM_LARGE_OUTPUT_TRANSCRIPT_GC_ENABLED` are deprecated in v0.28.0 and removed in v0.29.0 (#1246). Each enabled flag adds one `config_source_warnings` entry without changing behavior; false or unset flags and direct `LCMConfig(...)` construction add no deprecation warning. These flags are environment-only; their `lcm.*` YAML keys are ignored and shipped presets do not set them.
+
 ### Tool exposure
 
 Both native context-engine schemas and plugin-registry registration advertise
@@ -113,3 +115,195 @@ A 400 or 404 saying the route cannot serve its model (unknown model, model not f
 - `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUBBING_ENABLED` (default `true` from v0.27.0): replay carries the externalized-ref stub in place of a large tool result, per the two thresholds below; needs externalization on; `false` opts out;
 - `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUB_THRESHOLD_TOKENS` (default `10000`) and `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUB_AGED_THRESHOLD_TOKENS` (default `2000`; `0` = the first-sight value, never above it) (#671): with `LCM_LARGE_OUTPUT_EXTERNALIZATION_ENABLED` and `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUBBING_ENABLED` both on (the default from v0.27.0), a new tool result over the first value is replaced by its externalized-ref stub at ingest, and at a compaction a tool result outside the fresh tail is stubbed from the aged value. The stub keeps the call row; `lcm_expand(externalized_ref=...)` returns the original. An automatic compaction at or over the threshold first tries these free cuts without a model call and returns them when the host-measured list is at or under min(threshold - leaf chunk, 0.95 x threshold): stop reason `stub_first_exit` (partial; `lcm_status` `last_stub_first_exit`, the doctor, the `LCM compaction stop:` line); the rows no leaf summarised stay stored as backlog.
 - `LCM_SUMMARY_PROMPT_VERSION` (default `1`; env only): `1` keeps the original summariser prompts and 2x output ceiling; `2` opts in to the v2 prompts (six fixed headings, focus directives in the trusted policy, topic label tagged in the transcript message) and a 3x ceiling. Other values fall back to `1` with a config warning. (#646)
+
+
+## Generated scalar environment reference
+
+Regenerate this table with `python scripts/gen_config_reference.py` from the
+checkout root. It lists every scalar registry entry using the declared constructor
+default, without reading the environment, credentials, or host configuration.
+`""` is an empty string; `null` means unset (automatic provider-dependent protection
+for `LCM_EMBEDDING_PRIVACY_ENABLED`). Empty model/path defaults resolve at runtime;
+`LCM_CONTEXT_THRESHOLD` and `LCM_SUMMARY_TIMEOUT_MS` can inherit host settings as
+described above. Some defaults are sentinels: `LCM_FOREGROUND_HARD_SECONDS` `0` means 120 s,
+`LCM_PREANSWER_EVIDENCE_MODE` `""` means `legacy_selective` when pre-answer evidence is on,
+`LCM_EMBEDDING_STORE_DIM` `0` means the provider's full dimension, and `LCM_MAX_ASSEMBLY_TOKENS`
+and `LCM_RESERVE_TOKENS_FLOOR` `0` mean no cap. The type is the environment parser type, so the privacy boolean
+can still have an unset default.
+
+Ranges and nonempty choices are the loader's diagnostic metadata; consumers keep
+their existing clamping, fallback, and normalization rules. `—` means no metadata
+in that column, not that every input is valid or that a removed option is active.
+`LCM_NATIVE_RECOVERY` was removed in v0.25.0; it is parsed and ignored.
+The operator guide and the prose above explain behavior and coupled settings.
+Deprecation releases describe the two retiring experiments; enabling either still
+warns without changing its behavior until removal.
+
+<!-- BEGIN GENERATED CONFIG REFERENCE -->
+| Environment key | Type | Default | Diagnostic range / choices | Deprecation |
+| --- | --- | --- | --- | --- |
+| `LCM_FRESH_TAIL_COUNT` | `int` | `24` | — | — |
+| `LCM_FRESH_TAIL_MAX_TOKENS` | `int` | `24000` | — | — |
+| `LCM_FRESH_TAIL_PRESSURE_YIELD_ENABLED` | `bool` | `true` | — | — |
+| `LCM_FRESH_TAIL_PRESSURE_YIELD_MIN_OBSERVATIONS` | `int` | `3` | — | — |
+| `LCM_LEAF_CHUNK_TOKENS` | `int` | `24000` | `>= 1` | — |
+| `LCM_LEAF_TARGET_RATIO` | `float` | `0.2` | — | — |
+| `LCM_LEAF_TARGET_MIN_TOKENS` | `int` | `2000` | — | — |
+| `LCM_LEAF_TARGET_MAX_TOKENS` | `int` | `2000` | — | — |
+| `LCM_CONTEXT_THRESHOLD` | `float` | `0.75` | `> 0.0`, `<= 1.0` | — |
+| `LCM_INCREMENTAL_MAX_DEPTH` | `int` | `3` | — | — |
+| `LCM_CONDENSATION_FANIN` | `int` | `4` | — | — |
+| `LCM_DYNAMIC_LEAF_CHUNK_ENABLED` | `bool` | `false` | — | — |
+| `LCM_DYNAMIC_LEAF_CHUNK_MAX` | `int` | `40000` | — | — |
+| `LCM_CACHE_FRIENDLY_CONDENSATION_ENABLED` | `bool` | `false` | — | Deprecated v0.28.0; removed v0.29.0 |
+| `LCM_CACHE_FRIENDLY_MIN_DEBT_GROUPS` | `int` | `2` | — | — |
+| `LCM_DEFERRED_MAINTENANCE_ENABLED` | `bool` | `false` | — | — |
+| `LCM_DEFERRED_MAINTENANCE_MAX_PASSES` | `int` | `4` | — | — |
+| `LCM_CRITICAL_BUDGET_PRESSURE_RATIO` | `float` | `0.0` | — | — |
+| `LCM_THRESHOLD_FULL_SWEEP_ENABLED` | `bool` | `true` | — | — |
+| `LCM_SUMMARY_PREFIX_TARGET_TOKENS` | `int` | `0` | — | — |
+| `LCM_FOREGROUND_SOFT_SECONDS` | `float` | `60.0` | — | — |
+| `LCM_FOREGROUND_HARD_SECONDS` | `float` | `0.0` | — | — |
+| `LCM_L2_BUDGET_RATIO` | `float` | `0.5` | — | — |
+| `LCM_L3_TRUNCATE_TOKENS` | `int` | `512` | — | — |
+| `LCM_MAX_ASSEMBLY_TOKENS` | `int` | `0` | — | — |
+| `LCM_RESERVE_TOKENS_FLOOR` | `int` | `0` | — | — |
+| `LCM_CUSTOM_INSTRUCTIONS` | `str` | `""` | — | — |
+| `LCM_SUMMARY_PROMPT_VERSION` | `int` | `1` | — | — |
+| `LCM_EXTRACTION_ENABLED` | `bool` | `false` | — | — |
+| `LCM_EXTRACTION_MODEL` | `str` | `""` | — | — |
+| `LCM_EXTRACTION_OUTPUT_PATH` | `str` | `""` | — | — |
+| `LCM_ASSERTIONS_ENABLED` | `bool` | `false` | — | — |
+| `LCM_QUERY_VIEWS_ENABLED` | `bool` | `false` | — | — |
+| `LCM_ADAPTIVE_RETRIEVAL_ENABLED` | `bool` | `false` | — | — |
+| `LCM_ASSERTION_EXTRACTION_ENABLED` | `bool` | `false` | — | — |
+| `LCM_ASSERTION_EXTRACTION_MODEL` | `str` | `""` | — | — |
+| `LCM_ASSERTION_EXTRACTION_MAX_SOURCES_PER_PASS` | `int` | `4` | — | — |
+| `LCM_ASSERTION_EXTRACTION_TIMEOUT_SECONDS` | `float` | `30.0` | — | — |
+| `LCM_SENSITIVE_PATTERNS_ENABLED` | `bool` | `false` | — | — |
+| `LCM_EMBEDDING_PRIVACY_ENABLED` | `bool` | `null` | — | — |
+| `LCM_LARGE_OUTPUT_EXTERNALIZATION_ENABLED` | `bool` | `true` | — | — |
+| `LCM_LARGE_OUTPUT_EXTERNALIZATION_THRESHOLD_CHARS` | `int` | `12000` | — | — |
+| `LCM_LARGE_OUTPUT_EXTERNALIZATION_PATH` | `str` | `""` | — | — |
+| `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUBBING_ENABLED` | `bool` | `true` | — | — |
+| `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUB_THRESHOLD_TOKENS` | `int` | `10000` | — | — |
+| `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUB_AGED_THRESHOLD_TOKENS` | `int` | `2000` | — | — |
+| `LCM_LARGE_OUTPUT_TRANSCRIPT_GC_ENABLED` | `bool` | `false` | — | Deprecated v0.28.0; removed v0.29.0 |
+| `LCM_SUMMARY_MODEL` | `str` | `""` | — | — |
+| `LCM_NATIVE_RECOVERY` | `bool` | `false` | — | — |
+| `LCM_SURVIVAL_FIT` | `bool` | `true` | — | — |
+| `LCM_SURVIVAL_RESERVE` | `float` | `0.15` | `>= 0.0`, `<= 0.9` | — |
+| `LCM_SUMMARY_CIRCUIT_BREAKER_FAILURE_THRESHOLD` | `int` | `2` | — | — |
+| `LCM_SUMMARY_CIRCUIT_BREAKER_COOLDOWN_SECONDS` | `int` | `300` | — | — |
+| `LCM_SUMMARY_CIRCUIT_BREAKER_REJECTION_THRESHOLD` | `int` | `6` | — | — |
+| `LCM_SUMMARY_SPEND_MAX_CALLS` | `int` | `24` | — | — |
+| `LCM_SUMMARY_SPEND_WINDOW_SECONDS` | `float` | `600.0` | — | — |
+| `LCM_SUMMARY_SPEND_BACKOFF_SECONDS` | `float` | `1800.0` | — | — |
+| `LCM_EXPANSION_MODEL` | `str` | `""` | — | — |
+| `LCM_EXPANSION_CONTEXT_TOKENS` | `int` | `32000` | — | — |
+| `LCM_SUMMARY_TIMEOUT_MS` | `int` | `120000` | `> 0` | — |
+| `LCM_EXPANSION_TIMEOUT_MS` | `int` | `120000` | — | — |
+| `LCM_DATABASE_PATH` | `str` | `""` | — | — |
+| `LCM_EMBEDDINGS_ENABLED` | `bool` | `false` | — | — |
+| `LCM_RERANK_ENABLED` | `bool` | `false` | — | — |
+| `LCM_RERANK_MODEL` | `str` | `"rerank-2.5-lite"` | — | — |
+| `LCM_RERANK_WINDOW_LIMIT` | `int` | `0` | — | — |
+| `LCM_RERANK_MARGIN` | `float` | `0.0` | — | — |
+| `LCM_RECALL_SCAN_ROWS` | `int` | `25000` | — | — |
+| `LCM_RECALL_SCAN_MAX_ROWS` | `int` | `0` | — | — |
+| `LCM_RECALL_SCAN_BUDGET_S` | `float` | `0.0` | — | — |
+| `LCM_RECALL_REFERENCE_STRICT` | `bool` | `true` | — | — |
+| `LCM_RECALL_FTS_ANCHOR` | `bool` | `true` | — | — |
+| `LCM_PROACTIVE_RECALL_ENABLED` | `bool` | `false` | — | — |
+| `LCM_PROACTIVE_RECALL_MIN_SCORE` | `float` | `0.01` | — | — |
+| `LCM_PROACTIVE_RECALL_BUDGET_TOKENS` | `int` | `500` | — | — |
+| `LCM_PROACTIVE_RECALL_PROVIDER` | `str` | `""` | — | — |
+| `LCM_PREANSWER_EVIDENCE_ENABLED` | `bool` | `false` | — | — |
+| `LCM_PREANSWER_EVIDENCE_MODE` | `str` | `""` | `"off"`, `"legacy_selective"`, `"requirements_v1"` | — |
+| `LCM_SELECTIVE_COMPILER_ENABLED` | `bool` | `false` | — | — |
+| `LCM_SELECTIVE_COMPILER_MODEL` | `str` | `""` | — | — |
+| `LCM_EMBEDDING_BOUNDED_SCAN_ROWS` | `int` | `2000` | — | — |
+| `LCM_EMBEDDING_STORAGE_DTYPE` | `str` | `"float32"` | `"float32"`, `"int8"` | — |
+| `LCM_EMBEDDING_STORE_DIM` | `int` | `0` | — | — |
+| `LCM_EMBEDDING_BINARY_PRESCREEN` | `bool` | `false` | — | — |
+| `LCM_KNN_PRESCREEN_MULTIPLIER` | `int` | `4` | — | — |
+| `LCM_EMBEDDING_PROVIDER` | `str` | `""` | `"voyage"`, `"voyageai"`, `"ollama"`, `"fastembed"`, `"fast-embed"`, `"openai-compatible"`, `"openai"`, `"siliconflow"` | — |
+| `LCM_EMBEDDING_MODEL` | `str` | `""` | — | — |
+| `LCM_EMBED_CONTENT_POLICY` | `str` | `"conversational"` | — | — |
+| `LCM_OLLAMA_BASE_URL` | `str` | `"http://localhost:11434"` | — | — |
+| `LCM_EMBEDDING_BASE_URL` | `str` | `""` | — | — |
+| `LCM_EMBEDDING_API_KEY_ENV` | `str` | `"LCM_EMBEDDING_API_KEY"` | — | — |
+| `LCM_EMBEDDING_QUERY_TIMEOUT_S` | `float` | `3.0` | — | — |
+| `LCM_RECALL_QUERY_TIMEOUT_S` | `float` | `8.0` | — | — |
+| `LCM_EMBEDDING_BACKFILL_TIMEOUT_S` | `float` | `120.0` | — | — |
+| `LCM_EMBEDDING_MAX_BATCH_ITEMS` | `int` | `1000` | — | — |
+| `LCM_EMBEDDING_QUERY_SPEND_MAX_CALLS` | `int` | `600` | — | — |
+| `LCM_EMBEDDING_QUERY_SPEND_WINDOW_SECONDS` | `float` | `60.0` | — | — |
+| `LCM_EMBEDDING_QUERY_SPEND_BACKOFF_SECONDS` | `float` | `60.0` | — | — |
+| `LCM_NEW_SESSION_RETAIN_DEPTH` | `int` | `2` | — | — |
+| `LCM_DOCTOR_CLEAN_APPLY_ENABLED` | `bool` | `false` | — | — |
+| `LCM_EMPTY_LIFECYCLE_GC_ENABLED` | `bool` | `true` | — | — |
+| `LCM_EMPTY_LIFECYCLE_GC_THRESHOLD` | `int` | `200` | — | — |
+| `LCM_TEMPORAL_ROLLUPS_ENABLED` | `bool` | `true` | — | — |
+| `LCM_ROLLUP_DAILY_TARGET_TOKENS` | `int` | `5000` | — | — |
+| `LCM_ROLLUP_DAILY_MAX_TOKENS` | `int` | `15000` | — | — |
+| `LCM_ROLLUP_AGGREGATE_MAX_TOKENS` | `int` | `20000` | — | — |
+| `LCM_ROLLUP_BUILDS_PER_PASS` | `int` | `2` | — | — |
+| `LCM_ROLLUP_MAINTENANCE_BUDGET_MS` | `int` | `5000` | — | — |
+<!-- END GENERATED CONFIG REFERENCE -->
+
+## Hand-written reference: explicit configuration readers
+
+These entries are deliberately outside the scalar registry and generated table.
+All are read by `config.py` in `LCMConfig.from_env()`; list entries accept
+comma-separated values. Keep their existing source tracking and parsing rules.
+
+| Environment key | Format / declared default |
+| --- | --- |
+| `LCM_MODEL_THRESHOLDS` | `model:threshold` pairs; `{}`; each threshold must be > 0 and <= 1 |
+| `LCM_SUMMARY_REASONING_EFFORT` | Empty (task/provider default); `none`, `minimal`, `low`, `medium`, `high`, `xhigh` |
+| `LCM_EXPANSION_REASONING_EFFORT` | Same reasoning choices; empty (task/provider default) |
+| `LCM_SENSITIVE_PATTERNS` | List; `api_key,bearer_token,password_assignment,private_key` |
+| `LCM_SUMMARY_FALLBACK_MODELS` | List; empty |
+| `LCM_EMPTY_LIFECYCLE_GC_MAX_AGE_HOURS` | Float; `24.0` |
+| `LCM_RECALL_ARM_WEIGHTS` | `arm=weight` pairs; `fts=0.5,summary=1.0,chunk=1.0` |
+| `LCM_IGNORE_SESSION_PATTERNS` | Session glob list; empty |
+| `LCM_STATELESS_SESSION_PATTERNS` | Session glob list; empty |
+| `LCM_IGNORE_MESSAGE_PATTERNS` | Message regex list; empty |
+
+## Hand-written reference: side-channel environment readers
+
+These 11 keys are read outside `config.py`, directly or through helper
+wrappers. They are not loaded into `LCMConfig`; listing them does not
+consolidate or change their readers. Reader filenames are relative to the
+checkout root. Credential entries list only variable names, never values.
+
+| Environment key | Reader file(s) | Purpose | Read when |
+| --- | --- | --- | --- |
+| `LCM_ABSOLUTE_THRESHOLD_TOKENS` | `engine.py` | Absolute compaction threshold override | each call — `_set_context_length()` with a positive context length, through model updates, session-start metadata, or cloning |
+| `LCM_ENABLE_SLASH_COMMAND` | `__init__.py` | Optional slash-command registration | plugin registration |
+| `LCM_HERMES_BASE_DIR` | `engine.py`, `externalize.py`, `diagnostics.py` | Storage containment boundary | each call — storage-directory resolution or state-database containment validation; `_get_allowed_hermes_base()` also reads it when called (tests only; no production caller) |
+| `LCM_IDENTITY_ANCHOR` | `identity_anchor.py` | Identity-anchor switch | each call — `identity_anchor_enabled()` checks during ingest, replay identity handling, and compaction |
+| `LCM_FTS_INTEGRITY_CHECK_INTERVAL_HOURS` | `db_bootstrap.py` | Startup integrity-check interval | database open — startup FTS validation, after structural checks pass |
+| `LCM_FTS_INTEGRITY_BACKGROUND` | `db_bootstrap.py` | Background integrity-check switch | database open — startup FTS validation, when a deep check is due |
+| `LCM_EMBEDDING_BACKFILL_LEASE_TTL_S` | `command.py` | Backfill claim lifetime | each call — each summary or chunk backfill apply run, before lease acquisition |
+| `LCM_EMBEDDING_BACKFILL_HEARTBEAT_S` | `command.py` | Backfill claim renewal cadence | each call — each summary or chunk backfill apply run, before lease acquisition |
+| `LCM_EMBEDDING_BACKFILL_BUDGET_S` | `command.py` | Operation-wide backfill time budget | each call — each summary or chunk backfill apply run, before lease acquisition |
+| `LCM_EMBEDDING_BACKFILL_BATCH_SIZE` | `command.py` | Backfill claim batch size | each call — backfill batch estimates, apply-run batch sizing, and automatic embedding-maintenance pass sizing |
+| `LCM_EMBEDDING_API_KEY` | `embedding_provider.py` | Default credential variable for the compatible endpoint; name selectable via `LCM_EMBEDDING_API_KEY_ENV` | plugin registration — availability probe when compatible embeddings are enabled; also re-read at each compatible-provider `_request()` and availability probe (doctor and automatic maintenance) |
+
+Restart the host for `LCM_ENABLE_SLASH_COMMAND`; the other keys take effect on
+the next named operation (FTS controls on the next database open, and
+`LCM_EMBEDDING_API_KEY` on the next request or probe despite its initial
+registration-time check), provided the running process's environment has been
+updated; changing a parent shell's environment alone requires restarting the
+host to pass it the new values.
+
+Three additional standalone helpers in `config.py` are also outside the scalar
+registry and `LCMConfig.from_env()`:
+
+| Environment key | Reader file(s) | Purpose |
+| --- | --- | --- |
+| `LCM_DISABLED_TOOLS` | `config.py` (called by `engine.py`, `__init__.py`) | Call-time tool exclusion list |
+| `LCM_HOST_MESSAGE_UID` | `config.py` (called by `host_uid.py`, `host_uid_emit.py`, `message_analysis.py`) | Host message-identity capture mode |
+| `LCM_SQLITE_MMAP_SIZE` | `config.py` (called by `db_bootstrap.py`) | Connection-time mapped-read budget |
