@@ -1813,6 +1813,7 @@ class LCMEngine(
             if (self._sweep_budget_hold_turn_paced and self._hung_summary_strike is not None
                     and self._hung_summary_strike[0] == self._hold_conversation_key()
                     and self._sweep_budget_hold_conversation == self._hold_conversation_key()
+                    and self._sweep_budget_hold_active()
                     and not self._bypasses_lcm_context_management()):
                 route = self._hung_summary_strike[1]
                 self._sweep_budget_hold_until, self._sweep_budget_hold_turn_paced = 0.0, False
