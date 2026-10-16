@@ -1306,7 +1306,7 @@ class LCMConfig:
                 "cache_friendly_condensation_enabled", "large_output_transcript_gc_enabled",
             ):
                 config_source_warnings.append(
-                    f"deprecated: {spec.env_key} is set; this experiment is removed in v0.28.0 (#1246). "
+                    f"deprecated: {spec.env_key} is set; this experiment is removed in v0.29.0 (#1246). "
                     "Until then it behaves as before."
                 )
 
