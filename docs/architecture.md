@@ -113,6 +113,7 @@ Plugin surface
   plugin.yaml            manifest
   __init__.py            plugin registration and optional slash-command registration
   schemas.py             tool schemas shown to the model
+  tool_registry.py       ordered tool schemas, handler names, emojis, and dormant flags
   tools.py               lcm_grep, lcm_load_session, lcm_describe, lcm_expand, lcm_expand_query
   command.py             /lcm command handlers
   config.py              env var defaults and overrides
