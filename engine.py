@@ -4543,6 +4543,8 @@ class LCMEngine(
                 session_id,
             )
             return
+        unflushed = max(0, len(messages) - self._ingest_cursor)
+        ingest_finished = False
         try:
             with _temporary_sqlite_busy_timeout(
                 [
@@ -4564,18 +4566,21 @@ class LCMEngine(
                         messages,
                         allow_session_end_replay_proof=is_current_session_full_history_end,
                     )
+                    ingest_finished = True
                 except KeyboardInterrupt:
                     logger.warning(
                         "LCM session-end raw-message ingest interrupted; "
-                        "final messages may be absent from the plugin-local store"
+                        "final messages may be absent from the plugin-local store unflushed=%d",
+                        unflushed,
                     )
                     return
                 except Exception as exc:
                     if _is_sqlite_locked_error(exc):
                         logger.warning(
                             "LCM session-end raw-message ingest skipped due to SQLite lock after short wait; "
-                            "final messages may be absent from the plugin-local store: %s",
+                            "final messages may be absent from the plugin-local store: %s unflushed=%d",
                             exc,
+                            unflushed,
                         )
                         return
                     raise
@@ -4614,13 +4619,17 @@ class LCMEngine(
                 # helper writes only when session_id == self._session_id).
                 self._remember_session_end_replay_snapshot(session_id, messages)
         except KeyboardInterrupt:
-            logger.warning("LCM session-end ingest/finalize interrupted before bounded flush completed")
+            logger.warning(
+                "LCM session-end ingest/finalize interrupted before bounded flush completed%s",
+                f" unflushed={unflushed}" if not ingest_finished else "",
+            )
             return
         except Exception as exc:
             if _is_sqlite_locked_error(exc):
                 logger.warning(
-                    "LCM session-end ingest/finalize skipped due to SQLite lock before bounded flush: %s",
+                    "LCM session-end ingest/finalize skipped due to SQLite lock before bounded flush: %s%s",
                     exc,
+                    f" unflushed={unflushed}" if not ingest_finished else "",
                 )
                 return
             raise
