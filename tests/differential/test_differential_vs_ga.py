@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .cases import exact_cases, generated_cases, projection_cases
 from .run import run
-from .trees import PrerequisiteUnavailable, skip_or_fail
+from .trees import DEFAULT_BASELINE, PrerequisiteUnavailable, skip_or_fail
 
 
 @pytest.fixture(scope="module")
@@ -21,7 +21,7 @@ def outputs(tmp_path_factory):
 
 def evaluate(cases, output):
     try:
-        result = run(cases, output, os.environ.get("LCM_DIFFERENTIAL_BASELINE", "v0.26.2"),
+        result = run(cases, output, os.environ.get("LCM_DIFFERENTIAL_BASELINE", DEFAULT_BASELINE),
                      os.environ.get("LCM_DIFFERENTIAL_CANDIDATE", "worktree"), int(os.environ.get("LCM_DIFFERENTIAL_SEED", "1227")))
     except PrerequisiteUnavailable as exc:
         skip_or_fail(str(exc))
@@ -51,7 +51,8 @@ def test_i1281_g0_marks_newest_user_without_budget(outputs):
     case = generated_cases(1, 1227)[0]
     assert case["id"] == "g0"
     try:
-        result = run([case], outputs / "i1281_g0", os.environ.get("LCM_DIFFERENTIAL_BASELINE", "v0.26.2"),
+        # v0.27.0 also loses these sentinels, so the historical R2 pin needs v0.26.2.
+        result = run([case], outputs / "i1281_g0", "v0.26.2",
                      os.environ.get("LCM_DIFFERENTIAL_CANDIDATE", "worktree"), 1227)
     except PrerequisiteUnavailable as exc:
         skip_or_fail(str(exc))
@@ -111,11 +112,11 @@ def test_projection_delta_is_only_fit_with_ga_user_marks():
     case = dict(layer="projection", limit=100)
     ga = dict(out_tokens=90, user_marks=[0], input_mutated=False)
     cand = dict(out_tokens=110, user_marks=[], input_mutated=False)
-    assert compare(case, ga, cand)[0]["delta"] == "D916_GA_MARKED_USER"
+    assert compare(case, ga, cand, baseline="v0.26.2")[0]["delta"] == "D916_GA_MARKED_USER"
     ga["user_marks"] = []
-    assert compare(case, ga, cand)[0]["delta"] is None
+    assert compare(case, ga, cand, baseline="v0.26.2")[0]["delta"] is None
     cand.update(user_marks=[0], input_mutated=True)
-    assert {row["oracle"] for row in compare(case, ga, cand)} == {"R1", "P_USER", "P_INPUT"}
+    assert {row["oracle"] for row in compare(case, ga, cand, baseline="v0.26.2")} == {"R1", "P_USER", "P_INPUT"}
 
 
 def test_public_oracles_and_delta_do_not_hide_absolute_failures():
@@ -127,9 +128,25 @@ def test_public_oracles_and_delta_do_not_hide_absolute_failures():
     cand["calls"][0].update(tokens=110, sentinels=[], user_marks=[], pair_errors=["missing-result:c"],
                             compress_runs=3, summarizer_calls=3)
     cand["stored"] = []
-    failures = compare(case, ga, cand)
+    failures = compare(case, ga, cand, baseline="v0.26.2")
     assert {row["oracle"] for row in failures} == {"R1", "R2", "R3", "A1", "A2"}
     assert all(row["delta"] is None for row in failures if row["oracle"] != "R1")
+
+
+@pytest.mark.parametrize("tokens,marks,oracle,delta_id", [
+    (110, [], "R1", "D916_GA_MARKED_USER"),
+    (90, [0], "P_USER", "D1233_LAST_RESORT_USER_MARK"),
+])
+def test_shipped_delta_is_not_absorbed_by_new_ga(tokens, marks, oracle, delta_id):
+    case = dict(layer="projection", limit=100)
+    ga = dict(out_tokens=90, user_marks=[0], input_mutated=False)
+    cand = dict(out_tokens=tokens, user_marks=marks, input_mutated=False)
+    legacy = compare(case, ga, cand, baseline="v0.26.2")
+    detail = [0] if oracle == "P_USER" else dict(ga=90, candidate=110, limit=100)
+    assert legacy == [dict(oracle=oracle, detail=detail, delta=delta_id)]
+    unabsorbed = [dict(legacy[0], delta=None)]
+    assert compare(case, ga, cand, baseline="v0.27.0") == unabsorbed
+    assert compare(case, ga, cand) == unabsorbed
 
 
 def test_tool_results_must_follow_calls_and_every_call_needs_a_result():
@@ -228,24 +245,24 @@ def test_i1233_delta_is_only_projection_user_marks_already_in_ga():
     case = dict(layer="projection", limit=100)
     ga = dict(out_tokens=90, user_marks=[0, 2], input_mutated=False)
     cand = dict(out_tokens=90, user_marks=[2, 0], input_mutated=False)
-    assert compare(case, ga, cand) == [dict(oracle="P_USER", detail=[2, 0], delta="D1233_LAST_RESORT_USER_MARK")]
+    assert compare(case, ga, cand, baseline="v0.26.2") == [dict(oracle="P_USER", detail=[2, 0], delta="D1233_LAST_RESORT_USER_MARK")]
     cand = dict(out_tokens=90, user_marks=[2], input_mutated=False)
-    assert compare(case, ga, cand)[0]["delta"] == "D1233_LAST_RESORT_USER_MARK"
+    assert compare(case, ga, cand, baseline="v0.26.2")[0]["delta"] == "D1233_LAST_RESORT_USER_MARK"
     cand["out_tokens"] = 101
-    assert compare(case, ga, cand) == [
+    assert compare(case, ga, cand, baseline="v0.26.2") == [
         dict(oracle="R1", detail=dict(ga=90, candidate=101, limit=100), delta="D916_GA_MARKED_USER"),
         dict(oracle="P_USER", detail=[2], delta=None),
     ]
     cand.update(out_tokens=100, user_marks=[0, 2])
-    assert compare(case, ga, cand)[0]["delta"] == "D1233_LAST_RESORT_USER_MARK"
+    assert compare(case, ga, cand, baseline="v0.26.2")[0]["delta"] == "D1233_LAST_RESORT_USER_MARK"
     cand["out_tokens"] = 101
-    failures = compare(case, ga, cand)
+    failures = compare(case, ga, cand, baseline="v0.26.2")
     assert failures == [dict(oracle="R1", detail=dict(ga=90, candidate=101, limit=100), delta="D916_GA_MARKED_USER"),
                         dict(oracle="P_USER", detail=[0, 2], delta=None)]
     ga["out_tokens"] = 101
-    assert compare(case, ga, cand)[0]["delta"] == "D1233_LAST_RESORT_USER_MARK"
+    assert compare(case, ga, cand, baseline="v0.26.2")[0]["delta"] == "D1233_LAST_RESORT_USER_MARK"
     cand["user_marks"] = [1]
-    assert compare(case, ga, cand)[0]["delta"] is None
+    assert compare(case, ga, cand, baseline="v0.26.2")[0]["delta"] is None
     cand["user_marks"] = []
     assert not last_resort_user_mark(case, ga, cand)
-    assert compare(case, ga, cand) == []
+    assert compare(case, ga, cand, baseline="v0.26.2") == []

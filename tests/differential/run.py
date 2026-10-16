@@ -11,10 +11,10 @@ import time
 from .ACCEPTED_DELTAS import ACCEPTED_DELTAS
 from .cases import exact_cases, generated_cases, projection_cases
 from .oracles import compare
-from .trees import ROOT, PrerequisiteUnavailable, check_host, materialize, resolve
+from .trees import DEFAULT_BASELINE, ROOT, PrerequisiteUnavailable, check_host, materialize, resolve
 
 
-def run(cases, out, baseline="v0.26.2", candidate="worktree", seed=1227, baseline_config=None):
+def run(cases, out, baseline=DEFAULT_BASELINE, candidate="worktree", seed=1227, baseline_config=None):
     if os.environ.get("LCM_DIFFERENTIAL") != "1":
         raise RuntimeError("set LCM_DIFFERENTIAL=1 to opt in")
     baseline_config = baseline_config or os.environ.get("LCM_DIFFERENTIAL_BASELINE_CONFIG", "managed")
@@ -51,7 +51,7 @@ def run(cases, out, baseline="v0.26.2", candidate="worktree", seed=1227, baselin
         for case, ga, cand in zip(sample, results["ga"], results["candidate"]):
             if layer == "public" and "error" not in ga and "error" not in cand:
                 summary["coverage"][case["id"]] = dict(ga=ga["uncovered_rows"], candidate=cand["uncovered_rows"])
-            for failure in compare(case, ga, cand):
+            for failure in compare(case, ga, cand, baseline=baseline):
                 key = f"{layer}/{case['family']}/{failure['oracle']}"
                 counts[key] += 1
                 record = dict(case_id=case["id"], layer=layer, **failure)
@@ -83,7 +83,7 @@ def run(cases, out, baseline="v0.26.2", candidate="worktree", seed=1227, baselin
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--baseline", default=os.environ.get("LCM_DIFFERENTIAL_BASELINE", "v0.26.2"))
+    parser.add_argument("--baseline", default=os.environ.get("LCM_DIFFERENTIAL_BASELINE", DEFAULT_BASELINE))
     parser.add_argument("--baseline-config", choices=["bare", "managed"],
                         default=os.environ.get("LCM_DIFFERENTIAL_BASELINE_CONFIG", "managed"))
     parser.add_argument("--candidate", default=os.environ.get("LCM_DIFFERENTIAL_CANDIDATE", "worktree"))
