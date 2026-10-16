@@ -389,16 +389,16 @@ def test_key_inventory_is_complete():
 
 
 @pytest.mark.parametrize("key,raw,field,expected,warns", (
-    ("LCM_SURVIVAL_FIT", "garbage", "survival_fit", True, False),
-    ("LCM_CONTEXT_THRESHOLD", "-1", "context_threshold", -1.0, False),
-    ("LCM_SURVIVAL_RESERVE", "-1", "survival_reserve", -1.0, False),
-    ("LCM_LEAF_CHUNK_TOKENS", "-1", "leaf_chunk_tokens", -1, False),
+    ("LCM_SURVIVAL_FIT", "garbage", "survival_fit", True, True),
+    ("LCM_CONTEXT_THRESHOLD", "-1", "context_threshold", -1.0, True),
+    ("LCM_SURVIVAL_RESERVE", "-1", "survival_reserve", -1.0, True),
+    ("LCM_LEAF_CHUNK_TOKENS", "-1", "leaf_chunk_tokens", -1, True),
     ("LCM_FRESH_TAIL_COUNT", "garbage", "fresh_tail_count", 24, True),
-    ("LCM_SUMMARY_TIMEOUT_MS", "0", "summary_timeout_ms", 0, False),
-    ("LCM_MAX_ASSEMBLY_TOKENS", "garbage", "max_assembly_tokens", 0, False),
-    ("LCM_EMBEDDING_PROVIDER", "garbage", "embedding_provider", "garbage", False),
-    ("LCM_PREANSWER_EVIDENCE_MODE", "garbage", "preanswer_evidence_mode", "garbage", False),
-    ("LCM_EMBEDDING_STORAGE_DTYPE", "garbage", "embedding_storage_dtype", "garbage", False),
+    ("LCM_SUMMARY_TIMEOUT_MS", "0", "summary_timeout_ms", 0, True),
+    ("LCM_MAX_ASSEMBLY_TOKENS", "garbage", "max_assembly_tokens", 0, True),
+    ("LCM_EMBEDDING_PROVIDER", "garbage", "embedding_provider", "garbage", True),
+    ("LCM_PREANSWER_EVIDENCE_MODE", "garbage", "preanswer_evidence_mode", "garbage", True),
+    ("LCM_EMBEDDING_STORAGE_DTYPE", "garbage", "embedding_storage_dtype", "garbage", True),
 ))
 def test_config_warning_presence(monkeypatch, caplog, key, raw, field, expected, warns):
     set_value(monkeypatch, key, raw)

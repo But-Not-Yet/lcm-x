@@ -100,6 +100,7 @@ from .ingest_protection import (
     sensitive_pattern_status,
 )
 from .plugin_identity import ENGINE_NAME, LEGACY_ENGINE_NAME, PLUGIN_NAME
+from .tool_pairs import repair_tool_pairs
 from .runtime_identity import (
     _PLUGIN_ROOT,
     _git_runtime_identity,
@@ -115,23 +116,7 @@ from .assertion_extraction import ModelAssertionExtractor
 from .assertion_store import AssertionStore, SourceSnapshot
 from .adaptive_retrieval import AdaptiveRetrievalRegistry
 from .query_view_store import QueryViewStore
-from .schemas import (
-    LCM_DESCRIBE,
-    LCM_DOCTOR,
-    LCM_EXPAND,
-    LCM_EXPAND_QUERY,
-    LCM_GREP,
-    LCM_INSPECT,
-    LCM_LOAD_SESSION,
-    LCM_COMPUTE,
-    LCM_COMPILE_EVIDENCE,
-    LCM_EVIDENCE_PACK,
-    LCM_QUERY_STATE,
-    LCM_RECALL,
-    LCM_RECENT,
-    LCM_RETRIEVE,
-    LCM_STATUS,
-)
+from .tool_registry import TOOL_REGISTRY
 from .sanitize import (
     _clean_active_assistant_message,
     _should_drop_active_assistant_message,
@@ -4829,23 +4814,7 @@ class LCMEngine(
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         disabled = self._omitted_tool_names()
-        schemas = [
-            LCM_GREP,
-            LCM_RECALL,
-            LCM_QUERY_STATE,
-            LCM_COMPUTE,
-            LCM_COMPILE_EVIDENCE,
-            LCM_EVIDENCE_PACK,
-            LCM_RETRIEVE,
-            LCM_RECENT,
-            LCM_LOAD_SESSION,
-            LCM_DESCRIBE,
-            LCM_EXPAND,
-            LCM_EXPAND_QUERY,
-            LCM_STATUS,
-            LCM_INSPECT,
-            LCM_DOCTOR,
-        ]
+        schemas = [spec.schema for spec in TOOL_REGISTRY]
         if disabled:
             return [s for s in schemas if s.get("name") not in disabled]
         return schemas
@@ -4853,10 +4822,9 @@ class LCMEngine(
     def _omitted_tool_names(self) -> set[str]:
         """Hide explicitly disabled and flag-dormant tools on both host paths."""
         omitted = self._disabled_tool_names()
-        if not self._config.assertions_enabled:
-            omitted.add("lcm_query_state")
-        if not self._config.adaptive_retrieval_enabled:
-            omitted.add("lcm_retrieve")
+        for spec in TOOL_REGISTRY:
+            if spec.dormant_unless and not getattr(self._config, spec.dormant_unless):
+                omitted.add(spec.name)
         return omitted
 
     @staticmethod
@@ -4888,21 +4856,7 @@ class LCMEngine(
                     self._record_ingest_failure("tool-call ingest", e)
 
         handlers = {
-            "lcm_grep": lcm_tools.lcm_grep,
-            "lcm_recall": lcm_tools.lcm_recall,
-            "lcm_query_state": lcm_tools.lcm_query_state,
-            "lcm_compute": lcm_tools.lcm_compute,
-            "lcm_compile_evidence": lcm_tools.lcm_compile_evidence,
-            "lcm_evidence_pack": lcm_tools.lcm_evidence_pack,
-            "lcm_retrieve": lcm_tools.lcm_retrieve,
-            "lcm_recent": lcm_tools.lcm_recent,
-            "lcm_load_session": lcm_tools.lcm_load_session,
-            "lcm_describe": lcm_tools.lcm_describe,
-            "lcm_expand": lcm_tools.lcm_expand,
-            "lcm_expand_query": lcm_tools.lcm_expand_query,
-            "lcm_status": lcm_tools.lcm_status,
-            "lcm_inspect": lcm_tools.lcm_inspect,
-            "lcm_doctor": lcm_tools.lcm_doctor,
+            spec.name: getattr(lcm_tools, spec.handler_name) for spec in TOOL_REGISTRY
         }
         handler = handlers.get(name)
         if handler:
@@ -7091,50 +7045,11 @@ class LCMEngine(
         duplicate, out-of-order, and orphan tool results are dropped; missing
         direct results get synthetic stubs.
         """
-        sanitized: List[Dict[str, Any]] = []
-        dropped_tool_results = 0
-        inserted_stub_results = 0
-
-        i = 0
-        while i < len(messages):
-            msg = messages[i]
-
-            if msg.get("role") == "tool":
-                dropped_tool_results += 1
-                i += 1
-                continue
-
-            sanitized.append(msg)
-
-            if msg.get("role") == "assistant":
-                expected_ids = [
-                    call_id
-                    for call_id in (_tool_call_id(tool_call) for tool_call in (msg.get("tool_calls") or []))
-                    if call_id
-                ]
-
-                for expected_id in expected_ids:
-                    matched_direct_result = False
-                    while i + 1 < len(messages) and messages[i + 1].get("role") == "tool":
-                        next_msg = messages[i + 1]
-                        next_id = str(next_msg.get("tool_call_id") or "").strip()
-                        if next_id == expected_id:
-                            sanitized.append(next_msg)
-                            i += 1
-                            matched_direct_result = True
-                            break
-                        dropped_tool_results += 1
-                        i += 1
-
-                    if not matched_direct_result and insert_missing_tool_stubs:
-                        sanitized.append(self._missing_tool_result_stub(expected_id))
-                        inserted_stub_results += 1
-
-                while i + 1 < len(messages) and messages[i + 1].get("role") == "tool":
-                    dropped_tool_results += 1
-                    i += 1
-
-            i += 1
+        sanitized, dropped_tool_results, inserted_stub_results = repair_tool_pairs(
+            messages,
+            stub=self._missing_tool_result_stub,
+            insert_missing_tool_stubs=insert_missing_tool_stubs,
+        )
 
         if dropped_tool_results:
             logger.info(
