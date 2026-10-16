@@ -113,23 +113,7 @@ from .assertion_extraction import ModelAssertionExtractor
 from .assertion_store import AssertionStore, SourceSnapshot
 from .adaptive_retrieval import AdaptiveRetrievalRegistry
 from .query_view_store import QueryViewStore
-from .schemas import (
-    LCM_DESCRIBE,
-    LCM_DOCTOR,
-    LCM_EXPAND,
-    LCM_EXPAND_QUERY,
-    LCM_GREP,
-    LCM_INSPECT,
-    LCM_LOAD_SESSION,
-    LCM_COMPUTE,
-    LCM_COMPILE_EVIDENCE,
-    LCM_EVIDENCE_PACK,
-    LCM_QUERY_STATE,
-    LCM_RECALL,
-    LCM_RECENT,
-    LCM_RETRIEVE,
-    LCM_STATUS,
-)
+from .tool_registry import TOOL_REGISTRY
 from .sanitize import (
     _clean_active_assistant_message,
     _should_drop_active_assistant_message,
@@ -4866,23 +4850,7 @@ class LCMEngine(
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         disabled = self._omitted_tool_names()
-        schemas = [
-            LCM_GREP,
-            LCM_RECALL,
-            LCM_QUERY_STATE,
-            LCM_COMPUTE,
-            LCM_COMPILE_EVIDENCE,
-            LCM_EVIDENCE_PACK,
-            LCM_RETRIEVE,
-            LCM_RECENT,
-            LCM_LOAD_SESSION,
-            LCM_DESCRIBE,
-            LCM_EXPAND,
-            LCM_EXPAND_QUERY,
-            LCM_STATUS,
-            LCM_INSPECT,
-            LCM_DOCTOR,
-        ]
+        schemas = [spec.schema for spec in TOOL_REGISTRY]
         if disabled:
             return [s for s in schemas if s.get("name") not in disabled]
         return schemas
@@ -4890,10 +4858,9 @@ class LCMEngine(
     def _omitted_tool_names(self) -> set[str]:
         """Hide explicitly disabled and flag-dormant tools on both host paths."""
         omitted = self._disabled_tool_names()
-        if not self._config.assertions_enabled:
-            omitted.add("lcm_query_state")
-        if not self._config.adaptive_retrieval_enabled:
-            omitted.add("lcm_retrieve")
+        for spec in TOOL_REGISTRY:
+            if spec.dormant_unless and not getattr(self._config, spec.dormant_unless):
+                omitted.add(spec.name)
         return omitted
 
     @staticmethod
@@ -4928,21 +4895,7 @@ class LCMEngine(
                     self._record_ingest_failure("tool-call ingest", e)
 
         handlers = {
-            "lcm_grep": lcm_tools.lcm_grep,
-            "lcm_recall": lcm_tools.lcm_recall,
-            "lcm_query_state": lcm_tools.lcm_query_state,
-            "lcm_compute": lcm_tools.lcm_compute,
-            "lcm_compile_evidence": lcm_tools.lcm_compile_evidence,
-            "lcm_evidence_pack": lcm_tools.lcm_evidence_pack,
-            "lcm_retrieve": lcm_tools.lcm_retrieve,
-            "lcm_recent": lcm_tools.lcm_recent,
-            "lcm_load_session": lcm_tools.lcm_load_session,
-            "lcm_describe": lcm_tools.lcm_describe,
-            "lcm_expand": lcm_tools.lcm_expand,
-            "lcm_expand_query": lcm_tools.lcm_expand_query,
-            "lcm_status": lcm_tools.lcm_status,
-            "lcm_inspect": lcm_tools.lcm_inspect,
-            "lcm_doctor": lcm_tools.lcm_doctor,
+            spec.name: getattr(lcm_tools, spec.handler_name) for spec in TOOL_REGISTRY
         }
         handler = handlers.get(name)
         if handler:
