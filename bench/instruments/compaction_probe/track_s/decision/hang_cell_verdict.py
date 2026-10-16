@@ -24,6 +24,19 @@ def arm(path, variant, sha):
     if len(data["pooled"]) != 1:
         raise ValueError("expected one pooled arm per input")
     name, metrics = next(iter(data["pooled"].items()))
+    if name != cell["arm"]:
+        raise ValueError("pooled arm differs from cell arm")
+    # pmw_read.read() uses one repeat per declared seed: arm|d<seed>-r1.
+    if set(data["per_run"]) != {f"{name}|d{seed}-r1" for seed in cell["seeds"]}:
+        raise ValueError("per_run ids differ from cell seeds and arm")
+    material = {}
+    for seed in cell["seeds"]:
+        summary = path.parent / "lcmx-runs" / name / f"seed-{seed}" / f"d{seed}-r1" / "summary.json"
+        digest = json.loads(summary.read_text())["material_sha256"]
+        if not isinstance(digest, str) or not digest.strip():
+            raise ValueError(f"{summary}: missing or empty material_sha256")
+        material[str(seed)] = digest
+    identity["material_sha256"] = material
     for key in ("runs", "faulted_calls", "long_waits", "max_long_waits_in_one_turn", "dropped_rows", "survival_fits"):
         value = metrics[key]
         if type(value) is not int or value < 0:
@@ -65,10 +78,10 @@ def main(argv=None):
         base, base_runs, base_identity = arm(args.base, args.variant, args.base_sha)
         candidate, candidate_runs, candidate_identity = arm(args.candidate, args.variant, args.candidate_sha)
         if base_identity != candidate_identity:
-            raise ValueError("cell seeds, kit_sha or arm differ")
+            raise ValueError("cell seeds, kit_sha, arm or material_sha256 differ")
         if base_runs.keys() != candidate_runs.keys():
             raise ValueError("per_run key sets differ")
-        out.update(base=base, candidate=candidate)
+        out.update(base=base, candidate=candidate, material_sha256=base_identity["material_sha256"])
         out["per_run"] = {run_id: {side: {key: run[key] for key in ("long_waits", "max_long_waits_in_one_turn")}
                                    for side, run in (("base", base_runs[run_id]), ("candidate", candidate_runs[run_id]))}
                           for run_id in base_runs}

@@ -21,7 +21,7 @@ def receipt(mode, counts=(1, 1)):
                          for n, c in enumerate(counts, 1)})
 
 
-def invoke(tmp_path, mode, base, candidate, bad_cell=None):
+def invoke(tmp_path, mode, base, candidate, bad_cell=None, bad_summary=None):
     for name, data in (("base", base), ("candidate", candidate)):
         directory = tmp_path / name
         directory.mkdir()
@@ -36,6 +36,21 @@ def invoke(tmp_path, mode, base, candidate, bad_cell=None):
                 continue
             cell[key] = value
         (directory / "cell.json").write_text(json.dumps(cell))
+        for seed in cell["seeds"]:
+            summary = dict(material_sha256=str(seed) * 64)
+            if bad_summary and bad_summary[:2] == (name, seed):
+                bad = bad_summary[2]
+                if bad == "missing":
+                    continue
+                if bad == "no_digest":
+                    summary = {}
+                elif bad == "empty_digest":
+                    summary["material_sha256"] = ""
+                elif bad == "different":
+                    summary["material_sha256"] = "f" * 64
+            path = directory / "lcmx-runs" / cell["arm"] / f"seed-{seed}" / f"d{seed}-r1" / "summary.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{" if bad_summary == (name, seed, "unreadable") else json.dumps(summary))
     output = tmp_path / "verdict.json"
     rc = v.main(["--base", str(tmp_path / "base/pmw-read.json"),
                  "--candidate", str(tmp_path / "candidate/pmw-read.json"),
@@ -55,6 +70,7 @@ def test_pass_and_d7_never_gates(tmp_path, mode):
     assert rc == 0 and out["result"] == "PASS"
     assert out["base"]["d7"]["result"] == "FAIL"
     assert out["candidate"]["facts_304_mean"] == 0.5
+    assert out["material_sha256"] == {str(seed): str(seed) * 64 for seed in (1, 2)}
 
 
 @pytest.mark.parametrize("mode,change", [("T", dict(dropped_rows=1)), ("T", dict(long_waits=3)),
@@ -119,6 +135,37 @@ def test_invalid_different_run_ids(tmp_path, mode):
     base, candidate = receipt(mode), receipt(mode)
     candidate["per_run"]["synthetic|d3-r1"] = candidate["per_run"].pop("synthetic|d1-r1")
     assert invoke(tmp_path, mode, base, candidate)[0] == 2
+
+
+@pytest.mark.parametrize("mode", ["T", "P"])
+@pytest.mark.parametrize("bad", ["one_run", "arm", "run_ids"])
+def test_invalid_receipt_cell_binding(tmp_path, mode, bad):
+    base, candidate = receipt(mode), receipt(mode)
+    # Corrupt both sides alike so cross-cell equality cannot mask a stale reader.
+    for data in (base, candidate):
+        if bad == "one_run":
+            del data["per_run"]["synthetic|d2-r1"]
+            data["pooled"]["synthetic"].update(runs=1, faulted_calls=1, long_waits=1)
+        elif bad == "arm":
+            data["pooled"]["other"] = data["pooled"].pop("synthetic")
+        else:
+            data["per_run"]["synthetic|d3-r1"] = data["per_run"].pop("synthetic|d1-r1")
+    rc, out = invoke(tmp_path, mode, base, candidate)
+    assert rc == 2 and out["result"] == "INVALID"
+
+
+@pytest.mark.parametrize("mode", ["T", "P"])
+@pytest.mark.parametrize("side", ["base", "candidate"])
+@pytest.mark.parametrize("bad", ["missing", "unreadable", "no_digest", "empty_digest"])
+def test_invalid_summary_material(tmp_path, mode, side, bad):
+    rc, out = invoke(tmp_path, mode, receipt(mode), receipt(mode), bad_summary=(side, 2, bad))
+    assert rc == 2 and out["result"] == "INVALID"
+
+
+@pytest.mark.parametrize("mode", ["T", "P"])
+def test_invalid_different_material(tmp_path, mode):
+    rc, out = invoke(tmp_path, mode, receipt(mode), receipt(mode), bad_summary=("candidate", 2, "different"))
+    assert rc == 2 and out["result"] == "INVALID"
 
 
 @pytest.mark.parametrize("mode", ["T", "P"])
