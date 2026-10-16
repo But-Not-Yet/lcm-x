@@ -163,5 +163,7 @@ def test_reconcile_probe_failure_trusts_zero_cursor(
     engine.ingest([*messages, {"role": "user", "content": "New question."}])
     rows = engine._store.get_session_messages("session")
     contents = [row["content"] for row in rows]
-    if contents != ["Durable question.", "Durable answer.", "New question."]:
+    if contents == ["Durable question.", "Durable answer."] * 2 + ["New question."]:
         raise ReplayStoredTwice(f"Expected reconciled replay, stored {contents!r}")
+    # Any other shape (a lost or reordered row) is a new failure, not #1317.
+    assert contents == ["Durable question.", "Durable answer.", "New question."]
