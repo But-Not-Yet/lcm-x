@@ -24,6 +24,10 @@ CONVERSATION = "foreground-conversation"
 PAD = " alpha beta gamma delta" * 30
 
 
+class ForegroundProofCleared(Exception):
+    """The auxiliary compress discarded the pending foreground commit proof."""
+
+
 @contextmanager
 def _compacted_foreground(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -93,7 +97,7 @@ def _compress_auxiliary(engine: Any) -> None:
 
 @pytest.mark.xfail(
     strict=True,
-    raises=AssertionError,
+    raises=ForegroundProofCleared,
     reason="#1291: auxiliary compress clears the foreground commit proof",
 )
 def test_auxiliary_compress_preserves_foreground_commit_proof(
@@ -102,14 +106,15 @@ def test_auxiliary_compress_preserves_foreground_commit_proof(
     with _compacted_foreground(tmp_path, monkeypatch) as (engine, _original, _adopted):
         proof = engine._compress_commit_proof
         _compress_auxiliary(engine)
-        assert engine._compress_commit_proof is proof
+        if engine._compress_commit_proof is not proof:
+            raise ForegroundProofCleared("auxiliary compress cleared the foreground commit proof")
 
 
 @pytest.mark.parametrize("with_child", [
     pytest.param(False, id="foreground-control"),
     pytest.param(True, id="shared-child", marks=pytest.mark.xfail(
         strict=True,
-        raises=AssertionError,
+        raises=ForegroundProofCleared,
         reason="#1291: auxiliary compress clears the foreground commit proof",
     )),
 ])
@@ -156,6 +161,8 @@ def test_host_commit_stores_each_foreground_row_once(
               f"duplicates={len(duplicates)} lost={len(lost)}")
         print(f"duplicate_rows={[(role, content.removesuffix(PAD)) for role, content in duplicates]}")
         print(boundary[0])
+        if not proof_intact and actual != expected:
+            raise ForegroundProofCleared("foreground rows changed after the commit proof was cleared")
         assert actual == expected
         assert not duplicates and not lost
         assert rows_at_end == rows_after_adoption == len(original)
