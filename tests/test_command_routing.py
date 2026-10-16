@@ -24,7 +24,7 @@ HELP = """LCM command help
 - /lcm doctor retention: read-only retention analysis for stored session footprint and age
 - /lcm backup: create a timestamped SQLite backup before any future cleanup workflow
 - /lcm rotate: preview a tail-preserving in-place compact of the active session (read-only)
-- /lcm rotate apply: backup-first rotate that advances the lifecycle frontier past pre-tail raw messages
+- /lcm rotate apply: refused on Hermes (#1141); use /compress here N
 - /lcm rollups: show temporal-rollup status for the current session
 - /lcm rollups rebuild <day|week|month|all> [date]: synchronously rebuild a bounded UTC target set
 - /lcm assertions rebuild [--apply] [--limit N]: preview or run one bounded exact-row assertion batch
