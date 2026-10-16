@@ -209,7 +209,9 @@ def observe(case: Case, monkeypatch: pytest.MonkeyPatch) -> Trace:
     monkeypatch.setattr(escalation, "_call_llm_for_summary", provider)
     handler = TraceHandler(trace)
     escalation.logger.addHandler(handler)
-    monkeypatch.setattr(escalation.logger, "level", logging.DEBUG)
+    # setLevel (not a raw attribute patch) clears the logging cache, so earlier tests cannot leave DEBUG disabled.
+    previous_level = escalation.logger.level
+    escalation.logger.setLevel(logging.DEBUG)
     try:
         for _ in range(2 if case.round_two else 1):
             budget = Budget(trace, case, clock) if case.budget else None
@@ -227,6 +229,7 @@ def observe(case: Case, monkeypatch: pytest.MonkeyPatch) -> Trace:
                           budget.slot_taken if budget else None])
     finally:
         escalation.logger.removeHandler(handler)
+        escalation.logger.setLevel(previous_level)
     return trace
 
 
