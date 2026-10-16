@@ -1,11 +1,13 @@
 """A bypassed child must leave its shared engine's foreground compress state alone."""
 
+import re
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from threading import Barrier
 
 import pytest
 
+from hermes_lcm import message_patterns
 from tests.harness import ScriptedSummarizer, assistant, engine_context, pin_char_counter, prose, user
 
 
@@ -294,11 +296,28 @@ def test_child_preserves_armed_preflight_handoffs(tmp_path, monkeypatch):
             assert before[name] is True and after[name] is True
 
 
+class _TimeoutRegex:  # the optional ``regex`` engine's timeout-capable interface (as tests/test_host_uid_shadow.py)
+    error = re.error
+
+    class _Pattern:
+        def __init__(self, pattern):
+            self._compiled = re.compile(pattern)
+
+        def search(self, text, *, timeout=None):
+            return self._compiled.search(text)
+
+    @classmethod
+    def compile(cls, pattern):
+        return cls._Pattern(pattern)
+
+
 @pytest.mark.parametrize("site", ["ignored_backlog", "leaf_candidate", "ingest", "dependent_reply"])
 @pytest.mark.parametrize("exit_path", ["return", "inner_error", "outer_error", "map_error"])
 def test_store_id_scopes_restore_outer_identity(tmp_path, monkeypatch, site, exit_path):
     """Each temporary map restores by identity, including nested readers and failures."""
     pin_char_counter(monkeypatch)
+    # CI installs no ``regex``; without a timeout-capable engine the ignore pattern is dropped and three sites never run.
+    monkeypatch.setattr(message_patterns, "_regex_engine", _TimeoutRegex)
     with engine_context(tmp_path, window=200_000, ignore_message_patterns=["ignored"],
                         large_output_externalization_enabled=False) as engine:
         outer, inner = assistant("outer visible"), assistant("inner visible")
