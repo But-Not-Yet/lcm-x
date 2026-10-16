@@ -10,7 +10,8 @@ from tests.compat.helpers import CASES, GOLDEN, READERS, emit_case, open_engine,
 # diagnostics.survival_fit_projection_floor_applies and test_issue_919 define
 # the conservative v0.27.0 floor. Legacy and long forms predate every pinned
 # reader; test_issue_916 and test_issue_959 define the changed short forms.
-LEGACY_READER_FLOOR = "v0.24.5"
+# The pinned readers start at v0.25.0-rc1. The operator guide's v0.24.5
+# plugin-only rollback floor is not exercised here (follow-up on #1271).
 SHORT_READER_FLOOR = "v0.27.0"
 EXPECTED = {
     "mark_only": "supported",
