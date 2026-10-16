@@ -1,4 +1,4 @@
-"""Occurrence seeds for compress, recovery, #1179 retries and #1286 stale proofs."""
+"""Occurrence seeds for compress, recovery, rotation, retries and stale proofs."""
 from copy import deepcopy
 import re
 import sys
@@ -11,7 +11,8 @@ from hypothesis import settings, strategies as st
 from hypothesis.stateful import invariant, rule, run_state_machine_as_test
 
 from tests.invariants.test_exactly_once_machine import (
-    KNOWN_OPEN, PROFILE, REPROJECTED_USER, ExactlyOnceMachine, RecoveryMachine, assert_occurrences, identity,
+    KNOWN_OPEN, PROFILE, REPROJECTED_USER, UNPROVEN_ROTATION, WARM_ROTATION_AUDIT,
+    ExactlyOnceMachine, RecoveryMachine, RotationMachine, assert_occurrences, identity,
 )
 
 
@@ -210,6 +211,122 @@ class ReprojectedUserStored(AssertionError):
     """Only the extra user projection after a repeat fit misbinds its source."""
 
 
+class RotationTailStored(AssertionError):
+    """Only the complete adopted parent tail appended again in the child."""
+
+
+@pytest.mark.parametrize("turns", [
+    pytest.param(2, id="published-control"),
+    pytest.param(1, id="no-rewrite", marks=pytest.mark.xfail(
+        strict=True, reason=UNPROVEN_ROTATION, raises=RotationTailStored)),
+])
+def test_rotation_without_rewrite_preserves_occurrences(turns):
+    machine = RotationMachine()
+    try:
+        for _ in range(turns):
+            machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.rotate()
+        assert machine.unproven_rotation == (turns == 1)
+        machine.exactly_once()
+        tail = deepcopy(machine.host)
+        # Bypass only the known-open guard, retaining the full oracle.
+        machine.engine.shutdown()
+        machine.engine = machine.start_engine()
+        machine.engine.ingest(machine.host)
+        try:
+            machine.exactly_once()
+        except AssertionError as error:
+            if list(map(identity, machine.rows())) == list(map(identity, [*machine.occurrences, *tail])):
+                raise RotationTailStored(str(error)) from error
+            raise
+    finally:
+        machine.teardown()
+
+
+@pytest.mark.parametrize("resume", [
+    pytest.param(True, id="cold-control"),
+    pytest.param(False, id="warm-audit", marks=pytest.mark.xfail(
+        strict=True, reason=WARM_ROTATION_AUDIT, raises=RotationTailStored)),
+])
+def test_rotation_warm_audit_preserves_tail(resume):
+    machine = RotationMachine()
+    try:
+        for _ in range(2):
+            machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.rotate()
+        assert machine.engine._last_compression_status == "compacted"
+        assert machine.pending_rotation_audit
+        machine.exactly_once()
+        tail = deepcopy(machine.host[1:])
+        if resume:
+            machine.cold_resume()
+            machine.exactly_once()
+        # The original replay bypasses the subclass's warm-audit exclusion.
+        ExactlyOnceMachine.replay(machine)
+        try:
+            machine.exactly_once()
+        except AssertionError as error:
+            if list(map(identity, machine.rows())) == list(map(identity, [*machine.occurrences, *tail])):
+                raise RotationTailStored(str(error)) from error
+            raise
+    finally:
+        machine.teardown()
+
+
+@pytest.mark.parametrize("condense", [
+    pytest.param(False, id="published-control"),
+    pytest.param(True, id="sanitized", marks=pytest.mark.xfail(
+        strict=True, reason="#1286: sanitized rotation leaves no durable child proof", raises=RotationTailStored)),
+])
+def test_rotation_stale_proof_preserves_tail(condense):
+    machine = RotationMachine()
+    try:
+        for count in (1, 1, 0):
+            machine.new_turn("alpha", False, count, False, "lookup")
+        if condense:
+            machine.compress()
+        machine.rotate()
+        assert machine.stale_proof == condense
+        machine.exactly_once()
+        adopted = deepcopy(machine.host)
+        machine.engine.shutdown()
+        machine.engine = machine.start_engine()
+        machine.engine.ingest(machine.host)
+        try:
+            machine.exactly_once()
+        except AssertionError as error:
+            if list(map(identity, machine.rows())) == list(map(identity, [*machine.occurrences, *adopted])):
+                raise RotationTailStored(str(error)) from error
+            raise
+    finally:
+        machine.teardown()
+
+
+def test_rotation_resume_replay_append_compress():
+    machine = RotationMachine()
+    try:
+        for _ in range(2):
+            for text in ("alpha", "same text"):
+                machine.new_turn(text, False, 0, False, "lookup")
+                machine.exactly_once()
+            ledger = deepcopy(machine.occurrences)
+            machine.rotate()
+            assert machine.engine._last_compression_status == "compacted"
+            assert machine.occurrences == ledger
+            machine.exactly_once()
+            machine.cold_resume()
+            assert machine.engine._session_id == machine.session_ids[-1]
+            machine.exactly_once()
+            machine.replay()
+            machine.exactly_once()
+        machine.new_turn("βeta", True, 1, False, "inspect")
+        machine.exactly_once()
+        machine.compress()
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
 @pytest.mark.parametrize("recoveries", [
     pytest.param(1, id="single-fit-control"),
     pytest.param(2, id="repeated-fit", marks=pytest.mark.xfail(
@@ -346,4 +463,5 @@ def test_known_open_exclusions_track_their_strict_xfails():
                    for parameter in mark.args[1] if hasattr(parameter, "marks")
                    for mark in parameter.marks if mark.name == "xfail" and mark.kwargs.get("strict"))
     xfailed = {int(found.group(1)) for reason in reasons if (found := re.match(r"#(\d+)", reason))}
+    xfailed.update(reason for reason in reasons if reason.startswith("UNFILED: "))
     assert set(KNOWN_OPEN) <= xfailed, (set(KNOWN_OPEN) - xfailed)
