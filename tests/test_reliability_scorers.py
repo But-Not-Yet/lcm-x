@@ -978,7 +978,7 @@ def test_b2_composite_cover_respects_licence_capacity_while_searching():
     assert multiset.licensed_parts(a + "\n\n" + b, {("user", multiset.h(a)): {"licensed": 1}}, 1) is None
 
 
-def test_b2_composite_cover_is_fail_closed_on_a_pathological_input():
+def test_b2_composite_cover_is_fail_closed_on_a_pathological_input(latency_check):
     """70 paragraphs, every single and adjacent pair licensed, and an unlicensed tail: the budget ends the search
     quickly and the composite stays a deficit."""
     import time
@@ -986,9 +986,10 @@ def test_b2_composite_cover_is_fail_closed_on_a_pathological_input():
     paras = [f"paragraph {i}" for i in range(70)]
     lic = {("user", multiset.h(p)): {"licensed": 1} for p in paras}
     lic.update({("user", multiset.h(a + "\n\n" + b)): {"licensed": 1} for a, b in zip(paras, paras[1:])})
-    started = time.monotonic()
+    started = time.monotonic() if latency_check else None
     assert multiset.licensed_parts("\n\n".join(paras + ["unlicensed tail"]), lic, 1) is None
-    assert time.monotonic() - started < 10
+    if latency_check:
+        assert time.monotonic() - started < 10
 
 
 def test_b2_composite_cover_cuts_inside_a_longer_newline_run():
