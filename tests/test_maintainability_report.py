@@ -1,6 +1,7 @@
 """Deterministic acceptance checks for the report-only maintainability inventory."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -138,6 +139,30 @@ def test_incomplete_collection_is_report_only(tmp_path, monkeypatch):
     result = run(tmp_path, "--baseline", str(tmp_path / "baseline.json"), "--write-baseline")
     assert "Ruff metrics unavailable" in result["metrics"]["warnings"][0]
     assert not (tmp_path / "baseline.json").exists()
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0, reason="root can list a mode-000 directory")
+def test_unreadable_directory_blocks_the_baseline_write(tmp_path):
+    (tmp_path / "engine.py").write_text("def valid():\n    pass\n")
+    hidden = tmp_path / "pkg"
+    hidden.mkdir()
+    (hidden / "store.py").write_text("def other():\n    pass\n")
+    hidden.chmod(0)
+    try:
+        result = run(tmp_path, "--baseline", str(tmp_path / "baseline.json"), "--write-baseline")
+    finally:
+        hidden.chmod(0o755)
+    assert "Could not read pkg" in result["metrics"]["warnings"]
+    assert not (tmp_path / "baseline.json").exists()
+
+
+def test_standalone_f_string_is_not_ddl(tmp_path):
+    (tmp_path / "store.py").write_text('''def note(name):
+    f"CREATE TABLE {name} (id) is documented here, not executed"
+    return f"ALTER TABLE {name} ADD COLUMN x"
+''')
+    result = run(tmp_path)["metrics"]
+    assert [site["detail"] for site in result["ddl_outside_schema"].values()] == ["ALTER TABLE"]
 
 
 def lifetime_tree(root, declarations):
