@@ -42,12 +42,12 @@ def run(cases, out, baseline=DEFAULT_BASELINE, candidate="worktree", seed=1227, 
     if baseline_config not in {"bare", "managed"}:
         raise ValueError("baseline_config must be bare or managed")
     check_host()
+    identity = candidate_identity(ROOT) if candidate == "worktree" else dict(candidate=resolve(candidate))
     out = Path(out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     cache = out.parent / "trees"
     trees = {"ga": materialize(baseline, cache),
              "candidate": ROOT if candidate == "worktree" else materialize(candidate, cache)}
-    identity = candidate_identity(ROOT) if candidate == "worktree" else dict(candidate=resolve(candidate))
     summary = dict(baseline=baseline_sha, baseline_ref=baseline_ref,
                    baseline_tag=baseline if baseline in BASELINES else None, **identity,
                    baseline_config=baseline_config, seed=seed, cases=len(cases), counts={}, delta_absorption={}, stale_deltas=[], unexplained=[],

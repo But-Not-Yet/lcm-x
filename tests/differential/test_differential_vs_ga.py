@@ -189,7 +189,7 @@ def test_tool_results_must_follow_calls_and_every_call_needs_a_result():
     assistant = {"role": "assistant", "tool_calls": [{"id": "c"}]}
     tool = {"role": "tool", "tool_call_id": "c", "content": "stub"}
     assert pair_errors([assistant, tool]) == []
-    assert pair_errors([tool, assistant]) == ["result-before-call:c"]
+    assert pair_errors([tool, assistant]) == ["result-before-call:c", "missing-result:c"]
     assert pair_errors([assistant]) == ["missing-result:c"]
 
 
@@ -546,3 +546,59 @@ def test_f1244r2_baseline_cli_canonicalizes_known_commit(ref_form, tmp_path, mon
     assert result["baseline_ref"] == ref
     assert result["baseline_tag"] == tag
     assert "0 unexplained events" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("shape,expected", [
+    ("complete", []),
+    ("duplicate-call", ["duplicate-call:c"]),
+    ("duplicate-result", ["duplicate-result:c"]),
+    ("missing-first", ["missing-result:c"]),
+    ("missing-second", ["missing-result:c"]),
+])
+def test_f1244r3_reused_ids_are_scoped_to_call_group(shape, expected):
+    assistant = dict(role="assistant", tool_calls=[dict(id="c")])
+    tool = dict(role="tool", tool_call_id="c", content="result")
+    second = deepcopy(assistant)
+    if shape == "duplicate-call":
+        second["tool_calls"].append(dict(id="c"))
+    rows = [assistant, tool, second, deepcopy(tool)]
+    if shape == "duplicate-result":
+        rows.append(deepcopy(tool))
+    elif shape == "missing-first":
+        rows.pop(1)
+    elif shape == "missing-second":
+        rows.pop()
+    assert pair_errors(rows) == expected
+
+
+def test_f1244r3_cli_identity_precedes_in_repo_output(tmp_path, monkeypatch):
+    import json
+    import subprocess
+    import sys
+    from . import run as runner
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True).stdout
+
+    git("init", "-q")
+    (tmp_path / "source.py").write_text("original\n")
+    git("add", "source.py")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "fixture")
+    sha = git("rev-parse", "HEAD").decode().strip()
+    out = tmp_path / "runs" / "result"
+
+    def materialize(ref, cache):
+        tree = cache / runner.resolve(ref)
+        tree.mkdir(parents=True)
+        (tree / "source.py").write_text("baseline cache\n")
+        return tree
+
+    monkeypatch.setattr(runner, "ROOT", tmp_path)
+    monkeypatch.setattr(runner, "materialize", materialize)
+    monkeypatch.setattr(sys, "argv", ["differential", "--layers", "projection", "--cases", "0", "--out", str(out)])
+    assert runner.main() == 0
+    assert (out.parent / "trees").is_dir()
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["candidate"] == sha
+    assert "candidate_dirty" not in summary
+    assert runner.candidate_identity(tmp_path)["candidate"] == f"{sha}+dirty"
