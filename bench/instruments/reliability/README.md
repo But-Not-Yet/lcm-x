@@ -277,6 +277,31 @@ INCONCLUSIVE. These observations do not satisfy the complete acceptance bar or
 justify pre-rc promotion. Gate telemetry records token estimates,
 thresholds, tool rounds and compression input message counts for further diagnosis.
 
+The A2c mechanism check found that `10e10d82` is a defaults-onset comparison,
+not a RED/GREEN engine-assembly pair with `207092cd`. Running the rc6 regression's
+`objective_scenario` and assembly body unchanged on both trees gives **zero**
+objective rows on both; `bd46fd9f` gives one. With the regression's character
+fallback, the objective is 12,012 tokens and its 20-row tail is 18,950 tokens.
+The prefix-bound code is identical across the onset pair
+(`10e10d82:engine.py:8027–8084`); injecting the same DAG state bypasses the
+defaults and timing differences that a host backtest must exercise.
+
+The requested multi-row objective leaf also cannot come from ordinary
+oldest-first selection at that culprit's shipped defaults: its leaf size is
+**8,000**, with dynamic sizing off (`config.py:670,689`), rather than rc5's
+24,000. A plain 12K user row starts a singleton chunk: the selector stops before
+adding it to any preceding rows and before adding a following row
+(`compaction.py:539–552`). The tool-group repair does not extend a plain user
+row. Direct selection confirms this for both the regression history and an
+objective-first history; a 24K selection combines the rows instead.
+
+A real-host diagnostic at 32,768 also encountered early no-op/survival-fit
+passes before the requested state. This does not establish universal host
+unreachability for #1221, including later pre-fix trees with 24K leaves. A2c
+therefore stopped at its mechanism gate, before parameter calibration; it adds
+no `default-window/32k-objective-1221` cell and retains the existing opt-in
+64K objective cell. Detector and path-margin admission remain unproven.
+
 Frozen-parameter path replays used output and scratch paths of 97 versus 212
 characters. First committed compression input counts were identical: 19 messages
 at the onset/fixed/rc8 refs, 23 at the parent (whose initial three-message pass
