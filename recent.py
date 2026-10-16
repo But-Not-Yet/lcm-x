@@ -24,7 +24,9 @@ if TYPE_CHECKING:
     from .engine import LCMEngine
 
 
-logger = logging.getLogger("hermes_lcm.tools")
+# The tools logger, under whatever package name the host loads this plugin as (``hermes_lcm`` in tests,
+# ``hermes_plugins.<name>`` in Hermes), so the moved recent family keeps logging where tools.py logs.
+logger = logging.getLogger(f"{__package__}.tools" if __package__ else "tools")
 
 
 def _recent_iso(value: datetime) -> str:
