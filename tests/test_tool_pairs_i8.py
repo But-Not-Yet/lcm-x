@@ -132,3 +132,23 @@ def test_i8_seeded_occurrence_properties(insert: bool) -> None:
         if insert:
             assert not pending
 
+
+@pytest.mark.parametrize("insert", [False, True])
+def test_i8_pure_repair_counts(insert: bool) -> None:
+    pairs = importlib.import_module("hermes_lcm.tool_pairs")
+    rows = [tool("orphan"), assistant("a", "a", "b"), tool("a"), tool("unmatched")]
+    before = deepcopy(rows)
+    calls: list[str] = []
+
+    def stub(call_id: str) -> Row:
+        calls.append(call_id)
+        return missing(call_id)
+
+    result = pairs.repair_tool_pairs(rows, stub=stub, insert_missing_tool_stubs=insert)
+    assert result.rows == repair(rows, insert)
+    assert result.dropped == 2
+    assert result.inserted == (2 if insert else 0)
+    assert calls == (["a", "b"] if insert else [])
+    assert rows == before
+    assert result.rows[0] is rows[1]
+    assert result.rows[1] is rows[2]
