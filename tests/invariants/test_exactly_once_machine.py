@@ -54,8 +54,18 @@ def identity(message):
     calls = message.get("tool_calls") or []
     if isinstance(calls, str):
         calls = json.loads(calls)
+
+    def arguments(call):
+        value = call["function"].get("arguments")
+        if isinstance(value, str):
+            try:
+                return json.dumps(json.loads(value), sort_keys=True, separators=(",", ":"))
+            except ValueError:
+                pass
+        return value
+
     return (message["role"], content or "", message.get("tool_call_id") or "",
-            tuple((call["id"], call["function"]["name"]) for call in calls))
+            tuple((call["id"], call.get("type"), call["function"]["name"], arguments(call)) for call in calls))
 
 
 def assert_occurrences(expected, stored):
@@ -131,6 +141,8 @@ def unstamped_user_beside_carrier_923(host, ledger):
 
 EXCEPTIONS = {259: ambiguous_unstamped_tool_window_259, 923: unstamped_user_beside_carrier_923}
 TEXT = st.sampled_from(("alpha", "same text", "βeta", "line one\nline two"))
+TOOL_ARGUMENTS = st.permutations((' {"query": 0}', '{"query":1}', '{"query":2}'))
+DEFAULT_ARGUMENTS = (' {"query": 0}', '{"query":1}', '{"query":2}')
 
 
 class ExactlyOnceMachine(RuleBasedStateMachine):
@@ -173,8 +185,8 @@ class ExactlyOnceMachine(RuleBasedStateMachine):
         return rows
 
     @rule(text=TEXT, structured=st.booleans(), tool_count=st.integers(0, 3),
-          retry=st.booleans(), tool_name=st.sampled_from(("lookup", "inspect")))
-    def new_turn(self, text, structured, tool_count, retry, tool_name):
+          retry=st.booleans(), tool_name=st.sampled_from(("lookup", "inspect")), arguments=TOOL_ARGUMENTS)
+    def new_turn(self, text, structured, tool_count, retry, tool_name, arguments=DEFAULT_ARGUMENTS):
         user = self.stamp({"role": "user", "content": (
             [{"type": "text", "text": text}, {"type": "text", "text": "part two"}]
             if structured else text)})
@@ -188,7 +200,7 @@ class ExactlyOnceMachine(RuleBasedStateMachine):
             self.host = self.host[:-2]
         batch = [user]
         calls = [{"id": f"call-{self.sequence}-{i}", "type": "function",
-                  "function": {"name": tool_name, "arguments": "{}"}} for i in range(tool_count)]
+                  "function": {"name": tool_name, "arguments": arguments[i]}} for i in range(tool_count)]
         if calls:
             batch.append(self.stamp({"role": "assistant", "content": "calling", "tool_calls": calls}))
             batch.extend(self.stamp({"role": "tool", "content": f"result {i}", "tool_call_id": call["id"]})
@@ -341,10 +353,10 @@ class RecoveryMachine(ExactlyOnceMachine):
             super().replay()
 
     @rule(text=TEXT, structured=st.booleans(), tool_count=st.integers(0, 3),
-          retry=st.booleans(), tool_name=st.sampled_from(("lookup", "inspect")))
-    def new_turn(self, text, structured, tool_count, retry, tool_name):
+          retry=st.booleans(), tool_name=st.sampled_from(("lookup", "inspect")), arguments=TOOL_ARGUMENTS)
+    def new_turn(self, text, structured, tool_count, retry, tool_name, arguments=DEFAULT_ARGUMENTS):
         if not KNOWN_OPEN[503](self.recovery_aliases, self.host, "new_turn"):
-            super().new_turn(text, structured, tool_count, retry, tool_name)
+            super().new_turn(text, structured, tool_count, retry, tool_name, arguments)
 
 
 TestRecovery = RecoveryMachine.TestCase
@@ -384,12 +396,24 @@ class RotationMachine(ExactlyOnceMachine):
                                 context_length=200_000)
         return engine
 
+    @rule(text=TEXT, structured=st.booleans(), tool_count=st.integers(0, 3),
+          retry=st.booleans(), tool_name=st.sampled_from(("lookup", "inspect")), arguments=TOOL_ARGUMENTS)
+    def new_turn(self, text, structured, tool_count, retry, tool_name, arguments=DEFAULT_ARGUMENTS):
+        delivered = len(self.occurrences)
+        super().new_turn(text, structured, tool_count, retry, tool_name, arguments)
+        for occurrence in self.occurrences[delivered:]:
+            occurrence["session_id"] = self.session_id
+
     def rows(self):
         cursor = self.engine._store.connection.execute(
             "SELECT role, content, tool_call_id, tool_calls, session_id FROM messages "
             "WHERE conversation_id = ? ORDER BY store_id", ("identity-conversation",))
         rows = [dict(zip((column[0] for column in cursor.description), row)) for row in cursor.fetchall()]
-        assert all(row["session_id"] in self.session_ids for row in rows)
+        # Let the occurrence oracle diagnose missing or extra rows first.
+        if len(rows) == len(self.occurrences):
+            assert [row["session_id"] for row in rows] == [
+                occurrence["session_id"] for occurrence in self.occurrences
+            ], "session ownership"
         return rows
 
     @precondition(lambda self: bool(self.host))
@@ -397,10 +421,6 @@ class RotationMachine(ExactlyOnceMachine):
     def rotate(self):
         previous = deepcopy(self.host)
         compressed = self.engine.compress(self.host, current_tokens=self.engine.threshold_tokens + 1, force=True)
-        if self.engine._last_compression_status == "sanitized" and compressed != previous:
-            self.stale_proof = True
-        elif self.engine._last_compression_status == "compacted":
-            self.stale_proof = False
         # Hermes rejects candidates unchanged even after removing its DB marker.
         def without_persisted(rows):
             return [{key: value for key, value in row.items() if key != "_db_persisted"} for row in rows]
@@ -408,6 +428,10 @@ class RotationMachine(ExactlyOnceMachine):
         if compressed == previous or without_persisted(compressed) == without_persisted(previous):
             self.host = previous
             return
+        if self.engine._last_compression_status == "sanitized":
+            self.stale_proof = True
+        elif self.engine._last_compression_status == "compacted":
+            self.stale_proof = False
         self.engine.on_session_end(self.session_id, previous)
         child = f"identity-session-{len(self.session_ids)}"
         self._publish_host_session(child, self.session_id)
@@ -453,23 +477,6 @@ class HostMergeMachine(RotationMachine):
     Fleet: conversation_compression.py:3673-3683, 3445-3451, 2555-2559;
     turn_iteration_prep.py:203 -> agent_runtime_helpers.py:553-594.
     """
-
-    @rule(text=TEXT, structured=st.booleans(), tool_count=st.integers(0, 3),
-          retry=st.booleans(), tool_name=st.sampled_from(("lookup", "inspect")))
-    def new_turn(self, text, structured, tool_count, retry, tool_name):
-        delivered = len(self.occurrences)
-        super().new_turn(text, structured, tool_count, retry, tool_name)
-        for occurrence in self.occurrences[delivered:]:
-            occurrence["session_id"] = self.session_id
-
-    def rows(self):
-        rows = super().rows()
-        # Let the occurrence oracle diagnose missing or extra rows first.
-        if len(rows) == len(self.occurrences):
-            assert [row["session_id"] for row in rows] == [
-                occurrence["session_id"] for occurrence in self.occurrences
-            ], "session ownership"
-        return rows
 
     @precondition(lambda self: bool(self.host))
     @rule(in_place=st.booleans())
@@ -524,10 +531,10 @@ class GatewayResetMachine(ExactlyOnceMachine):
         return engine
 
     @rule(text=TEXT, structured=st.booleans(), tool_count=st.integers(0, 3),
-          retry=st.booleans(), tool_name=st.sampled_from(("lookup", "inspect")))
-    def new_turn(self, text, structured, tool_count, retry, tool_name):
+          retry=st.booleans(), tool_name=st.sampled_from(("lookup", "inspect")), arguments=TOOL_ARGUMENTS)
+    def new_turn(self, text, structured, tool_count, retry, tool_name, arguments=DEFAULT_ARGUMENTS):
         delivered = len(self.occurrences)
-        super().new_turn(text, structured, tool_count, retry, tool_name)
+        super().new_turn(text, structured, tool_count, retry, tool_name, arguments)
         for occurrence in self.occurrences[delivered:]:
             occurrence["session_id"] = self.session_id
 
@@ -736,8 +743,8 @@ class RestartMachine(RotationMachine):
         self.stale_proof = False
 
     @rule(text=st.one_of(TEXT, st.just("alpha 2")), structured=st.booleans(), tool_count=st.integers(0, 3),
-          retry=st.booleans(), tool_name=st.sampled_from(("lookup", "inspect")))
-    def new_turn(self, text, structured, tool_count, retry, tool_name):
+          retry=st.booleans(), tool_name=st.sampled_from(("lookup", "inspect")), arguments=TOOL_ARGUMENTS)
+    def new_turn(self, text, structured, tool_count, retry, tool_name, arguments=DEFAULT_ARGUMENTS):
         user = self.stamp({"role": "user", "content": (
             [{"type": "text", "text": text}, {"type": "text", "text": "part two"}]
             if structured else text)})
@@ -757,18 +764,18 @@ class RestartMachine(RotationMachine):
             self.host = self.host[:-2]
         self.retry_occurrence_index = len(self.occurrences) if is_retry else None
         self.host.append(user)
-        self.occurrences.append(deepcopy(user))
+        self.occurrences.append(dict(deepcopy(user), session_id=self.session_id))
         self.host = merge_host_users(self.host)
         batch = []
         calls = [{"id": f"call-{self.sequence}-{i}", "type": "function",
-                  "function": {"name": tool_name, "arguments": "{}"}} for i in range(tool_count)]
+                  "function": {"name": tool_name, "arguments": arguments[i]}} for i in range(tool_count)]
         if calls:
             batch.append(self.stamp({"role": "assistant", "content": "calling", "tool_calls": calls}))
             batch.extend(self.stamp({"role": "tool", "content": f"result {i}", "tool_call_id": call["id"]})
                          for i, call in enumerate(calls))
         batch.append(self.stamp({"role": "assistant", "content": f"answer {text} occurrence {self.sequence}"}))
         self.host.extend(batch)
-        self.occurrences.extend(deepcopy(batch))
+        self.occurrences.extend(dict(deepcopy(row), session_id=self.session_id) for row in batch)
         self.engine.ingest(self.host)
 
     @precondition(lambda self: bool(self.host))
@@ -800,7 +807,7 @@ class RestartMachine(RotationMachine):
         if point == "user-persisted":
             user = self.stamp({"role": "user", "content": text})
             self.host.append(user)
-            self.occurrences.append(deepcopy(user))
+            self.occurrences.append(dict(deepcopy(user), session_id=self.session_id))
             self._persist_host_view(self.session_id, self.host)
         else:
             previous = deepcopy(self.host)

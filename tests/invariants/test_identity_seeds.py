@@ -1,5 +1,6 @@
 """Occurrence seeds for compress, recovery, rotation, retries and stale proofs."""
 from copy import deepcopy
+import json
 import re
 import sys
 import types
@@ -103,6 +104,51 @@ def test_oracle_checks_order_and_assistant_tool_metadata():
         expected = dict(assistant, tool_calls=[{"id": "call", "function": {"name": "lookup"}}])
         with pytest.raises(AssertionError, match="collapses="):
             assert_occurrences([expected], [dict(assistant, tool_calls=[changed])])
+
+
+@pytest.mark.parametrize("field", ["arguments", "type"])
+def test_oracle_keeps_tool_payloads_distinct(field):
+    call = {"id": "call", "type": "function", "function": {"name": "lookup", "arguments": '{"query":1}'}}
+    other = deepcopy(call)
+    if field == "arguments":
+        other["function"]["arguments"] = '{"query":2}'
+    else:
+        other["type"] = "changed"
+    expected = {"role": "assistant", "content": "calling", "tool_calls": [call]}
+    changed = dict(expected, tool_calls=[other])
+    assert identity(expected) != identity(changed)
+    with pytest.raises(AssertionError, match="collapses="):
+        assert_occurrences([expected, changed], [expected, expected])
+
+
+def test_oracle_normalizes_json_arguments_only():
+    def row(arguments):
+        return {"role": "assistant", "tool_calls": [{"id": "call", "type": "function",
+                "function": {"name": "lookup", "arguments": arguments}}]}
+
+    assert_occurrences([row('{"b": [2, 3], "a":1}')], [row('{"a": 1, "b":[2,3]}')])
+    for raw in ("invalid JSON", "", None, 7, {"raw": "object"}):
+        assert identity(row(raw))[-1][0][-1] == raw
+
+
+def test_rotation_tool_arguments_and_active_ownership():
+    machine = RotationMachine()
+    try:
+        for _ in range(2):
+            machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.rotate()
+        assert machine.session_id != "identity-session"
+        machine.new_turn("alpha", False, 3, False, "lookup",
+                         ('{"query":2}', '{"query":0}', '{"query":1}'))
+        calls = machine.occurrences[-5]["tool_calls"]
+        assert len({json.loads(call["function"]["arguments"])["query"] for call in calls}) == 3
+        assert [row["session_id"] for row in machine.rows()] == [
+            "identity-session"] * 4 + [machine.session_id] * 6
+        for operation in (machine.replay, machine.cold_resume):
+            operation()
+            machine.exactly_once()
+    finally:
+        machine.teardown()
 
 
 def test_compress_replay_resume_append():
@@ -225,13 +271,28 @@ def test_rotation_no_progress_fires_no_hooks(marker_only):
         def unexpected_hook(*args, **kwargs):
             pytest.fail("unchanged compression must not fire session hooks")
 
-        machine.patch.setattr(machine.engine, "compress", unchanged)
-        machine.patch.setattr(machine.engine, "on_session_end", unexpected_hook)
-        machine.patch.setattr(machine.engine, "on_session_start", unexpected_hook)
-        machine.rotate()
+        with machine.patch.context() as patch:
+            patch.setattr(machine.engine, "compress", unchanged)
+            patch.setattr(machine.engine, "on_session_end", unexpected_hook)
+            patch.setattr(machine.engine, "on_session_start", unexpected_hook)
+            machine.rotate()
         assert machine.host == previous
         assert machine.session_ids == ["identity-session"]
-        assert machine.stale_proof == marker_only
+        cold_restarts = 0
+        start = machine.start_engine
+
+        def counted_start():
+            nonlocal cold_restarts
+            cold_restarts += 1
+            return start()
+
+        machine.patch.setattr(machine, "start_engine", counted_start)
+        old_engine = machine.engine
+        machine.cold_resume()
+        print(f"marker_only={marker_only}; cold_restarts={cold_restarts}")
+        assert cold_restarts == 1
+        assert machine.engine is not old_engine
+        assert not machine.stale_proof
         machine.exactly_once()
     finally:
         machine.teardown()
@@ -723,7 +784,7 @@ def test_restart_replay_resume_append(point):
             # cold-start ingest. The plain/plain #849 shape is seeded below.
             user = machine.stamp({"role": "user", "content": "interrupted user"})
             machine.host.append(user)
-            machine.occurrences.append(deepcopy(user))
+            machine.occurrences.append(dict(deepcopy(user), session_id=machine.session_id))
             machine._persist_host_view(machine.session_id, machine.host)
             machine._restart_from_host()
             assert all("message_uid" not in row for row in machine.host)
