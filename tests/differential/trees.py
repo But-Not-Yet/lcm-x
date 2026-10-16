@@ -7,7 +7,11 @@ import subprocess
 import tarfile
 
 ROOT = Path(__file__).resolve().parents[2]
-BASELINES = {"v0.26.2": "6800cf45ad05280e6cf6fa9e1ad96c62b7132646"}
+DEFAULT_BASELINE = "v0.27.0"
+BASELINES = {
+    "v0.26.2": "6800cf45ad05280e6cf6fa9e1ad96c62b7132646",
+    "v0.27.0": "c67d7633d963a2ffd24cf90995189ee58e2f88c7",
+}
 
 
 class PrerequisiteUnavailable(RuntimeError):
