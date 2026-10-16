@@ -70,6 +70,10 @@ class TransactionOwner:
     def atomic(self, conn: sqlite3.Connection, *, immediate: bool = False) -> Iterator[None]:
         with self._lock:
             if self._active_connection is conn:
+                if immediate and not conn.in_transaction:
+                    # An empty enclosing scope has not reserved the database yet; reserve it here so a nested
+                    # read-before-write keeps BEGIN IMMEDIATE semantics. The enclosing owner still commits.
+                    conn.execute("BEGIN IMMEDIATE")
                 yield
                 return
             if immediate:
