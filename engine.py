@@ -1713,6 +1713,15 @@ class LCMEngine(
         return summary_route_available(
             self._config.summary_model, self._config.summary_fallback_models, self._summary_circuit_breaker)
 
+    def _hung_summary_route_has_fallback(self, budget: ForegroundBudget) -> bool:
+        """Only this pass's hang can waive its hold, while an alternate fallback is still usable."""
+        return (
+            budget.hung_route is not None
+            and not self._summary_circuit_breaker.allows(budget.hung_route)
+            and any(self._summary_circuit_breaker.allows(model) for model in _summary_model_chain(
+                self._config.summary_model, self._config.summary_fallback_models)[1:])
+        )
+
     def _fit_can_rescue(self, force_overflow: bool) -> bool:
         """#652: false when forced or no survival fit can keep the request under the window (fit off, or
         window unknown); only then does a level 3 truncation still converge as before."""

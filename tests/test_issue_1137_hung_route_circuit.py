@@ -168,3 +168,76 @@ def test_hang_status_cooldown_success_and_one_warning_per_opening(tmp_path, cloc
         assert json.loads(lcm_tools.lcm_status({}, engine=engine))["summary_route"] == closed
     finally:
         engine.shutdown()
+
+
+@pytest.mark.parametrize("use_full_window", [True, False], ids=["deadline", "early-fence"])
+@pytest.mark.parametrize("leaf_reserve", [0.0, 30.0], ids=["leaf", "condensation"])
+def test_short_configured_timeout_with_installed_deadline_records_only_full_window_hangs(
+        monkeypatch, clock, use_full_window, leaf_reserve):
+    monkeypatch.setattr(escalation, "_host_stream_deadline_seam", lambda: True)
+
+    def provider(prompt, max_tokens, model="", timeout=None, reasoning_effort=""):
+        assert timeout == 60.0  # configured timeout, not bound by the foreground budget
+        clock.offset += (escalation._summary_call.stream_deadline - time.monotonic()
+                         if use_full_window else 30.0)
+        raise TimeoutError("auxiliary stream timed out at the host compression deadline")
+
+    monkeypatch.setattr(escalation, "_invoke_summary_llm", provider)
+    breaker = escalation.SummaryCircuitBreaker()
+    budget = _budget(configured_timeout=60.0, leaf_reserve=leaf_reserve)
+    with pytest.raises(escalation.SweepBudgetExhausted):
+        _summarize(breaker, budget)
+    assert breaker.allows("m1") is not use_full_window
+    assert breaker.route_status(["m1"])["last_error_class"] == ("hung" if use_full_window else None)
+
+
+@pytest.mark.parametrize("failure,fallbacks,blocked", [
+    ("hang", ["m2"], False),
+    ("hang", [], False),
+    ("hang", ["m2"], True),
+    ("prework", ["m2"], False),
+], ids=["hang-fallback", "hang-no-fallback", "hang-blocked-fallback", "non-hang-budget"])
+def test_automatic_compaction_holds_only_without_a_hung_route_alternative(
+        tmp_path, monkeypatch, clock, caplog, failure, fallbacks, blocked):
+    from tests.test_issue_605_foreground_budget import _engine, _view
+
+    engine = _engine(tmp_path, summary_model="m1", summary_fallback_models=fallbacks,
+                     summary_timeout_ms=120_000)
+    calls = _provider(monkeypatch, clock)
+    view = _view()
+    engine.ingest(view)
+    if blocked:
+        engine._summary_circuit_breaker.record_hang("m2")
+    if failure == "prework":
+        # A previous pass's hang must not make this non-hang budget stop eligible.
+        engine._summary_circuit_breaker.record_hang("m1")
+        original = engine._get_store_id_map_for_messages
+
+        def spend_budget(*args, **kwargs):
+            result = original(*args, **kwargs)
+            clock.offset += 120.0
+            return result
+
+        monkeypatch.setattr(engine, "_get_store_id_map_for_messages", spend_budget)
+    try:
+        with caplog.at_level(logging.INFO, logger="hermes_lcm"):
+            result = engine.compress(view, current_tokens=engine.threshold_tokens + 1)
+        assert engine.get_status()["threshold_full_sweep"]["stop_reason"] == "time_budget_exhausted"
+        assert engine._dag.get_session_nodes("S") == []
+        retry = failure == "hang" and bool(fallbacks) and not blocked
+        assert engine._sweep_budget_hold_active() is not retry
+        assert engine._no_progress_hold_active() is not retry
+        assert engine.should_compress(engine.threshold_tokens + 1) is retry
+        skip_lines = [r for r in caplog.records if "skipping sweep budget hold" in r.getMessage()]
+        assert len(skip_lines) == int(retry)
+        if retry:
+            assert skip_lines[0].levelno == logging.INFO
+            assert "m1" in skip_lines[0].getMessage()
+            assert [model for model, _timeout in calls] == ["m1"]
+            assert not engine._summary_circuit_breaker.allows("m1")
+            engine.compress(result, current_tokens=engine.threshold_tokens + 1)
+            assert calls[1:] and {model for model, _timeout in calls[1:]} == {"m2"}
+            assert engine._dag.get_session_nodes("S")
+            assert engine._last_compression_status == "compacted"
+    finally:
+        engine.shutdown()
