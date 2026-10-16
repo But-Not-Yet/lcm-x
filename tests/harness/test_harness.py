@@ -259,6 +259,14 @@ def test_host_call_reads_the_breaker_gate_on_the_type(pressure, wants, held):
     assert engine.compress.call_count == (not held) and result.compressed is (not held)
 
 
+def test_host_call_ignores_an_instance_only_breaker_gate():
+    """Like the host, read the gate on the type: an instance attribute alone does not hold a compress."""
+    view = [user(prose(100))]
+    engine = SimpleNamespace(context_length=1000, ingest=Mock(), should_compress=Mock(return_value=True),
+                             compress=Mock(return_value=view), _automatic_compression_blocked=lambda **kwargs: True)
+    assert host_call(engine, view).compressed is True and engine.compress.call_count == 1
+
+
 def test_pinned_counter_ignores_an_encoder_that_finishes_loading_later(monkeypatch):
     pin_char_counter(monkeypatch)
     expected = tokens.count_tokens("an uncached sentence for the fallback estimate")
