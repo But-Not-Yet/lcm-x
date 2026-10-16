@@ -146,7 +146,7 @@ The manifest declares 15 tools; runtime discovery advertises 13 by default,
 or 15 with both assertion and adaptive-retrieval flags on.
 
 Every compaction LCM-X starts today runs on the turn thread, so the user waits
-for it. v0.25.0 makes a hidden backlog drain at turn pace (#597); v0.28.0
+for it. v0.25.0 makes a hidden backlog drain at turn pace (#597); v0.31.0
 removes the wait by preparing summaries in the background and publishing them
 at the threshold (#787). Recall is re-baselined on the shipped default
 configuration.
