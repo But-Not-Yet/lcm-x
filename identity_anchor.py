@@ -25,12 +25,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sqlite3
 from collections import Counter, defaultdict, deque
 from difflib import SequenceMatcher
 from typing import Any, Dict, Optional
 
+from .config import _parse_bool_env
 from .fresh_tail import tool_group_safe_end
 from .message_content import normalize_content_value, text_content_for_pattern_matching
 from .store import _normalize_observed_at
@@ -50,7 +50,7 @@ _MATCH_WORK_PER_ITEM, _MATCH_WORK_FLOOR = 32, 4096  # matching search budget per
 
 
 def identity_anchor_enabled() -> bool:
-    return (os.environ.get("LCM_IDENTITY_ANCHOR") or "").strip().lower() not in {"0", "false", "no", "off"}
+    return _parse_bool_env("LCM_IDENTITY_ANCHOR", True, unknown=True, true_values=())
 
 
 def _decompositions(content: str, texts: set, *, partial: bool) -> Optional[list]:
@@ -1035,7 +1035,7 @@ class IdentityAnchorMixin:
           row it re-flushed later before it): coverage would skip that occurrence. The chunk takes it."""
         if not chunk or len(chunk) >= len(candidates) or not identity_anchor_enabled():
             return chunk
-        full_map, self._identity_anchor_text_memo = self._current_compress_store_ids_by_message_id or {}, {}
+        full_map, self._identity_anchor_text_memo = self._compress_run.store_ids_by_message_id or {}, {}
         end = len(chunk)
         if all(self._identity_anchor_covered_view(message, full_map) for message in chunk):
             while end < len(candidates) and self._identity_anchor_covered_view(candidates[end], full_map):
