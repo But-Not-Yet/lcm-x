@@ -186,7 +186,26 @@ def test_t1_abandoned_load_logs_one_error_and_writes_record(tmp_path, monkeypatc
         module.register(ctx)
     finally:
         _shutdown(ctx)
+    _assert_abandoned_load(ctx, caplog, home)
 
+
+@pytest.mark.latency
+def test_t1_abandoned_load_logs_one_error_and_writes_record_latency(tmp_path, monkeypatch, caplog):
+    """The real path: a host load slower than the deadline is abandoned by ``run_with_load_deadline``."""
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    _install_host(monkeypatch, home, delay=0.8)
+    module = _load_plugin("hermes_lcm_622_t1_latency")
+    ctx = _Ctx(_Manager())
+    caplog.set_level(logging.INFO)
+    try:
+        _register_under_deadline(module, ctx, deadline=0.3)
+    finally:
+        _shutdown(ctx)
+    _assert_abandoned_load(ctx, caplog, home)
+
+
+def _assert_abandoned_load(ctx, caplog, home: Path) -> None:
     assert ctx._manager._context_engine is None
     errors = [r for r in caplog.records if r.levelno == logging.ERROR]
     assert len(errors) == 1, [r.getMessage() for r in errors]
