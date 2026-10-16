@@ -68,8 +68,12 @@ def test_pin_char_counter_is_offline_alias_safe_and_reversible(monkeypatch):
         def encode(self, text):
             return [1] * 99
 
-    # Seed a disagreeing encoder cache, then prove the pin neither uses nor poisons it.
-    monkeypatch.setattr(tokens, "_encoder", Encoder())
+    # Seed a disagreeing encoder cache, then prove the pin neither uses nor poisons it. The seam is fixed too,
+    # so neither test order nor a slow real encoder load decides what the unpinned counter uses.
+    encoder = Encoder()
+    monkeypatch.setattr(tokens, "_encoder", encoder)
+    monkeypatch.setattr(tokens, "_encoder_ready", True)
+    monkeypatch.setattr(tokens, "_get_encoder", lambda: encoder)
     assert tokens.count_tokens("cache probe") == 99
     cache = tokens._count_tokens_cached
     with monkeypatch.context() as pinned:
@@ -215,6 +219,37 @@ def test_host_call_counts_and_retries_at_most_once(pressure, retry, window, expe
     assert result.retried is bool(retry and window == 10)
     if result.retried:
         engine.compress.assert_called_with(view, current_tokens=n, bypass_cooldown=True)
+
+
+@pytest.mark.parametrize("pressure,blocked,wants,expected_calls", [
+    (False, None, True, 1), (False, None, False, 0), (False, "cooldown", True, 0), (True, None, False, 1),
+])
+def test_host_call_asks_the_preflight_gate_below_threshold(pressure, blocked, wants, expected_calls):
+    view = [user(prose(100))]
+    n = tokens.count_messages_tokens(view)
+    engine = SimpleNamespace(context_length=1000, ingest=Mock(), should_compress=Mock(return_value=pressure),
+                             should_compress_info=Mock(return_value=(pressure, blocked)),
+                             should_compress_preflight=Mock(return_value=wants), compress=Mock(return_value=view))
+    result = host_call(engine, view)
+    # As the host: the gate is asked only below the threshold and only when nothing blocks compression.
+    assert engine.should_compress_preflight.call_count == (not pressure and not blocked)
+    assert engine.compress.call_count == expected_calls and result.compressed is bool(expected_calls)
+    if expected_calls:
+        engine.compress.assert_called_once_with(view, current_tokens=n)
+
+
+def test_pinned_counter_ignores_an_encoder_that_finishes_loading_later(monkeypatch):
+    pin_char_counter(monkeypatch)
+    expected = tokens.count_tokens("an uncached sentence for the fallback estimate")
+
+    class Late:
+        def encode(self, text, **kwargs):
+            raise AssertionError("the pinned counter used a late encoder")
+
+    monkeypatch.setattr(tokens, "_encoder", Late())  # an earlier test's loader thread completing now
+    assert tokens.count_tokens("another uncached sentence for the fallback estimate") == \
+        tokens._fallback_token_estimate("another uncached sentence for the fallback estimate")
+    assert expected == tokens._fallback_token_estimate("an uncached sentence for the fallback estimate")
 
 
 def test_stored_rows_reads_current_or_explicit_session(tmp_path):
