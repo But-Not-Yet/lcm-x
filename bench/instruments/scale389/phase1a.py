@@ -65,16 +65,16 @@ def _data_path(relative: str, override: str) -> Path:
 
     if override in os.environ:
         return Path(os.environ[override])
-    return bench_path(relative)
+    return bench_path(relative, override=override)
 
 
 def _corpus() -> Path:
-    return _data_path("runs/2026-07-25/hermes-v1-scale/artifacts/corpus", "SCALE389_CORPUS")
+    return _data_path("Codex/session-notes/2026-07-25/hermes-v1-scale/artifacts/corpus", "SCALE389_CORPUS")
 
 
 def _results() -> Path:
     return _data_path(
-        "runs/2026-07-29/hermes-r3-1/artifacts/laneINSTPREP-logs/scale389-results",
+        "Codex/session-notes/2026-07-29/hermes-r3-1/artifacts/laneINSTPREP-logs/scale389-results",
         "SCALE389_RESULTS",
     )
 

@@ -26,10 +26,10 @@ from bench.tools.storefreeze import snapshot
 
 
 DEFAULT_RESULTS = Path(
-    "runs/2026-07-29/hermes-phase1b-rerun/artifacts/results"
+    "Codex/session-notes/2026-07-29/hermes-phase1b-rerun/artifacts/results"
 )
 DEFAULT_QEVAL = Path(
-    "runs/2026-07-25/hermes-v1-scale/artifacts/corpus/qeval.json"
+    "Codex/session-notes/2026-07-25/hermes-v1-scale/artifacts/corpus/qeval.json"
 )
 DEFAULT_DATASET = Path("hermes-work/longmemeval-data/longmemeval_s")
 DEFAULT_SIDECAR = Path(

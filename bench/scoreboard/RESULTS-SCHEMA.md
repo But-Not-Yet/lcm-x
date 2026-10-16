@@ -24,21 +24,27 @@ disclosure fields does not render** — the schema IS the seven-point standard
 | `breakdown` | per-category numbers or artifact path holding them |
 | `variance` | run count + variance/noise-floor statement (A/A′ discordants, p-values) |
 | `failclose` | fail-close accounting (rows excluded/scored-zero by instrument fault) |
-| `evidence` | list of durable URLs backing every claim above: GitHub release-download asset URLs or blob URLs pinned to a full 40-hex commit SHA |
+| `evidence` | non-empty list of durable URLs backing every claim above (except the frozen legacy IDs below): GitHub release-download asset URLs or blob URLs pinned to a full 40-hex commit SHA |
 | `caveats` | anything a skeptical reader needs (or `[]`) |
 
 ## Optional fields
-- `local_raw`: list of local paths or legacy artifact references, for locating raw
-  material only; these are not durable citations. Never include machine-specific
-  absolute paths in committed rows.
+- `local_raw`: list of relative machine-local raw artifact paths/references, for locating raw
+  material only; these are not durable citations. Repository files belong in
+  `evidence` as SHA-pinned blob URLs. Absolute paths (POSIX or Windows) and
+  home-relative paths starting with `~` are rejected for every row.
 - `superseded_by`: id of the successor row.
 
 ## Rules
-- For rows dated 2026-10-16 or later, every `evidence` entry must match
+- Only the frozen 18 IDs in `generate.py`'s `LEGACY_ROW_IDS` (the registry at
+  commit `764ed74c6142141a6d2102dd0c99eb84806f7f66`) are grandfathered for
+  evidence validation. Every other row, including backfills with an older date,
+  needs a non-empty `evidence` list whose entries all match
   `https://github.com/OWNER/REPO/releases/download/TAG/ASSET` or
-  `https://github.com/OWNER/REPO/blob/FULL_COMMIT_SHA/PATH`. Branch-name blob URLs
-  and machine-local paths fail validation. Older URLs are grandfathered; legacy
-  non-URL references move to `local_raw` without changing measured values.
+  `https://github.com/OWNER/REPO/blob/FULL_COMMIT_SHA/PATH` (optionally followed
+  by a line anchor such as `#L12` or `#L12-L20`). Branch-name blobs, local paths,
+  and dot segments (`.` or `..`, including percent-encoded forms) are rejected.
+  Legacy repository references are converted to pinned blob URLs; only local raw
+  artifact references move to `local_raw`. Measured values stay unchanged.
 - Rows are APPEND-ONLY; a superseding run gets a new row and the old row gains
   `superseded_by: <id>` (history stays visible — that is the point).
 - Tier-F rows carry their fault-finding yield in `caveats`/`evidence` — a low

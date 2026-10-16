@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 
+import pytest
+
 from bench.scoreboard import generate
 
 
@@ -24,7 +26,7 @@ def _row(row_id: str, *, benchmark: str = "Bench", date: str = "2026-07-30") -> 
         "breakdown": "all=91.0%",
         "variance": "n=2; noise floor=1pp",
         "failclose": "0",
-        "evidence": ["bench/evidence.md"],
+        "evidence": ["https://github.com/example/project/releases/download/v1.0/RESULT.md"],
         "caveats": [],
     }
 
@@ -111,7 +113,7 @@ n=2; noise floor=1pp
 0
 
 **evidence:**
-- bench/evidence.md
+- https://github.com/example/project/releases/download/v1.0/RESULT.md
 
 **caveats:**
 - none
@@ -167,7 +169,7 @@ n=2; noise floor=1pp
 0
 
 **evidence:**
-- bench/evidence.md
+- https://github.com/example/project/releases/download/v1.0/RESULT.md
 
 **caveats:**
 - none
@@ -277,7 +279,7 @@ def test_new_row_rejects_branch_blob(tmp_path, capsys):
 
 
 def test_legacy_row_preserves_local_raw(tmp_path):
-    row = _row("legacy", date="2026-10-15")
+    row = _row("longmemeval-v1-s500-accuracy-2026-07-29", date="2026-10-15")
     row["evidence"] = []
     row["local_raw"] = ["raw/legacy.jsonl"]
     results = tmp_path / "results.jsonl"
@@ -285,3 +287,56 @@ def test_legacy_row_preserves_local_raw(tmp_path):
     assert generate.main(["--check", "--results", str(results)]) == 0
     rendered = generate.render(generate.load_rows(results), "source-hash")
     assert "**local_raw:**\n- raw/legacy.jsonl" in rendered
+
+
+@pytest.mark.parametrize("evidence", [["raw/backfill.jsonl"], []], ids=["backdated", "empty"])
+def test_nonlegacy_row_requires_durable_evidence(tmp_path, capsys, evidence):
+    row = _row("nonlegacy-backfill", date="2026-07-29")
+    row["evidence"] = evidence
+    results = tmp_path / "results.jsonl"
+    _write_jsonl(results, [row])
+    assert generate.main(["--check", "--results", str(results)]) == 2
+    assert "durable" in capsys.readouterr().err
+
+
+def test_only_frozen_legacy_ids_are_grandfathered(tmp_path):
+    row = _row("longmemeval-v1-s500-accuracy-2026-07-29", date="2026-10-16")
+    row["evidence"] = ["legacy-reference"]
+    results = tmp_path / "results.jsonl"
+    _write_jsonl(results, [row])
+    assert generate.main(["--check", "--results", str(results)]) == 0
+    row["id"] = "new-row-same-date-and-evidence"
+    _write_jsonl(results, [row])
+    assert generate.main(["--check", "--results", str(results)]) == 2
+
+
+@pytest.mark.parametrize("suffix", ["#L12", "#L12-L20"])
+def test_sha_blob_accepts_line_anchor(tmp_path, suffix):
+    _assert_durable_row_with_raw(
+        tmp_path, "https://github.com/example/project/blob/" + "a" * 40 + "/RESULT.md" + suffix,
+    )
+
+
+@pytest.mark.parametrize("url", [
+    "https://github.com/example/project/blob/" + "a" * 40 + "/../../blob/main/A.md",
+    "https://github.com/example/project/releases/download/v1/..",
+    "https://github.com/./project/releases/download/v1/RESULT.md",
+    "https://github.com/example/project/blob/" + "a" * 40 + "/%2e%2e/A.md",
+])
+def test_durable_evidence_rejects_dot_segments(tmp_path, capsys, url):
+    row = _row("dot-segments", date="2026-10-16")
+    row["evidence"] = [url]
+    results = tmp_path / "results.jsonl"
+    _write_jsonl(results, [row])
+    assert generate.main(["--check", "--results", str(results)]) == 2
+    assert "durable" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("path", ["/machine/raw.jsonl", "~/raw.jsonl", "C:\\raw.jsonl"])
+def test_local_raw_rejects_machine_absolute_paths(tmp_path, capsys, path):
+    row = _row("absolute-raw", date="2026-10-16")
+    row["local_raw"] = [path]
+    results = tmp_path / "results.jsonl"
+    _write_jsonl(results, [row])
+    assert generate.main(["--check", "--results", str(results)]) == 2
+    assert "local_raw" in capsys.readouterr().err
