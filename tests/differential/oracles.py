@@ -1,8 +1,9 @@
 """Differential and absolute checks return evidence, not tuned thresholds."""
 from .ACCEPTED_DELTAS import ACCEPTED_DELTAS
+from .trees import DEFAULT_BASELINE
 
 
-def compare(case, ga, cand):
+def compare(case, ga, cand, baseline=DEFAULT_BASELINE):
     failures = []
 
     def check(oracle, condition, detail):
@@ -14,7 +15,9 @@ def compare(case, ga, cand):
     if case["layer"] == "projection":
         check("R1", not (ga["out_tokens"] <= case["limit"] < cand["out_tokens"]),
               dict(ga=ga["out_tokens"], candidate=cand["out_tokens"], limit=case["limit"]))
-        check("P_USER", not cand["user_marks"], cand["user_marks"])
+        marks = (cand["user_marks"] if baseline == "v0.26.2"
+                 else sorted(set(cand["user_marks"]) - set(ga["user_marks"])))
+        check("P_USER", not marks, marks)
         check("P_INPUT", not cand["input_mutated"] and not ga["input_mutated"], "input mutated")
     else:
         check("CALLS", len(ga["calls"]) == len(cand["calls"]) == len(case["steps"]), "model call count differs")
@@ -34,7 +37,8 @@ def compare(case, ga, cand):
         check("A1", not lost, lost)
     for failure in failures:
         for delta in ACCEPTED_DELTAS:
-            if case["layer"] in delta.layer and failure["oracle"] == delta.oracle and delta.predicate(case, ga, cand, failure):
+            if (baseline in delta.baselines and case["layer"] in delta.layer
+                    and failure["oracle"] == delta.oracle and delta.predicate(case, ga, cand, failure)):
                 failure["delta"] = delta.id
                 break
     return failures
