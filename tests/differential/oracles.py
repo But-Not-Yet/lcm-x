@@ -15,7 +15,9 @@ def compare(case, ga, cand, baseline=DEFAULT_BASELINE):
     if case["layer"] == "projection":
         check("R1", not (ga["out_tokens"] <= case["limit"] < cand["out_tokens"]),
               dict(ga=ga["out_tokens"], candidate=cand["out_tokens"], limit=case["limit"]))
-        check("P_USER", not cand["user_marks"], cand["user_marks"])
+        marks = (cand["user_marks"] if baseline == "v0.26.2"
+                 else sorted(set(cand["user_marks"]) - set(ga["user_marks"])))
+        check("P_USER", not marks, marks)
         check("P_INPUT", not cand["input_mutated"] and not ga["input_mutated"], "input mutated")
     else:
         check("CALLS", len(ga["calls"]) == len(cand["calls"]) == len(case["steps"]), "model call count differs")

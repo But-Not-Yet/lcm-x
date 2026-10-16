@@ -144,9 +144,40 @@ def test_shipped_delta_is_not_absorbed_by_new_ga(tokens, marks, oracle, delta_id
     legacy = compare(case, ga, cand, baseline="v0.26.2")
     detail = [0] if oracle == "P_USER" else dict(ga=90, candidate=110, limit=100)
     assert legacy == [dict(oracle=oracle, detail=detail, delta=delta_id)]
-    unabsorbed = [dict(legacy[0], delta=None)]
+    # The shipped user marks are inherited under the new GA, not an accepted delta.
+    unabsorbed = [] if oracle == "P_USER" else [dict(legacy[0], delta=None)]
     assert compare(case, ga, cand, baseline="v0.27.0") == unabsorbed
     assert compare(case, ga, cand) == unabsorbed
+
+
+@pytest.mark.parametrize("baseline", ["v0.26.2", "v0.27.0", "v0.28.0"])
+@pytest.mark.parametrize("marks", [[2, 0], [2, 0, 1], [2]])
+def test_projection_user_marks_are_relative_after_v026(baseline, marks):
+    case = dict(layer="projection", limit=100)
+    ga = dict(out_tokens=90, user_marks=[0, 2], input_mutated=False)
+    cand = dict(ga, user_marks=marks)
+    if baseline == "v0.26.2":
+        delta = "D1233_LAST_RESORT_USER_MARK" if 1 not in marks else None
+        expected = [dict(oracle="P_USER", detail=marks, delta=delta)]
+    else:
+        expected = [dict(oracle="P_USER", detail=[1], delta=None)] if 1 in marks else []
+    assert compare(case, ga, cand, baseline=baseline) == expected
+
+
+@pytest.mark.parametrize("baseline,config,inherited", [
+    ("v0.26.2", "managed", dict(cases=0, marks=0)),
+    ("v0.27.0", "bare", dict(cases=1, marks=1)),
+])
+def test_baseline_defaults_and_inherited_user_marks(baseline, config, inherited, tmp_path, monkeypatch):
+    import json
+    monkeypatch.delenv("LCM_DIFFERENTIAL_BASELINE_CONFIG", raising=False)
+    # p0 has the same one-row last-resort mark in both pinned trees.
+    result = run(projection_cases(1, 1227), tmp_path / "run", baseline=baseline)
+    assert result["baseline_config"] == config
+    assert result["inherited_user_marks"] == inherited
+    assert not result["unexplained"]
+    assert json.loads((tmp_path / "run/summary.json").read_text())["inherited_user_marks"] == inherited
+    assert f"Inherited user marks: {inherited['cases']} cases; {inherited['marks']} marks." in (tmp_path / "run/summary.md").read_text()
 
 
 def test_tool_results_must_follow_calls_and_every_call_needs_a_result():
