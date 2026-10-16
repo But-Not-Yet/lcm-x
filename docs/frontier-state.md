@@ -159,11 +159,14 @@ change.
    - **Today's data** (line coverage at rc8, Hypothesis 6.141.1).
      - The exactly-once machines (compress, recovery fit) execute 30 of the 62 statements, at both the CI and the nightly profile;
        more examples reach none of the rest.
+     - The rotation machine (draft #1289) adds one more (engine.py:3827). A rotation that commits goes through the in-place proof
+       transfer (engine.py:3837-3867), not the direct writes.
      - The rest of the test suite brings this to 58 of 62.
      - Four statements run in no test: engine.py:3860, 4121-4122 and 5278.
      - The receipts are recorded with the C4 tracking issue.
    - **What reaches the gaps.** Grouped by the host operation that would reach them:
-     - rotation (engine.py:3817-3877, 4121-4122): the rotation rule now in review;
+     - rotation without a transferable proof (engine.py:3817-3818 with native recovery digests; 3875-3877 after a failed
+       publication or an end that ingested) and the bypassed-source boundary (4121-4122);
      - an unadopted or refused commit, and the host's consecutive-user merge (engine.py:3458, 5913-5933);
      - reset (reset_state.py:44-61);
      - forced overflow (engine.py:8458-8459);
