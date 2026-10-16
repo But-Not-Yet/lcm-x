@@ -6,6 +6,11 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
+- Fix: `/lcm rotate apply` is refused on Hermes because it reloads its own transcript after a restart; use `/compress here N` to summarise everything except the most recent N messages. (#1141)
+- Fix: when chunk vectors carry a stale embedding identity, `lcm_doctor` now advises `/lcm embed backfill --corpus chunks --apply --confirm-raw-text` (or `--corpus both --apply --confirm-raw-text` when summaries are stale too) for cloud providers. Repeat the backfill apply only while `remaining` is above 0 and each run lowers it. Stop on `status: partial`, `status: error`, or `status: failed`, or if `remaining` stops falling, and inspect the warnings, errors, and detail output. The summary-only command is unchanged; its advice gains only the repeat guidance. (#896)
+### Deprecated
+
+- `LCM_CACHE_FRIENDLY_CONDENSATION_ENABLED` and `LCM_LARGE_OUTPUT_TRANSCRIPT_GC_ENABLED` are deprecated in v0.28.0 and will be removed in v0.29.0 (#1246). Enabling either adds one `config_source_warnings` entry shown by `/lcm status`, `lcm_status` and the `lcm_doctor` configuration check; behavior is unchanged until removal.
 - Fix: a summary route that hangs for the whole foreground budget window opens its circuit immediately, so the next compaction can use a fallback route. Partial-window budget cuts still leave the circuit closed. (#1137)
 
 ## v0.27.0 (summary quality)
