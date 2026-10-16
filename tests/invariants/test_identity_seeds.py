@@ -346,5 +346,4 @@ def test_known_open_exclusions_track_their_strict_xfails():
                    for parameter in mark.args[1] if hasattr(parameter, "marks")
                    for mark in parameter.marks if mark.name == "xfail" and mark.kwargs.get("strict"))
     xfailed = {int(found.group(1)) for reason in reasons if (found := re.match(r"#(\d+)", reason))}
-    xfailed.update(reason for reason in reasons if reason.startswith("UNFILED: "))
     assert set(KNOWN_OPEN) <= xfailed, (set(KNOWN_OPEN) - xfailed)

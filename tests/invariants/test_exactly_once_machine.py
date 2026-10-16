@@ -82,7 +82,7 @@ def cold_stale_proof(stale_proof, operation):
 
 KNOWN_OPEN = {1179: retry_resend_1179, 1286: cold_stale_proof}
 
-REPROJECTED_USER = "UNFILED: repeated recovery maps a projected user to an older equal-text source"
+REPROJECTED_USER = "#503: repeated recovery fit maps a projected user to an older equal-text source"
 
 
 def reprojected_user_input(aliases, host, operation):
@@ -91,7 +91,7 @@ def reprojected_user_input(aliases, host, operation):
         (row.get("message_uid"), identity(row)) in aliases for row in host)
 
 
-KNOWN_OPEN[REPROJECTED_USER] = reprojected_user_input
+KNOWN_OPEN[503] = reprojected_user_input
 
 
 def ambiguous_unstamped_tool_window_259(host, ledger):
@@ -285,7 +285,7 @@ class RecoveryMachine(ExactlyOnceMachine):
 
     def _compress_view(self, recovery):
         operation = "recover" if recovery else "compress"
-        if KNOWN_OPEN[REPROJECTED_USER](self.recovery_aliases, self.host, operation):
+        if KNOWN_OPEN[503](self.recovery_aliases, self.host, operation):
             return
         # Remember the trajectory, not marker text: a proven stored occurrence
         # is about to be projected from a DIFFERENT occurrence of that text.
@@ -324,20 +324,20 @@ class RecoveryMachine(ExactlyOnceMachine):
     @precondition(lambda self: bool(self.host))
     @rule()
     def cold_resume(self):
-        if KNOWN_OPEN[REPROJECTED_USER](self.recovery_aliases, self.host, "cold_resume"):
+        if KNOWN_OPEN[503](self.recovery_aliases, self.host, "cold_resume"):
             return
         super().cold_resume()
 
     @precondition(lambda self: bool(self.host))
     @rule()
     def replay(self):
-        if not KNOWN_OPEN[REPROJECTED_USER](self.recovery_aliases, self.host, "replay"):
+        if not KNOWN_OPEN[503](self.recovery_aliases, self.host, "replay"):
             super().replay()
 
     @rule(text=TEXT, structured=st.booleans(), tool_count=st.integers(0, 3),
           retry=st.booleans(), tool_name=st.sampled_from(("lookup", "inspect")))
     def new_turn(self, text, structured, tool_count, retry, tool_name):
-        if not KNOWN_OPEN[REPROJECTED_USER](self.recovery_aliases, self.host, "new_turn"):
+        if not KNOWN_OPEN[503](self.recovery_aliases, self.host, "new_turn"):
             super().new_turn(text, structured, tool_count, retry, tool_name)
 
 
