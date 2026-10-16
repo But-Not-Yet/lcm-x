@@ -223,6 +223,8 @@ def score_window(events: list[dict]) -> tuple[dict, dict, dict]:
         failed["C1"] = numbers["C1"]
     if not calls:
         incomplete["C1"] = "no model calls after a committed compaction"
+    elif pending:  # the run ended before the call after its last commit: the ratio's denominator is incomplete
+        incomplete["C1"] = "the model call after the last committed compaction was not observed"
     if f4["absent"]:
         failed["F4"] = f4
     if not f4["observed"] or f4["unknown"]:
