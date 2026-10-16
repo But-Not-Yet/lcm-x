@@ -1,4 +1,7 @@
-"""Characterize the four C4 frontier writes, including defensive-only paths.
+"""Cover the four C4 frontier writes, including the known replay bug (#1317).
+
+The failed reconciliation probe uses a strict xfail for duplicate replay rows;
+its plain preconditions must still fail normally when the setup changes.
 
 The inspected host starts engines in agent/agent_init.py:2106 and notifies
 compression children in agent/conversation_compression.py:2555, 3445. That
@@ -18,6 +21,10 @@ import pytest
 # conftest registers the plugin's virtual package; it is not an installed package.
 engine_module = importlib.import_module("hermes_lcm.engine")
 config_module = importlib.import_module("hermes_lcm.config")
+
+
+class ReplayStoredTwice(Exception):
+    """The failed reconciliation probe caused durable replay rows to repeat."""
 
 
 @pytest.fixture
@@ -123,14 +130,20 @@ def test_bypassed_source_boundary_restarts_the_cursor(
     # There is no intervening reader: skipping it has no durable consequence.
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=ReplayStoredTwice,
+    reason="#1317: a failed reconcile probe trusts cursor 0 and re-stores the replay",
+)
 def test_reconcile_probe_failure_trusts_zero_cursor(
     engine: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """5278: inject only the store probe failure, then let ingest use the store.
 
     A normal rebind is host-shaped; the store failure is a defensive fault.
-    Current behavior re-stores the replay rather than reconciling it. Pin that
-    consequence without treating duplicate rows as desired future behavior.
+    Only duplicate replay rows are an expected failure under #1317. A corrected
+    write must reconcile the replay and produce a strict XPASS; setup failures
+    remain ordinary assertion failures.
     """
     engine.on_session_start("session", platform="acp")
     messages = [
@@ -146,10 +159,9 @@ def test_reconcile_probe_failure_trusts_zero_cursor(
         patch.setattr(engine._store, "get_session_count", fail_probe)
         engine.on_session_start("session", platform="acp")
     assert engine._ingest_cursor == 0
+    assert engine._store.get_session_count("session") == len(messages)
     engine.ingest([*messages, {"role": "user", "content": "New question."}])
     rows = engine._store.get_session_messages("session")
-    assert [row["content"] for row in rows] == [
-        "Durable question.", "Durable answer.",
-        "Durable question.", "Durable answer.", "New question.",
-    ]
-    assert engine._ingest_cursor_needs_reconcile is False
+    contents = [row["content"] for row in rows]
+    if contents != ["Durable question.", "Durable answer.", "New question."]:
+        raise ReplayStoredTwice(f"Expected reconciled replay, stored {contents!r}")
