@@ -15,14 +15,11 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from bench.tools.benchpaths import bench_path
+from bench.tools.benchpaths import bench_path, required_path
 from bench.tools.pinverify import sha256_file
 
 
 DEFAULT_DATASET = Path("hermes-work/longmemeval-data/longmemeval_s")
-DEFAULT_OUTPUT = Path(
-    "Codex/session-notes/2026-07-29/hermes-r3-1/artifacts/laneINSTPREP-logs/scale389-corpus"
-)
 SEED = 20260725
 DEFAULT_SCALES = (500, 2000, 8000, 19829)
 
@@ -157,7 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     args.dataset = args.dataset or bench_path(DEFAULT_DATASET)
-    args.output = args.output or bench_path(DEFAULT_OUTPUT)
+    args.output = args.output or required_path("SCALE389_CORPUS", argument="--output")
     result = build_corpus(
         args.dataset,
         args.output,

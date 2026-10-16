@@ -2,7 +2,7 @@
 
 Every number ships with its full run config, variance, fail-close accounting, and known dataset defects — rows that cannot meet the standard do not render.
 
-Generated from `results.jsonl` (sha256: `9415e097b44266120506a25efc887c92004f7c8cb1eb99db198cc7c3d2517e30`, rows: 53)
+Generated from `results.jsonl` (sha256: `77bbaf19f38d1a6c5724306b45ade82faba1f65b063992b8fe503da6eec7bb1c`, rows: 53)
 
 ## Summary
 
@@ -119,7 +119,7 @@ A/A' 30-episode fixed-seed subset (seed 20260802) EXECUTED: 27/30 pairs compared
 - https://github.com/electricsheephq/lcm-x/blob/764ed74c6142141a6d2102dd0c99eb84806f7f66/bench/FINDING-F51-AMA-208-FIRST-FULL.md
 
 **local_raw:**
-- session-notes 2026-08-02 hermes-ama-full208 (per-episode results, timing, telemetry)
+- local run 2026-08-02 hermes-ama-full208 (per-episode results, timing, telemetry)
 
 **caveats:**
 - First full-208 disclosed number; GOALS target >=72.26% NOT met (gap -24.9pt); funnel decomposition queued
@@ -647,7 +647,7 @@ pin discipline PASS; truncation bug meant 5.7% of delivered results were silentl
 - https://github.com/electricsheephq/lcm-x/blob/764ed74c6142141a6d2102dd0c99eb84806f7f66/bench/FINDING-F46-LOCOMO-ARM-A-DECOMPOSITION.md
 
 **local_raw:**
-- session-notes 2026-07-30 hermes-locomo-deepdive artifacts
+- local run 2026-07-30 hermes-locomo-deepdive artifacts
 
 **caveats:**
 - published AS THE FAULT-FINDING RESULT IT IS: decomposition attributes the gap to instrument bugs (~+3pts ceiling), corrupted gold (~1.5-2pts), a config-class retrieval gap (fusion quota + chunk threshold, both since landed), and one genuine answer-layer weakness (adversarial speaker attribution — fact retrieved on 78.6% of wrong rows); declared-config re-run pending
@@ -711,8 +711,8 @@ pre-registered A/A′ pair on fresh stores: 82/1,986 discordant (4.13%), aggrega
 - https://github.com/electricsheephq/lcm-x/blob/764ed74c6142141a6d2102dd0c99eb84806f7f66/bench/specs/RUN-SHEET-LOCOMO-C2-B3A.md
 
 **local_raw:**
-- session-notes 2026-08-21 hermes-locomo-c2 artifacts (paid-aa-20260820T211813Z)
-- session-notes 2026-08-26 interim-review artifacts F61-recompute.txt
+- local run 2026-08-21 hermes-locomo-c2 artifacts (paid-aa-20260820T211813Z)
+- local run 2026-08-26 interim-review artifacts F61-recompute.txt
 
 **caveats:**
 - attribution is the lever, robustness is the prize: the adversarial (unanswerable) category nearly doubles (32.7 → 62.3) — the F59 §9 failure class (entity+recency-matched confusions from misattributed facts) attacked directly; every other category also rises, consistent with attribution improving retrieval binding generally
@@ -775,7 +775,7 @@ pre-registered A/A′ pair on fresh stores: 69/1,986 discordant (3.47%), aggrega
 - https://github.com/electricsheephq/lcm-x/blob/764ed74c6142141a6d2102dd0c99eb84806f7f66/bench/specs/RUN-SHEET-LOCOMO-DECLARED-CONFIG.md
 
 **local_raw:**
-- session-notes 2026-07-31 hermes-locomo-declared artifacts
+- local run 2026-07-31 hermes-locomo-declared artifacts
 
 **caveats:**
 - +7.6 vs the superseded row is NOT pure retrieval: the judge rubric and adversarial gold changed between configs (both disclosed); corrupted gold unchanged (ceiling ≈95%)
@@ -1071,7 +1071,7 @@ A/A' 100q fixed-seed subset (seed 20260802): 95/95 scored questions per-question
 - https://github.com/electricsheephq/lcm-x/blob/764ed74c6142141a6d2102dd0c99eb84806f7f66/bench/specs/RUN-SHEET-V1M-REGISTERED.md
 
 **local_raw:**
-- session-notes 2026-08-19 v1m-launch2 artifacts + lme-runs/m-full2-shard-*
+- local run 2026-08-19 v1m-launch2 artifacts + lme-runs/m-full2-shard-*
 
 **caveats:**
 - The 25q smoke's r@1 0.96 was a first-N sampling artifact (full-500 r@1 = 0.50); first-N smokes retired, seeded-random only
@@ -1533,7 +1533,7 @@ answer_ready delivery, full pin set (pins-treatment.yaml in run artifacts)
 none documented
 
 **breakdown:**
-per-question rows in run artifacts (session-notes 2026-07-30/hermes-v2-paired)
+per-question rows in run artifacts (local run 2026-07-30/hermes-v2-paired)
 
 **variance:**
 paired vs control (prior main @ e5acbbf) in the same run: net +3 (b=29/c=26, n=434) under a pre-registered non-inferiority gate, verdict PASS via blind adjudication; control re-measured 120/451 vs the banked R1 125/451 — single-run cross-build variance context for V2-static numbers
@@ -3192,7 +3192,7 @@ A/A' 100q fixed-seed subset (seed 20260802) EXECUTED: 11/100 discordant (11.0%),
 - https://github.com/electricsheephq/lcm-x/blob/764ed74c6142141a6d2102dd0c99eb84806f7f66/bench/specs/RUN-SHEET-V2-SOTA-LUNA.md
 
 **local_raw:**
-- session-notes 2026-08-02 v2-sota-luna artifacts (full-web, full-enterprise, per-question)
+- local run 2026-08-02 v2-sota-luna artifacts (full-web, full-enterprise, per-question)
 
 **caveats:**
 - Cross-config context: official-config (qwen3.5-9b reader) row is 123/451=27.3%; the +4.4pt is READER-dominated by design — this row anchors the SOTA-reader funnel, it is NOT a memory-delta claim

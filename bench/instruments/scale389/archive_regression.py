@@ -20,17 +20,11 @@ from bench.instruments.scale389.metrics import (
     select_questions,
     summarise_rows,
 )
-from bench.tools.benchpaths import bench_path
+from bench.tools.benchpaths import bench_path, required_path
 from bench.tools.pinverify import sha256_file
 from bench.tools.storefreeze import snapshot
 
 
-DEFAULT_RESULTS = Path(
-    "Codex/session-notes/2026-07-29/hermes-phase1b-rerun/artifacts/results"
-)
-DEFAULT_QEVAL = Path(
-    "Codex/session-notes/2026-07-25/hermes-v1-scale/artifacts/corpus/qeval.json"
-)
 DEFAULT_DATASET = Path("hermes-work/longmemeval-data/longmemeval_s")
 DEFAULT_SIDECAR = Path(
     "hermes-work/mb-workdir-phase1a/phase1a-scale-500.dates.json"
@@ -180,8 +174,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    args.results = args.results or bench_path(DEFAULT_RESULTS)
-    args.qeval = args.qeval or bench_path(DEFAULT_QEVAL)
+    args.results = args.results or required_path("SCALE389_ARCHIVE_RESULTS", argument="--results")
+    args.qeval = args.qeval or (
+        required_path("SCALE389_ARCHIVE_CORPUS", argument="--qeval") / "qeval.json"
+    )
     args.dataset = args.dataset or bench_path(DEFAULT_DATASET)
     args.sidecar = args.sidecar or bench_path(DEFAULT_SIDECAR)
     if args.output and args.output.resolve().is_relative_to(args.results.resolve()):

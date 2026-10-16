@@ -6,6 +6,14 @@ import os
 from pathlib import Path
 
 
+def required_path(environment: str, *, argument: str | None = None) -> Path:
+    value = os.environ.get(environment)
+    if not value:
+        hint = f"pass {argument} or " if argument else ""
+        raise SystemExit(f"{hint}set {environment} to the run data location")
+    return Path(value)
+
+
 def bench_path(relative: str | Path, *, override: str | None = None) -> Path:
     root = os.environ.get("LCMX_BENCH_ROOT")
     if not root:

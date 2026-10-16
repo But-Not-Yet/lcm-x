@@ -236,7 +236,7 @@ def test_check_does_not_write(tmp_path):
 
 def test_new_row_rejects_local_evidence(tmp_path, capsys):
     row = _row("new-local", date="2026-10-16")
-    row["evidence"] = [str(tmp_path / "raw.jsonl")]
+    row["evidence"] = ["/machine/raw.jsonl"]
     results = tmp_path / "results.jsonl"
     _write_jsonl(results, [row])
     assert generate.main(["--check", "--results", str(results)]) == 2
@@ -342,3 +342,38 @@ def test_local_raw_rejects_machine_absolute_paths(tmp_path, capsys, path):
     _write_jsonl(results, [row])
     assert generate.main(["--check", "--results", str(results)]) == 2
     assert "local_raw" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("suffix", ["note", "notes"])
+@pytest.mark.parametrize("field", [
+    *(field for field in generate.SCALAR_FIELDS if field != "value"),
+    "superseded_by", "evidence", "caveats", "local_raw", "extra",
+])
+def test_rejects_session_folder_references(tmp_path, capsys, field, suffix):
+    row = _row("longmemeval-v1-s500-accuracy-2026-07-29")
+    reference = "session-" + suffix + " 2026-07-30/example"
+    row[field] = [reference] if field in {"evidence", "caveats", "local_raw"} else reference
+    results = tmp_path / "results.jsonl"
+    _write_jsonl(results, [row])
+    output = tmp_path / "SCOREBOARD.md"
+    output.write_text("keep this", encoding="utf-8")
+
+    assert generate.main(["--results", str(results), "--output", str(output)]) == 2
+    error = capsys.readouterr().err
+    assert f"field '{field}" in error
+    assert "local session folders" in error
+    assert output.read_text(encoding="utf-8") == "keep this"
+
+
+@pytest.mark.parametrize("reference", [
+    "SESSION-" + "NOTES/2026-07-30/example",
+    "prefix/session-" + "note/example",
+])
+def test_rejects_nested_session_folder_references(tmp_path, capsys, reference):
+    row = _row("nested")
+    row["extra"] = {"receipts": [{"source": reference}]}
+    results = tmp_path / "results.jsonl"
+    _write_jsonl(results, [row])
+
+    assert generate.main(["--check", "--results", str(results)]) == 2
+    assert "field 'extra.receipts[0].source'" in capsys.readouterr().err

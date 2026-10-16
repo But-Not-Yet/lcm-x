@@ -91,9 +91,24 @@ def _error(line_number: int, message: str) -> ScoreboardError:
     return ScoreboardError(f"line {line_number}: {message}")
 
 
+def _validate_references(value: Any, field: str, line_number: int) -> None:
+    if isinstance(value, str):
+        if "session-" + "note" in value.lower():
+            raise _error(line_number, f"field '{field}' must not cite local session folders")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_references(item, f"{field}[{index}]", line_number)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            _validate_references(item, f"{field}.{key}", line_number)
+
+
 def _validate_row(row: Any, line_number: int) -> dict[str, Any]:
     if not isinstance(row, dict):
         raise _error(line_number, "expected a JSON object")
+
+    for field, value in row.items():
+        _validate_references(value, field, line_number)
 
     missing = [field for field in REQUIRED_FIELDS if field not in row]
     if missing:
