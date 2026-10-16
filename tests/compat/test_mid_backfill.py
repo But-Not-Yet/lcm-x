@@ -76,6 +76,9 @@ def test_stem_backfill_survives_old_writer(
     finally:
         engine.shutdown()
     report = run_old(old_tree("v0.26.2"), tmp_path, host_root, OLD_STEM_INTERLUDE)
+    # Snapshot after the old writer, so its interleaved row is held to the same lossless bar.
+    after_old = table_hashes(tmp_path, ("messages",))
+    assert report["inserted"] in after_old["messages"]
     engine = plugin("engine").LCMEngine(config=config, hermes_home=str(tmp_path / "home"))
     try:
         bind(engine)
@@ -93,6 +96,7 @@ def test_stem_backfill_survives_old_writer(
         assert boot._stem_metadata(conn, "fts_stem_state") == "ready"
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert_preserved(tmp_path, before)
+        assert_preserved(tmp_path, after_old)
     finally:
         engine.shutdown()
 
