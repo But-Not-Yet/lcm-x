@@ -442,6 +442,11 @@ class ProcessCell:
         return rec
 
 
+# The provider stamps a request's receive start in its handler thread. On a loaded runner that thread can run after
+# the kill that already cut the body short, so a start up to this long after the kill still counts as in flight.
+RECEIVE_START_SLACK_NS = 1_000_000_000
+
+
 def accounting(d: Path, events: list[dict]) -> dict:
     """The provider log is the complete request set. Every distinct request is a model-role completion, a
     ``/models`` catalog read, or unexpected (an unrouted path/method or an unknown role: the cell ERRORs). Each main
@@ -468,7 +473,7 @@ def accounting(d: Path, events: list[dict]) -> dict:
     for kill in kills:
         candidates = [r for r in truncated if r["rid"] not in matched
                       and r.get("receive_start_ns") is not None and r.get("receive_end_ns") is not None
-                      and r["receive_start_ns"] <= kill <= r["receive_end_ns"]]
+                      and r["receive_start_ns"] <= kill + RECEIVE_START_SLACK_NS and kill <= r["receive_end_ns"]]
         if candidates:  # earliest end preserves later kills for requests still receiving then
             matched.add(min(candidates, key=lambda r: r["receive_end_ns"])["rid"])
     unexpected += [{"rid": r["rid"], "route": "truncated"} for r in truncated if r["rid"] not in matched]
