@@ -9,7 +9,16 @@ import pytest
 from tests.compat import codec_adapter
 from tests.compat.helpers import FLEET_POLICY, config_for, run_old
 
-WRITE_AND_READ = f"fleet_policy = {FLEET_POLICY!r}\n" + r'''
+# One source for both sides: the old writer's reader and the current reader hash the same fields.
+DIGEST = r'''
+import hashlib as _hashlib
+def message_digest(rows):
+    fields = [(r.get("role"), r.get("content"), r.get("tool_call_id"), r.get("tool_calls"), r.get("tool_name"),
+               r.get("observed_at")) for r in rows]
+    return _hashlib.sha256(json.dumps(fields, sort_keys=True, default=str).encode()).hexdigest()
+'''
+
+WRITE_AND_READ = f"fleet_policy = {FLEET_POLICY!r}\n" + DIGEST + r'''
 if mode == "write":
     options.update(fresh_tail_count=4, leaf_chunk_tokens=1000, large_output_externalization_enabled=True)
     if data == "fleet":
@@ -37,7 +46,7 @@ try:
                 {"role": "user", "content": "Run the large report.", "timestamp": 130.0},
                 {"role": "assistant", "content": "", "tool_calls": [
                     {"id": "report", "type": "function", "function": {"name": "report", "arguments": "{}"}}]},
-                {"role": "tool", "tool_call_id": "report", "name": "report", "content": "report data " * 5000},
+                {"role": "tool", "tool_call_id": "report", "name": "report", "tool_name": "report", "content": "report data " * 5000},
                 {"role": "assistant", "content": "The report is complete."},
             ])
             engine.ingest(view)
@@ -71,7 +80,8 @@ try:
     assert all(nodes.values())
     assert list((Path(home).parent / "payloads").glob("*")), "large output must be externalized"
     assert engine._store.connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-    print(json.dumps({"counts": {session: len(value) for session, value in rows.items()}, "nodes": nodes}))
+    print(json.dumps({"counts": {session: len(value) for session, value in rows.items()}, "nodes": nodes,
+                      "digests": {session: message_digest(value) for session, value in rows.items()}}))
 finally:
     engine.shutdown()
 '''
@@ -124,6 +134,8 @@ def test_previous_ga_forward_migration(tmp_path, old_tree, host_root, monkeypatc
     assert before[1]["messages"][0] == sum(original["counts"].values()) and before[-1]
     # Keep the asynchronous derived-index backfill out of the reopen comparison.
     monkeypatch.setattr(db_bootstrap, "dispatch_background_stem_backfill", lambda *args: None)
+    namespace = {"json": json}
+    exec(DIGEST, namespace)
     first_open = None
     for opening in range(2):
         engine = LCMEngine(config=config_for(tmp_path), hermes_home=str(tmp_path / "home"))
@@ -133,6 +145,12 @@ def test_previous_ga_forward_migration(tmp_path, old_tree, host_root, monkeypatc
                                         conversation_id=f"conversation-{index}")
                 assert len(engine._dag.get_session_nodes(f"session-{index}")) == original["nodes"][f"session-{index}"]
             assert engine._store.connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            # Rows on disk are not enough: every session must stay readable through the current reader.
+            for session, count in original["counts"].items():
+                current = engine._store.get_session_messages(session)
+                assert len(current) == count, f"{session}: the current reader returns {len(current)} of {count} messages"
+                assert namespace["message_digest"](current) == original["digests"][session], \
+                    f"{session}: the current reader returns different message content or provenance"
         finally:
             engine.shutdown()
         after = snapshot(tmp_path, before[0])
