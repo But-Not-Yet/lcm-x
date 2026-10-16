@@ -1,6 +1,7 @@
 """Occurrence seeds for compress, recovery, rotation, retries and stale proofs."""
 from copy import deepcopy
 import re
+import subprocess
 import sys
 import types
 
@@ -705,3 +706,30 @@ def test_cli_new_post_llm_compress_replay(start, caplog, monkeypatch):
         if prototype is not None:
             prototype.shutdown()
         machine.teardown()
+
+
+_LEAK_PROBE = """
+import sys
+from hypothesis import Phase, given, settings, strategies as st
+
+@settings(phases=[Phase[name] for name in sys.argv[1:]], database=None, derandomize=True, deadline=None, max_examples=5)
+@given(st.integers())
+def fails(value):
+    raise AssertionError(value)
+
+try:
+    fails()
+except AssertionError:
+    pass
+print([sys.monitoring.get_events(tool) for tool in range(6)])
+"""
+
+
+@pytest.mark.skipif(not hasattr(sys, "monitoring"), reason="sys.monitoring exists on Python 3.12+")
+def test_failing_example_leaves_no_monitoring_events():
+    """A failing example under PROFILE's phases leaves no sys.monitoring events set. Hypothesis's explain
+    phase did not: its LINE events stayed set and slowed every later test. A fresh interpreter gives a clean
+    baseline, so a leak from an earlier test in this session cannot hide one here."""
+    probe = subprocess.run([sys.executable, "-c", _LEAK_PROBE, *(phase.name for phase in PROFILE.phases)],
+                           capture_output=True, text=True, timeout=120, check=True)
+    assert probe.stdout.strip() == str([0] * 6), probe.stdout + probe.stderr
