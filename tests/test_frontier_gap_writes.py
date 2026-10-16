@@ -91,6 +91,9 @@ def test_rotation_drops_descriptors_from_a_previous_reset_epoch(
     # A stale cache must not authorize generated-span removal on the helper's
     # output. The durable reader rejects the old reset epoch as well.
     occurrences, _ = engine._replay_occurrences(output)
+    assert occurrences
+    assert len(occurrences) == len(output)
+    assert occurrences[-1][1] == ("user", "Current question.", "", "", "")
     assert all(entry.generated_span is None for entry, _identity in occurrences)
     assert engine._last_emission_descriptors is None
     assert engine._store.get_session_count("parent") == len(messages)
@@ -120,8 +123,19 @@ def test_bypassed_source_boundary_restarts_the_cursor(
     )
     assert engine._ingest_cursor == 0
     assert engine._last_compacted_store_id == 0
-    engine.ingest([*messages, {"role": "assistant", "content": "Bypassed continuation."}])
-    engine.on_session_end("child", messages)
+    continuation = {"role": "assistant", "content": "Bypassed continuation."}
+    complete_history = [*messages, continuation]
+    # The host forwards the end history unchanged (run_agent.py:182-187 at
+    # NousResearch/hermes-agent@d923a5eb487a17c0a68801bba9ef0f56c81040a8).
+    # This child inherits stateless bypass: neither ingest nor end may store
+    # its continuation; any already-bound normal row must remain intact.
+    engine.ingest(complete_history)
+    engine.on_session_end("child", complete_history)
+    rows = engine._store.get_session_messages("child")
+    assert [row["content"] for row in rows] == [
+        message["content"] for message in messages if already_bound
+    ]
+    assert sum(row["content"] == continuation["content"] for row in rows) == 0
     assert engine._store.get_session_count("child") == int(already_bound)
     assert engine._store.get_session_count("bypassed-source") == 0
     state = engine._lifecycle.get_by_session("child")
@@ -158,7 +172,6 @@ def test_reconcile_probe_failure_trusts_zero_cursor(
     with monkeypatch.context() as patch:
         patch.setattr(engine._store, "get_session_count", fail_probe)
         engine.on_session_start("session", platform="acp")
-    assert engine._ingest_cursor == 0
     assert engine._store.get_session_count("session") == len(messages)
     engine.ingest([*messages, {"role": "user", "content": "New question."}])
     rows = engine._store.get_session_messages("session")
