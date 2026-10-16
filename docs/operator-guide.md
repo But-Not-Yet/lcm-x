@@ -476,6 +476,12 @@ circuit immediately (#1137). That window is the smaller of the configured summar
 foreground budget minus the finalize and leaf reserves. It logs one WARNING per opening naming the route
 and saying it used the whole window. The current compaction still stops on its budget; a fallback route
 can run on the next compaction. A cut after receiving only a partial window leaves the circuit unchanged.
+When no other route is usable, the first hang since the conversation's last stored leaf holds automatic
+compaction until foreground turn end, with a 600 s backstop (#1096). At turn end only that conversation's
+hung circuit is released for one ordinary retry; bypassed sessions cannot release it. A second hang keeps
+the 600 s sweep and no-progress holds. Without turn-end notifications the backstop applies as before.
+A stored leaf or conversation/session reset clears the strike. Other circuit errors and hold reasons,
+forced overflow and survival-ceiling exemptions are unchanged. INFO logs name the route at arm and release.
 
 When a leaf's own level 1 and level 2 results are rejected and the survival fit can keep the request under the
 window, the compaction writes no leaf and no node for it and keeps its rows for a later pass (#652). A level 3
