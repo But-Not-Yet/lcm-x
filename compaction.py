@@ -736,7 +736,8 @@ class CompactionMixin:
                 reason = budget.stop_reason
             bypassed = self._bypasses_lcm_context_management()  # B5: never report the bound conversation's rows
             retained = any(str(text or "").startswith(_RETAINED_NOOP_REASON)
-                           for text in (reason, self.last_compression_noop_reason))
+                           for text in (reason, self.last_compression_noop_reason if bypassed
+                                        else self._last_compression_noop_reason))
             if reason.startswith(_RETAINED_NOOP_REASON):  # sweep on: base's #581 text exactly; the row is blocked=
                 reason = _RETAINED_NOOP_REASON  # (also after leaves of the same sweep, whose no-op reason is empty)
             blocked = (getattr(self, "_store_complete_blocked", None)
@@ -746,7 +747,8 @@ class CompactionMixin:
                 reason = "stub_first_exit"
             logger.info("LCM compaction stop: reason=%s leaves=%d progress=%s elapsed=%.1fs pre=%.1fs calls=%.1fs "
                         "finalize=%.1fs backlog_tokens=%d%s%s%s", reason, budget.leaves, budget.progress or "none", elapsed,
-                        pre, calls, finalize, self._raw_backlog_tokens(result) if isinstance(result, list) else 0,
+                        pre, calls, finalize,
+                        self._raw_backlog_tokens(result) if isinstance(result, list) and not bypassed else 0,
                         f" host={budget.host:.1f}s" if budget.host > 0 else "",
                         " tokens_before={tokens_before} tokens_after={tokens_after} target={target_tokens} "
                         "backlog_rows={backlog_rows}".format(**exited) if exited else "",
