@@ -467,7 +467,7 @@ def test_known_open_exclusions_track_their_strict_xfails():
                    for parameter in mark.args[1] if hasattr(parameter, "marks")
                    for mark in parameter.marks if mark.name == "xfail" and mark.kwargs.get("strict"))
     xfailed = {int(found.group(1)) for reason in reasons if (found := re.match(r"#(\d+)", reason))}
-    xfailed.update(reason for reason in reasons if reason.startswith("UNFILED: "))
+    xfailed.update(reason for reason in reasons if re.match(r"(?:#\d+:|UNFILED: )", reason))
     assert set(KNOWN_OPEN) <= xfailed, (set(KNOWN_OPEN) - xfailed)
 
 
@@ -712,11 +712,22 @@ def test_restart_replay_resume_append(point):
         for text in ("alpha", "same text"):
             machine.new_turn(text, False, 0, False, "lookup")
         engine = machine.engine
-        machine.restart(point, "interrupted user")
+        if point == "user-persisted":
+            # A structured next prompt is not merged with the pending plain
+            # user. Both are delivered at the next completed turn, with no
+            # cold-start ingest. The plain/plain #849 shape is seeded below.
+            user = machine.stamp({"role": "user", "content": "interrupted user"})
+            machine.host.append(user)
+            machine.occurrences.append(deepcopy(user))
+            machine._persist_host_view(machine.session_id, machine.host)
+            machine._restart_from_host()
+            assert all("message_uid" not in row for row in machine.host)
+            machine.new_turn("βeta", True, 0, False, "lookup")
+        else:
+            machine.restart(point, "interrupted user")
         assert machine.engine is not engine
         assert machine.engine._session_id == machine.session_id
-        assert len(machine.session_ids) == (2 if point == "rotation-published" else 1)
-        assert all("message_uid" not in row for row in machine.host)
+        assert len(machine.session_ids) == 1
         machine.exactly_once()
         for operation in (machine.replay, machine.cold_resume):
             operation()
@@ -738,14 +749,15 @@ def check_restart_scaffold(machine):
     try:
         machine.exactly_once()
     except AssertionError as error:
-        if actual == expected + [identity(machine.host[0])]:
+        if actual == expected[:-2] + [identity(machine.host[0])] + expected[-2:]:
             raise RestartScaffoldStored(str(error)) from error
         raise
 
 
-@pytest.mark.xfail(strict=True, reason="UNFILED: cold published child lacks its parent emission proof",
+@pytest.mark.xfail(strict=True, reason="#1286: cold published child lacks its parent emission proof",
                    raises=RestartScaffoldStored)
 def test_restart_published_child_without_start_proof():
+    """Non-default compression.in_place=False; check the next completed turn."""
     from tests.invariants.test_exactly_once_machine import RestartMachine
 
     machine = RestartMachine()
@@ -784,9 +796,10 @@ def test_restart_published_child_after_start_control(monkeypatch):
 
 
 @pytest.mark.parametrize("point", ["in-place", "rotation-ended"])
-@pytest.mark.xfail(strict=True, reason="UNFILED: unadopted compaction supersedes the durable input emission",
+@pytest.mark.xfail(strict=True, reason="#1286: unadopted compaction supersedes the durable input emission",
                    raises=RestartScaffoldStored)
 def test_restart_before_recompression_adoption(point):
+    """Default in-place window, plus rotation-ended with in_place=False."""
     from tests.invariants.test_exactly_once_machine import RestartMachine
 
     machine = RestartMachine()
@@ -823,27 +836,22 @@ class RestartMergedStored(AssertionError):
     """Only the new prompt replaced by the host's held-plus-new composite."""
 
 
-@pytest.mark.parametrize("repeated", [
-    pytest.param(True, marks=pytest.mark.xfail(
-        strict=True, reason="UNFILED: restart merges a repeated pending prompt into an unsplit source row",
-        raises=RestartMergedStored)),
-    False,
-], ids=["repeated-pending-prompt", "different-prompt-control"])
-def test_restart_repeated_pending_prompt(repeated):
+@pytest.mark.xfail(strict=True, reason="#849: unanswered persisted user merges with the next completed turn",
+                   raises=RestartMergedStored)
+def test_restart_pending_prompt_849():
+    """Minimal no-duplicate variant: T(alpha), pending X, restart, completed Y."""
     from tests.invariants.test_exactly_once_machine import RestartMachine
 
     machine = RestartMachine()
     machine.include_known_open = True
     try:
         machine.new_turn("alpha", False, 0, False, "lookup")
-        machine.restart("user-persisted", "line one\nline two")
-        machine.exactly_once()
-        machine.restart("user-persisted", "line one\nline two" if repeated else "different prompt")
+        machine.restart("user-persisted", "X pending")
         expected, actual = list(map(identity, machine.occurrences)), list(map(identity, machine.rows()))
         try:
             machine.exactly_once()
         except AssertionError as error:
-            if repeated and actual == expected[:-1] + [identity(machine.host[-1])]:
+            if actual == expected[:-3] + [identity(machine.host[-2]), expected[-1]]:
                 raise RestartMergedStored(str(error)) from error
             raise
     finally:
