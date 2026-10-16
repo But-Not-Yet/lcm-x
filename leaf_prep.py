@@ -190,6 +190,7 @@ def excluded_from_summary_input(
     """Review r1 F1: a stored row the leaf loop keeps out of its summary input (a marked ignored-dependent reply,
     an active-replay placeholder, replay scaffold). Preparation stops before it; read-only and conservative: the
     foreground decides such rows."""
+    from .compress_run import CompressRun
     from .placeholder_ledger import PlaceholderLedgerMixin
     from .reconcile import (
         _PRESERVED_OBJECTIVE_CONTEXT_PREFIX,
@@ -215,7 +216,7 @@ def excluded_from_summary_input(
         (),
         {
             "_session_id": session_id,
-            "_current_compress_store_ids_by_message_id": {},
+            "_compress_run": CompressRun(),
             "_stable_tool_calls_identity": staticmethod(
                 ReconcileMixin._stable_tool_calls_identity
             ),
