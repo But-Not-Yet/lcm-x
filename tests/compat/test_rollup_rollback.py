@@ -35,6 +35,16 @@ finally:
 '''
 
 
+# Columns an invalidation (rollup_store: status='stale', generation+1, lease cleared, error) may change.
+INVALIDATION_FIELDS = {"status", "generation", "lease_expires_at", "lease_nonce", "error"}
+
+
+def rollup_row_columns(database):
+    with sqlite3.connect(database) as conn:  # its own read connection, never the engine's
+        names = [row[1] for row in conn.execute('PRAGMA table_info("lcm_rollups")')]
+        return {row[0]: dict(zip(names, row)) for row in conn.execute(f'SELECT {", ".join(names)} FROM lcm_rollups')}
+
+
 @pytest.mark.parametrize("policy", ["defaults", "fleet"])
 def test_shipped_rollups_rollback(
     tmp_path: Path, old_tree: Callable[[str], Path], host_root: Path,
@@ -61,6 +71,7 @@ def test_shipped_rollups_rollback(
         rollup_rows = table_hashes(tmp_path, ("lcm_rollups",))["lcm_rollups"]
         with sqlite3.connect(tmp_path / "lcm.db") as conn:
             ids = {row[0] for row in conn.execute("SELECT rollup_id FROM lcm_rollups")}
+            rollup_columns = rollup_row_columns(tmp_path / "lcm.db")
         vectors = table_hashes(tmp_path, VECTOR_TABLES) if policy == "fleet" else {}
     finally:
         engine.shutdown()
@@ -92,6 +103,16 @@ def test_shipped_rollups_rollback(
         after = table_hashes(tmp_path, ("lcm_rollups",))["lcm_rollups"]
         assert all(after.get(row_id) == digest or rows.get(row_id) == "stale"
                    for row_id, digest in rollup_rows.items())
+        # Invalidation may only touch its own fields: the durable summary, token count, fingerprint and
+        # build time of a row that went stale must survive unchanged.
+        # A row that was not yet ready may legitimately be built by the old release in between.
+        changed = rollup_row_columns(tmp_path / "lcm.db")
+        invalidated = [row_id for row_id, columns in rollup_columns.items()
+                       if columns["status"] == "ready" and rows.get(row_id) == "stale"]
+        for row_id in invalidated:
+            kept = {key: value for key, value in rollup_columns[row_id].items() if key not in INVALIDATION_FIELDS}
+            assert {key: changed[row_id][key] for key in kept} == kept, f"rollup {row_id} lost durable fields"
+        assert invalidated, "no ready rollup was invalidated, so the durable-field check did not run"
         assert conn.execute("SELECT count(*) FROM lcm_rollup_sources s LEFT JOIN summary_nodes n "
                             "ON s.node_id=n.node_id LEFT JOIN lcm_rollups r ON s.rollup_id=r.rollup_id "
                             "WHERE n.node_id IS NULL OR r.rollup_id IS NULL").fetchone()[0] == 0
