@@ -6,9 +6,11 @@ that persists every message and provides structured retrieval tools.
 Based on the LCM paper by Ehrlich & Blackman (Voltropy PBC, Feb 2026).
 """
 
+import importlib.util
 import json
 import logging
 import os
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,19 +57,45 @@ def get_recall_policy() -> str:
     return _get_recall_policy()
 
 
+_STANDALONE_CONFIG = None
+
+
+def _load_standalone_config():
+    """Load this tree's config for bare inspection or callbacks after eviction."""
+    global _STANDALONE_CONFIG
+    if _STANDALONE_CONFIG is None:
+        spec = importlib.util.spec_from_file_location(
+            f"{__name__}._standalone_config", Path(__file__).resolve().with_name("config.py"),
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError("Cannot load plugin configuration")
+        module = importlib.util.module_from_spec(spec)
+        # Dataclass processing needs its defining module registered during exec.
+        sys.modules[spec.name] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(spec.name, None)
+            raise
+        _STANDALONE_CONFIG = module
+    return _STANDALONE_CONFIG
+
+
 def _env_flag_enabled(name: str, default: bool = False) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    if __package__ in sys.modules:
+        from .config import _parse_bool_env
+    else:  # Standalone plugin inspection has no package context.
+        _parse_bool_env = _load_standalone_config()._parse_bool_env
+    return _parse_bool_env(name, default, unknown=False, false_values=())
 
 
 def _disabled_tool_names() -> set[str]:
     """Tools disabled via LCM_DISABLED_TOOLS (comma-separated lcm_* names)."""
-    raw = os.environ.get("LCM_DISABLED_TOOLS", "")
-    if not raw:
-        return set()
-    return {part.strip() for part in raw.split(",") if part.strip()}
+    if __package__ in sys.modules:
+        from .config import _disabled_tool_names as read_disabled_tools
+    else:
+        read_disabled_tools = _load_standalone_config()._disabled_tool_names
+    return read_disabled_tools()
 
 
 def _make_wrapped_handler(tool_name: str, engine):

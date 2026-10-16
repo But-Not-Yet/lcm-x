@@ -527,41 +527,28 @@ Available commands:
 - `/lcm backup` - timestamped SQLite backup. The snapshot holds the database only; copy the externalized payload directory named in the output alongside it when moving a backup to another host.
 - `/lcm rotate` - read-only preview of an in-place tail-preserving compact of
   the active session
-- `/lcm rotate apply` - backup-first rotate that advances the lifecycle frontier
-  past pre-tail raw messages
+- `/lcm rotate apply` - refused on Hermes (#1141); use `/compress here N`
 - `/lcm help` - command help
 
 Apply paths are intentionally narrow and backup-first. Start with diagnostics
 before cleanup or repair.
 
-### Rotate: compact in place without changing session identity
+### Rotate: read-only preview
 
-`/lcm rotate` compacts a long-running session in place without changing
-`session_id` or `conversation_id`. It is the in-session counterpart to
-Hermes-level `/new` and to `/lcm doctor clean`.
+`/lcm rotate` previews the tail-preserving frontier for the active session
+without changing `session_id` or `conversation_id`. It reports the configured
+fresh tail, pre-tail message count, current and planned lifecycle frontier, and
+rolling backup path. The preview refuses ignored or stateless sessions.
 
-What rotate does:
+`/lcm rotate apply` is refused on Hermes (#1141): Hermes reloads its own
+transcript after a restart, so advancing the frontier without summaries leaves
+rows LCM-X cannot map. No backup is created and no lifecycle state is changed.
+Use `/compress here N` to summarise everything except the most recent N messages.
+If an earlier LCM-X already rotated this session and Hermes restarted since, compaction can stop on rows below that frontier and `/compress here N` will not repair it: start a new session with `/new` (raw rows stay recoverable via `lcm_load_session`; in-place fix tracked in #1184).
+Raw source rows remain recoverable through `lcm_load_session` and `lcm_expand`.
 
-- preserves the live tail (`LCM_FRESH_TAIL_COUNT` most-recent messages)
-- advances the lifecycle frontier marker past every raw message before the tail,
-  so subsequent bootstrap stops replaying them into the active prompt
-- writes a rolling `*-rotate-latest.sqlite3` backup under the same backup
-  directory as `/lcm backup`, overwriting the previous rotate slot atomically so
-  disk usage stays bounded across repeated rotates
-
-What rotate does not do:
-
-- it does not delete raw messages; pre-tail rows remain recoverable through
-  `lcm_load_session` and `lcm_expand`
-- it does not invoke the summarization model; trigger normal compaction first if
-  you want pre-tail content covered by summary nodes before rotating
-- it does not change session or conversation identity, and it refuses ignored or
-  stateless sessions with a clear reason
-
-`lcm_status` and `/lcm status` surface `last_rotate_at` and the rolling backup
-path. Re-running `/lcm rotate apply` after the frontier is already at or ahead of
-the target boundary reports `status: noop` and does not overwrite the previous
-known-good rolling backup.
+`lcm_status` and `/lcm status` still surface `last_rotate_at` and the rolling
+backup path for existing stores.
 
 ## Configuration
 
