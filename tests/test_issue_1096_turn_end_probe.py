@@ -102,6 +102,53 @@ def test_second_hang_keeps_both_timed_holds_and_strike_after_backstop(episode, c
     assert engine._sweep_budget_hold_active() and engine._no_progress_hold_active()
 
 
+def test_bypass_recovery_preserves_turn_end_probe(episode, monkeypatch, caplog):
+    engine, calls, view = episode
+    with caplog.at_level(logging.INFO, logger="hermes_lcm"):
+        result = _pass(engine, view)
+        assert engine._sweep_budget_hold_active() and engine._sweep_budget_hold_turn_paced
+        result = engine.compress(result, current_tokens=engine.threshold_tokens + 1, bypass_cooldown=True)
+        assert len(calls) == 1
+        assert engine.get_status()["threshold_full_sweep"]["stop_reason"] == "summary_route_unavailable"
+        assert not engine._summary_circuit_breaker.allows("m1")
+        assert engine._sweep_budget_hold_active() and engine._sweep_budget_hold_turn_paced
+        assert engine._hung_summary_strike == ("conv", "m1")
+        engine.note_turn_complete()
+    arms = [r for r in caplog.records if "hung summary hold armed" in r.getMessage()]
+    assert len(arms) == 1 and arms[0].levelno == logging.INFO
+    assert engine._summary_circuit_breaker.allows("m1")
+    assert not engine._sweep_budget_hold_active()
+
+    def healthy(prompt, max_tokens, model="", timeout=None, reasoning_effort=""):
+        calls.append((model, timeout))
+        return SUMMARY
+
+    monkeypatch.setattr("hermes_lcm.escalation._invoke_summary_llm", healthy)
+    assert engine.should_compress(engine.threshold_tokens + 1)
+    _pass(engine, result)
+    assert [model for model, _ in calls] == ["m1", "m1"]
+    assert engine._dag.get_session_nodes("S")
+    assert engine._hung_summary_strike is None
+
+
+def test_route_unavailable_without_turn_paced_hold_stays_timed(episode, caplog):
+    engine, calls, view = episode
+    breaker = engine._summary_circuit_breaker
+    for _ in range(breaker.failure_threshold):
+        breaker.record_failure("m1")
+    assert not engine._sweep_budget_hold_turn_paced
+    with caplog.at_level(logging.INFO, logger="hermes_lcm"):
+        engine.compress(view, current_tokens=engine.threshold_tokens + 1, bypass_cooldown=True)
+        assert engine.get_status()["threshold_full_sweep"]["stop_reason"] == "summary_route_unavailable"
+        assert engine._sweep_budget_hold_active() and not engine._sweep_budget_hold_turn_paced
+        until = engine._sweep_budget_hold_until
+        engine.note_turn_complete()
+    assert not calls and not breaker.allows("m1")
+    assert engine._sweep_budget_hold_active() and engine._sweep_budget_hold_until == until
+    assert engine._hung_summary_strike is None
+    assert not any("hung summary hold armed" in r.getMessage() for r in caplog.records)
+
+
 def test_no_turn_end_keeps_the_600_second_backstop(episode, clock):
     engine, calls, view = episode
     result = _pass(engine, view)

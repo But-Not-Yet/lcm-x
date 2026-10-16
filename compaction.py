@@ -2245,7 +2245,12 @@ class CompactionMixin:
             )
             if not leaf_compacted_this_turn:
                 noop_reason = "summary route unavailable"
-                self._start_sweep_budget_hold(seconds_left)
+                self._start_sweep_budget_hold(seconds_left, turn_paced=(
+                    self._sweep_budget_hold_turn_paced
+                    and self._sweep_budget_hold_active()
+                    and self._hung_summary_strike is not None
+                    and self._hung_summary_strike[0] == self._hold_conversation_key()
+                ))
         elif sweep_stop_reason == "summary_result_rejected":
             warn_rejected()
             if not leaf_compacted_this_turn:
