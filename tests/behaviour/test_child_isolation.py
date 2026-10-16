@@ -209,3 +209,86 @@ def test_interleaved_child_stop_reason_and_native_state(tmp_path, monkeypatch, c
         assert "reason=compacted" in stops[threads["parent"]]
         assert " host=" not in stops[threads["parent"]]
         assert snapshots[0] == snapshots[1]
+
+
+# Legacy names also form #1242's parent-state snapshot contract.
+PREFLIGHT_HANDOFFS = (
+    "_preflight_cleanup_only_due_to_boundary_cooldown",
+    "_preflight_below_threshold_cleanup_only",
+    "_preflight_automatic_request",
+    "_hold_fit_only_requested",
+)
+
+
+@pytest.mark.parametrize("mask", range(16))
+@pytest.mark.parametrize("exit_path", ["empty", "ingest_error"])
+def test_preflight_handoffs_consumed_before_early_exit(tmp_path, monkeypatch, mask, exit_path):
+    pin_char_counter(monkeypatch)
+    with engine_context(tmp_path, window=200_000) as engine:
+        assert all(getattr(engine, name) is False for name in PREFLIGHT_HANDOFFS)
+        for bit, name in enumerate(PREFLIGHT_HANDOFFS):
+            setattr(engine, name, bool(mask & (1 << bit)))
+
+        if exit_path == "empty":
+            view = []
+            assert engine._compress_impl(view) is view
+            assert engine.last_compression_status == "noop"
+            assert engine.last_compression_noop_reason == "empty message list"
+        else:
+            def fail_ingest(messages):
+                assert all(getattr(engine, name) is False for name in PREFLIGHT_HANDOFFS)
+                raise RuntimeError("scripted ingest failure")
+
+            monkeypatch.setattr(engine, "_ingest_messages", fail_ingest)
+            with pytest.raises(RuntimeError, match="scripted ingest failure"):
+                engine._compress_impl([user("next turn")], current_tokens=10)
+        assert all(getattr(engine, name) is False for name in PREFLIGHT_HANDOFFS)
+        # A second invocation cannot inherit the previous request.
+        assert engine._compress_impl([]) == []
+        assert all(getattr(engine, name) is False for name in PREFLIGHT_HANDOFFS)
+
+
+@pytest.mark.parametrize("reset", ["preflight", "session"])
+def test_preflight_handoff_reset_masks(tmp_path, monkeypatch, reset):
+    pin_char_counter(monkeypatch)
+    with engine_context(tmp_path, window=200_000) as engine:
+        for name in PREFLIGHT_HANDOFFS:
+            setattr(engine, name, True)
+        if reset == "preflight":
+            assert engine.should_compress_preflight([]) is False
+            expected = (False, False, False, True)
+        else:
+            engine._reset_session_scoped_runtime_state()
+            expected = (True, False, False, True)
+        assert tuple(getattr(engine, name) for name in PREFLIGHT_HANDOFFS) == expected
+
+
+@pytest.mark.parametrize("threshold", [0, 100])
+def test_maintenance_handoff_preserves_unrelated_flags(tmp_path, threshold):
+    with engine_context(tmp_path, window=200_000) as engine:
+        engine.threshold_tokens = threshold
+        engine._preflight_cleanup_only_due_to_boundary_cooldown = True
+        engine._hold_fit_only_requested = True
+        assert engine._mark_below_threshold_maintenance() is True
+        assert tuple(getattr(engine, name) for name in PREFLIGHT_HANDOFFS) == (
+            True, threshold > 0, True, True,
+        )
+        assert engine.last_compression_status == "pending"
+        assert engine.last_compression_noop_reason == ""
+
+
+def test_child_preserves_armed_preflight_handoffs(tmp_path, monkeypatch):
+    pin_char_counter(monkeypatch)
+    with engine_context(tmp_path, window=200_000) as engine:
+        monkeypatch.setattr(engine, "_get_host_fallback_compressor", lambda: None)
+        for name in PREFLIGHT_HANDOFFS:
+            setattr(engine, name, True)
+        before = _snapshot(engine)
+        engine._mark_thread_context_stateless("child")
+        try:
+            assert engine.compress([], force=True) == []
+        finally:
+            engine._clear_thread_context_stateless("child")
+        after = _snapshot(engine)
+        for name in PREFLIGHT_HANDOFFS:
+            assert before[name] is True and after[name] is True
