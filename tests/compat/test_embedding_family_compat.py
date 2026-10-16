@@ -5,6 +5,8 @@ from contextlib import closing
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 import sqlite3
+import struct
+import typing
 from typing import Any, cast
 
 import pytest
@@ -59,6 +61,7 @@ print(json.dumps({'written': 2}))
 OLD_ROLLBACK = OLD_SETUP + '''
 rows = store._load_vectors_for_ids(identity.identity_hash, 2, ['1', '2'])
 assert dict(zip(rows[1], rows[3])) == {'1': [1.0, 0.0], '2': [0.0, 1.0]}
+store._now = lambda: '2000-01-01T00:00:00+00:00'
 store.record_embedding('3', 'summary', 'fixture-model', [1.0, 0.0], identity=identity)
 rows = store._load_vectors_for_ids(identity.identity_hash, 2, ['1', '2', '3'])
 assert dict(zip(rows[1], rows[3])) == {'1': [1.0, 0.0], '2': [0.0, 1.0], '3': [1.0, 0.0]}
@@ -113,8 +116,9 @@ def test_embedding_forward(
 
 
 @pytest.mark.parametrize("reader", tuple(EMBEDDING_READERS))
+@pytest.mark.parametrize("binary", (False, True), ids=("empty-binary", "populated-binary"))
 def test_embedding_rollback(
-    reader: str, tmp_path: Path, old_tree: Callable[..., Path], host_root: Path,
+    reader: str, binary: bool, tmp_path: Path, old_tree: Callable[..., Path], host_root: Path,
 ) -> None:
     path = tmp_path / "lcm.db"
     with closing(SummaryDAG(path)) as dag:
@@ -126,6 +130,14 @@ def test_embedding_rollback(
         identity = EmbeddingIdentity.canonical("fixture", "fixture-model", "", 2, "float32", "little", "summary")
         for key, vector in (("1", [1.0, 0.0]), ("2", [0.0, 1.0])):
             store.record_embedding(key, "summary", "fixture-model", vector, identity=identity)
+        if binary:
+            # An inactive int8 corpus supplies real pre-existing binary rows.
+            store.register_profile("binary-fixture-model", "fixture", 2, dtype="int8")
+            binary_identity = EmbeddingIdentity.canonical(
+                "fixture", "binary-fixture-model", "", 2, "int8", "little", "summary",
+            )
+            store.record_embedding("1", "summary", "binary-fixture-model", [1.0, 0.0], identity=binary_identity)
+            store.register_profile("fixture-model", "fixture", 2)
     before = snapshot(path)
     assert run_reader(old_tree(reader, EMBEDDING_READERS), tmp_path, host_root, OLD_ROLLBACK,
                       bootstrap=OLD_EMBEDDING_BOOTSTRAP) == {
@@ -133,7 +145,48 @@ def test_embedding_rollback(
     }
     after = snapshot(path)
     assert after["tables"] == before["tables"] and after["marker"] == before["marker"]
-    assert [row for row in after["vectors"] if row[0] != "3"] == before["vectors"]
+    if not binary:
+        assert before["binary"] == after["binary"] == []
+    else:
+        assert len(before["binary"]) == 1
+    primary_keys = {
+        "profile": ("identity_hash",),
+        "meta": ("embedded_id", "embedded_kind", "identity_hash"),
+        "vectors": ("embedded_id", "identity_hash"),
+        "binary": ("embedded_id", "identity_hash"),
+    }
+    expected_new = {
+        "profile": {},
+        "meta": {("3", "summary", identity.identity_hash): {
+            "embedded_id": "3", "embedded_kind": "summary", "identity_hash": identity.identity_hash,
+            "embedded_at": "2000-01-01T00:00:00+00:00", "source_token_count": 10, "archived": 0,
+        }},
+        "vectors": {("3", identity.identity_hash): {
+            "embedded_id": "3", "identity_hash": identity.identity_hash, "vec": struct.pack("<2f", 1.0, 0.0),
+        }},
+        "binary": {},
+    }
+    with closing(sqlite3.connect(path)) as conn:
+        for table, keys in primary_keys.items():
+            columns = [row[1] for row in conn.execute(f"PRAGMA table_info(lcm_embedding_{table})")]
+            keyed = []
+            for state in (before, after):
+                rows = [dict(zip(columns, row, strict=True)) for row in state[table]]
+                keyed.append({tuple(row[key] for key in keys): row for row in rows})
+            prior, current = keyed
+            assert current.keys() == prior.keys() | expected_new[table].keys(), table
+            for key, row in prior.items():
+                expected = dict(row)
+                if table == "profile" and key == (identity.identity_hash,):
+                    # Every pinned reader bumps only this counter for a write.
+                    expected["data_version"] += 1
+                assert current[key] == expected, (table, key)
+            for key, row in expected_new[table].items():
+                assert current[key] == row, (table, key)
+
+
+def test_embedding_schema_findings_type_hints() -> None:
+    assert typing.get_type_hints(db_bootstrap.embedding_schema_findings)["return"] == list[SchemaFinding]
 
 
 def test_embedding_registry(tmp_path: Path) -> None:

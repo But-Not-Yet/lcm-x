@@ -20,6 +20,7 @@ from contextlib import closing, contextmanager
 from typing import Iterable, Sequence
 
 from .config import _parse_bool_env, sqlite_mmap_size
+from .schema_families import SchemaFinding
 
 logger = logging.getLogger(__name__)
 _wal_reset_warned = False  # no lock: a rare duplicate warning beats a lock a forked child could inherit held
@@ -1614,7 +1615,7 @@ def embedding_schema_missing(conn: sqlite3.Connection) -> set[str]:
     return required - present
 
 
-def embedding_schema_findings(conn: sqlite3.Connection) -> list[SchemaFinding]:  # noqa: F821
+def embedding_schema_findings(conn: sqlite3.Connection) -> list[SchemaFinding]:
     """Return structural embedding-schema errors, not just missing names.
 
     Feature state is derived and rebuildable, but silently accepting a table
@@ -1623,8 +1624,6 @@ def embedding_schema_findings(conn: sqlite3.Connection) -> list[SchemaFinding]: 
     ``ensure_embedding_tables``; incompatible same-name objects are rejected
     before the named migration marker is published.
     """
-    from .schema_families import SchemaFinding
-
     errors = [SchemaFinding("missing object", name) for name in sorted(embedding_schema_missing(conn))]
     if errors:
         return errors
