@@ -367,20 +367,18 @@ class CompactionMixin:
         leading_anchor_count = self._leading_anchor_count(messages)
         if fresh_tail_start <= leading_anchor_count:
             return False
-        previous_store_id_map = self._current_compress_store_ids_by_message_id
+        store_id_scope = self._compress_run.preserve_store_ids()
         occurrences, v4 = self._replay_occurrences(messages)  # the complete list, sliced (A2, F5)
-        self._current_compress_store_ids_by_message_id = self._get_store_id_map_for_messages(
+        self._compress_run.store_ids_by_message_id = self._get_store_id_map_for_messages(
             messages[leading_anchor_count:fresh_tail_start],
             occurrences[leading_anchor_count:fresh_tail_start] if v4 else None,
         )
-        try:
+        with store_id_scope:
             return any(
                 self._matches_ignore_message_patterns(msg)
                 or self._mapped_stored_row_matches_ignore_message_patterns(msg)
                 for msg in messages[leading_anchor_count:fresh_tail_start]
             )
-        finally:
-            self._current_compress_store_ids_by_message_id = previous_store_id_map
 
     def _leaf_compaction_candidate_status(
         self,
@@ -456,12 +454,12 @@ class CompactionMixin:
             return False, "no eligible raw backlog outside fresh tail", 0
         generated_placeholder_hashes = self._load_generated_ignored_placeholder_hashes()
         if self._compiled_ignore_message_patterns or generated_placeholder_hashes:
-            previous_store_id_map = self._current_compress_store_ids_by_message_id
+            store_id_scope = self._compress_run.preserve_store_ids()
             occurrences, v4 = self._replay_occurrences(messages)  # the complete list, sliced (A2, F5)
-            self._current_compress_store_ids_by_message_id = self._get_store_id_map_for_messages(
+            self._compress_run.store_ids_by_message_id = self._get_store_id_map_for_messages(
                 candidate_raw, occurrences[leading_anchor_count:fresh_tail_start] if v4 else None
             )
-            try:
+            with store_id_scope:
                 filtered_candidate_raw: list[Dict[str, Any]] = []
                 for msg in candidate_raw:
                     content_text = text_content_for_pattern_matching(msg.get("content")) or ""
@@ -479,8 +477,6 @@ class CompactionMixin:
                     ):
                         continue
                     filtered_candidate_raw.append(msg)
-            finally:
-                self._current_compress_store_ids_by_message_id = previous_store_id_map
             candidate_raw = filtered_candidate_raw
             if not candidate_raw:
                 return False, "no eligible raw backlog outside fresh tail", 0
@@ -1755,7 +1751,7 @@ class CompactionMixin:
 
             if candidate_start < fresh_tail_start:
                 step_started = time.monotonic() if threshold_full_sweep_active else 0.0
-                self._current_compress_store_ids_by_message_id = (
+                self._compress_run.store_ids_by_message_id = (
                     premapped_store_ids
                     if premapped_store_ids is not None
                     else self._get_store_id_map_for_messages(working_messages[leading_anchor_count:])
@@ -1797,7 +1793,7 @@ class CompactionMixin:
                         or generated_volatile_placeholder
                     ):
                         mapped_store_id = (
-                            self._current_compress_store_ids_by_message_id.get(
+                            self._compress_run.store_ids_by_message_id.get(
                                 id(working_msg)
                             )
                         )
@@ -2003,7 +1999,7 @@ class CompactionMixin:
             self._store_complete_excluded, self._store_complete_cut, self._store_complete_blocked = [], False, None
             step_started = time.monotonic() if threshold_full_sweep_active else 0.0
             anchored_input = self._identity_anchor_summary_input(
-                selected_input, self._current_compress_store_ids_by_message_id, working_messages, selected_raw_chunk,
+                selected_input, self._compress_run.store_ids_by_message_id, working_messages, selected_raw_chunk,
                 budget=max(1, int(self._config.leaf_chunk_tokens)), accounted_ids=publication_excluded_store_ids,
             )
             if threshold_full_sweep_active and sweep_step_done("identity_anchor", step_started) >= sweep_deadline:
@@ -2126,7 +2122,7 @@ class CompactionMixin:
             source_lineage_chunk = [
                 message for message in source_lookup_chunk if id(message) not in dependent_reply_message_ids
             ]
-            full_map = self._current_compress_store_ids_by_message_id  # #535: the pass maps the whole list
+            full_map = self._compress_run.store_ids_by_message_id  # #535: the pass maps the whole list
             source_store_ids = self._get_store_ids_for_messages(source_lineage_chunk, full_map)
             source_store_ids = sorted(dict.fromkeys(source_store_ids + anchor_claimed_ids))
             consumed_store_ids = self._get_store_ids_for_messages(source_lookup_chunk, full_map)
