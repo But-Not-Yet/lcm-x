@@ -194,6 +194,7 @@ class Run:
         seam.take()
         SKIPS.n = 0
         t_start, m0 = time.time(), time.monotonic()
+        seam.set_event(len(self.events) + 1, row["turn"])
         new = self.engine.compress(view, current_tokens=cur, force=forced)
         wall = round(time.monotonic() - m0, 3)
         calls, sums = seam.take()
@@ -414,6 +415,7 @@ def main():
     ap.add_argument("--checkpoint", default="auto", help="auto (r4 F1 decision checkpoint) | <tokens>")
     ap.add_argument("--turn-end-notify", action="store_true",
                     help="call engine.note_turn_complete() at each user-turn end (live-host hold semantics; P0 cell)")
+    ap.add_argument("--fault-hang", choices=("T", "P"), help="1096-H: one hang (T) or two-turn hang episode (P)")
     ap.add_argument("--checkpoints", default=None, help="manifest ids or lifecycle for v4; comma-separated rows for v3")
     ap.add_argument("--context-length", type=int, default=DEFAULT_CTX)
     ap.add_argument("--batches", type=int, default=0, help="answer only the first N batches (0 = all)")
@@ -425,6 +427,7 @@ def main():
     ap.add_argument("--prefix60k", action="store_true", help="S6 A3: replay to the frozen prefix60k row, the arm's "
                     "own compaction fires once there (LCM_ABSOLUTE_THRESHOLD_TOKENS = view tokens at that gate); no probes")
     args = ap.parse_args()
+    seam.set_fault(args.fault_hang)
     if args.seed_db and not args.full_stream or args.full_stream and (args.checkpoints or args.prefix60k):
         raise SystemExit("--seed-db needs --full-stream; --full-stream excludes --checkpoints and --prefix60k")
     NO_VOYAGE[0] = args.lane == "fake" or args.dry_run
@@ -485,6 +488,8 @@ def main():
                        tail_mode="lcm-fresh-tail", timeout_s=replay_timeout(man["decision_checkpoint"]["tokens"]))
         t0 = time.monotonic()
         view = run.replay()
+        if args.fault_hang:
+            summary["fault_hang"] = seam.fault_receipt()
         summary["replay_wall_s"] = round(time.monotonic() - t0, 2)
         summary["admission"] = run.receipts()
         run.engine.shutdown()
