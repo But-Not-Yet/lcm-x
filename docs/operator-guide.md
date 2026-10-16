@@ -359,9 +359,8 @@ keep the default and appear in `config_source_warnings` in `lcm_status` JSON,
 `/lcm status`, and the `lcm_doctor` configuration check. For example,
 `LCM_SURVIVAL_FIT=flase` keeps `true` and reports the key, a representation of the
 raw value limited to 40 characters, and the value used. Empty or whitespace-only
-values in that loader keep the default without a warning. This checks parsing,
-not numeric ranges or string choices; separately source-tracked fields retain
-their existing validation.
+values in that loader keep the default without a warning.
+Range warnings (`LCM_CONTEXT_THRESHOLD`, `LCM_SURVIVAL_RESERVE`, `LCM_LEAF_CHUNK_TOKENS`, `LCM_SUMMARY_TIMEOUT_MS`), choice warnings (`LCM_EMBEDDING_PROVIDER`, `LCM_PREANSWER_EVIDENCE_MODE`, `LCM_EMBEDDING_STORAGE_DTYPE`), and dropped-input warnings (`LCM_EMPTY_LIFECYCLE_GC_MAX_AGE_HOURS`, `LCM_RECALL_ARM_WEIGHTS`, `LCM_MODEL_THRESHOLDS`) use the same channel without changing values or consumer fallbacks.
 
 `compression.target_ratio` and the host's other built-in-compressor ratios belong
 to the host's built-in compressor and are not read by LCM-X. How much one LCM-X

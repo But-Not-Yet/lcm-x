@@ -43,12 +43,30 @@ def test_fallback_values_unchanged(monkeypatch, key, field, raw, value):
 
 
 @pytest.mark.usefixtures("isolated_env")
-def test_valid_env_warning_consumers(monkeypatch, tmp_path, caplog):
+@pytest.mark.parametrize("extra", [
+    {},
+    *[{"LCM_RECALL_ARM_WEIGHTS": raw} for raw in
+      ("fts=0.5,", "fts=0.5,,summary=1.0", ",", "", " \t")],
+    *[{"LCM_MODEL_THRESHOLDS": raw} for raw in
+      ("glm-5.2:0.70,", ",", "", " \t")],
+    *[{"LCM_EMPTY_LIFECYCLE_GC_MAX_AGE_HOURS": raw} for raw in ("", " \t")],
+])
+def test_valid_env_warning_consumers(monkeypatch, tmp_path, caplog, extra):
     monkeypatch.setenv("LCM_SURVIVAL_FIT", "true")
     monkeypatch.setenv("LCM_MAX_ASSEMBLY_TOKENS", "100000")
     monkeypatch.setenv("LCM_SURVIVAL_RESERVE", "0.15")
     monkeypatch.setenv("LCM_EMBEDDINGS_ENABLED", "false")
     monkeypatch.setenv("LCM_TEMPORAL_ROLLUPS_ENABLED", "false")
+    for key, value in {
+        "LCM_CONTEXT_THRESHOLD": "0.75", "LCM_LEAF_CHUNK_TOKENS": "24000",
+        "LCM_SUMMARY_TIMEOUT_MS": "120000", "LCM_EMBEDDING_PROVIDER": "voyage",
+        "LCM_PREANSWER_EVIDENCE_MODE": "off", "LCM_EMBEDDING_STORAGE_DTYPE": "float32",
+        "LCM_EMPTY_LIFECYCLE_GC_MAX_AGE_HOURS": "24",
+        "LCM_RECALL_ARM_WEIGHTS": "fts=.5", "LCM_MODEL_THRESHOLDS": "model:.75",
+    }.items():
+        monkeypatch.setenv(key, value)
+    for key, value in extra.items():
+        monkeypatch.setenv(key, value)
     c = config.LCMConfig.from_env()
     c.database_path = str(tmp_path / "lcm.db")
     with caplog.at_level(logging.WARNING):
@@ -77,7 +95,11 @@ def test_uniform_warning_table(monkeypatch, key, field, raw, value):
     assert getattr(c, field) == value
     invalid = raw in ("flase", "abc", "24k", "1.5")
     expected = [f"invalid env {key}={raw!r} ignored; using {value!r}"] if invalid else []
-    assert c.config_source_warnings == expected
+    if key == "LCM_SURVIVAL_RESERVE" and raw == "7.5":
+        assert len(c.config_source_warnings) == 1
+        assert "clamped to 0.9" in c.config_source_warnings[0]
+    else:
+        assert c.config_source_warnings == expected
 
 
 @pytest.mark.usefixtures("isolated_env")
@@ -141,4 +163,37 @@ def test_ranges_choices_and_strings_unchanged(monkeypatch, key, field, raw, valu
     monkeypatch.setenv(key, raw)
     c = config.LCMConfig.from_env()
     assert getattr(c, field) == value
-    assert c.config_source_warnings == []
+    if key == "LCM_SUMMARY_MODEL":
+        assert c.config_source_warnings == []
+    else:
+        assert len(c.config_source_warnings) == 1
+        assert key in c.config_source_warnings[0]
+
+
+@pytest.mark.usefixtures("isolated_env")
+@pytest.mark.parametrize("key,raw", [
+    ("LCM_SURVIVAL_RESERVE", "-.1"),
+    ("LCM_EMBEDDING_STORAGE_DTYPE", "float8"),
+])
+def test_range_choice_warnings_reach_consumers(monkeypatch, tmp_path, caplog, key, raw):
+    monkeypatch.setenv(key, raw)
+    monkeypatch.setenv("LCM_EMBEDDINGS_ENABLED", "false")
+    monkeypatch.setenv("LCM_TEMPORAL_ROLLUPS_ENABLED", "false")
+    c = config.LCMConfig.from_env()
+    c.database_path = str(tmp_path / "lcm.db")
+    expected = list(c.config_source_warnings)
+    assert len(expected) == 1
+    engine = LCMEngine(config=c, hermes_home=str(tmp_path))
+    try:
+        engine.on_session_start("warning-channel", context_length=200000)
+        status = engine.get_status()
+        assert status["config_source_warnings"] == expected
+        assert status["config_source_warnings"] is not c.config_source_warnings
+        assert json.loads(tools.lcm_status({}, engine=engine))["config_source_warnings"] == expected
+        assert "config_source_warnings: " + expected[0] in handle_lcm_command("status", engine)
+        doctor = json.loads(tools.lcm_doctor({}, engine=engine))
+        check = next(row for row in doctor["checks"] if row["check"] == "config_validation")
+        assert check == {"check": "config_validation", "status": "warn", "detail": expected}
+    finally:
+        engine.shutdown()
+    assert not any(key in record.message for record in caplog.records)
