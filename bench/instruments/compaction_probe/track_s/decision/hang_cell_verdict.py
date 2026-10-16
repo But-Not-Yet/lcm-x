@@ -9,7 +9,11 @@ import math
 from pathlib import Path
 
 
-def arm(path, variant):
+def arm(path, variant, sha):
+    cell = json.loads(path.with_name("cell.json").read_text())
+    if cell["product_sha"] != sha or cell["fault"] != variant:
+        raise ValueError(f"{path}: cell product_sha or fault differs from declaration")
+    identity = {key: cell[key] for key in ("seeds", "kit_sha", "arm")}
     data = json.loads(path.read_text())
     verdict = data["verdict"]
     if verdict["result"] not in ("PASS", "FAIL") or verdict["complete"] is not True:
@@ -39,25 +43,39 @@ def arm(path, variant):
         if type(count) is not int or count < 1 or (variant == "T" and count != 1):
             raise ValueError("fault did not fire as declared per run")
         counts.append(count)
+        for key in ("long_waits", "max_long_waits_in_one_turn"):
+            if type(run[key]) is not int or run[key] < 0:
+                raise ValueError(f"invalid per-run {key}")
     if sum(counts) != metrics["faulted_calls"]:
         raise ValueError("pooled faulted_calls disagrees with per-run counts")
-    return {"arm": name, "d7": verdict, **metrics}
+    return {"arm": name, "d7": verdict, **metrics}, data["per_run"], identity
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--base", type=Path, required=True)
     ap.add_argument("--candidate", type=Path, required=True)
+    ap.add_argument("--base-sha", required=True)
+    ap.add_argument("--candidate-sha", required=True)
     ap.add_argument("--variant", choices=("T", "P"), required=True)
     ap.add_argument("--json", type=Path, required=True)
     args = ap.parse_args(argv)
     out = {"variant": args.variant}
     try:
-        base, candidate = arm(args.base, args.variant), arm(args.candidate, args.variant)
+        base, base_runs, base_identity = arm(args.base, args.variant, args.base_sha)
+        candidate, candidate_runs, candidate_identity = arm(args.candidate, args.variant, args.candidate_sha)
+        if base_identity != candidate_identity:
+            raise ValueError("cell seeds, kit_sha or arm differ")
+        if base_runs.keys() != candidate_runs.keys():
+            raise ValueError("per_run key sets differ")
         out.update(base=base, candidate=candidate)
+        out["per_run"] = {run_id: {side: {key: run[key] for key in ("long_waits", "max_long_waits_in_one_turn")}
+                                   for side, run in (("base", base_runs[run_id]), ("candidate", candidate_runs[run_id]))}
+                          for run_id in base_runs}
         passed = (candidate["dropped_rows"] == 0 and candidate["long_waits"] <= base["long_waits"]
                   if args.variant == "T" else
-                  candidate["long_waits"] <= base["long_waits"] + 1 and candidate["max_long_waits_in_one_turn"] <= 1)
+                  all(row["candidate"]["long_waits"] <= row["base"]["long_waits"] + 1
+                      and row["candidate"]["max_long_waits_in_one_turn"] <= 1 for row in out["per_run"].values()))
         out["result"] = "PASS" if passed else "FAIL"
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         out.update(result="INVALID", error=str(exc))

@@ -3,6 +3,9 @@
 # Only an observed 429 / usage-limit marker brakes the cell (exit 3).
 # FACTS_FLOOR is the cp-304 floor the release declares (RELEASE-READINESS-V1 D7: the previous GA's D7 mean - 0.10).
 set -eu
+if [ "${S2_FAULT_SLEEP_S+x}" = x ]; then
+  echo "STOP: S2_FAULT_SLEEP_S must be unset for a cell" >&2; exit 2
+fi
 FAULT=${FAULT:-}
 case "$FAULT" in ''|T|P) ;; *) echo "STOP: FAULT must be empty, T or P" >&2; exit 2;; esac
 for var in PRODUCT_WT PRODUCT_SHA KIT_DIR MATERIAL OUT PY GLM_API_KEY FACTS_FLOOR; do
