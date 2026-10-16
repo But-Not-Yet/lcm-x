@@ -26,8 +26,13 @@ SITE_GROUPS = ("imports", "config_getattr", "private_refs", "ddl_outside_schema"
 LIFETIMES = {"process", "profile", "conversation", "session", "invocation"}
 
 
-def python_files(root):
-    for directory, dirs, files in os.walk(root):
+def python_files(root, warnings=None):
+    def unreadable(error):
+        # os.walk skips a directory it cannot list; record it so an incomplete scan never replaces the baseline.
+        if warnings is not None:
+            warnings.append(f"Could not read {Path(error.filename).relative_to(root).as_posix()}")
+
+    for directory, dirs, files in os.walk(root, onerror=unreadable):
         dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in SKIP)
         for name in sorted(files):
             if name.endswith(".py"):
@@ -113,8 +118,14 @@ class Scan(ast.NodeVisitor):
                     self.site("imports", node.lineno, target)
 
     def visit_Expr(self, node):
-        # Standalone string expressions are documentation, not SQL literals in use.
-        if not isinstance(node.value, ast.Constant) or not isinstance(node.value.value, str):
+        # Standalone string expressions (plain or f-strings) are documentation, not SQL literals in use.
+        value = node.value
+        if isinstance(value, ast.JoinedStr):
+            # Skip the literal fragments, but still visit evaluated expressions (they may execute DDL).
+            for part in value.values:
+                if isinstance(part, ast.FormattedValue):
+                    self.visit(part)
+        elif not (isinstance(value, ast.Constant) and isinstance(value.value, str)):
             self.generic_visit(node)
 
     def visit_Constant(self, node):
@@ -161,7 +172,7 @@ def collect(root):
     result.update(version=1, functions={}, file_loc={}, attributes={}, warnings=[],
                   ddl_operations=Counter(), ddl_modules=set())
     classes, files = {}, []
-    for path in python_files(root):
+    for path in python_files(root, result["warnings"]):
         relative = path.relative_to(root)
         name = relative.as_posix()
         try:
@@ -298,6 +309,8 @@ def main():
     try:
         metrics = collect(Path.cwd().resolve())
         lifetimes = load_lifetimes(Path("scripts/maintainability/attr_lifetimes.json"), metrics["warnings"])
+        # Only an incomplete collection blocks a write; an unreadable or older baseline is what a write repairs.
+        collection_warnings = list(metrics["warnings"])
         baseline = {}
         if args.baseline.exists():
             try:
@@ -310,9 +323,10 @@ def main():
         elif not args.write_baseline:
             metrics["warnings"].append("Baseline missing; comparing to empty baseline.")
         if args.write_baseline:
-            if metrics["warnings"]:
+            if collection_warnings:
                 metrics["warnings"].append("Baseline not written because collection is incomplete.")
             else:
+                metrics["warnings"] = []
                 args.baseline.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n")
                 baseline = metrics
         report = {"metrics": metrics, "changes": compare(metrics, baseline, lifetimes)}
