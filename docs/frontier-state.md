@@ -32,7 +32,7 @@ transitions are named, unit-tested and visible in review. Behaviour does not cha
 | `_compress_commit_proof` | What the last `compress()` consumed and returned (identities), plus one-shot flags. | The durable commit proof, which is persisted only for some statuses (compaction.py:798-799). | 10, plus the binding filter loop at engine.py:3906 |
 | `_last_emission_descriptors` | Rows LCM itself emitted (carriers, projections) in the last output. | Inside the durable proof when that proof is persisted. | 5, plus the same loop |
 
-**Counting.** There are 63 attribute writes in 62 statements: survival_fit.py:229 assigns two attributes. Earlier plan text said
+**Counting.** There are 63 direct attribute writes in 62 assignment statements: survival_fit.py:229 assigns two attributes. On top of these come one dynamic setter (the binding filter at engine.py:3908, which clears the proof, the descriptors or both) and six in-place mutations of the proof dict (engine.py:3847, 3864, 3866, 3867, 4500, 5903). Earlier plan text said
 "12 writers"; that counted the writer methods of `_ingest_cursor`, not its statements. A regex count gives 22 for `_ingest_cursor`
 because it misses the tuple at survival_fit.py:229 and the annotated assignment in `__init__`.
 
@@ -64,11 +64,14 @@ exactly. No site may gain or lose a write.
 | **bind frontier** | engine.py:2442 (every bind), 3458 (rebind after an unadopted commit), 3827 (rotation child) | frontier from the lifecycle row |
 | **publish frontier** | compaction.py:2141 (leaf pass), engine.py:3498 (in-place boundary: publish the max, then read it back) | frontier |
 | **schedule reconcile** | engine.py:5264, 5268, 5278 (after every non-carry-over bind; 5278 is the probe-failure fallback) | needs_reconcile |
-| **consult proof** (first ingest after a compaction) | engine.py:5903-5933 | One of four outcomes. *Confirm* (5917): proof = None. *Host kept the input* (5921-5923): cursor = len(input); proof = None. *Remapped* (5929-5931): cursor = remapped; proof = None. *Unprovable* (5913, 5933): needs_reconcile = True. |
+| **mark end consumed** | engine.py:4500 (`end_consumed = True` on the existing dict, BEFORE finalization and its exception handler at 4501-4512) | proof dict flag (same dict identity) |
+| **mark consulted** | engine.py:5903 (`consulted = True` on the existing dict, BEFORE the comparisons at 5904-5933, including paths that keep the proof) | proof dict flag (same dict identity) |
+| **consult proof** (first ingest after a compaction; applied after the comparisons) | engine.py:5904-5933 | One of four outcomes. *Confirm* (5917): proof = None. *Host kept the input* (5921-5923): cursor = len(input); proof = None. *Remapped* (5929-5931): cursor = remapped; proof = None. *Unprovable* (5913, 5933): needs_reconcile = True. |
 | **reconcile from store** | engine.py:5990, 5994 | cursor; needs_reconcile = False |
 | **rewind** | engine.py:6053 (the identity anchor finds that the cursor overstates the stored prefix) | cursor |
 | **advance** | engine.py:6337 (all new rows filtered), 6428 (new rows stored) | cursor |
-| **record proof** | compaction.py:720 (clear), 792 and 797 (set), 801 (clear on exception) | proof; descriptors |
+| **clear proof** | compaction.py:720 (at the start of every record), 801 (on exception) | proof only; the descriptors are never cleared here |
+| **publish proof** | compaction.py:792 then 797 (descriptors first, then the proof; the durable persist at 799 runs between them and the exception handler) | descriptors, then proof. The early returns at :728 and :764 leave the old descriptors in place; a persist exception at :799 leaves the new descriptors in place. |
 | **bind fit emission** | compaction.py:856 (fit carrier with no proof; never persisted) | descriptors |
 | **filter by binding** | engine.py:3906 (after every `on_session_start`) | proof and/or descriptors = None |
 | **transfer to child** | engine.py:3847-3867 (re-key in place), 3860 (descriptors = None on a binding mismatch) | proof; descriptors |
@@ -83,12 +86,14 @@ class FrontierState:
     compacted_store_id: int = 0
     commit_proof: dict[str, Any] | None = None
     emission_descriptors: dict[str, Any] | None = None
-    pending_reset_store_id: int | None = None
+    pending_reset_store_id: int = 0
 ```
 
 There is one method per transition in section 3, each writing exactly that row's fields. For example, `adopt(n)`,
 `adopt_trusted(n)`, `invalidate(drop_proof=...)`, `restart_cursor()`, `reset_progress()`, `reset_proofs()`,
-`bind_frontier(store_id)`, `publish_frontier(store_id)`, `consult(outcome)`, `reconcile(n)`, `rewind(n)` and `advance(n)`.
+`bind_frontier(store_id)`, `publish_frontier(store_id)`, `clear_proof()`, `publish_descriptors(d)` and `publish_proof(p)` (two calls, so the persist and its exception boundary stay between them), `mark_end_consumed()`, `mark_consulted()`, `consult(outcome, cursor=...)`, `reconcile(n)`, `rewind(n)` and `advance(n)`.
+
+The one-shot flags are set at their current positions, on the same dict object, before the reads and comparisons that follow them today. The consult outcome is applied separately, afterwards. Moving a flag into a post-computation method would change the state that an exception leaves behind.
 
 Rules:
 
@@ -98,6 +103,7 @@ Rules:
    are (engine, compaction, reconcile). They pass the result in, for example `consult(outcome)` with an outcome enum. This keeps
    FrontierState pure, so each transition gets a plain unit test.
 3. **No logging or exception changes.** Log lines stay at their current call sites with the same logger names.
+   Getters return the original dicts, never copies. Thread-locality does not change: only `_thread_context` is thread-local (engine.py:807), and the frontier stays per engine.
 4. **Copies are explicit.**
    - `clone_for_agent` and `__deepcopy__` build a fresh engine (engine.py:858-917), so each clone already gets a fresh frontier from
      `__init__`.
@@ -109,19 +115,20 @@ Rules:
 
 ## 5. Slices
 
-Each slice is its own refactor-only PR with byte-identical behaviour. Each runs the full suite at base and head with an identical
-collected set, runs the exactly-once machines at the CI and nightly profiles with identical pass/xfail sets, and includes an AST
-comparison showing that only the frontier statements changed.
+Each slice is its own refactor-only PR with byte-identical behaviour. Each slice proves it in three ways:
+- the pre-existing tests give identical outcomes at base and head, with the intentional new tests listed separately;
+- the exactly-once machines give identical pass/xfail sets at the CI and nightly profiles;
+- an AST comparison shows that only frontier statements changed, apart from the listed structural changes (new module, properties, removed helper).
 
 | Slice | Content | Notes |
 |---|---|---|
 | S0 | This note. | |
-| S1 | Add `FrontierState`; the engine holds `self._frontier`. The five old names become properties that read and write through it. No call site changes. | Tests and fixtures that write the old names keep working (for example tests/legacy_native_state.py:192-343). Engines built without `__init__` in tests (4 sites use `LCMEngine.__new__`: test_per_model_threshold.py:121, test_path_containment.py:62 and :97, test_issue_646_prompt_version.py:276) never get `_frontier`; S1 makes the properties tolerate that or gives those fixtures the field. The #1240 ratchet's attribute-write counts move; update its baseline in the same PR. |
+| S1 | Add `FrontierState`; the engine holds `self._frontier`. The five old names become properties that read and write through it. No call site changes. | Tests and fixtures that write the old names keep working (for example tests/legacy_native_state.py:192-343). Engines built without `__init__` in tests (4 sites: `LCMEngine.__new__` at test_per_model_threshold.py:121 and test_path_containment.py:62 and :97, and `object.__new__(LCMEngine)` at test_issue_646_prompt_version.py:276) never get `_frontier`; S1 makes the properties tolerate that or gives those fixtures the field. The #1240 ratchet's attribute-write counts move; update its baseline in the same PR. |
 | S2 | compaction.py call sites: adopt, adopt and trust, publish frontier, record proof, bind fit emission. | |
 | S3 | engine.py boundary sites: invalidate, restart cursor, bind frontier, filter by binding, transfer to child. | Waits for the v0.27.1 boundary fixes (gate 1). |
 | S4 | engine.py ingest sites: schedule reconcile, consult proof (typed outcome), reconcile from store, rewind, advance. | |
 | S5 | reset_state.py and survival_fit.py. | B2 PR3a first moves survival_fit.py:229-231 into a caller-owned apply step; S5 edits that step. |
-| S6 | The static guard. Remove the setters; getters stay while outside readers remain (tools.py:8552, identity_anchor.py, reconcile.py, store_complete.py). Fold the shadow `pending_reset_store_id` into the state, and delete the dead `_persist_frontier_marker`. | |
+| S6 | First initialize `FrontierState` directly in `__init__` (engine.py:581, 590-596) and migrate the remaining test and fixture writers to the state methods (tests/legacy_native_state.py:192-193, 314-324, 337-338, and the writer it installs on the class at :343). Only then remove the setters; the getters stay while outside readers remain (tools.py:8552, identity_anchor.py, reconcile.py, store_complete.py). Add the static guard, scoped to production code. Fold the shadow `pending_reset_store_id` into the state, keeping its capture (engine.py:4618), clear (2627) and consumption (2639-2643, 3686-3697) sites. Delete the dead `_persist_frontier_marker`. | Until every writer is migrated, the setters stay. |
 
 ## 6. What the owner enables (fix-class, not part of C4)
 
@@ -133,8 +140,9 @@ change.
   its input either persists its proof or marks the cursor for reconcile". It belongs with #1117's fix, where #1286 also folds in.
 - **Writes from a bypassed context.** `_record_compress_commit_proof` clears the proof (compaction.py:720) before its bypass
   check (:724). An in-process auxiliary thread that shares the engine can therefore clear the foreground session's in-memory
-  proof. This comes from code reading and is being reproduced before anything is filed. Once the transitions take the binding,
-  they can refuse writes from a bypassed context.
+  proof. A deterministic engine-level test reproduces it: on the host commit path, 6 assistant rows are stored twice and none
+  are lost. Whether supported hosts reach this path is being checked before an issue is filed. Once the transitions take the
+  binding, they can refuse writes from a bypassed context.
 - **Probe-failure fallback.** When the reconcile probe fails, engine.py:5278 sets needs_reconcile = False with the cursor at 0, which
   trusts a zero cursor. This is worth its own look.
 - **Debug check.** An opt-in assertion compares the frontier with the lifecycle row after each `compress()` and session end, for
@@ -148,9 +156,12 @@ change.
 2. **This note is accepted.**
 3. **Characterization net, per slice.** Each write statement a slice touches must be executed by at least one test that fails when
    that write's value changes. A slice proves this with a mutation pass over its own statements.
-   - **Today's data.** The exactly-once machines (compress, recovery fit) execute 30 of the 62 statements, at both the CI and the
-     nightly profile; more examples reach none of the rest. The full test suite's coverage of the same statements is recorded with
-     the C4 tracking issue.
+   - **Today's data** (line coverage at rc8, Hypothesis 6.141.1).
+     - The exactly-once machines (compress, recovery fit) execute 30 of the 62 statements, at both the CI and the nightly profile;
+       more examples reach none of the rest.
+     - The rest of the test suite brings this to 58 of 62.
+     - Four statements run in no test: engine.py:3860, 4121-4122 and 5278.
+     - The receipts are recorded with the C4 tracking issue.
    - **What reaches the gaps.** Grouped by the host operation that would reach them:
      - rotation (engine.py:3817-3877, 4121-4122): the rotation rule now in review;
      - an unadopted or refused commit, and the host's consecutive-user merge (engine.py:3458, 5913-5933);
@@ -159,6 +170,8 @@ change.
      - stub-first exit at the managed fleet profile policy (compaction.py:1086);
      - cleanup-only and no-leaf reassembly (compaction.py:1361, 2332);
      - publication and proof faults (compaction.py:801, 966-967; engine.py:5278).
+   - **The four statements no test runs** need a targeted test before the slice that moves them: the descriptor clear on a
+     rotation binding mismatch (3860), the bypassed-source boundary reset (4121-4122) and the reconcile-probe fallback (5278).
    - **Ordering.** These are the next exactly-once operations, or targeted seeds where an operation is not host-shaped.
 
 ## 8. Not in scope
