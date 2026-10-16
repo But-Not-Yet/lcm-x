@@ -34,7 +34,9 @@ def test_proven_rows_name_a_receipt():
     for row in _rows():
         proof = row[5]
         assert proof == "gap" or re.fullmatch(r"proven: .*(#\d+|https://\S+).*", proof), (row[0], proof)
-        for target, anchor in re.findall(r"\]\((invariants/[^)#]+\.md)#([^)]+)\)", proof):
+        links = re.findall(r"\]\((invariants/[^)#]+\.md)#([^)]+)\)", proof)
+        assert proof == "gap" or links, (row[0], "a proven row links its receipt", proof)
+        for target, anchor in links:
             receipt = DOC.parent / target
             assert receipt.is_file(), (row[0], target)
             headings = re.findall(r"^## (.+)$", receipt.read_text(encoding="utf-8"), re.MULTILINE)
