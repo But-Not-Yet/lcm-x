@@ -120,7 +120,12 @@ class Scan(ast.NodeVisitor):
     def visit_Expr(self, node):
         # Standalone string expressions (plain or f-strings) are documentation, not SQL literals in use.
         value = node.value
-        if not (isinstance(value, ast.JoinedStr) or isinstance(value, ast.Constant) and isinstance(value.value, str)):
+        if isinstance(value, ast.JoinedStr):
+            # Skip the literal fragments, but still visit evaluated expressions (they may execute DDL).
+            for part in value.values:
+                if isinstance(part, ast.FormattedValue):
+                    self.visit(part)
+        elif not (isinstance(value, ast.Constant) and isinstance(value.value, str)):
             self.generic_visit(node)
 
     def visit_Constant(self, node):
@@ -304,6 +309,8 @@ def main():
     try:
         metrics = collect(Path.cwd().resolve())
         lifetimes = load_lifetimes(Path("scripts/maintainability/attr_lifetimes.json"), metrics["warnings"])
+        # Only an incomplete collection blocks a write; an unreadable or older baseline is what a write repairs.
+        collection_warnings = list(metrics["warnings"])
         baseline = {}
         if args.baseline.exists():
             try:
@@ -316,9 +323,10 @@ def main():
         elif not args.write_baseline:
             metrics["warnings"].append("Baseline missing; comparing to empty baseline.")
         if args.write_baseline:
-            if metrics["warnings"]:
+            if collection_warnings:
                 metrics["warnings"].append("Baseline not written because collection is incomplete.")
             else:
+                metrics["warnings"] = []
                 args.baseline.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n")
                 baseline = metrics
         report = {"metrics": metrics, "changes": compare(metrics, baseline, lifetimes)}
