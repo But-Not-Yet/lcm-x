@@ -25,9 +25,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agent.context_engine import ContextEngine
 
-from .codex_routing import (
-    _codex_oauth_context_cap,
-    _is_codex_gpt55_route,
+from .compaction_policy import (
+    assembly_token_cap,
+    effective_context_length,
+    resolve_threshold,
+    threshold_tokens,
 )
 from .config import LCMConfig
 from .dag import SummaryDAG, SummaryNode
@@ -407,7 +409,6 @@ _SESSION_END_BUSY_TIMEOUT_MS = 50
 _CONDENSATION_LIGHT_GROUP_TOKENS = 512
 # #1123: the smallest source the adaptive leaf rescue shrinks to (the pre-v0.27.0 default leaf chunk)
 _LEAF_RESCUE_FLOOR_TOKENS = 8_000
-_CODEX_GPT55_COMPACTION_THRESHOLD = 0.85
 _TOTAL_COMPACTIONS_SCOPE = "current_conversation"
 
 # Auto-focus topic derivation: infer a compact focus hint from the most recent
@@ -1133,39 +1134,12 @@ class LCMEngine(
             if getattr(self._config, "config_sources", None)
             else "manual_or_default"
         )
-        explicit_lcm_override = source in {
-            "env:LCM_CONTEXT_THRESHOLD",
-            "config_yaml:lcm.context_threshold",
-        }
         route_model = self.model if model is None else model
         route_provider = self.provider if provider is None else provider
-        # Per-model threshold overrides take priority over everything else.
-        # Longest substring match wins (so "glm-5.2-1M" beats "glm-5.2").
-        if self._config.model_thresholds and route_model:
-            best_key = ""
-            for key in self._config.model_thresholds:
-                if key in route_model and len(key) > len(best_key):
-                    best_key = key
-            if best_key:
-                override = float(self._config.model_thresholds[best_key])
-                return (
-                    override,
-                    f"model_thresholds:{best_key}",
-                    {"from": configured, "to": override},
-                )
-        # 5.6 deliberately excluded — F59 measured the standard threshold regime at 100% retention on gpt-5.6-sol; extension requires its own registered run.
-        if (
-            _is_codex_gpt55_route(route_model, route_provider)
-            and self._config.codex_gpt55_autoraise_enabled
-            and not explicit_lcm_override
-            and configured < _CODEX_GPT55_COMPACTION_THRESHOLD
-        ):
-            return (
-                _CODEX_GPT55_COMPACTION_THRESHOLD,
-                "codex_gpt55_autoraise",
-                {"from": configured, "to": _CODEX_GPT55_COMPACTION_THRESHOLD},
-            )
-        return configured, source, None
+        return resolve_threshold(
+            configured, source, self._config.model_thresholds,
+            self._config.codex_gpt55_autoraise_enabled, route_model, route_provider,
+        )
 
     def _effective_context_length(
         self,
@@ -1176,14 +1150,7 @@ class LCMEngine(
     ) -> tuple[int, int | None, str]:
         route_model = self.model if model is None else model
         route_provider = self.provider if provider is None else provider
-        cap = _codex_oauth_context_cap(route_model, route_provider)
-        if cap is not None and raw_context_length > cap:
-            return (
-                cap,
-                cap,
-                "codex_oauth_context_cap",
-            )
-        return raw_context_length, None, ""
+        return effective_context_length(raw_context_length, route_model, route_provider)
 
     def _effective_threshold_tokens(self, context_threshold_tokens: int) -> int:
         """Return the host-visible preflight trigger token count.
@@ -1195,11 +1162,7 @@ class LCMEngine(
         tool/schema-heavy request can skip host preflight entirely.
         """
         assembly_cap = self._effective_assembly_token_cap()
-        if assembly_cap is not None and assembly_cap > 0:
-            if context_threshold_tokens > 0:
-                return min(context_threshold_tokens, assembly_cap)
-            return assembly_cap
-        return context_threshold_tokens
+        return threshold_tokens(context_threshold_tokens, assembly_cap)
 
     def _set_context_length(
         self,
@@ -8634,26 +8597,16 @@ class LCMEngine(
         - max_assembly_tokens: explicit hard cap
         - reserve_tokens_floor: keep headroom inside context_length
         """
-        caps: list[int] = []
-
-        if self._config.max_assembly_tokens > 0:
-            caps.append(self._config.max_assembly_tokens)
-
-        if self.context_length > 0 and self._config.reserve_tokens_floor > 0:
-            reserve_cap = self.context_length - self._config.reserve_tokens_floor
-            if reserve_cap > 0:
-                caps.append(reserve_cap)
-            else:
-                logger.warning(
-                    "LCM reserve_tokens_floor=%d disables reserve-based assembly cap because context_length=%d",
-                    self._config.reserve_tokens_floor,
-                    self.context_length,
-                )
-
-        if not caps:
-            return None
-
-        return max(1, min(caps))
+        cap, reserve_floor_disabled = assembly_token_cap(
+            self.context_length, self._config.max_assembly_tokens, self._config.reserve_tokens_floor,
+        )
+        if reserve_floor_disabled:
+            logger.warning(
+                "LCM reserve_tokens_floor=%d disables reserve-based assembly cap because context_length=%d",
+                self._config.reserve_tokens_floor,
+                self.context_length,
+            )
+        return cap
 
     # -- Internal: helpers -------------------------------------------------
 
