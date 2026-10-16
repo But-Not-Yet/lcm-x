@@ -32,6 +32,12 @@ _SYNTHETIC_ASSISTANT_NOISE = {
 }
 
 
+
+def _hide_keys() -> frozenset:
+    """Lazy (engine imports this module): the display keys that hide a row from host history."""
+    from .engine import _model_only_display_metadata_keys
+    return _model_only_display_metadata_keys()
+
 def _tool_call_id(tool_call: Any) -> str:
     if not isinstance(tool_call, dict):
         return ""
@@ -155,8 +161,8 @@ def _merge_adjacent_assistant_messages(
             generated_ids.discard(id(collapsed[-1]))
             if generated:
                 generated_ids.add(id(prev))
-            elif "model_only" in (prev.get("display_metadata") or {}):
-                metadata = {key: value for key, value in prev["display_metadata"].items() if key != "model_only"}
+            elif (hide_keys := _hide_keys()) & set(prev.get("display_metadata") or {}):
+                metadata = {key: value for key, value in prev["display_metadata"].items() if key not in hide_keys}
                 if metadata:
                     prev["display_metadata"] = metadata
                 else:

@@ -118,10 +118,12 @@ def test_r2_survival_fit_stamps_standalone_summary(engine, monkeypatch, key):
     assert "display_metadata" not in unsupported
 
 
+@pytest.mark.parametrize("key", ["model_only", "host_model_only"])
 @pytest.mark.parametrize("origin", [False, True], ids=["empty-metadata", "keep-other-metadata"])
 @pytest.mark.parametrize("path", ["assistant-merge", "prepend-text", "prepend-list", "prepend-dict"])
-def test_r2_human_text_merge_removes_stale_marker(origin, path):
-    metadata = {"model_only": True, **({"origin": "host"} if origin else {})}
+def test_r2_human_text_merge_removes_stale_marker(monkeypatch, key, origin, path):
+    _host(monkeypatch, key)  # the host-advertised key is cleared too, not only the literal one
+    metadata = {key: True, **({"origin": "host"} if origin else {})}
     row = {"role": "assistant", "content": "Earlier generated context.", "display_metadata": metadata}
     if path == "assistant-merge":
         human = {"role": "assistant", "content": "Human-visible reply."}
@@ -134,14 +136,14 @@ def test_r2_human_text_merge_removes_stale_marker(origin, path):
                           {"type": "text", "text": "Human-visible reply."})
         merged = LCMEngine._prepend_generated_context_to_message(row, "Generated context.")
     assert "Human-visible reply." in str(merged["content"])
-    assert "model_only" not in merged.get("display_metadata", {})
+    assert key not in merged.get("display_metadata", {})
     assert merged.get("display_metadata") == ({"origin": "host"} if origin else None)
-    assert row["display_metadata"] is metadata and metadata["model_only"] is True
+    assert row["display_metadata"] is metadata and metadata[key] is True
     if path == "assistant-merge":
         other = {"role": "assistant", "content": "More generated context."}
         generated = [row, other]
         merged = _merge_adjacent_assistant_messages([row, other], generated_rows=generated)[0]
-        assert generated == [merged] and merged["display_metadata"]["model_only"] is True
+        assert generated == [merged] and merged["display_metadata"][key] is True
 
 
 def test_r2_over_cap_trim_tracks_generated_summary(engine, monkeypatch, caplog):
