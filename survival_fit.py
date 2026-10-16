@@ -393,10 +393,12 @@ class SurvivalFitMixin:
         return f"{text}\n\n{notice}"
 
     def _survival_projection(self, turn: List[Dict[str, Any]], store_ids, limit: int) -> List[Dict[str, Any]]:
-        """The newest turn, its largest stored rows projected until it fits (tool outputs first, then
-        others); never a row that is not stored, never an empty list. A projection is a pure function of
-        the stored row and the parameters its mark carries (store id, token count, head/tail), so a
-        re-ingest recognises it by recomputing it from that row (``_survival_projection_source``)."""
+        """The newest turn, its largest stored rows projected until it fits (tool outputs
+        first, then others; user rows last, and only to fit); never an unstored row,
+        never an empty list. A projection is a pure function of the stored row and
+        its mark's parameters (store id, tokens, head/tail), so a re-ingest recognises
+        it by recomputing it from that row (``_survival_projection_source``).
+        """
         out = list(turn)
         order = sorted(range(len(out)), key=lambda i: (out[i].get("role") != "tool", -count_message_tokens(out[i])))
         for index in order:
@@ -422,6 +424,28 @@ class SurvivalFitMixin:
                          if key != "tool_calls" or value}
             if count_message_tokens(projected) < tokens:
                 out[index] = projected
+        for roles in (("tool", "assistant"), ("user",)):
+            if self._survival_measure(out) <= limit:
+                break
+            # #1220: exhaust head forms before short-row marks; user rows last, and only to fit.
+            for index in order:
+                source = turn[index]
+                if source.get("role") not in roles:  # skip before measuring: the user pass passes every other row
+                    continue
+                if self._survival_measure(out) <= limit:
+                    break
+                tokens = count_message_tokens(source)
+                if id(source) not in store_ids or tokens < 256:
+                    continue
+                row = self._store.get(store_ids[id(source)])
+                if (not row or row.get("role") != source.get("role")
+                        or len(normalize_content_value(row.get("content")) or "") > 2 * _HEAD):
+                    continue
+                fields = self._survival_projected_fields(row, tokens, _HEAD, _TAIL, legacy=True)
+                projected = {key: value for key, value in {**out[index], **fields}.items()
+                             if key != "tool_calls" or value}
+                if count_message_tokens(projected) < count_message_tokens(out[index]):
+                    out[index] = projected
         return out
 
     @staticmethod
