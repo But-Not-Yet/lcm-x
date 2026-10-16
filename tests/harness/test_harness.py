@@ -238,6 +238,27 @@ def test_host_call_asks_the_preflight_gate_below_threshold(pressure, blocked, wa
         engine.compress.assert_called_once_with(view, current_tokens=n)
 
 
+@pytest.mark.parametrize("pressure, wants", [(True, False), (False, True)], ids=["threshold", "preflight"])
+@pytest.mark.parametrize("held", [True, False], ids=["held", "open"])
+def test_host_call_reads_the_breaker_gate_on_the_type(pressure, wants, held):
+    """The host reads ``_automatic_compression_blocked`` on the engine type before every automatic compress."""
+    view = [user(prose(100))]
+
+    class Engine:
+        context_length = 1000
+        ingest = Mock()
+        should_compress = Mock(return_value=pressure)
+        should_compress_preflight = Mock(return_value=wants)
+        compress = Mock(return_value=view)
+
+        def _automatic_compression_blocked(self, *, ignore_cooldown=False):
+            return held
+
+    engine = Engine()
+    result = host_call(engine, view)
+    assert engine.compress.call_count == (not held) and result.compressed is (not held)
+
+
 def test_pinned_counter_ignores_an_encoder_that_finishes_loading_later(monkeypatch):
     pin_char_counter(monkeypatch)
     expected = tokens.count_tokens("an uncached sentence for the fallback estimate")

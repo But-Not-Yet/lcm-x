@@ -69,6 +69,11 @@ def host_call(engine, view, *, retry_on_overflow=True) -> HostCall:
         info, preflight = getattr(engine, "should_compress_info", None), getattr(engine, "should_compress_preflight", None)
         blocked = callable(info) and info(n)[1]
         compressed = bool(not blocked and callable(preflight) and preflight(view))
+    # Every automatic compress passes the host's breaker gate, read on the type (Hermes
+    # agent/conversation_compression.py, _automatic_compression_gate_blocks): a no-progress or sweep hold skips it.
+    gate = getattr(type(engine), "_automatic_compression_blocked", None)
+    if compressed and callable(gate) and gate(engine):
+        compressed = False
     if compressed:
         view = engine.compress(view, current_tokens=n)
         n = count_messages_tokens(view)
