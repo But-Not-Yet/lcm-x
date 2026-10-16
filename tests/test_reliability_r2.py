@@ -340,10 +340,15 @@ def test_compaction_crash_records_the_signal_time_and_original_phase(monkeypatch
 
     def kill():
         assert kind in fired  # ProcessGone can now be classified as an injected crash
+        assert records, "the crash is recorded before the signal, while the phase is still A"
         run.phase = "B"
 
+    def fire(*args, **kwargs):
+        fired.add(args[0])
+        records.append((args, kwargs))
+
     run.proc = types.SimpleNamespace(kill=kill)
-    run.fire = lambda *args, **kwargs: records.append((args, kwargs))
+    run.fire = fire
     monkeypatch.setattr(PC.time, "monotonic_ns", lambda: 20)
     PC.ProcessCell.crash(run, 7)
     assert records == [((kind, 7), {"phase": "A", "kill_monotonic_ns": 20})]
