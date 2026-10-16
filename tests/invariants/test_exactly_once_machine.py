@@ -58,11 +58,18 @@ def identity(message):
     if isinstance(calls, str):
         calls = json.loads(calls)
 
+    def unique_object(pairs):
+        result = dict(pairs)
+        if len(result) != len(pairs):
+            raise ValueError("duplicate JSON object key")
+        return result
+
     def arguments(call):
         value = call["function"].get("arguments")
         if isinstance(value, str):
             try:
-                return json.dumps(json.loads(value), sort_keys=True, separators=(",", ":"))
+                return json.dumps(json.loads(value, object_pairs_hook=unique_object),
+                                  sort_keys=True, separators=(",", ":"))
             except ValueError:
                 pass
         return value

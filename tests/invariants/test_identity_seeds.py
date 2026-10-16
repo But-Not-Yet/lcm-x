@@ -128,8 +128,11 @@ def test_oracle_normalizes_json_arguments_only():
                 "function": {"name": "lookup", "arguments": arguments}}]}
 
     assert_occurrences([row('{"b": [2, 3], "a":1}')], [row('{"a": 1, "b":[2,3]}')])
-    for raw in ("invalid JSON", "", None, 7, {"raw": "object"}):
+    for raw in ("invalid JSON", "", None, 7, {"raw": "object"},
+                ' {"x":1,"x":2} ', '{"nested":[{"x":1,"x":2}]}'):
         assert identity(row(raw))[-1][0][-1] == raw
+    with pytest.raises(AssertionError, match="collapses="):
+        assert_occurrences([row('{"x":1,"x":2}')], [row('{"x":2}')])
 
 
 def test_rotation_tool_arguments_and_active_ownership():
