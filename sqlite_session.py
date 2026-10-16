@@ -13,6 +13,7 @@ class ConnectionPolicy:
 
     Keyword pairs deliberately distinguish an omitted SQLite default from an
     explicitly supplied value (especially isolation_level=None and uri=True).
+    A None row_factory leaves SQLite's default tuple rows untouched.
     Callbacks retain the caller's live bootstrap bindings and ownership timing.
     No schema, retries, transaction or close policy is added here.
     """
@@ -20,7 +21,7 @@ class ConnectionPolicy:
     database: str
     connect_kwargs: tuple[tuple[str, object], ...]
     before_row_factory: tuple[str | Callable[[sqlite3.Connection], None], ...]
-    row_factory: type[sqlite3.Row]
+    row_factory: type[sqlite3.Row] | None
     on_open: Callable[[sqlite3.Connection], None] | None
     on_setup_error: Callable[[Exception], None] | None
 
@@ -38,7 +39,8 @@ def open_connection(policy: ConnectionPolicy) -> sqlite3.Connection:
                 conn.execute(operation)
             else:
                 operation(conn)
-        conn.row_factory = policy.row_factory
+        if policy.row_factory is not None:
+            conn.row_factory = policy.row_factory
     except Exception as exc:
         if policy.on_setup_error is not None:
             policy.on_setup_error(exc)
