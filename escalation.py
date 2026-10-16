@@ -22,13 +22,9 @@ from typing import Callable, Optional
 
 from . import tokens as _token_module
 from .model_routing import apply_lcm_model_route, apply_lcm_reasoning_effort
-from .summary_attempt import (
-    SummaryAttempt,
-    SummaryTiming,
-    is_summary_content_filter_error as is_summary_content_filter_error,
-    is_summary_context_length_error as is_summary_context_length_error,
-    is_summary_route_config_error,
-)
+from .summary_attempt import SummaryAttempt, SummaryTiming
+# Re-exported for existing callers.
+from .summary_attempt import is_summary_content_filter_error, is_summary_context_length_error, is_summary_route_config_error  # noqa: F401
 from .summary_outcome import SummaryOutcomeFacts, SummaryOutcomeKind, classify_summary_outcome
 from .tokens import count_tokens
 
@@ -908,30 +904,6 @@ def summary_route_available(
         return True
     return any(circuit_breaker.allows(route_key_prefix + candidate)
                for candidate in _summary_model_chain(model, fallback_models))
-
-
-def _is_budget_cut(error, budget: ForegroundBudget, budget_bound: bool, wall: float, call_timeout,
-                   deadline_installed: bool = False) -> bool:
-    """#605 F4: a timeout is a budget cut when the budget's limit bound the call (its timeout was the usable
-    time left, below the configured one, and it ran out or the usable deadline passed), or the host deadline
-    fired. A configured-timeout hit stays an ordinary route failure, even one that ends near the deadline.
-    A call that ends at the usable deadline under a budget-bound timeout or an installed host deadline is a
-    budget cut whatever its error says, because a host fallback can mask the timeout (#1120).
-    A call that outlives its configured timeout and ends at the usable deadline was bounded by the budget, for
-    example on a host whose timeout is a no-progress window; only where that deadline was installed in the host
-    (#1099), so a provider that ignores its timeout on a host without the seam stays a route failure."""
-    message = str(error or "").lower()
-    if error is None:
-        return False
-    timeout_like = isinstance(error, TimeoutError) or "timed out" in message or "timeout" in message
-    at_deadline = time.monotonic() >= budget.usable_deadline - 1.0
-    return bool(
-        (timeout_like and "host compression deadline" in message)
-        or (budget_bound and at_deadline)
-        or (timeout_like and budget_bound and call_timeout is not None and wall >= call_timeout - 1.0)
-        or (deadline_installed and call_timeout is not None and wall > call_timeout + 1.0
-            and at_deadline)
-    )
 
 
 def _host_stream_deadline_seam() -> bool:

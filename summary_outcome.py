@@ -52,6 +52,32 @@ class SummaryOutcomeFacts:
     context_length_rescue: bool
 
 
+def is_budget_cut(
+    error: BaseException | None, *, budget_bound: bool, wall: float, call_timeout: float | None,
+    deadline_installed: bool, now: float, usable_deadline: float,
+) -> bool:
+    """#605 F4: a timeout is a budget cut when the budget's limit bound the call (its timeout was the usable
+    time left, below the configured one, and it ran out or the usable deadline passed), or the host deadline
+    fired. A configured-timeout hit stays an ordinary route failure, even one that ends near the deadline.
+    A call that ends at the usable deadline under a budget-bound timeout or an installed host deadline is a
+    budget cut whatever its error says, because a host fallback can mask the timeout (#1120).
+    A call that outlives its configured timeout and ends at the usable deadline was bounded by the budget, for
+    example on a host whose timeout is a no-progress window; only where that deadline was installed in the host
+    (#1099), so a provider that ignores its timeout on a host without the seam stays a route failure."""
+    message = str(error or "").lower()
+    if error is None:
+        return False
+    timeout_like = isinstance(error, TimeoutError) or "timed out" in message or "timeout" in message
+    at_deadline = now >= usable_deadline - 1.0
+    return bool(
+        (timeout_like and "host compression deadline" in message)
+        or (budget_bound and at_deadline)
+        or (timeout_like and budget_bound and call_timeout is not None and wall >= call_timeout - 1.0)
+        or (deadline_installed and call_timeout is not None and wall > call_timeout + 1.0
+            and at_deadline)
+    )
+
+
 def classify_summary_outcome(attempt: SummaryAttempt, facts: SummaryOutcomeFacts) -> SummaryOutcome:
     """Classify captured values without logging, consulting a clock or changing a circuit.
 
@@ -63,18 +89,10 @@ def classify_summary_outcome(attempt: SummaryAttempt, facts: SummaryOutcomeFacts
         started, ended = attempt.timing.started, cast(float, attempt.timing.ended)
         deadline_installed = attempt.timing.deadline_installed
         wall, call_timeout, budget_bound = ended - started, facts.call_timeout, facts.budget_bound
-        message = str(error or "").lower()
-        budget_cut = False
-        if error is not None:
-            timeout_like = isinstance(error, TimeoutError) or "timed out" in message or "timeout" in message
-            at_deadline = facts.now >= facts.usable_deadline - 1.0
-            budget_cut = bool(
-                (timeout_like and "host compression deadline" in message)
-                or (budget_bound and at_deadline)
-                or (timeout_like and budget_bound and call_timeout is not None and wall >= call_timeout - 1.0)
-                or (deadline_installed and call_timeout is not None and wall > call_timeout + 1.0
-                    and at_deadline)
-            )
+        budget_cut = is_budget_cut(
+            error, budget_bound=budget_bound, wall=wall, call_timeout=call_timeout,
+            deadline_installed=deadline_installed, now=facts.now, usable_deadline=facts.usable_deadline,
+        )
         if budget_cut:
             full_window = min(facts.configured_timeout, facts.hard - facts.reserve - facts.leaf_reserve)
             if not budget_bound:  # host timeout may be a shorter no-progress window
