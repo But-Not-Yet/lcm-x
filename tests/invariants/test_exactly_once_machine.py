@@ -453,6 +453,23 @@ class HostMergeMachine(RotationMachine):
     turn_iteration_prep.py:203 -> agent_runtime_helpers.py:553-594.
     """
 
+    @rule(text=TEXT, structured=st.booleans(), tool_count=st.integers(0, 3),
+          retry=st.booleans(), tool_name=st.sampled_from(("lookup", "inspect")))
+    def new_turn(self, text, structured, tool_count, retry, tool_name):
+        delivered = len(self.occurrences)
+        super().new_turn(text, structured, tool_count, retry, tool_name)
+        for occurrence in self.occurrences[delivered:]:
+            occurrence["session_id"] = self.session_id
+
+    def rows(self):
+        rows = super().rows()
+        # Let the occurrence oracle diagnose missing or extra rows first.
+        if len(rows) == len(self.occurrences):
+            assert [row["session_id"] for row in rows] == [
+                occurrence["session_id"] for occurrence in self.occurrences
+            ], "session ownership"
+        return rows
+
     @precondition(lambda self: bool(self.host))
     @rule(in_place=st.booleans())
     def host_merge(self, in_place):
