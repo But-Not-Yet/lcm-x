@@ -1,6 +1,7 @@
 """Current projection bytes and selection policy, before codec extraction."""
 
 from copy import deepcopy
+import json
 
 import pytest
 
@@ -149,6 +150,73 @@ def test_pasted_marks_and_bounded_arguments(engine):
     assert source["tool_calls"][0]["function"]["arguments"] == "word " * 3000
     assert engine._survival_projection_source(result, "assistant", result["content"])["store_id"] == before[-1]["store_id"]
     assert engine._survival_projection([result], {id(result): mapping[id(source)]}, 0) == [result]
+
+
+@pytest.mark.parametrize("site", ["content", "arguments", "emitted"])
+@pytest.mark.parametrize("position", [4, 5], ids=["fourth-accepted", "fifth-ignored"])
+def test_projection_candidate_scan_cap_on_cold_ingest(tmp_path, monkeypatch, site, position):
+    """Each scan gets its own valid candidate, without another scan rescuing it."""
+    with engine_context(tmp_path, window=32_768, conversation_id="contract",
+                        temporal_rollups_enabled=False) as engine:
+        # Fresh isolated stores start at 1; assert the reservation after appending.
+        # Use the shared emitter seam so these fixtures also exercise pre-extraction code.
+        def mark(store_id, head):
+            row = {"role": "assistant", "store_id": store_id, "content": "raw"}
+            return engine._survival_projected_fields(row, 1000, head, 100, legacy=True)["content"]
+
+        fake = mark(900000, 2000)
+        if site == "content":
+            # The emitted mark is at 2005, away from the fixed-position shortcut,
+            # and has a tail after it, so the ending shortcut cannot rescue it.
+            prefix = (fake + "\n") * (position - 1)
+            source = assistant(prefix.ljust(6000, "x"))
+            head = 2000
+        elif site == "arguments":
+            # Content's own mark is beyond its scan cap. The quoted argument is
+            # retained verbatim and is not a bounded notice (its value starts "quoted").
+            source = assistant(((fake + "\n") * 4).ljust(6000, "x"), [call("quoted", arguments=json.dumps({
+                "lcm_survival_fit": "quoted " + (fake + "\n") * (position - 1) + mark(1, 2000),
+            }))])
+            head = 2000
+        else:
+            # Saturate the argument scan before the distinct bounded notices.
+            # Repeated marks do not count as distinct emitted candidates.
+            quoted = call("quoted", arguments=json.dumps({"lcm_survival_fit": "quoted " + (fake + "\n") * 4}))
+            notices = [engine._survival_bounded_call(call(f"decoy-{i}", arguments="x" * 6000),
+                                                    mark(900001 + i, 1200)) for i in range(position - 1)]
+            source = assistant("", [quoted, *notices, call("real", arguments="x" * 6000)])
+            head = 1200
+        source["timestamp"] = 9.0  # retain occurrence proof across the cold restart
+        store_id = engine._store.append("S", source, conversation_id="contract")
+        assert store_id == 1
+        before = stored_rows(engine)
+        projected = {**source, **engine._survival_projected_fields(before[0], 1000, head, 100)}
+        assert projected != source
+
+    with engine_context(tmp_path, window=32_768, conversation_id="contract",
+                        temporal_rollups_enabled=False) as cold:
+        # Observe the real verifier while invoking only the public replay entry point.
+        # Other reconciliation fallbacks can still deduplicate a byte-identical view;
+        # they must not conceal whether this candidate was accepted as its source row.
+        recognized = []
+        verify = cold._survival_projection_source
+
+        def record(message, role, content):
+            row = verify(message, role, content)
+            if message == projected:
+                recognized.append(None if row is None else row["store_id"])
+            return row
+
+        monkeypatch.setattr(cold, "_survival_projection_source", record)
+        cold.ingest([deepcopy(projected)])
+        assert recognized
+        assert set(recognized) == ({store_id} if position == 4 else {None})
+        after = stored_rows(cold)
+        assert after[:1] == before  # replay never changes the verbatim source
+        if position == 4:
+            assert after == before
+        else:
+            assert len(after) == 2
 
 
 @pytest.mark.parametrize("covered", [False, True])
