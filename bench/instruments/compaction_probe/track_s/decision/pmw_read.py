@@ -54,8 +54,12 @@ def run_metrics(run_root, material, arm, n, r):
     ev = s.get("events") or []
     thr = s["threshold_tokens"]
     cross = next((e for e in ev if e["tokens_at_trigger"] >= thr), None)
+    if cross is None:
+        raise ValueError(f"{arm}|d{n}-r{r}: no threshold crossing")
     turns = material_turns(material, n, s["stop_row_index"])
     post = [t for t in turns if cross and t >= cross["turn"]]
+    if not post:
+        raise ValueError(f"{arm}|d{n}-r{r}: zero post-crossing turns")
     wait = {t: 0.0 for t in post}
     c_events, leaves, freed, walls, lat, timeouts, fails, zero_leaf = 0, [], [], [], [], 0, 0, 0
     src = []
@@ -91,6 +95,8 @@ def run_metrics(run_root, material, arm, n, r):
         f = run_root / "decision" / "scores" / f"cp-{cp}" / f"{arm}.seed-{n}.d{n}-r{r}.json"
         if f.exists():
             fk = (json.loads(f.read_text()).get("metrics") or {}).get("facts_kept") or {}
+            if cp == "304" and fk.get("complete") is False:
+                raise ValueError(f"{arm}|d{n}-r{r}: incomplete cp-304 facts_kept score")
             facts[cp] = fk.get("value")
     return {"status": "DONE", "crossing_turn": cross["turn"] if cross else None, "post_turns": len(post),
             "c_events": c_events, "c_per_100": (100.0 * c_events / len(post)) if post else None,
@@ -165,7 +171,7 @@ def read(args):
     }
     complete = x.get("runs") == len(runs) and (x.get("facts_n") or (0, 0))[1] == len(runs)
     out["config_check"] = {"per_run": cfg, "valid": valid}
-    out["verdict"] = {"bars": bars, "complete": complete,
+    out["verdict"] = {"bars": bars, "complete": complete, "facts_floor": args.facts_floor,
                       "result": "INVALID" if not valid or not complete else "PASS" if all(bars.values()) else "FAIL"}
     for metrics in out["per_run"].values():
         if metrics:
@@ -189,7 +195,7 @@ def main(argv=None):
     try:
         out = read(args)
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        out = {"verdict": {"result": "INVALID"}, "error": str(exc)}
+        out = {"verdict": {"result": "INVALID", "facts_floor": args.facts_floor}, "error": str(exc)}
     args.json.write_text(json.dumps(out, indent=1, default=str))
     print(json.dumps({k: v for k, v in out.items() if k != "per_run"}, indent=1, default=str))
     return {"PASS": 0, "FAIL": 1, "INVALID": 2}[out["verdict"]["result"]]

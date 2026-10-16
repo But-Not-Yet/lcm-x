@@ -19,9 +19,31 @@ done
   [ -z "$(git -C "$PRODUCT_WT" status --porcelain)" ] || {
     echo "STOP: product worktree must be clean at PRODUCT_SHA" >&2; exit 2;
   }
+if ! kit_sha=$(git -C "$KIT_DIR" rev-parse HEAD) ||
+   ! kit_status=$(git -C "$KIT_DIR" status --porcelain --untracked-files=all -- .) ||
+   [ -n "$kit_status" ]; then
+  echo "STOP: KIT_DIR must be inside a clean git checkout: $KIT_DIR" >&2; exit 2
+fi
 H=$OUT/decision
 mkdir -p "$H/logs" "$OUT/tmp"
 [ ! -f "$OUT/STOP" ] || { echo "STOP: existing limit marker" >&2; exit 3; }
+"$PY" -B - "$OUT/cell.json" "$PRODUCT_SHA" "$kit_sha" "$ARM" "$SEEDS" "$FACTS_FLOOR" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path, product_sha, kit_sha, arm, seeds, floor = sys.argv[1:]
+reasons = []
+if arm != "LCMX-fleet-rc3":
+    reasons.append(f"ARM={arm} is not LCMX-fleet-rc3")
+if seeds != "1 2 3":
+    reasons.append(f"SEEDS={seeds!r} is not exactly '1 2 3'")
+if reasons:
+    print("NON-GATING: " + "; ".join(reasons), file=sys.stderr)
+Path(path).write_text(json.dumps(dict(product_sha=product_sha, kit_sha=kit_sha, arm=arm,
+                                     seeds=[int(n) for n in seeds.split()], facts_floor=float(floor),
+                                     gating=not reasons), indent=1) + "\n")
+PY
 
 limited() {
   local seed=$1 file

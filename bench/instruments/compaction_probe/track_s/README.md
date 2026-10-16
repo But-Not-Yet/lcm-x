@@ -122,8 +122,10 @@ python3 -B "$KIT/decision/analyze_paired.py" --material "$TRACK_S_MATERIAL" \
 `--second-tree RUN_ROOT DECISION_ROOT LOGS` reads the second arm from the candidate root;
 `--labels` (distinct; default the two arm names) key `per_arm`, `loss_classes` and `trees`.
 Every `p` is rounded for display and has an unrounded `p_exact`. The gate reads `d2.verdict`
-(`INCOMPLETE`, `REPEAT_SEEDS`, `BLOCK` or `PASS`) and, per checkpoint, `d2.cp-<n>.p_exact` and
-`effect_pts_exact` (candidate minus previous). D2's unit is the run, stratified by seed: the facts of a
+(`INCOMPLETE`, `REPEAT_SEEDS`, `INCONCLUSIVE`, `BLOCK` or `PASS`; only `PASS` is green) and, per checkpoint, `d2.cp-<n>.p_exact` and
+`effect_pts_exact` (candidate minus previous). Only cp-304 blocks; a significant cp-176 effect of
+at least 5 points in either direction sets `placebo_fires` and makes D2 `INCONCLUSIVE`.
+D2's unit is the run, stratified by seed: the facts of a
 run share its compactions, so they are correlated (the run-level variance was 3–25× the
 independent-fact variance at cp-304 on real runs). A run's kept share is kept / scored facts; the effect is
 the mean over seeds of the candidate's mean run share minus the previous tree's, and `p_exact` is the
