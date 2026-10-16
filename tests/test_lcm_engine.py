@@ -6194,39 +6194,39 @@ class TestSessionFiltering:
         """
         from hermes_lcm.command import _status_text
 
-        config = LCMConfig(
-            database_path=str(tmp_path / "lcm_command_consistency.db"),
-            ignore_session_patterns=["cron:*"],
-        )
-        instance = LCMEngine(config=config)
-        instance.on_session_start(
-            "telegram-foreground",
-            platform="telegram",
-            conversation_id="telegram-conversation",
-            context_length=200_000,
-        )
-        instance._store.append(
-            "telegram-foreground",
-            {"role": "user", "content": "telegram row"},
-            token_estimate=2,
-            source="telegram",
-        )
-        instance.on_session_start(
-            "cron_xxx",
-            platform="cron",
-            conversation_id="cron-conversation",
-            context_length=200_000,
-        )
+        from tests.harness import engine_context
 
-        text = _status_text(instance)
-        assert "session_id: telegram-foreground" in text
-        assert "conversation_id: telegram-conversation" in text
-        assert "lifecycle_current_session_id: telegram-foreground" in text
-        assert "source_messages_total: 1" in text
-        assert "store_messages: 1" in text
-        assert "session_ignored: no" in text
-        assert "session_stateless: no" in text
-        assert "side_channel_active: yes" in text
+        with engine_context(tmp_path, ignore_session_patterns=["cron:*"]) as instance:
+            instance.on_session_start(
+                "telegram-foreground",
+                platform="telegram",
+                conversation_id="telegram-conversation",
+                context_length=200_000,
+            )
+            instance._store.append(
+                "telegram-foreground",
+                {"role": "user", "content": "telegram row"},
+                token_estimate=2,
+                source="telegram",
+            )
+            instance.on_session_start(
+                "cron_xxx",
+                platform="cron",
+                conversation_id="cron-conversation",
+                context_length=200_000,
+            )
+
+            text = _status_text(instance)
+            assert "session_id: telegram-foreground" in text
+            assert "conversation_id: telegram-conversation" in text
+            assert "lifecycle_current_session_id: telegram-foreground" in text
+            assert "source_messages_total: 1" in text
+            assert "store_messages: 1" in text
+            assert "session_ignored: no" in text
+            assert "session_stateless: no" in text
+            assert "side_channel_active: yes" in text
+            assert instance._session_id == "cron_xxx"
+            assert instance._session_ignored is True
 
     def test_lcm_doctor_retention_targets_foreground_during_cron_tick(self, tmp_path):
         """The /lcm doctor retention surface must report on the foreground
