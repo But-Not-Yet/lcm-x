@@ -1963,7 +1963,7 @@ class CompactionMixin:
                     to_compact = self._select_oldest_leaf_chunk(candidate_raw, working_leaf_chunk_tokens)
             else:
                 if (
-                    raw_tokens_outside_tail < self._config.leaf_chunk_tokens
+                    raw_tokens_outside_tail < self._working_leaf_chunk_tokens(raw_tokens_outside_tail)
                     and not force_overflow
                     and self._pressure_yield_tail_token_limit <= 0
                     and not fit_would_strand

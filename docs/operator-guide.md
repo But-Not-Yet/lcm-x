@@ -876,7 +876,10 @@ What the main knobs do:
   `LCM_LEAF_TARGET_MAX_TOKENS` set how long one leaf summary may be:
   `min(MAX, max(MIN, int(source_tokens * RATIO)))`, and the first summary call
   receives twice that as `max_tokens`. The defaults (`0.20`, `2000`, `2000`)
-  give a fixed 2,000-token target. Explicit settings still use the formula (#614).
+  give a fixed 2,000-token target. Setting only the ratio has no effect while
+  MIN equals MAX and emits a config warning; set `LCM_LEAF_TARGET_MAX_TOKENS`
+  above MIN to enable the ratio. A MIN above the default cap also needs MAX;
+  otherwise MIN resets with a warning naming `LCM_LEAF_TARGET_MAX_TOKENS` (#614, #1138).
 - `LCM_THRESHOLD_FULL_SWEEP_ENABLED=true` (the default) makes a threshold-triggered invocation
   keep draining oldest raw chunks outside the protected tail, even after prompt
   pressure falls below the trigger. It always uses the configured working leaf

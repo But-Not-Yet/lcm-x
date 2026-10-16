@@ -16,6 +16,7 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 - `LCM_CACHE_FRIENDLY_CONDENSATION_ENABLED` and `LCM_LARGE_OUTPUT_TRANSCRIPT_GC_ENABLED` are deprecated in v0.28.0 and will be removed in v0.29.0 (#1246). Enabling either adds one `config_source_warnings` entry shown by `/lcm status`, `lcm_status` and the `lcm_doctor` configuration check; behavior is unchanged until removal.
 - Fix: a summary route that hangs for the whole foreground budget window opens its circuit immediately, so the next compaction can use a fallback route. Partial-window budget cuts still leave the circuit closed. (#1137)
 - Fix: deadline-guarded vector reads retain the pooled store's matrix caches, so repeated KNN calls reuse unchanged matrices. (#1206)
+- Fix: non-sweep admission uses the working leaf size, and oversized indivisible leaves retry with the existing 8,000-token input clip. Leaf target defaults remain fixed at 2,000 tokens; ratio-only settings pinned by equal MIN and MAX warn, and the min-only reset warning names `LCM_LEAF_TARGET_MAX_TOKENS`. (#1134, #1132, #1138)
 
 ## v0.27.0 (summary quality)
 
