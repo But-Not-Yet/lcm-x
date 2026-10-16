@@ -6716,12 +6716,32 @@ def _embedding_provider_health_check(engine: "LCMEngine") -> dict[str, Any]:
         finally:
             conn.close()
         if stale_tasks:
+            corpus_option = ""
+            consent_option = ""
+            consent_note = ""
+            if "chunk" in stale_tasks:
+                from .command import _is_local_embedding_provider
+
+                corpus_option = " --corpus both" if "summary" in stale_tasks else " --corpus chunks"
+                if not _is_local_embedding_provider(provider_id):
+                    consent_option = " --confirm-raw-text"
+                    consent_note = (
+                        "; --confirm-raw-text acknowledges sending raw message text to the "
+                        f"'{provider_id}' cloud embedding provider"
+                    )
+            remedy = f"/lcm embed warmup, then /lcm embed backfill{corpus_option} --apply{consent_option}"
             detail.update({
                 "embedding_identity_stale": True,
                 "stale_tasks": stale_tasks,
-                "reason": _EMBEDDING_IDENTITY_STALE_REASON,
+                "reason": (
+                    "embedding_identity_stale: stored vectors use an older embedding privacy "
+                    f"revision; run {remedy}{consent_note}"
+                    "; repeat the backfill apply only while remaining is above 0 and each run lowers it, "
+                    "but stop and inspect its warnings and details on status: partial, status: error, "
+                    "status: failed, or if remaining stops falling"
+                ),
                 "impact": "lcm_recall skips the stale semantic arm until the profile is re-registered",
-                "remedy": "/lcm embed warmup, then /lcm embed backfill --apply",
+                "remedy": remedy,
             })
             return {
                 "check": "embedding_provider_health",
