@@ -141,6 +141,8 @@ from .reconcile import _COMPACTION_COMMIT_PROOF_METADATA_PREFIX, ReconcileMixin,
 from .reconcile import _emission_identity
 from .reconcile import _has_lossy_redacted_identity, _merge_append_cut, _proof_user_identity
 from .compaction import CompactionMixin
+from .compaction_request import CompactionRequest
+from .compress_run import CompressRun
 from .identity_anchor import IdentityAnchorMixin, _raw_remainder, identity_anchor_enabled
 from .host_uid import HostUidShadowMixin
 from .host_uid_emit import carry_identity, identity_emit_enabled, record_absorbed_message, sync_cached_host_metadata
@@ -771,25 +773,16 @@ class LCMEngine(
         self._last_compress_leaves: Optional[tuple[str, int]] = None  # #597: latest call, bound conversation
         self._last_hidden_backlog: Optional[HiddenBacklog] = None  # #597: latest check in this compress()
         self._hidden_backlog_unknown_warned: set[str] = set()
-        # #618: one-shot from compress(): a hold is active at the survival ceiling, so the pass only fits.
-        self._hold_fit_only_requested = False
+        self._compaction_request = CompactionRequest()
         self._no_progress_candidate = False  # set by _compress_impl for compress()
         self._objective_only_noop = False
         self._compress_dropped_ignored_rows = False  # #1013: this compress() dropped ignored rows
         self._last_gate_tokens = 0  # the latest should_compress/preflight observation
-        # #651 one-shot handoff: preflight asked for maintenance below the host
-        # threshold, so the automatic compress() that follows is cleanup-only.
-        self._preflight_below_threshold_cleanup_only = False
-        # #677 one-shot: any preflight request; compress() makes it cleanup-only below the host's count.
-        self._preflight_automatic_request = False
-        # One-shot handoff from preflight: adopt an already-durable replay
-        # cleanup during boundary cooldown without running summary work.
-        self._preflight_cleanup_only_due_to_boundary_cooldown = False
         # Temporary source window used only while compress() assembles context.
         # _assemble_context also serves tests and recovery paths directly, so
         # keep anchoring opt-in rather than changing its public behavior.
         self._pending_context_anchor_messages: Optional[List[Dict[str, Any]]] = None
-        self._current_compress_store_ids_by_message_id: dict[int, int] = {}
+        self._compress_run = CompressRun()
         self._current_compress_placeholder_identity_counts: dict[tuple[str, str, str, str], int] = {}
         self._last_active_replay_source_identities: list[tuple[Any, ...]] = []
         self._last_active_replay_messages: list[Dict[str, Any]] = []
@@ -828,6 +821,7 @@ class LCMEngine(
         self._lcm_normal_message_prefix_fingerprints: dict[tuple[str, str], list[str]] = {}
         self._lcm_current_start_allows_bypass_lineage = False
         self._auxiliary_session_lock = threading.RLock()
+        self._child_host_fallback_states: dict[str, dict[int, dict]] = {}
         self._host_fallback_compressor: Any = None
         self._host_fallback_session_id = ""
         self._host_fallback_import_warning_logged = False
@@ -1064,8 +1058,8 @@ class LCMEngine(
             self._lcm_bypass_message_prefix_fingerprints.clear()
             self._lcm_normal_message_prefix_fingerprints.clear()
         self._lcm_current_start_allows_bypass_lineage = False
-        self._host_fallback_compressor = None
-        self._host_fallback_session_id = ""
+        for state in self._host_fallback_states():
+            self._clear_host_fallback_state(state)
         self._host_fallback_import_warning_logged = False
         # B-ID-2: #436 caches name rows and ancestry of the previous profile's store.
         self._identity_anchor_recent, self._identity_anchor_versions = [], []
@@ -1248,7 +1242,7 @@ class LCMEngine(
         an LCM no-op (for example, when request pressure is high but all
         compactable raw backlog is protected by the fresh tail).
         """
-        return self._last_compression_status
+        return self._bypass_compress_state().get("_last_compression_status", "idle")
 
     @last_compression_status.setter
     def last_compression_status(self, value: str) -> None:
@@ -1258,17 +1252,58 @@ class LCMEngine(
         in ``conversation_compression.py`` raises ``AttributeError: property
         has no setter``, crashing context compression.
         """
-        self._last_compression_status = value
+        self._bypass_compress_state()["_last_compression_status"] = value
 
     @property
     def last_compression_noop_reason(self) -> str:
         """Human-readable reason for the latest no-op compression decision."""
-        return self._last_compression_noop_reason
+        return self._bypass_compress_state().get("_last_compression_noop_reason", "")
 
     @property
     def last_compression_was_noop(self) -> bool:
         """Whether the most recent compression/preflight decision was a no-op."""
-        return self._last_compression_status == "noop"
+        return self.last_compression_status == "noop"
+
+    # Compatibility views for existing tests and parent-state snapshots.
+    @property
+    def _current_compress_store_ids_by_message_id(self) -> dict[int, int]:
+        return self._compress_run.store_ids_by_message_id
+
+    @_current_compress_store_ids_by_message_id.setter
+    def _current_compress_store_ids_by_message_id(self, value: dict[int, int]) -> None:
+        self._compress_run.store_ids_by_message_id = value
+
+    @property
+    def _preflight_cleanup_only_due_to_boundary_cooldown(self) -> bool:
+        return self._compaction_request.cleanup_only_due_to_boundary_cooldown
+
+    @_preflight_cleanup_only_due_to_boundary_cooldown.setter
+    def _preflight_cleanup_only_due_to_boundary_cooldown(self, value: bool) -> None:
+        self._compaction_request.cleanup_only_due_to_boundary_cooldown = value
+
+    @property
+    def _preflight_below_threshold_cleanup_only(self) -> bool:
+        return self._compaction_request.below_threshold_cleanup_only
+
+    @_preflight_below_threshold_cleanup_only.setter
+    def _preflight_below_threshold_cleanup_only(self, value: bool) -> None:
+        self._compaction_request.below_threshold_cleanup_only = value
+
+    @property
+    def _preflight_automatic_request(self) -> bool:
+        return self._compaction_request.automatic_request
+
+    @_preflight_automatic_request.setter
+    def _preflight_automatic_request(self, value: bool) -> None:
+        self._compaction_request.automatic_request = value
+
+    @property
+    def _hold_fit_only_requested(self) -> bool:
+        return self._compaction_request.hold_fit_only_requested
+
+    @_hold_fit_only_requested.setter
+    def _hold_fit_only_requested(self, value: bool) -> None:
+        self._compaction_request.hold_fit_only_requested = value
 
     def _mark_preflight_compression_requested(
         self,
@@ -1287,7 +1322,7 @@ class LCMEngine(
         """
         self._last_compression_status = "pending"
         self._last_compression_noop_reason = ""
-        self._preflight_automatic_request = True
+        self._compaction_request.automatic_request = True
         if not depends_on_pressure_yield:
             self._pressure_yield_invocation_verdict = "clear"
         return True
@@ -1406,11 +1441,12 @@ class LCMEngine(
                                 auxiliary_session_id
                             )
                         self._auxiliary_last_prompt_tokens.pop(auxiliary_session_id, None)
-                        if self._host_fallback_session_id == auxiliary_session_id:
+                        if self._host_fallback_state_for_session(auxiliary_session_id).get("_host_fallback_session_id") == auxiliary_session_id:
                             self._end_host_fallback_compressor_for_session(
                                 auxiliary_session_id,
                                 [],
                                 current_session_bypasses=True,
+                                require_session_match=True,
                             )
                         self._auxiliary_session_generations[
                             auxiliary_session_id
@@ -1772,7 +1808,7 @@ class LCMEngine(
         (``ignore_cooldown``), a pending below-threshold cleanup-only pass, forced overflow and the survival
         ceiling are never blocked; the hold governs LCM-managed compaction only, never a bypassed session.
         #625: the #608 sweep hold blocks the same way."""
-        if ignore_cooldown or self._preflight_below_threshold_cleanup_only:
+        if ignore_cooldown or self._compaction_request.below_threshold_cleanup_only:
             return False
         tokens = max(int(self.last_prompt_tokens or 0), self._last_gate_tokens)
         return self._no_progress_hold_blocks(tokens) or self._sweep_budget_hold_blocks(tokens)
@@ -3949,28 +3985,28 @@ class LCMEngine(
                 and old_session_id not in self._auxiliary_direct_end_guard_session_ids
                 and new_session_auxiliary_parent != old_session_id
             )
-        if self._host_fallback_compressor is not None and (
-            self._host_fallback_session_id != session_id or requested_platform != self._session_platform
-        ) and not (
-            pre_reset_preserve_ambiguous_no_frame_old_session
-            and self._host_fallback_session_id == old_session_id
-        ):
-            compressor = self._host_fallback_compressor
-            fallback_session_id = self._host_fallback_session_id or previous_session_id
-            on_session_end = getattr(compressor, "on_session_end", None)
-            if callable(on_session_end) and fallback_session_id:
-                try:
-                    on_session_end(fallback_session_id, [])
-                except Exception:
-                    logger.debug("LCM host fallback compressor session-start reset failed", exc_info=True)
-            on_session_reset = getattr(compressor, "on_session_reset", None)
-            if callable(on_session_reset):
-                try:
-                    on_session_reset()
-                except Exception:
-                    logger.debug("LCM host fallback compressor reset failed", exc_info=True)
-            self._host_fallback_compressor = None
-            self._host_fallback_session_id = ""
+        for state in self._host_fallback_states():
+            if state.get("_host_fallback_compressor") is not None and (
+                state.get("_host_fallback_session_id", "") != session_id or requested_platform != self._session_platform
+            ) and not (
+                pre_reset_preserve_ambiguous_no_frame_old_session
+                and state.get("_host_fallback_session_id", "") == old_session_id
+            ):
+                compressor = state.get("_host_fallback_compressor")
+                fallback_session_id = state.get("_host_fallback_session_id", "") or previous_session_id
+                on_session_end = getattr(compressor, "on_session_end", None)
+                if callable(on_session_end) and fallback_session_id:
+                    try:
+                        on_session_end(fallback_session_id, [])
+                    except Exception:
+                        logger.debug("LCM host fallback compressor session-start reset failed", exc_info=True)
+                on_session_reset = getattr(compressor, "on_session_reset", None)
+                if callable(on_session_reset):
+                    try:
+                        on_session_reset()
+                    except Exception:
+                        logger.debug("LCM host fallback compressor reset failed", exc_info=True)
+                self._clear_host_fallback_state(state)
         if (
             boundary_reason == "compression"
             and old_session_id
@@ -4569,16 +4605,16 @@ class LCMEngine(
             self._on_session_reset_unlocked()
 
     def _on_session_reset_unlocked(self) -> None:
-        if self._host_fallback_compressor is not None:
-            compressor = self._host_fallback_compressor
-            on_session_reset = getattr(compressor, "on_session_reset", None)
-            if callable(on_session_reset):
-                try:
-                    on_session_reset()
-                except Exception:
-                    logger.debug("LCM host fallback compressor reset failed", exc_info=True)
-            self._host_fallback_compressor = None
-            self._host_fallback_session_id = ""
+        for state in self._host_fallback_states():
+            if state.get("_host_fallback_compressor") is not None:
+                compressor = state.get("_host_fallback_compressor")
+                on_session_reset = getattr(compressor, "on_session_reset", None)
+                if callable(on_session_reset):
+                    try:
+                        on_session_reset()
+                    except Exception:
+                        logger.debug("LCM host fallback compressor reset failed", exc_info=True)
+                self._clear_host_fallback_state(state)
         self._pending_reset_session_id = self._session_id
         self._pending_reset_conversation_id = self._conversation_id
         self._pending_reset_frontier_store_id = self._last_compacted_store_id
@@ -4941,8 +4977,8 @@ class LCMEngine(
             "effective_context_length_cap": self.effective_context_length_cap,
             "effective_context_length_reason": self.effective_context_length_reason,
             "threshold_tokens": self.threshold_tokens,
-            "last_compression_status": self._last_compression_status,
-            "last_compression_noop_reason": self._last_compression_noop_reason,
+            "last_compression_status": self.last_compression_status,
+            "last_compression_noop_reason": self.last_compression_noop_reason,
             "last_survival_fit": dict(self._last_survival_fit) if self._last_survival_fit else None,
             "threshold_full_sweep": dict(self._last_threshold_full_sweep),
             "last_stub_first_exit": dict(self._last_stub_first_exit) if self._last_stub_first_exit else None,
@@ -5305,7 +5341,7 @@ class LCMEngine(
         has_externalized_placeholder = self._content_has_externalized_placeholder_ref(content)
         mapped_from_active_placeholder = False
         if store_id is None:
-            store_id = self._current_compress_store_ids_by_message_id.get(id(msg))
+            store_id = self._compress_run.store_ids_by_message_id.get(id(msg))
             mapped_from_active_placeholder = has_externalized_placeholder and store_id is not None
         if store_id is None:
             return False
@@ -5867,17 +5903,15 @@ class LCMEngine(
         scan_start = 0 if self._ingest_cursor_needs_reconcile else cursor
         ignored_original_messages = [False] * n
         if self._compiled_ignore_message_patterns:
-            previous_store_id_map = self._current_compress_store_ids_by_message_id
-            self._current_compress_store_ids_by_message_id = self._get_store_id_map_for_messages(messages)
-            try:
+            store_id_scope = self._compress_run.preserve_store_ids()
+            self._compress_run.store_ids_by_message_id = self._get_store_id_map_for_messages(messages)
+            with store_id_scope:
                 for idx in range(scan_start, n):
                     mapped_ignore = self._mapped_stored_row_matches_ignore_message_patterns(messages[idx])
                     ignored_original_messages[idx] = (
                         self._matches_ignore_message_patterns(messages[idx])
                         or mapped_ignore
                     )
-            finally:
-                self._current_compress_store_ids_by_message_id = previous_store_id_map
         externalize_messages = [False] * n
         prefer_existing_externalized = [False] * n
         for idx in range(scan_start, n):

@@ -617,7 +617,7 @@ def main():
                 result = orig_compress(self, messages, *args, **kwargs)
         else:
             result = orig_compress(self, messages, *args, **kwargs)
-        status = getattr(self, "_last_compression_status", None)
+        status = getattr(self, "last_compression_status", getattr(self, "_last_compression_status", None))
         recovery = {}
         if status == "overflow_recovery":
             paths = [k for k, text in recovery_texts.items() if text and any(
@@ -631,7 +631,7 @@ def main():
             counters["compacted_turns"].append(cur["turn"])
         event(turn=cur["turn"], event="compaction", session=getattr(self, "_session_id", None), final=cur["final"],
               session_prefix=cur.get("prefix", "T"),
-              compression_status=status, noop_reason=getattr(self, "_last_compression_noop_reason", None),
+              compression_status=status, noop_reason=getattr(self, "last_compression_noop_reason", getattr(self, "_last_compression_noop_reason", None)),
               depth0_nodes=depth0() if status == "compacted" else None,
               rejection=rejection(self), native_attempts=cur["native"], **recovery,
               **({"input_tokens": recovery_module.count_messages_tokens(messages),
@@ -1052,7 +1052,7 @@ def session_count():
 def rejection(engine):
     """LCM's native-recovery rejection reason for the call that just ended (it doubles as the noop reason)."""
     reason = getattr(engine, "_last_native_recovery_rejection", None)
-    return reason if reason and reason == getattr(engine, "_last_compression_noop_reason", None) else None
+    return reason if reason and reason == getattr(engine, "last_compression_noop_reason", getattr(engine, "_last_compression_noop_reason", None)) else None
 
 
 def final_check(agent, history, buf):
@@ -1095,7 +1095,7 @@ def final_check(agent, history, buf):
             agent._session_db = saved
         rec["engine_calls"] = getattr(engine, "_probe_calls", 0) - calls0  # a compress() inside THIS invocation
         rec["engine_status"] = getattr(engine, "_probe_status", None) if rec["engine_calls"] else None
-        rec["noop_reason"] = getattr(engine, "_last_compression_noop_reason", None)
+        rec["noop_reason"] = getattr(engine, "last_compression_noop_reason", getattr(engine, "_last_compression_noop_reason", None))
         rec["rejection"] = rejection(engine)
         rec["conflicts"] = buf.getvalue().count("publication_invariant_conflict") - before
         attempts.append(rec)
