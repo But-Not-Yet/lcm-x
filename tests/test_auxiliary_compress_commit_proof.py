@@ -95,11 +95,6 @@ def _compress_auxiliary(engine: Any) -> None:
     assert engine._store.get_session_count("aux-review") == 0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=ForegroundProofCleared,
-    reason="#1291: auxiliary compress clears the foreground commit proof",
-)
 def test_auxiliary_compress_preserves_foreground_commit_proof(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -112,11 +107,7 @@ def test_auxiliary_compress_preserves_foreground_commit_proof(
 
 @pytest.mark.parametrize("with_child", [
     pytest.param(False, id="foreground-control"),
-    pytest.param(True, id="shared-child", marks=pytest.mark.xfail(
-        strict=True,
-        raises=ForegroundProofCleared,
-        reason="#1291: auxiliary compress clears the foreground commit proof",
-    )),
+    pytest.param(True, id="shared-child"),
 ])
 def test_host_commit_stores_each_foreground_row_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
