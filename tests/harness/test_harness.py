@@ -184,7 +184,17 @@ def test_host_call_fits_default_engine_in_32768_window(tmp_path, monkeypatch):
         assert result.compressed and provider.calls
         assert result.sent_tokens == tokens.count_messages_tokens(result.view) <= engine.context_length
         assert not result.overflow_failed
-        assert [row["content"] for row in stored_rows(engine)] == [row["content"] for row in view]
+        # Every stored row keeps its role, content and tool identity: call ids, the calls and the tool name.
+        def shape(row):
+            return (row["role"], row["content"], row.get("tool_call_id"), row.get("tool_calls") or None,
+                    row.get("tool_name"))
+        assert [shape(row) for row in stored_rows(engine)] == [shape(row) for row in view]
+
+
+def test_make_engine_rejects_a_database_path_override(tmp_path):
+    with pytest.raises(TypeError, match="database_path"):
+        make_engine(tmp_path, database_path=str(tmp_path / "elsewhere.db"))
+    assert not (tmp_path / "elsewhere.db").exists()
 
 
 @pytest.mark.parametrize("pressure,retry,window,expected_calls", [

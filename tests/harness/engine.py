@@ -12,6 +12,8 @@ from hermes_lcm.tokens import count_messages_tokens
 def make_engine(tmp_path, *, window=None, session_id="S", conversation_id=None,
                 platform="cli", **overrides) -> LCMEngine:
     """Use shipped defaults, isolated storage, and explicit config overrides only."""
+    if "database_path" in overrides:
+        raise TypeError("make_engine always stores in tmp_path/lcm.db; database_path cannot be overridden")
     config = LCMConfig()
     config.database_path = str(tmp_path / "lcm.db")
     names = {field.name for field in fields(config)}
