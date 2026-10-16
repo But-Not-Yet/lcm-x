@@ -19,7 +19,22 @@ from tests.test_embedding_schema_golden import CASES, Case, schema_for
 
 # The previous-GA pin already fetched by the compatibility suite's CI job.
 PREVIOUS_GA = "v0.26.2"
+EMBEDDING_READERS = {
+    **READERS,
+    "v0.20.0": "49e99a272d2d461e5c90732e7ef2bc20e96f0826",
+}
 run_reader = cast(Callable[..., dict[str, Any]], run_old)
+OLD_EMBEDDING_BOOTSTRAP = '''
+import importlib.util, json, sys
+from pathlib import Path
+old, db, home, host_root, mode, data = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("hermes_lcm", old + "/__init__.py", submodule_search_locations=[old])
+sys.modules["hermes_lcm"] = importlib.util.module_from_spec(spec)
+from hermes_lcm import db_bootstrap, vector_store
+from hermes_lcm.config import LCMConfig
+assert Path(db_bootstrap.__file__).resolve().parent == Path(old).resolve()
+assert Path(vector_store.__file__).resolve().parent == Path(old).resolve()
+'''
 OLD_SETUP = '''
 from hermes_lcm.vector_store import VectorStore, EmbeddingIdentity
 from hermes_lcm.db_bootstrap import verify_embedding_schema
@@ -66,10 +81,12 @@ def snapshot(path: Path) -> dict[str, list[tuple[Any, ...]]]:
         }
 
 
+@pytest.mark.parametrize("reader", tuple(EMBEDDING_READERS))
 def test_embedding_forward(
-    tmp_path: Path, old_tree: Callable[[str], Path], host_root: Path, monkeypatch: pytest.MonkeyPatch,
+    reader: str, tmp_path: Path, old_tree: Callable[..., Path], host_root: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert run_reader(old_tree(PREVIOUS_GA), tmp_path, host_root, OLD_WRITE) == {"written": 2}
+    assert run_reader(old_tree(reader, EMBEDDING_READERS), tmp_path, host_root, OLD_WRITE,
+                      bootstrap=OLD_EMBEDDING_BOOTSTRAP) == {"written": 2}
     path = tmp_path / "lcm.db"
     before = snapshot(path)
     assert len(before["profile"]) == 1 and len(before["vectors"]) == 2 and len(before["marker"]) == 1
@@ -95,9 +112,9 @@ def test_embedding_forward(
     assert drops == []
 
 
-@pytest.mark.parametrize("reader", tuple(READERS))
+@pytest.mark.parametrize("reader", tuple(EMBEDDING_READERS))
 def test_embedding_rollback(
-    reader: str, tmp_path: Path, old_tree: Callable[[str], Path], host_root: Path,
+    reader: str, tmp_path: Path, old_tree: Callable[..., Path], host_root: Path,
 ) -> None:
     path = tmp_path / "lcm.db"
     with closing(SummaryDAG(path)) as dag:
@@ -110,7 +127,8 @@ def test_embedding_rollback(
         for key, vector in (("1", [1.0, 0.0]), ("2", [0.0, 1.0])):
             store.record_embedding(key, "summary", "fixture-model", vector, identity=identity)
     before = snapshot(path)
-    assert run_reader(old_tree(reader), tmp_path, host_root, OLD_ROLLBACK) == {
+    assert run_reader(old_tree(reader, EMBEDDING_READERS), tmp_path, host_root, OLD_ROLLBACK,
+                      bootstrap=OLD_EMBEDDING_BOOTSTRAP) == {
         "verifier": [], "read": 2, "after_write": 3,
     }
     after = snapshot(path)
@@ -125,8 +143,20 @@ def test_embedding_registry(tmp_path: Path) -> None:
     assert family.marker == "embeddings_v1" and family.removal_version is None
     assert family.tables == db_bootstrap._REQUIRED_EMBEDDING_TABLES
     assert family.indexes == db_bootstrap._REQUIRED_EMBEDDING_INDEXES
-    assert family.oldest_reader == next(iter(READERS))
-    assert PREVIOUS_GA in READERS
+    # Compare release versions, including prereleases, rather than insertion order
+    # or git ancestry: the oldest embedding release is on a separate lineage.
+    def version(tag: str) -> tuple[int, int, int, bool, int]:
+        release, _, rc = tag.removeprefix("v").partition("-rc")
+        major, minor, patch = map(int, release.split("."))
+        return major, minor, patch, not rc, int(rc or "0")
+
+    assert family.oldest_reader == min(EMBEDDING_READERS, key=version)
+    assert "v0.20.0" in EMBEDDING_READERS
+    assert PREVIOUS_GA in EMBEDDING_READERS
+    for test in (test_embedding_forward, test_embedding_rollback):
+        marks = getattr(test, "pytestmark")
+        assert any(mark.name == "parametrize" and mark.args[0] == "reader"
+                   and set(mark.args[1]) == set(EMBEDDING_READERS) for mark in marks)
     assert any(row["name"] == family.name and row["prefix"] == family.prefix
                for row in db_bootstrap._INTERIM_FEATURE_FAMILIES)
     with closing(VectorStore(tmp_path / "lcm.db", config=LCMConfig(embeddings_enabled=False))) as store:
