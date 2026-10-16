@@ -141,8 +141,8 @@ change.
 - **Writes from a bypassed context.** `_record_compress_commit_proof` clears the proof (compaction.py:720) before its bypass
   check (:724). An in-process auxiliary thread that shares the engine can therefore clear the foreground session's in-memory
   proof. A deterministic engine-level test reproduces it: on the host commit path, 6 assistant rows are stored twice and none
-  are lost. Whether supported hosts reach this path is being checked before an issue is filed. Once the transitions take the
-  binding, they can refuse writes from a bypassed context.
+  are lost. Filed as #1291 (test PR #1292). It is latent: every inspected supported host gives each agent its own engine. Once
+  the transitions take the binding, they can refuse writes from a bypassed context.
 - **Probe-failure fallback.** When the reconcile probe fails, engine.py:5278 sets needs_reconcile = False with the cursor at 0, which
   trusts a zero cursor. This is worth its own look.
 - **Debug check.** An opt-in assertion compares the frontier with the lifecycle row after each `compress()` and session end, for
