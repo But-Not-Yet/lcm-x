@@ -32,7 +32,6 @@ import time
 from itertools import islice
 from typing import Any, Dict, List, Optional
 
-from .escalation import _summary_call
 from .host_uid import _valid_uid
 from .host_uid_emit import ADDRESS_KEYS, IDENTITY_KEYS, identity_emit_enabled, record_absorbed_message
 from .message_analysis import _is_codex_interim
@@ -167,7 +166,8 @@ class SurvivalFitMixin:
                 and not self._survival_generated(message))
 
     def _survival_fit(self, messages, result, observed_tokens, reason: str, *, after_exception: bool = False,
-                      window_cap: Optional[int] = None, request_cap: Optional[int] = None):
+                      window_cap: Optional[int] = None, request_cap: Optional[int] = None,
+                      summary_failure: str = "", fit_cause: str = ""):
         """``result``, or the fitted list when ``result`` is over the survival budget."""
         if not self._session_id or self._bypasses_lcm_context_management():
             return result
@@ -182,7 +182,7 @@ class SurvivalFitMixin:
             return result
         if exit_fit and window_budget is not None and before > window_budget:
             return self._survival_fit(messages, result, observed_tokens, reason[len("exit_fit:"):],
-                                      after_exception=after_exception)
+                                      after_exception=after_exception, summary_failure=summary_failure, fit_cause=fit_cause)
         system = 0
         while system < len(result) and isinstance(result[system], dict) and result[system].get("role") == "system":
             system += 1
@@ -225,7 +225,8 @@ class SurvivalFitMixin:
         if after >= before:  # nothing stored could leave: the list is already as small as it gets
             logger.warning("LCM survival fit could not shorten the list (before=%d, budget=%d, reason=%s)",
                            before, budget, reason)
-            self._survival_record(reason, 0, [], before, before, budget, False, "", shortened=False)
+            self._survival_record(reason, 0, [], before, before, budget, False, "", shortened=False,
+                                  summary_failure=summary_failure, fit_cause=fit_cause)
             return result
         if emergency and any(all(m is not row for m in fitted) for row in result[system:prefix]):
             logger.warning("LCM survival fit dropped the summary prefix (emergency: prefix=%d tokens, budget=%d)",
@@ -236,7 +237,8 @@ class SurvivalFitMixin:
             self._ingest_cursor = len(fitted)
         if after > budget:  # still the best list available: returned, but never reported as within budget
             logger.warning("LCM survival fit could not reach budget (after=%d, budget=%d, reason=%s)", after, budget, reason)
-        self._survival_record(reason, count, ids, before, after, budget, projected, notice, warn_user=not exit_fit)
+        self._survival_record(reason, count, ids, before, after, budget, projected, notice, warn_user=not exit_fit,
+                              summary_failure=summary_failure, fit_cause=fit_cause)
         formed = getattr(self, "_survival_cut_carrier", None)
         if formed is not None:  # #1000: the re-formed carrier is LCM's emission, as assembly registers its own;
             merged, span, store_id = formed  # the proof finalizes it apart from the pending candidates (output order)
@@ -587,16 +589,11 @@ class SurvivalFitMixin:
         return any(_normalize_observed_at(rel.get("observed_at")) == stamp for rel in aliases)
 
     def _survival_record(self, reason, count, ids, before, after, budget, projected, notice, *, shortened=True,
-                         warn_user=True) -> None:
+                         warn_user=True, summary_failure: str = "", fit_cause: str = "") -> None:
         """Log the fit, update the doctor counter and warn the user once per conversation."""
-        call_budget = self._foreground_call_budget()
-        plain_reason = reason.removeprefix("exit_fit:").removeprefix("recovery_attempt:")
-        summary_failed = bool(
-            (plain_reason in {"noop", "error"} or plain_reason.startswith("exception:"))
-            and call_budget is not None and call_budget.first_call_started is not None
-            and getattr(_summary_call, "error", None) is not None)
-        cause = (getattr(self, "_last_compression_noop_reason", "")
-                 if not summary_failed and not getattr(self, "_survival_fit_reason", None) else "")
+        # Evidence travels with this pass, independent of its final status or the engine-wide budget.
+        summary_failed = bool(summary_failure)
+        cause = summary_failure or fit_cause
         uncovered = 0
         if shortened:
             try:  # a diagnostic: its failure never fails the fit

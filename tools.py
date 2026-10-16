@@ -34,6 +34,7 @@ from .diagnostics import (
     _has_lifecycle_fragmentation,
     _state_db_path_for_engine,
     doctor_guidance_for_checks,
+    survival_fit_count,
 )
 from .dag import build_nodes_fts_spec
 from .db_bootstrap import (
@@ -9197,7 +9198,7 @@ def lcm_doctor(args: Dict[str, Any], **kwargs) -> str:
         survival_fit = engine._store.read_metadata_json("survival_fit:counter")
     except Exception:
         survival_fit = None
-    if isinstance(survival_fit, dict) and survival_fit:
+    if survival_fit_count(survival_fit) != 0:
         checks.append({"check": "survival_fit", "status": "warn", "detail": survival_fit})
 
     # 8. Compaction progress (#1162): consecutive over-threshold passes that stored no leaf
