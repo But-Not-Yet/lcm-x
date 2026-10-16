@@ -308,6 +308,13 @@ class SummaryCircuitBreaker:
             self._config_episodes.discard(key)  # #682: a success ends the episode
             self._note(key, None, None)
 
+    def release_hang(self, model: str | None) -> None:
+        """#1096: allow a turn-end probe only for a circuit still classified as hung."""
+        key = self._key(model)
+        with self._lock:
+            if self._route_state.get(key, {}).get("last_error_class") == "hung":
+                self._open_until.pop(key, None)
+
     def record_hang(self, model: str | None, *, now: float | None = None) -> None:
         """#1137: a route that used the whole foreground window opens immediately."""
         key = self._key(model)

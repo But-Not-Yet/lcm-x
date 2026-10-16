@@ -6,6 +6,8 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
+- Fix: the first hung summary route without a usable alternative holds compaction until foreground turn end, then permits one ordinary retry. A repeat hang retains the 600 s holds; hosts without turn-end notifications retain the backstop. No new setting. (#1096)
+
 - Fix: a summary route that hangs for the whole foreground budget window opens its circuit immediately, so the next compaction can use a fallback route. Partial-window budget cuts still leave the circuit closed. (#1137)
 
 ## v0.27.0 (summary quality)
