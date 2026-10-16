@@ -17,6 +17,8 @@ def pin_char_counter(monkeypatch):
     """
     monkeypatch.setattr(tokens, "_encoder_ready", True)
     monkeypatch.setattr(tokens, "_encoder", None)
+    # An encoder load still running from an earlier test can set _encoder later; the seam stays None.
+    monkeypatch.setattr(tokens, "_get_encoder", lambda: None)
     monkeypatch.setattr(tokens, "_count_tokens_cached",
                         lru_cache(maxsize=2048)(tokens._count_tokens_cached.__wrapped__))
     monkeypatch.setattr(survival_fit, "_host_estimate", lambda messages: None)
