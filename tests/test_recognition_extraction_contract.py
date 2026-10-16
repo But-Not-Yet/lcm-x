@@ -21,13 +21,13 @@ def test_decomposition_preserves_order_remainder_and_ambiguity() -> None:
 
 
 def test_matching_merges_store_ids_and_uses_augmenting_paths() -> None:
-    rows = [{"store_id": 1, "keys": {"a"}}, {"store_id": 1, "keys": {"b"}},
+    rows: list[dict[str, Any]] = [{"store_id": 1, "keys": {"a"}}, {"store_id": 1, "keys": {"b"}},
             {"store_id": 2, "keys": {"a"}}]
     assert identity_anchor._match_occurrences(rows, lambda row: row["keys"], [(10, "a"), (20, "b")]) == {1: 20, 2: 10}
 
 
 def test_null_reservation_keeps_stamped_holder_and_alias_ownership() -> None:
-    rows = [{"store_id": 1, "observed_at": 1.0, "forms": {"a", "b"}},
+    rows: list[dict[str, Any]] = [{"store_id": 1, "observed_at": 1.0, "forms": {"a", "b"}},
             {"store_id": 2, "observed_at": None, "forms": {"a"}}]
     forms = lambda row: row["forms"]  # noqa: E731
     assert identity_anchor._reserve_shown(rows, forms, [(10, (1.0, "a")), (20, (1.0, "b"))]) == {1, 2}
@@ -102,7 +102,7 @@ def test_null_reroute_budget_retains_warning_namespace(
     matching = importlib.import_module(identity_anchor._reserve_shown.__module__)
     monkeypatch.setattr(matching, "_MATCH_WORK_PER_ITEM", 0)
     monkeypatch.setattr(matching, "_MATCH_WORK_FLOOR", 0)
-    rows = [{"store_id": 1, "observed_at": 1.0, "forms": {"a", "b"}},
+    rows: list[dict[str, Any]] = [{"store_id": 1, "observed_at": 1.0, "forms": {"a", "b"}},
             {"store_id": 2, "observed_at": None, "forms": {"a"}}]
     with caplog.at_level(logging.WARNING, logger="hermes_lcm.identity_anchor"):
         assert identity_anchor._reserve_shown(rows, lambda row: row["forms"],
