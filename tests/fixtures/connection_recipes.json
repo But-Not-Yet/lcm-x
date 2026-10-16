@@ -73,6 +73,34 @@
     ["set", "row_factory", "Row"],
     ["execute", "SELECT"]
   ],
+  "lifecycle": [
+    ["connect", ["<database>"], {"timeout": 30.0, "check_same_thread": false, "isolation_level": null}],
+    ["initial", null, null],
+    ["execute", "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'", []],
+    ["execute", "SELECT value FROM metadata WHERE key = 'schema_version'", []],
+    ["execute", "PRAGMA busy_timeout=30000", []],
+    ["execute", "PRAGMA journal_mode=WAL", []],
+    ["execute", "PRAGMA synchronous=FULL", []],
+    ["execute", "PRAGMA wal_autocheckpoint=500", []],
+    ["execute", "PRAGMA journal_size_limit=67108864", []],
+    ["execute", "PRAGMA mmap_size=268435456", []],
+    ["set", "row_factory", "Row"],
+    ["execute", "SELECT"]
+  ],
+  "vector": [
+    ["connect", ["<database>"], {"timeout": 5.0, "check_same_thread": false, "isolation_level": null}],
+    ["initial", null, null],
+    ["execute", "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'", []],
+    ["execute", "SELECT value FROM metadata WHERE key = 'schema_version'", []],
+    ["execute", "PRAGMA busy_timeout=30000", []],
+    ["execute", "PRAGMA journal_mode=WAL", []],
+    ["execute", "PRAGMA synchronous=FULL", []],
+    ["execute", "PRAGMA wal_autocheckpoint=500", []],
+    ["execute", "PRAGMA journal_size_limit=67108864", []],
+    ["execute", "PRAGMA mmap_size=268435456", []],
+    ["set", "row_factory", "Row"],
+    ["execute", "SELECT"]
+  ],
   "future_trajectory": [
     ["connect", ["<database>"], {"timeout": 5.0, "check_same_thread": false, "isolation_level": null}],
     ["initial", null, null],
@@ -106,6 +134,22 @@
     ["close"],
     ["exception", "SchemaVersionTooNewError", "LCM database schema version 999 is newer than this build supports (v5). Refusing to open to avoid corrupting data written by a newer LCM-X. Upgrade the plugin or restore a pre-upgrade backup (.db/-wal/-shm)."]
   ],
+  "future_lifecycle": [
+    ["connect", ["<database>"], {"timeout": 30.0, "check_same_thread": false, "isolation_level": null}],
+    ["initial", null, null],
+    ["execute", "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'", []],
+    ["execute", "SELECT value FROM metadata WHERE key = 'schema_version'", []],
+    ["execute", "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'", []],
+    ["exception", "SchemaVersionTooNewError", "LCM database schema version 999 is newer than this build supports (v5). Refusing to open to avoid corrupting data written by a newer LCM-X. Upgrade the plugin or restore a pre-upgrade backup (.db/-wal/-shm)."]
+  ],
+  "future_vector": [
+    ["connect", ["<database>"], {"timeout": 5.0, "check_same_thread": false, "isolation_level": null}],
+    ["initial", null, null],
+    ["execute", "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'", []],
+    ["execute", "SELECT value FROM metadata WHERE key = 'schema_version'", []],
+    ["execute", "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'", []],
+    ["exception", "SchemaVersionTooNewError", "LCM database schema version 999 is newer than this build supports (v5). Refusing to open to avoid corrupting data written by a newer LCM-X. Upgrade the plugin or restore a pre-upgrade backup (.db/-wal/-shm)."]
+  ],
   "failure_trajectory": [
     ["connect", ["<database>"], {"timeout": 5.0, "check_same_thread": false, "isolation_level": null}],
     ["initial", null, null],
@@ -134,5 +178,19 @@
     ["execute", "PRAGMA busy_timeout=30000", []],
     ["close"],
     ["exception", "RuntimeError", "query-view schema ensure failed: recipe failure"]
+  ],
+  "failure_lifecycle": [
+    ["connect", ["<database>"], {"timeout": 30.0, "check_same_thread": false, "isolation_level": null}],
+    ["initial", null, null],
+    ["execute", "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'", []],
+    ["execute", "PRAGMA busy_timeout=30000", []],
+    ["exception", "OperationalError", "recipe failure"]
+  ],
+  "failure_vector": [
+    ["connect", ["<database>"], {"timeout": 5.0, "check_same_thread": false, "isolation_level": null}],
+    ["initial", null, null],
+    ["execute", "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'", []],
+    ["execute", "PRAGMA busy_timeout=30000", []],
+    ["exception", "OperationalError", "recipe failure"]
   ]
 }
