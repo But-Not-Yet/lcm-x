@@ -191,6 +191,11 @@ def _model_only_display_metadata_key() -> Optional[str]:
     except (ImportError, AttributeError):
         return None
 
+
+def _model_only_display_metadata_keys() -> frozenset:
+    """Every key that can hide a row: the literal key and the host-advertised one."""
+    return frozenset(k for k in ("model_only", _model_only_display_metadata_key()) if k)
+
 _ASSERTION_EXTRACTION_PROCESS_SLOT = threading.BoundedSemaphore(1)
 _EMBEDDING_SCHEMA_READY: set[tuple[Path, bool]] = set()
 _EMBEDDING_SCHEMA_LOCK = threading.Lock()
@@ -7562,8 +7567,9 @@ class LCMEngine(
     ) -> Dict[str, Any]:
         """Fold generated context into a same-role tail without losing metadata."""
         merged = message.copy()
-        if "model_only" in (merged.get("display_metadata") or {}):
-            metadata = {key: value for key, value in merged["display_metadata"].items() if key != "model_only"}
+        hide_keys = _model_only_display_metadata_keys()
+        if hide_keys & set(merged.get("display_metadata") or {}):
+            metadata = {key: value for key, value in merged["display_metadata"].items() if key not in hide_keys}
             if metadata:
                 merged["display_metadata"] = metadata
             else:
