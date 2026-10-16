@@ -22,6 +22,13 @@ from typing import Callable, Optional
 
 from . import tokens as _token_module
 from .model_routing import apply_lcm_model_route, apply_lcm_reasoning_effort
+from .summary_attempt import (
+    SummaryAttempt,
+    SummaryTiming,
+    is_summary_content_filter_error,
+    is_summary_context_length_error,
+    is_summary_route_config_error,
+)
 from .tokens import count_tokens
 
 logger = logging.getLogger(__name__)
@@ -63,19 +70,6 @@ _DEFAULT_ROUTE_KEY = "<task-default>"
 # #608: a threshold sweep does not start a summariser call with less time than this left.
 _THRESHOLD_FULL_SWEEP_MIN_CALL_SECONDS = 15.0
 
-# #682: a summary route that cannot serve its model is host/profile config, not a transient failure.
-_STATUS_IN_MESSAGE_RE = re.compile(r"(?:error code|status(?: code)?)\s*[:=]?\s*(\d{3})\b")
-_ROUTE_CONFIG_ERROR_TOKENS = (
-    "model not found", "model_not_found", "unknown model", "no such model", "is not a valid model",
-    "model not supported", "model is not supported", "model_not_supported", "unsupported model",
-)
-# Generic tokens count only when the message also names a model (a bare 404 or a missing file is not one).
-_ROUTE_CONFIG_ERROR_GENERIC_TOKENS = ("not_found_error", "does not exist", "not supported when using")
-_NOT_ROUTE_CONFIG_TOKENS = (
-    "context length", "context_length", "context window", "maximum context", "too many tokens", "rate limit",
-    "rate_limit", "too many requests", "billing", "credits", "insufficient", "quota", "payment", "free tier",
-    "timed out", "timeout",
-)
 _summary_call = threading.local()  # #682: the last summary call's error and host route, per thread
 _route_info_support: dict[int, tuple[object, bool]] = {}
 
@@ -83,64 +77,6 @@ _route_info_support: dict[int, tuple[object, bool]] = {}
 def closed_summary_route_status() -> dict:
     """#682: ``summary_route`` with no breaker in use, or no route to describe."""
     return {"state": "closed", "seconds_left": 0, "last_error_class": None, "provider": None, "model": None}
-
-
-def is_summary_route_config_error(exc: BaseException | None) -> bool:
-    """#682: a 400/404 saying the route cannot serve its model. Context-length, rate-limit, billing (402),
-    timeout and 5xx failures are not. The status is read as the host reads it (``status_code``, else
-    ``response.status_code``); an error without one is judged by its text."""
-    if exc is None or isinstance(exc, TimeoutError):
-        return False
-    status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
-    message = str(exc).lower()
-    if status is None and (match := _STATUS_IN_MESSAGE_RE.search(message)):
-        status = int(match.group(1))
-    if status not in (400, 404, None) or any(token in message for token in _NOT_ROUTE_CONFIG_TOKENS):
-        return False
-    return any(token in message for token in _ROUTE_CONFIG_ERROR_TOKENS) or (
-        "model" in message and any(token in message for token in _ROUTE_CONFIG_ERROR_GENERIC_TOKENS))
-
-
-# #751: the provider refused the request for its size; a property of the chunk, not of the route.
-_CONTEXT_LENGTH_ERROR_TOKENS = (
-    "context length", "context_length", "context window", "maximum context", "max context", "too many tokens",
-    "token limit", "prompt is too long", "input too long", "request too large", "context limit",
-    "maximum number of tokens",
-)
-_NOT_CONTEXT_LENGTH_TOKENS = ("rate limit", "rate_limit", "too many requests", "quota")
-
-
-def is_summary_context_length_error(exc: BaseException | None) -> bool:
-    """#751: a summary call refused because the request does not fit the route's window. A timeout, a
-    rate limit or a quota error is not one; the status is read as ``is_summary_route_config_error`` reads it."""
-    if exc is None or isinstance(exc, TimeoutError):
-        return False
-    status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
-    message = str(exc).lower()
-    if status is None and (match := _STATUS_IN_MESSAGE_RE.search(message)):
-        status = int(match.group(1))
-    if status == 429 or getattr(exc, "status", None) == 429:
-        return False
-    if any(token in message for token in _NOT_CONTEXT_LENGTH_TOKENS):
-        return False
-    return any(token in message for token in _CONTEXT_LENGTH_ERROR_TOKENS)
-
-
-def is_summary_content_filter_error(exc: BaseException | None) -> bool:
-    """#1012 F4: an HTTP 400 refusing this chunk's content, not a route failure."""
-    if exc is None or isinstance(exc, TimeoutError):
-        return False
-    response = getattr(exc, "response", None)
-    status = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
-    message = " ".join(str(value) for value in (
-        exc, getattr(exc, "body", ""), getattr(response, "text", ""),
-    )).lower()
-    if status is None and (match := _STATUS_IN_MESSAGE_RE.search(message)):
-        status = int(match.group(1))
-    return status == 400 and (
-        any(token in message for token in ("contentfilter", "content_filter", "content_policy_violation"))
-        or (re.search(r"\b1301\b", message) is not None and "sensitive" in message)
-    )
 
 
 def _accepts_route_info(call_llm) -> bool:
@@ -736,6 +672,39 @@ def _invoke_summary_llm(prompt: str, max_tokens: int, model: str = "", timeout: 
     return _call_llm_for_summary(prompt, max_tokens, **kwargs)
 
 
+def _invoke_summary_attempt(
+    prompt: str, max_tokens: int, model: str = "", timeout: float | None = None,
+    reasoning_effort: str = "", *, budget: ForegroundBudget | None = None,
+) -> SummaryAttempt:
+    """Collect one invocation without changing the provider or invocation seams."""
+    _summary_call.route, _summary_call.error = {}, None  # #682: filled by _call_llm_for_summary
+    _summary_call.contract = ""
+    _summary_call.stream_deadline = budget.usable_deadline if budget is not None else None
+    deadline_installed = budget is not None and _host_stream_deadline_seam()
+    started = time.monotonic()
+    try:
+        result = _invoke_summary_llm(
+            prompt,
+            max_tokens,
+            model=model,
+            timeout=timeout,
+            reasoning_effort=reasoning_effort,
+        )
+    except Exception as exc:
+        _summary_call.error = exc
+        (logger.debug if is_summary_route_config_error(exc) else logger.warning)(
+            "LLM summarization failed: %s", exc)
+        result = None
+    finally:
+        _summary_call.stream_deadline = None
+    route, error = dict(_summary_call.route or {}), _summary_call.error
+    ended = time.monotonic() if budget is not None else None
+    return SummaryAttempt(
+        text=result, error=error, route=route, contract=_summary_call.contract,
+        timing=SummaryTiming(started, ended, deadline_installed),
+    )
+
+
 def _normalized_focus_topic(focus_topic: str, max_chars: int = 160) -> str:
     """Return a single-line, bounded focus topic for prompt injection."""
     normalized = " ".join(str(focus_topic or "").split())
@@ -1033,29 +1002,14 @@ def _invoke_summary_llm_chain(
                 break
             if budget is not None:
                 budget.slot_taken = True
-        _summary_call.route, _summary_call.error = {}, None  # #682: filled by _call_llm_for_summary
-        _summary_call.contract = ""
-        _summary_call.stream_deadline = budget.usable_deadline if budget is not None else None
-        deadline_installed = budget is not None and _host_stream_deadline_seam()
-        started = time.monotonic()
-        try:
-            result = _invoke_summary_llm(
-                prompt,
-                max_tokens,
-                model=candidate_model,
-                timeout=call_timeout,
-                reasoning_effort=reasoning_effort,
-            )
-        except Exception as exc:
-            _summary_call.error = exc
-            (logger.debug if is_summary_route_config_error(exc) else logger.warning)(
-                "LLM summarization failed: %s", exc)
-            result = None
-        finally:
-            _summary_call.stream_deadline = None
-        route, error = dict(_summary_call.route or {}), _summary_call.error
+        attempt = _invoke_summary_attempt(
+            prompt, max_tokens, model=candidate_model, timeout=call_timeout,
+            reasoning_effort=reasoning_effort, budget=budget,
+        )
+        result, route, error = attempt.text, attempt.route, attempt.error
+        started, ended = attempt.timing.started, attempt.timing.ended
+        deadline_installed = attempt.timing.deadline_installed
         if budget is not None:
-            ended = time.monotonic()
             budget.record_call(route_key, started, ended)
             if result is None and _is_budget_cut(error, budget, budget_bound, ended - started, call_timeout,
                                                  deadline_installed):
@@ -1082,7 +1036,7 @@ def _invoke_summary_llm_chain(
             logger.warning(
                 "LCM summary result rejected (reason=%s, source_tokens=%s, result_tokens=%d, model=%s)",
                 "not_shorter" if result else "no_content" + (
-                    f" contract={_summary_call.contract}" if _summary_call.contract else ""),
+                    f" contract={attempt.contract}" if attempt.contract else ""),
                 "unknown" if source_tokens is None else source_tokens,
                 count_tokens(result) if result else 0,
                 candidate_model or _DEFAULT_ROUTE_KEY,
