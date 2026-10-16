@@ -25,11 +25,13 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agent.context_engine import ContextEngine
 
-from .codex_routing import (
-    _codex_oauth_context_cap,
-    _is_codex_gpt55_route,
+from .compaction_policy import (
+    assembly_token_cap,
+    effective_context_length,
+    resolve_threshold,
+    threshold_tokens,
 )
-from .config import LCMConfig
+from .config import LCMConfig, _disabled_tool_names
 from .dag import SummaryDAG, SummaryNode
 from .diagnostics import _enforce_state_db_containment
 from .engine_registry import (
@@ -158,7 +160,7 @@ from .identity_anchor import IdentityAnchorMixin, _raw_remainder, identity_ancho
 from .host_uid import HostUidShadowMixin
 from .host_uid_emit import carry_identity, identity_emit_enabled, record_absorbed_message, sync_cached_host_metadata
 from .store_complete import HiddenBacklog, StoreCompleteMixin
-from .survival_fit import SurvivalFitMixin, _carries_survival_notice, _host_estimate
+from .survival_fit import SurvivalFitMixin, _carries_survival_notice, _host_estimate, survival_reserve_fraction
 from .db_bootstrap import refresh_legacy_conversation_ids
 from .reset_state import ResetStateMixin
 from .bypass import BypassMixin
@@ -175,6 +177,7 @@ from .sqlite_util import (
 )
 from .store import MessageStore
 from .tokens import count_message_tokens, count_messages_tokens, count_tokens
+from .assembly_plan import PrefixBudgetFacts, default_prefix_budget, select_prefix, select_tail
 from . import tools as lcm_tools
 
 logger = logging.getLogger(__name__)
@@ -407,7 +410,6 @@ _SESSION_END_BUSY_TIMEOUT_MS = 50
 _CONDENSATION_LIGHT_GROUP_TOKENS = 512
 # #1123: the smallest source the adaptive leaf rescue shrinks to (the pre-v0.27.0 default leaf chunk)
 _LEAF_RESCUE_FLOOR_TOKENS = 8_000
-_CODEX_GPT55_COMPACTION_THRESHOLD = 0.85
 _TOTAL_COMPACTIONS_SCOPE = "current_conversation"
 
 # Auto-focus topic derivation: infer a compact focus hint from the most recent
@@ -1134,39 +1136,12 @@ class LCMEngine(
             if getattr(self._config, "config_sources", None)
             else "manual_or_default"
         )
-        explicit_lcm_override = source in {
-            "env:LCM_CONTEXT_THRESHOLD",
-            "config_yaml:lcm.context_threshold",
-        }
         route_model = self.model if model is None else model
         route_provider = self.provider if provider is None else provider
-        # Per-model threshold overrides take priority over everything else.
-        # Longest substring match wins (so "glm-5.2-1M" beats "glm-5.2").
-        if self._config.model_thresholds and route_model:
-            best_key = ""
-            for key in self._config.model_thresholds:
-                if key in route_model and len(key) > len(best_key):
-                    best_key = key
-            if best_key:
-                override = float(self._config.model_thresholds[best_key])
-                return (
-                    override,
-                    f"model_thresholds:{best_key}",
-                    {"from": configured, "to": override},
-                )
-        # 5.6 deliberately excluded — F59 measured the standard threshold regime at 100% retention on gpt-5.6-sol; extension requires its own registered run.
-        if (
-            _is_codex_gpt55_route(route_model, route_provider)
-            and self._config.codex_gpt55_autoraise_enabled
-            and not explicit_lcm_override
-            and configured < _CODEX_GPT55_COMPACTION_THRESHOLD
-        ):
-            return (
-                _CODEX_GPT55_COMPACTION_THRESHOLD,
-                "codex_gpt55_autoraise",
-                {"from": configured, "to": _CODEX_GPT55_COMPACTION_THRESHOLD},
-            )
-        return configured, source, None
+        return resolve_threshold(
+            configured, source, self._config.model_thresholds,
+            self._config.codex_gpt55_autoraise_enabled, route_model, route_provider,
+        )
 
     def _effective_context_length(
         self,
@@ -1177,14 +1152,7 @@ class LCMEngine(
     ) -> tuple[int, int | None, str]:
         route_model = self.model if model is None else model
         route_provider = self.provider if provider is None else provider
-        cap = _codex_oauth_context_cap(route_model, route_provider)
-        if cap is not None and raw_context_length > cap:
-            return (
-                cap,
-                cap,
-                "codex_oauth_context_cap",
-            )
-        return raw_context_length, None, ""
+        return effective_context_length(raw_context_length, route_model, route_provider)
 
     def _effective_threshold_tokens(self, context_threshold_tokens: int) -> int:
         """Return the host-visible preflight trigger token count.
@@ -1196,11 +1164,7 @@ class LCMEngine(
         tool/schema-heavy request can skip host preflight entirely.
         """
         assembly_cap = self._effective_assembly_token_cap()
-        if assembly_cap is not None and assembly_cap > 0:
-            if context_threshold_tokens > 0:
-                return min(context_threshold_tokens, assembly_cap)
-            return assembly_cap
-        return context_threshold_tokens
+        return threshold_tokens(context_threshold_tokens, assembly_cap)
 
     def _set_context_length(
         self,
@@ -1860,7 +1824,7 @@ class LCMEngine(
         window = int(self.context_length or 0)
         if window <= 0:
             return None
-        reserve = min(0.9, max(0.0, float(getattr(self._config, "survival_reserve", 0.15) or 0.0)))
+        reserve = survival_reserve_fraction(self._config)
         return int(window * (1 - reserve))
 
     def _hold_fit_only_applies(self, tokens: int) -> bool:
@@ -4118,7 +4082,6 @@ class LCMEngine(
                         old_session_id == self._session_id
                         or preserve_ambiguous_no_frame_old_session
                     ),
-                    preserve_old_foreground_marker=old_session_is_suppressed_foreground,
                 )
                 logger.info(
                     "LCM auxiliary session %s compressed to %s — keeping boundary stateless",
@@ -4905,10 +4868,7 @@ class LCMEngine(
         Disabled tools are excluded from the injected context-engine schemas
         AND refused in handle_tool_call, so they cost zero tokens per turn.
         """
-        raw = os.environ.get("LCM_DISABLED_TOOLS", "")
-        if not raw:
-            return set()
-        return {part.strip() for part in raw.split(",") if part.strip()}
+        return _disabled_tool_names()
 
     def handle_tool_call(self, name: str, args: Dict[str, Any], **kwargs) -> str:
         if name in self._disabled_tool_names():
@@ -7983,101 +7943,81 @@ class LCMEngine(
                 # it. The final assembled result is merged downstream.
                 merge_adjacent_assistants=False,
             )
-            skipped_tail_gap = False
-            # #636 (forced recovery only): newest-first tool rows since the last kept
-            # row, over-cap ones replaced by a bounded stub, kept only with their call.
-            pending_results: list[Dict[str, Any]] = []
-            result_names = _tool_result_names(tail_for_selection) if stub_over_cap_tool_results else {}
-            for index in range(len(tail_for_selection) - 1, -1, -1):
-                msg = tail_for_selection[index]
-                msg_tokens = count_message_tokens(msg)
-                pending_tokens = count_messages_tokens(pending_results) if pending_results else 0
-                if stub_over_cap_tool_results and msg.get("role") == "assistant":
-                    call_ids = [_tool_call_id(tc) for tc in (msg.get("tool_calls") or [])]
-                    result_ids = {str(r.get("tool_call_id") or "").strip() for r in pending_results}
-                    # Reserve precisely the plain stubs inserted by the final sanitizer.
-                    msg_tokens += count_messages_tokens([
-                        self._missing_tool_result_stub(call_id)
-                        for call_id in call_ids if call_id and call_id not in result_ids
-                    ])
-                    if (
-                        used + tail_token_total + pending_tokens + msg_tokens > assembly_cap
-                        and pending_results
-                        and result_ids <= set(call_ids)
-                    ):
-                        # A rich ref is useful only if its call survives the budget.
-                        pending_results = [
-                            carry_identity(r, self._missing_tool_result_stub(str(r.get("tool_call_id") or "").strip()),
-                                           ("message_uid", "_tool_call_uid"))
-                            if is_externalized_placeholder(normalize_content_value(r.get("content")) or "")
-                            else r
-                            for r in pending_results
-                        ]
-                        pending_tokens = count_messages_tokens(pending_results)
-                own_results_start: Optional[int] = None
-                if not stub_over_cap_tool_results and msg.get("role") == "assistant" and msg.get("tool_calls"):
-                    # The final sanitizer inserts a plain stub for each call whose result is not
-                    # in this turn's own result group (the tool rows right after it). Reserve them
-                    # too, or a full summary budget overflows after sanitizing and the over-cap
-                    # pass drops the preserved objective first (#1048).
-                    own_results_start = len(kept_tail_reversed)
-                    while own_results_start and kept_tail_reversed[own_results_start - 1].get("role") == "tool":
-                        own_results_start -= 1
-                    # Count, don't collapse: the sanitizer pairs each call occurrence separately.
-                    unmatched_results = Counter(
-                        str(r.get("tool_call_id") or "").strip()
-                        for r in kept_tail_reversed[own_results_start:]
-                    )
-                    missing_ids = []
-                    for call_id in (_tool_call_id(tc) for tc in msg["tool_calls"]):
-                        if not call_id:
+            if not stub_over_cap_tool_results:
+                selection = select_tail(
+                    tail_for_selection, assembly_cap, used, count_message_tokens,
+                    count_messages_tokens=count_messages_tokens,
+                    missing_tool_result_stub=self._missing_tool_result_stub,
+                    is_budget_droppable_tail_message=self._is_budget_droppable_tail_message,
+                )
+                tail_selected = [tail_for_selection[i] for i in selection.indexes]
+                tail_token_total = selection.charged_tokens
+            else:
+                skipped_tail_gap = False
+                # #636 (forced recovery only): newest-first tool rows since the last kept
+                # row, over-cap ones replaced by a bounded stub, kept only with their call.
+                pending_results: list[Dict[str, Any]] = []
+                result_names = _tool_result_names(tail_for_selection) if stub_over_cap_tool_results else {}
+                for index in range(len(tail_for_selection) - 1, -1, -1):
+                    msg = tail_for_selection[index]
+                    msg_tokens = count_message_tokens(msg)
+                    pending_tokens = count_messages_tokens(pending_results) if pending_results else 0
+                    if stub_over_cap_tool_results and msg.get("role") == "assistant":
+                        call_ids = [_tool_call_id(tc) for tc in (msg.get("tool_calls") or [])]
+                        result_ids = {str(r.get("tool_call_id") or "").strip() for r in pending_results}
+                        # Reserve precisely the plain stubs inserted by the final sanitizer.
+                        msg_tokens += count_messages_tokens([
+                            self._missing_tool_result_stub(call_id)
+                            for call_id in call_ids if call_id and call_id not in result_ids
+                        ])
+                        if (
+                            used + tail_token_total + pending_tokens + msg_tokens > assembly_cap
+                            and pending_results
+                            and result_ids <= set(call_ids)
+                        ):
+                            # A rich ref is useful only if its call survives the budget.
+                            pending_results = [
+                                carry_identity(r, self._missing_tool_result_stub(str(r.get("tool_call_id") or "").strip()),
+                                               ("message_uid", "_tool_call_uid"))
+                                if is_externalized_placeholder(normalize_content_value(r.get("content")) or "")
+                                else r
+                                for r in pending_results
+                            ]
+                            pending_tokens = count_messages_tokens(pending_results)
+                    if used + tail_token_total + pending_tokens + msg_tokens > assembly_cap:
+                        if (
+                            stub_over_cap_tool_results
+                            and msg.get("role") == "tool"
+                            and not skipped_tail_gap
+                            and self._is_budget_droppable_tail_message(msg)
+                        ):
+                            pending_results.append(self._over_cap_tool_result_stub(msg, result_names.get(index, "")))
                             continue
-                        if unmatched_results[call_id]:
-                            unmatched_results[call_id] -= 1
-                        else:
-                            missing_ids.append(call_id)
-                    if missing_ids:
-                        msg_tokens += count_messages_tokens(
-                            [self._missing_tool_result_stub(call_id) for call_id in missing_ids])
-                if used + tail_token_total + pending_tokens + msg_tokens > assembly_cap:
-                    if own_results_start is not None and own_results_start < len(kept_tail_reversed):
-                        # The turn is rejected: its kept results would be orphans the final
-                        # sanitizer drops, so stop charging them to the tail budget.
-                        tail_token_total -= sum(count_message_tokens(r) for r in kept_tail_reversed[own_results_start:])
-                        del kept_tail_reversed[own_results_start:]
-                    if (
-                        stub_over_cap_tool_results
-                        and msg.get("role") == "tool"
-                        and not skipped_tail_gap
-                        and self._is_budget_droppable_tail_message(msg)
-                    ):
-                        pending_results.append(self._over_cap_tool_result_stub(msg, result_names.get(index, "")))
-                        continue
-                    if self._is_budget_droppable_tail_message(msg):
-                        skipped_tail_gap = True
-                        continue
-                    break
-                if skipped_tail_gap:
-                    break
-                if stub_over_cap_tool_results and msg.get("role") == "tool":
-                    # Queue even fitting results so the call sees its whole result set.
-                    pending_results.append(msg)
-                    continue
-                if pending_results:
-                    call_ids = {_tool_call_id(tc) for tc in (msg.get("tool_calls") or [])}
-                    if msg.get("role") == "tool":
+                        if self._is_budget_droppable_tail_message(msg):
+                            skipped_tail_gap = True
+                            continue
+                        break
+                    if skipped_tail_gap:
+                        break
+                    if stub_over_cap_tool_results and msg.get("role") == "tool":
+                        # Queue even fitting results so the call sees its whole result set.
                         pending_results.append(msg)
                         continue
-                    if msg.get("role") != "assistant" or not {
-                        str(r.get("tool_call_id") or "").strip() for r in pending_results
-                    } <= call_ids:
-                        break
-                    kept_tail_reversed.extend(pending_results)
-                    tail_token_total += pending_tokens
-                    pending_results = []
-                kept_tail_reversed.append(msg)
-                tail_token_total += msg_tokens
-            tail_selected = list(reversed(kept_tail_reversed))
+                    if pending_results:
+                        call_ids = {_tool_call_id(tc) for tc in (msg.get("tool_calls") or [])}
+                        if msg.get("role") == "tool":
+                            pending_results.append(msg)
+                            continue
+                        if msg.get("role") != "assistant" or not {
+                            str(r.get("tool_call_id") or "").strip() for r in pending_results
+                        } <= call_ids:
+                            break
+                        kept_tail_reversed.extend(pending_results)
+                        tail_token_total += pending_tokens
+                        pending_results = []
+                    kept_tail_reversed.append(msg)
+                    tail_token_total += msg_tokens
+                tail_selected = list(reversed(kept_tail_reversed))
             summary_budget = max(0, assembly_cap - used - tail_token_total)
             tail_selected, summary_budget, kept_reply = self._keep_newest_reply(
                 tail_messages, anchor_source, tail_for_selection, tail_selected, summary_budget, _reply_rejected)
@@ -8149,15 +8089,13 @@ class LCMEngine(
                 # Measure without externalizing preserved-objective payloads.
                 # Tool-pair repair still reserves any missing-result stubs.
                 measurement_tail = self._sanitize_tool_pairs(list(tail_selected))
-                # The quarter-window floor relies on a later survival fit; without one, use the true remainder.
-                default_budget = max(
-                    ceiling - overhead - count_messages_tokens(result)
-                    - max(count_messages_tokens(tail_selected),
-                          count_messages_tokens(measurement_tail))
-                    # Reserve recall only when its builder can return a row (recall and embeddings on, budget > 0).
-                    - (max(0, int(self._config.proactive_recall_budget_tokens or 0))
-                       if self._config.proactive_recall_enabled and self._config.embeddings_enabled else 0),
-                    ceiling // 4 if self._config.survival_fit else 0,
+                default_budget = default_prefix_budget(
+                    ceiling=ceiling, overhead=overhead, leading_tokens=count_messages_tokens(result),
+                    tail_tokens=count_messages_tokens(tail_selected),
+                    repaired_tail_tokens=count_messages_tokens(measurement_tail),
+                    recall_budget_tokens=self._config.proactive_recall_budget_tokens,
+                    proactive_recall_enabled=self._config.proactive_recall_enabled,
+                    embeddings_enabled=self._config.embeddings_enabled, survival_fit=self._config.survival_fit,
                 )
                 full_prefix = {"role": summary_role, "content": "\n\n---\n\n".join(summary_parts)}
                 if count_message_tokens(full_prefix) > default_budget:
@@ -8175,32 +8113,12 @@ class LCMEngine(
                             }) <= summary_budget:
                                 summary_parts[0] = anchor_part = candidate
                                 break
-            anchor_exempt = (
-                summary_budget is not None and assembly_cap is None and self._config.survival_fit
-                and part_keys[0] == (-1, None) and count_message_tokens({
-                    "role": summary_role, "content": strip_injected_context_blocks(summary_parts[0]),
-                }) > summary_budget
-            )
-            kept_indexes = list(range(len(summary_parts)))
-            if anchor_exempt:
-                summary_parts[0] = strip_injected_context_blocks(summary_parts[0])
-                kept_indexes = [0]
-            elif summary_budget is not None:
-                # #653: within a depth the newest parts are kept first; kept parts render in the order above.
-                kept_indexes = []
-                for index in sorted(range(len(summary_parts)), key=lambda i: (part_keys[i][0], -i)):
-                    candidate = "\n\n---\n\n".join(
-                        strip_injected_context_blocks(summary_parts[i])
-                        if part_keys[i] == (-1, None) and count_message_tokens({
-                            "role": summary_role, "content": summary_parts[i],
-                        }) > summary_budget else summary_parts[i]
-                        for i in sorted(kept_indexes + [index]))
-                    candidate_msg = {"role": summary_role, "content": candidate}
-                    if count_message_tokens(candidate_msg) > summary_budget:
-                        continue
-                    kept_indexes.append(index)
-                kept_indexes.sort()
-            selected_parts = [summary_parts[i] for i in kept_indexes]
+            selection = select_prefix(summary_parts, PrefixBudgetFacts(
+                part_keys=part_keys, summary_role=summary_role, summary_budget=summary_budget,
+                assembly_cap=assembly_cap, survival_fit=self._config.survival_fit,
+                count_message_tokens=count_message_tokens,
+            ))
+            kept_indexes, selected_parts = selection.kept_indexes, selection.selected_parts
             active_summary_node_ids.update(
                 part_keys[i][1] for i in kept_indexes if part_keys[i][1] is not None)
             if selected_parts:
@@ -8636,26 +8554,16 @@ class LCMEngine(
         - max_assembly_tokens: explicit hard cap
         - reserve_tokens_floor: keep headroom inside context_length
         """
-        caps: list[int] = []
-
-        if self._config.max_assembly_tokens > 0:
-            caps.append(self._config.max_assembly_tokens)
-
-        if self.context_length > 0 and self._config.reserve_tokens_floor > 0:
-            reserve_cap = self.context_length - self._config.reserve_tokens_floor
-            if reserve_cap > 0:
-                caps.append(reserve_cap)
-            else:
-                logger.warning(
-                    "LCM reserve_tokens_floor=%d disables reserve-based assembly cap because context_length=%d",
-                    self._config.reserve_tokens_floor,
-                    self.context_length,
-                )
-
-        if not caps:
-            return None
-
-        return max(1, min(caps))
+        cap, reserve_floor_disabled = assembly_token_cap(
+            self.context_length, self._config.max_assembly_tokens, self._config.reserve_tokens_floor,
+        )
+        if reserve_floor_disabled:
+            logger.warning(
+                "LCM reserve_tokens_floor=%d disables reserve-based assembly cap because context_length=%d",
+                self._config.reserve_tokens_floor,
+                self.context_length,
+            )
+        return cap
 
     # -- Internal: helpers -------------------------------------------------
 
