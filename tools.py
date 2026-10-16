@@ -80,6 +80,11 @@ from .rollup_periods import (
 )
 from .retrieval_core import (
     _hit_identity,
+    _lcm_recall_excerpt_expand_hint,
+    _lcm_recall_recency_boost as _lcm_recall_recency_boost,  # re-export for direct imports; the prior runs it in retrieval_core
+    apply_prior,
+    fuse_candidates,
+    place_fts_anchor,
     _lcm_grep_confidence,
     _lcm_grep_deadline_error,
     _resolve_semantic_conversation_scope,
@@ -468,15 +473,6 @@ _LCM_RECALL_SUMMARY_SOURCE_PER_NODE = 4
 # read per candidate it has to skip.
 _LCM_RECALL_STRICT_READ_WAVE = 32
 _LCM_RECALL_ANSWER_READY_CONTENT_CHARS = 2_400
-# Recency boost half-life (30 days) and its floor: a memory's rank_score is
-# multiplied by 2**(-age/half_life), clamped so age never zeroes an otherwise
-# strong hit — it only nudges toward newer memories.
-_LCM_RECALL_RECENCY_HALF_LIFE_S = 30 * 24 * 3600.0
-_LCM_RECALL_RECENCY_FLOOR = 0.5
-_LCM_RECALL_RRF_K = 60
-# FTS anchor slot (#950): the FTS arm's best message, when fusion pushed it out
-# of the delivered window, takes the slot of the 10th distinct session at most.
-_LCM_RECALL_FTS_ANCHOR_SLOTS = 10
 _LCM_LOAD_SESSION_DEFAULT_LIMIT = 100
 _LCM_LOAD_SESSION_HARD_LIMIT_CAP = 200
 _LCM_LOAD_SESSION_DEFAULT_MAX_CONTENT_CHARS = 4000
@@ -4450,19 +4446,6 @@ def lcm_grep(args: Dict[str, Any], **kwargs) -> str:
     })
 
 
-def _lcm_recall_recency_boost(timestamp: Any, *, now: float) -> float:
-    """Half-life recency multiplier in ``[floor, 1.0]`` (newer => closer to 1)."""
-    try:
-        ts = float(timestamp or 0.0)
-    except (TypeError, ValueError):
-        ts = 0.0
-    if ts <= 0:
-        return _LCM_RECALL_RECENCY_FLOOR
-    age = max(0.0, now - ts)
-    boost = 2.0 ** (-(age / _LCM_RECALL_RECENCY_HALF_LIFE_S))
-    return max(_LCM_RECALL_RECENCY_FLOOR, boost)
-
-
 def _lcm_recall_summary_expand_hint(hit: dict[str, Any]) -> str:
     if hit.get("from_current_session"):
         return f"lcm_expand(node_id={hit.get('node_id')})"
@@ -4470,11 +4453,6 @@ def _lcm_recall_summary_expand_hint(hit: dict[str, Any]) -> str:
     # apostrophes/backslashes, and an unescaped interpolation would advertise
     # a handle lcm_expand cannot parse back.
     return _session_expand_hint(hit.get("node_id"), hit.get("session_id") or "")
-
-
-def _lcm_recall_excerpt_expand_hint(hit: dict[str, Any]) -> str:
-    offset = int(hit.get("content_offset") or 0)
-    return f"lcm_expand(store_id={hit.get('store_id')}, content_offset={offset})"
 
 
 def _lcm_recall_diverse_entries(
@@ -5815,58 +5793,8 @@ def _lcm_recall_rerank(
     return reordered, "applied", rerank_scores
 
 
-def _lcm_recall_fts_anchor(
-    ordered: list[dict[str, Any]],
-    arm_hits: dict[str, list[dict[str, Any]]],
-    arm_order: list[str],
-    limit: int,
-    slots: int = _LCM_RECALL_FTS_ANCHOR_SLOTS,
-    *,
-    arm_weights: list[float] | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Keep the FTS arm's best message inside the delivered window (#950).
-
-    Rank-only: when the FTS arm's raw position-1 message fell outside the first
-    ``limit`` fused entries, it moves to the start of the S-th distinct session
-    of that window (S = min(limit, slots)), else to slot ``limit``. At most one
-    entry moves and at most one session leaves the window. ``rrf_score`` and
-    ``_final_score`` are untouched, and the moved entry reports its own score,
-    so a relevance floor applied to the serialized score still sees the hit's
-    true strength (delivered scores need not be monotone around it).
-    Inert unless at least two arms ran and FTS is one of them, so FTS-only
-    output is unchanged. Also inert when ``arm_weights`` (the weights
-    ``rrf_fuse`` used, aligned to ``arm_order``) gives the FTS arm a weight of
-    zero or less: an operator who switched the arm off gets no anchor from it.
-    """
-    info: dict[str, Any] = {"fired": False, "position": None}
-    if len(arm_order) < 2 or "fts" not in arm_order or limit < 4 or not arm_hits.get("fts"):
-        return ordered, info
-    fts_index = arm_order.index("fts")
-    if arm_weights is not None and fts_index < len(arm_weights) and arm_weights[fts_index] <= 0:
-        return ordered, info
-    anchor = _hit_identity(arm_hits["fts"][0])
-    j = next(
-        (i for i, entry in enumerate(ordered) if _hit_identity(entry["hit"]) == anchor),
-        None,
-    )
-    if j is None or j < limit:
-        return ordered, info
-    window = ordered[:limit]
-    target = min(limit, slots)
-    cut = limit - 1
-    seen: list[Any] = []
-    for i, entry in enumerate(window):
-        sid = entry["hit"].get("session_id")
-        if sid and sid not in seen:
-            seen.append(sid)
-            if len(seen) == target:
-                cut = i
-                break
-    cut = min(cut, limit - 1)
-    ordered = list(ordered)
-    entry = ordered.pop(j)
-    info.update(fired=True, position=cut + 1)
-    return ordered[:cut] + [entry] + ordered[cut:], info
+# Re-export for existing direct callers only. lcm_recall runs retrieval_core.place_fts_anchor, so patch that, not this name.
+_lcm_recall_fts_anchor = place_fts_anchor
 
 
 def _lcm_recall_fts_anchor_delivered(
@@ -6485,97 +6413,13 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
                         coverage["chunk"] = "none"
                         degraded_reasons.append(f"chunk arm failed: {exc}")
 
-    # -- RRF fusion over the arms that produced hits (order fixes base-hit win) --
-    # Per-arm weights down-weight the weak FTS arm so the 3-arm hybrid is never
-    # dragged below its best arm (measured −21 R@5 on LongMemEval for naive
-    # equal-weight fusion). Weights echo into provenance below.
-    arm_order = [name for name in ("fts", "summary", "chunk") if arm_hits.get(name)]
-    configured_arm_weights = getattr(engine._config, "recall_arm_weights", None) or {}
-    arm_weights = [float(configured_arm_weights.get(name, 1.0)) for name in arm_order]
-    ordered = rrf_fuse(
-        [arm_hits[name] for name in arm_order],
-        k=_LCM_RECALL_RRF_K,
-        weights=arm_weights,
+    ordered, arm_order, arm_weights = fuse_candidates(
+        arm_hits, getattr(engine._config, "recall_arm_weights", None)
     )
-
-    # Merge chunk-arm provenance onto a message whose store_id also surfaced via
-    # FTS. The chunk list is best-first, so keep the BEST-ranked chunk per store
-    # (setdefault, not a plain comprehension which keeps the WORST last entry --
-    # F1-chunk-dedupe-wrong-span). When both arms carry the message, the merged
-    # hit takes the better-ranked arm's snippet AND its offsets together so the
-    # displayed preview and the expand handle describe the SAME span (DEDUPE-1);
-    # a mismatched snippet/offset pair pointed at two different parts of the
-    # message. arm_order fixes the fused base object to the earliest arm, so we
-    # compare per-arm ranks explicitly rather than trusting insertion order.
-    chunk_by_store: dict[Any, dict[str, Any]] = {}
-    for chunk_hit in arm_hits.get("chunk", []):
-        chunk_by_store.setdefault(chunk_hit.get("store_id"), chunk_hit)
-    # Every OTHER arm's representation of the same row is kept alongside the
-    # fused base rather than discarded. Fusion picks one base per identity (the
-    # earliest arm, so FTS when it hit), but an FTS snippet is a match window
-    # with markers -- not a verbatim span -- so a row whose only surviving
-    # representation is the FTS one cannot be cited beyond the hydration budget
-    # even though the chunk or summary-source excerpt of that same row could be.
-    # Reference-strict verification tries these in order and delivers the first
-    # that the row actually supports.
-    alternates_by_store: dict[Any, list[dict[str, Any]]] = {}
-    for arm_name in ("summary", "chunk"):
-        for other_hit in arm_hits.get(arm_name, []):
-            if other_hit.get("kind") != "message_excerpt":
-                continue
-            alternates_by_store.setdefault(other_hit.get("store_id"), []).append(
-                other_hit
-            )
-    chunk_arm_index = arm_order.index("chunk") if "chunk" in arm_order else None
     fts_arm_index = arm_order.index("fts") if "fts" in arm_order else None
-    for entry in ordered:
-        hit = entry["hit"]
-        if hit.get("kind") != "message_excerpt":
-            continue
-        entry["_alternates"] = [
-            other
-            for other in alternates_by_store.get(hit.get("store_id"), [])
-            if other is not hit
-        ]
-        chunk_hit = chunk_by_store.get(hit.get("store_id"))
-        if chunk_hit is None:
-            continue
-        ranks = entry["ranks"]
-        chunk_rank = ranks.get(chunk_arm_index) if chunk_arm_index is not None else None
-        fts_rank = ranks.get(fts_arm_index) if fts_arm_index is not None else None
-        # Adopt the chunk arm's span+snippet when the base hit lacks a span (a
-        # pure-FTS base) OR the chunk arm ranked this message at least as well as
-        # the FTS arm. Lower rank number == better.
-        chunk_wins = not hit.get("chunk_span") or (
-            chunk_rank is not None
-            and (fts_rank is None or chunk_rank <= fts_rank)
-        )
-        if chunk_wins:
-            hit["chunk_span"] = chunk_hit.get("chunk_span")
-            hit["content_offset"] = chunk_hit.get("content_offset", 0)
-            hit["snippet"] = chunk_hit.get("snippet") or hit.get("snippet")
-            hit["expand_hint"] = _lcm_recall_excerpt_expand_hint(hit)
-
-    # -- Scope-prior + recency rescoring. Applied BEFORE the rerank window is
-    #    selected so an item the prior lifts into the true top-N is the one
-    #    actually reranked (RERANK-1). Boost eligibility spans the whole
-    #    conversation-scope session set, not a single session-id equality, so a
-    #    mid-conversation session rotation keeps the boost (SCOPE-1). --
     now = time.time()
     scope_session_ids = set(_recent_conversation_scope_session_ids(engine))
-    for entry in ordered:
-        hit = entry["hit"]
-        rank_score = float(entry.get("rrf_score", 0.0))
-        is_current = 1.0 if hit.get("session_id") in scope_session_ids else 0.0
-        recency = _lcm_recall_recency_boost(hit.get("timestamp"), now=now)
-        entry["_final_score"] = rank_score * (1.0 + scope_bias * is_current) * recency
-    ordered.sort(
-        key=lambda entry: (
-            -float(entry["_final_score"]),
-            -float(entry.get("rrf_score", 0.0)),
-            _hit_identity(entry["hit"]),
-        )
-    )
+    ordered = apply_prior(ordered, scope_session_ids, now, scope_bias)
 
     # -- Optional rerank stage (default OFF): a pure rank-REORDER within the top
     #    window of the post-prior order (no score splicing onto the RRF scale). --
@@ -6592,7 +6436,7 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
     if bool(kwargs.get("fts_anchor", True)) and bool(
         getattr(engine._config, "recall_fts_anchor", True)
     ):
-        ordered, fts_anchor_info = _lcm_recall_fts_anchor(
+        ordered, fts_anchor_info = place_fts_anchor(
             ordered, arm_hits, arm_order, limit, arm_weights=arm_weights
         )
 
