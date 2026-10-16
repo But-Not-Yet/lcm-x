@@ -6,7 +6,7 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
-- Fix: a primary summary error followed by a usable fallback no longer gives the summary-failed survival-fit warning. An exhausted chain still records its error for the pass. Doctor survival-fit history includes the last cause without changing the top-level status; the `lcm_doctor` tool returns the record as top-level `survival_fit` (or null), outside `checks`. (#1162)
+- Fix: a survival fit now says LCM could not summarise only when the pass's summary chain failed; every other fit says older messages left live context to keep the conversation within the model's context window. So a primary summary error followed by a usable fallback no longer gives the summary-failed warning. An exhausted chain still records its error for the pass. Doctor survival-fit history includes the last cause without changing the top-level status; the `lcm_doctor` tool returns the record as top-level `survival_fit` (or null), outside `checks`. (#1162)
 
 ## v0.27.0 (summary quality)
 
