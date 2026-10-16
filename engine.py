@@ -5266,7 +5266,7 @@ class LCMEngine(
             return
         try:
             self._ingest_cursor_needs_reconcile = (
-                self._store.get_session_count(self._session_id) > 0
+                self._store.has_session_messages(self._session_id)
                 # An empty rotation child resumed after a restart still has to
                 # re-index the host's post-compaction list (#483, C7), from a
                 # commit proof or a carried native recovery proof.
@@ -6039,8 +6039,8 @@ class LCMEngine(
                                    if identity != cached_source_identities[idx]), None)
             try:
                 if reconciled_existing_session and cursor > 0:
-                    for store_id, stamp in self._identity_anchor_backfill_prefix(messages, reconcile_messages, cursor):
-                        self._store.backfill_observed_at(store_id, stamp)
+                    self._store.backfill_observed_at_many(
+                        self._identity_anchor_backfill_prefix(messages, reconcile_messages, cursor))
                 anchor_plan = self._identity_anchor_prematch(messages, reconcile_messages, cursor, audit_from)
                 anchor_plan["replayed"] -= replayed_tool_segment_indexes
                 self._identity_anchor_version_rewind(messages, anchor_plan)
@@ -6110,7 +6110,7 @@ class LCMEngine(
         empty_session_placeholder_ordinals: dict[str, set[int]] = {}
         if not compression_boundary_ingest_pending and self._session_id:
             try:
-                if self._store.get_session_count(self._session_id) == 0:
+                if not self._store.has_session_messages(self._session_id):
                     empty_session_placeholder_budget = self._load_generated_ignored_placeholder_hash_counts()
                     empty_session_placeholder_ordinals = self._load_generated_ignored_placeholder_hash_ordinals()
             except Exception:
