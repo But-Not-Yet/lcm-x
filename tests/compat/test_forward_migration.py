@@ -47,7 +47,7 @@ try:
                 {"role": "user", "content": "Run the large report.", "timestamp": 130.0},
                 {"role": "assistant", "content": "", "tool_calls": [
                     {"id": "report", "type": "function", "function": {"name": "report", "arguments": "{}"}}]},
-                {"role": "tool", "tool_call_id": "report", "name": "report", "content": "report data " * 5000},
+                {"role": "tool", "tool_call_id": "report", "name": "report", "tool_name": "report", "content": "report data " * 5000},
                 {"role": "assistant", "content": "The report is complete."},
             ])
             engine.ingest(view)
