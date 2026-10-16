@@ -92,3 +92,69 @@ def test_bypassed_pass_keeps_other_pending_entries(tmp_path, monkeypatch):
         assert engine._engine_uids_pending == {"foreground-uid": ("lineage", "carrier")}
     finally:
         engine.shutdown()
+
+
+def test_nested_bypassed_pass_restores_the_outer_tracker(tmp_path, monkeypatch):
+    _state_db(tmp_path, [("S", None, None)])
+    engine = _engine(tmp_path, "S")
+    inside = False
+
+    class Native:
+        def compress(self, rows, **kwargs):
+            nonlocal inside
+            inside = True
+            try:
+                assert _marker_uids(engine.compress(rows, current_tokens=100_000, force=True))
+            finally:
+                inside = False
+            raise RuntimeError("outer native failure after the nested bypassed pass")
+
+    monkeypatch.setattr(engine, "_get_host_fallback_compressor", lambda: None if inside else Native())
+    engine._mark_thread_context_stateless("child")
+    try:
+        out = engine.compress(_rows(), current_tokens=100_000, force=True)
+        print(f"\nnested pass: marker={bool(_marker_uids(out))} pending={dict(engine._engine_uids_pending)}")
+        assert _marker_uids(out)
+        assert engine._engine_uids_pending == {}
+    finally:
+        engine._clear_thread_context_stateless("child")
+        engine.shutdown()
+
+
+class _ConcurrentDrop(dict):
+    """The recorder's first pop lets a bypassed pass on another thread drop the other ``racing`` uids, after the
+    recorder snapshotted the pending keys (compaction.py _compress_bypassed cleanup vs host_uid recorder)."""
+
+    def __init__(self, *args, racing=()):
+        super().__init__(*args)
+        self.racing, self.raced = set(racing), False
+
+    def pop(self, key, *default):
+        if not self.raced and key in self.racing:
+            self.raced = True
+            for other in self.racing - {key}:
+                dict.pop(self, other, None)
+        return dict.pop(self, key, *default)
+
+
+def test_recorder_publishes_when_a_bypassed_pass_drops_its_uid_meanwhile(tmp_path, monkeypatch):
+    _state_db(tmp_path, [("S", None, None)])
+    engine = _engine(tmp_path, "S")
+    errors = []
+    monkeypatch.setattr(engine, "_host_uid_count", lambda counts, exc=None: errors.append(type(exc).__name__))
+    try:
+        row = {"role": "user", "content": "synthetic foreground carrier"}
+        engine._mint_engine_uids([(row, "summary", None, "carrier")])
+        lineage, proof = engine._engine_uids_pending[row["message_uid"]]
+        engine._engine_uids_pending = _ConcurrentDrop(
+            {**engine._engine_uids_pending, "child-a": (lineage, proof), "child-b": (lineage, proof)},
+            racing={"child-a", "child-b"})
+        engine._host_uid_record_engine([row])
+        bindings = engine._store.host_uid_bindings_for(lineage, {row["message_uid"]}, ("engine",))
+        print(f"\nrecorder vs concurrent drop: raced={engine._engine_uids_pending.raced} errors={errors} "
+              f"bindings={len(bindings)}")
+        assert engine._engine_uids_pending.raced
+        assert errors == []
+        assert bindings
+    finally:
+        engine.shutdown()
