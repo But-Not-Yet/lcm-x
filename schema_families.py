@@ -52,7 +52,7 @@ COMPAT_REGISTRY: dict[str, SchemaFamily] = {
             "idx_lcm_embedding_profile_model",
             "idx_lcm_embedding_meta_identity_embedded_at",
         ),
-        oldest_reader="v0.25.0-rc1",
+        oldest_reader="v0.20.0",
         removal_version=None,
     ),
 }

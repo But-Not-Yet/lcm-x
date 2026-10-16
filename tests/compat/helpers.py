@@ -148,11 +148,11 @@ options = dict(database_path=db, embeddings_enabled=False, temporal_rollups_enab
 '''
 
 
-def run_old(old, directory, host_root, script, mode="read", data=""):
+def run_old(old, directory, host_root, script, mode="read", data="", *, bootstrap=OLD_BOOTSTRAP):
     env = {key: value for key, value in os.environ.items() if not key.startswith("LCM_")}
     env.update(HERMES_HOME=str(directory / "home"), PYTHONDONTWRITEBYTECODE="1")
     result = subprocess.run(
-        [sys.executable, "-B", "-c", OLD_BOOTSTRAP + script, str(old), str(directory / "lcm.db"),
+        [sys.executable, "-B", "-c", bootstrap + script, str(old), str(directory / "lcm.db"),
          str(directory / "home"), str(host_root), mode, str(data)],
         cwd=directory, env=env, capture_output=True, text=True, timeout=45)
     assert result.returncode == 0, result.stderr[-6000:]
