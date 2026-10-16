@@ -1146,13 +1146,36 @@ def test_default_window_cell_contract():
         assert "R1" in process_cell.unsupported(c, "acp-process")
         assert c["lcm_env"] == {} and c["in_place"] is True
         assert ("C1" in c["bars"]) is c["id"].endswith("cadence")
-        assert ("F4" in c["bars"]) is c["id"].endswith("large-objective")
-    c = cells.select("default-window/64k-large-objective")[0]
+        assert ("F4" in c["bars"]) is c["id"].endswith("objective-1221")
+    with pytest.raises(ValueError, match="no cell matches"):
+        cells.select("default-window/64k-large-objective")
+    c = cells.select("default-window/objective-1221")[0]
     assert c["bars"] == ["B1", "B2", "F4"]
-    assert len(probe.user_text(c, "T", 2)) // 4 > 13600
-    assert len(probe.user_text(c, "T", 3)) < len(probe.user_text(c, "T", 2))
-    assert len(c["tool_plan"]) > 1
+    assert c["window"] == 32768 and c["turns"] == 2
+    assert 12000 <= len(probe.user_text(c, "T", 2)) // 4 < 12100
+    assert len(probe.user_text(c, "T", 1)) < 100
+    assert not c["final_compaction_check"]
+    assert len(c["tool_plan"]) == 11
+    assert [g["calls"][0]["args"]["path"] for g in c["tool_plan"]] == [
+        f"~/objective-1221/big-{n:02d}.txt" for n in range(1, 12)]
     assert "threshold:" not in run_matrix.config_yaml(c, {"engine": "fixture", "enabled": "fixture"})
+
+
+def test_default_window_objective_fixtures_stay_in_private_home(tmp_path, monkeypatch):
+    private_home = tmp_path / "home"
+    private_home.mkdir()
+    monkeypatch.setenv("HOME", str(private_home))
+    c = cells.select("default-window/objective-1221")[0]
+    # The output path is independent of the paths sent to the real host's file tool.
+    for name in ("short", "a-much-longer-output-directory"):
+        files = tmp_path / name
+        probe.write_tool_files(files, c)
+        for n, size in enumerate([24000, 16000] + [7400] * 9, 1):
+            text = (private_home / "objective-1221" / f"big-{n:02d}.txt").read_text()
+            expected = "".join(f"Record {i:04d}: datum for task step {n:02d}.\n"
+                               for i in range(size // 30 + 1))[:size]
+            assert text == expected
+            assert not (files / f"big-{n:02d}.txt").exists()
 
 
 @pytest.mark.parametrize("duplicate", [False, True])

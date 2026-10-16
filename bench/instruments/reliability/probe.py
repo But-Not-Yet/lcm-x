@@ -89,6 +89,14 @@ def write_tool_files(files: Path, cell: dict) -> None:
     """Shared R1/R2 fixtures; distinct paths bypass the host's identical-read dedup."""
     files.mkdir(exist_ok=True)
     (files / "small.txt").write_text("small deterministic file\n")
+    if cell.get("id") == "default-window/objective-1221":
+        # Real reads use fixed ~/ paths; --out and --scratch-root never enter the tool arguments.
+        objective_files = Path.home() / "objective-1221"
+        objective_files.mkdir(exist_ok=True)
+        for n, size in enumerate([24000, 16000] + [7400] * 9, 1):
+            text = "".join(f"Record {i:04d}: datum for task step {n:02d}.\n"
+                           for i in range(size // 30 + 1))[:size]
+            (objective_files / f"big-{n:02d}.txt").write_text(text)
     lines = cell.get("big_lines", 400)
     (files / "big.txt").write_text("".join(f"line {i:05d}: " + FILLER * 8 + "\n" for i in range(lines)))
     for n in range(1, cell.get("big_files", 0) + 1):
@@ -189,6 +197,11 @@ def refusal(cell_dir):
 
 
 def user_text(cell, prefix, t):
+    if cell.get("id") == "default-window/objective-1221":
+        if t == 2:
+            # Fixed plain-row objective from #1221's engine regression, with the harness turn tag.
+            return "[T02] user turn 2: Keep the following objective verbatim.\n" + ("plan " * 9600) + " end."
+        return f"[{prefix}{t:02d}] user turn {t}: Earlier request. end."
     ut = cell["user_text"]
     if t in ut.get("continue_turns", []):
         return "continue"
