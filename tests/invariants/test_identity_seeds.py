@@ -856,14 +856,58 @@ def test_restart_replay_user_1328():
         machine.teardown()
 
 
+class ReplayToolTailUserCollapsed(AssertionError):
+    """Only the final repeated user missing from the nine-row tool-tail trace."""
+
+
+@pytest.mark.xfail(strict=True, reason="#1328: tool-tail replay consumes the fresh repeated user's proof",
+                   raises=ReplayToolTailUserCollapsed)
+def test_restart_replay_tool_tail_user_1328():
+    """T(alpha), T(next prompt with two tools), compress, replay, T(alpha)."""
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.new_turn("next prompt", False, 2, False, "lookup")
+        machine.exactly_once()
+        machine.compress()
+        machine.exactly_once()
+        assert machine.engine._last_compression_status == "compacted"
+        proof = machine.engine._compress_commit_proof
+        assert proof and proof.get("emissions")
+        previous = deepcopy(machine.host)
+        machine.replay()
+        machine.exactly_once()
+        assert machine.host == previous
+        assert machine.engine._compress_commit_proof is None
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        expected = list(map(identity, machine.occurrences))
+        assert len(expected) == 9
+        assert expected[0] == expected[-2]
+        assert machine.occurrences[0]["timestamp"] != machine.occurrences[-2]["timestamp"]
+        actual = list(map(identity, machine.rows()))
+        try:
+            machine.exactly_once()
+        except AssertionError as error:
+            if actual == expected[:-2] + expected[-1:]:
+                raise ReplayToolTailUserCollapsed(str(error)) from error
+            raise
+    finally:
+        machine.teardown()
+
+
 @settings(PROFILE)
 @given(case=st.sampled_from(("known-open", "distinct-text", "no-compress", "one-compress", "four-row", "tool-tail")),
        cold=st.booleans())
 def test_restart_recompression_generated_controls(case, cold):
-    """Generate the passing neighbors; the guard must deliver their final turn."""
-    from tests.invariants.test_exactly_once_machine import RestartMachine
+    """Passing neighbors bypass guards; known-open inputs skip delivery."""
+    from tests.invariants.test_exactly_once_machine import KNOWN_OPEN, RestartMachine
 
     machine = RestartMachine()
+    known_open = case == "known-open"
+    machine.include_known_open = not known_open
     try:
         machine.new_turn("alpha", False, 0, False, "lookup")
         if cold:
@@ -883,8 +927,59 @@ def test_restart_recompression_generated_controls(case, cold):
             machine.compress()
             machine.exactly_once()
         delivered = len(machine.occurrences)
-        machine.new_turn("alpha 2" if case == "distinct-text" else "alpha", False, 0, False, "lookup")
-        assert len(machine.occurrences) == delivered + (0 if case == "known-open" else 2)
+        text = "alpha 2" if case == "distinct-text" else "alpha"
+        user = dict(role="user", content=text, timestamp=float(machine.sequence + 1))
+        assert bool(KNOWN_OPEN[1328](machine.proof_lost_view == machine.host,
+                    machine.engine._compress_commit_proof, machine.host, machine.occurrences, user)) == known_open
+        machine.new_turn(text, False, 0, False, "lookup")
+        assert len(machine.occurrences) == delivered + (0 if known_open else 2)
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
+@settings(PROFILE)
+@given(case=st.sampled_from(("known-open", "no-compress", "new-turn", "distinct-text", "tool-tail", "four-row")),
+       cold=st.booleans())
+def test_restart_replay_generated_controls(case, cold):
+    """Replay neighbors bypass guards; equal-identity triggers skip delivery."""
+    from tests.invariants.test_exactly_once_machine import KNOWN_OPEN, RestartMachine
+
+    machine = RestartMachine()
+    known_open = case in ("known-open", "tool-tail")
+    machine.include_known_open = not known_open
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        if cold:
+            machine.cold_resume()
+        else:
+            machine.new_turn("next prompt", False, 2 if case == "tool-tail" else 0, False, "lookup")
+        if case == "four-row":
+            machine.engine._config.fresh_tail_count = 4
+            machine.engine.protect_last_n = 4
+            machine.new_turn("third prompt", False, 0, False, "lookup")
+        elif case == "tool-tail" and cold:
+            machine.new_turn("tool prompt", False, 2, False, "lookup")
+        machine.exactly_once()
+        if case != "no-compress":
+            machine.compress()
+            machine.exactly_once()
+            assert machine.engine._last_compression_status == "compacted"
+        if case == "new-turn":
+            machine.new_turn("intervening prompt", False, 0, False, "lookup")
+            machine.exactly_once()
+        else:
+            previous = deepcopy(machine.host)
+            machine.replay()
+            assert machine.host == previous
+            machine.exactly_once()
+        delivered = len(machine.occurrences)
+        text = "alpha 2" if case == "distinct-text" else "alpha"
+        user = dict(role="user", content=text, timestamp=float(machine.sequence + 1))
+        assert bool(KNOWN_OPEN[1328](machine.proof_lost_view == machine.host,
+                    machine.engine._compress_commit_proof, machine.host, machine.occurrences, user)) == known_open
+        machine.new_turn(text, False, 0, False, "lookup")
+        assert len(machine.occurrences) == delivered + (0 if known_open else 2)
         machine.exactly_once()
     finally:
         machine.teardown()

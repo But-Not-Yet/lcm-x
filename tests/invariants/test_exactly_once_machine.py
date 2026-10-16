@@ -628,15 +628,15 @@ def repeated_user_after_proof_loss(proof_lost, proof, host, occurrences, user):
     """#1328: the unchanged emitted view lost its proof before a fresh user.
 
     No-progress recompression or unchanged replay consumes the proof without
-    a delivery. Role repair then moves the fresh repeated user before the old
-    cursor in this emitted-head/plain-tail shape. Text or length alone cannot
-    select the input; the earlier occurrence must have a different timestamp.
+    a delivery. The next turn's role repair must still change that prefix:
+    the four-row control is already repaired and passes after proof loss.
+    Tool rows do not select the input; the earlier occurrence must have a
+    different timestamp as well as equal identity.
     """
     return (proof_lost and proof is None
-            and [row["role"] for row in host] == ["user", "user", "assistant"]
-            and identity(user) != identity(host[1])
+            and merge_host_users(deepcopy(host)) != host
             and any(row["role"] == "user" and identity(row) == identity(user)
-                    and row.get("timestamp") != user.get("timestamp") for row in occurrences[:-2]))
+                    and row.get("timestamp") != user.get("timestamp") for row in occurrences))
 
 
 KNOWN_OPEN[1328] = repeated_user_after_proof_loss
@@ -654,7 +654,6 @@ class RestartMachine(RotationMachine):
 
     def __init__(self):
         self.host_clock = 1_000_000
-        self.last_compress_sequence = None
         self.proof_lost_view = None
         super().__init__()
 
@@ -663,15 +662,8 @@ class RestartMachine(RotationMachine):
     def compress(self):
         previous = deepcopy(self.host)
         prior_proof = self.engine._compress_commit_proof
-        consecutive = self.last_compress_sequence == self.sequence
         super().compress()
-        current = deepcopy(self.host)
-        if (consecutive and prior_proof and prior_proof.get("emissions")
-                and previous == current and self.engine._compress_commit_proof is None):
-            self.proof_lost_view = current
-        elif current != self.proof_lost_view or self.engine._compress_commit_proof is not None:
-            self.proof_lost_view = None
-        self.last_compress_sequence = self.sequence
+        self._record_proof_loss(previous, prior_proof)
 
     @precondition(lambda self: bool(self.host))
     @rule()
@@ -679,6 +671,19 @@ class RestartMachine(RotationMachine):
         previous = deepcopy(self.host)
         prior_proof = self.engine._compress_commit_proof
         super().replay()
+        self._record_proof_loss(previous, prior_proof)
+
+    @precondition(lambda self: bool(self.host))
+    @rule()
+    def rotate(self):
+        previous = deepcopy(self.host)
+        prior_proof = self.engine._compress_commit_proof
+        super().rotate()
+        self._record_proof_loss(previous, prior_proof)
+
+    def _record_proof_loss(self, previous, prior_proof):
+        # rotate() also compresses, including the host-rejected no-progress
+        # path. Track the resulting state regardless of the entry point.
         if (prior_proof and prior_proof.get("emissions") and previous == self.host
                 and self.engine._compress_commit_proof is None):
             self.proof_lost_view = previous
@@ -725,7 +730,6 @@ class RestartMachine(RotationMachine):
         self.session_id = session
         self.host = merge_host_users([dict(row, _db_persisted=True) for row in json.loads(payload)])
         self.engine = self.start_engine()
-        self.last_compress_sequence = None
         self.proof_lost_view = None
         # r34.10 cold start only binds; post_llm_call delivers the next
         # completed turn, after per-request role repair. Never ingest here.
@@ -748,7 +752,6 @@ class RestartMachine(RotationMachine):
                 and KNOWN_OPEN[1328](proof_lost, self.engine._compress_commit_proof,
                                     self.host, self.occurrences, user)):
             return  # exclude this trajectory before delivery, never an oracle failure
-        self.last_compress_sequence = None
         self.proof_lost_view = None
         if is_retry:
             self.host = self.host[:-2]
