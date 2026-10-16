@@ -82,6 +82,6 @@ This page states what we are building and how we will know it works. The [roadma
   - Agentic rows (the reader drives LCM-X's tools) and single-retrieval rows are reported separately.
 - **Shared-reader boards.** We submit the shipped default to boards that run every system with the same models, and report where we place.
 - **Compaction parity.** Facts kept, instruction continuity and compaction wall time against other compaction systems, on the same material, three seeds.
-- **Lifecycle reliability.** Every release candidate runs a real-host gauntlet (install, upgrade, rollback, restart, rotation, long sessions). Only a candidate that passes the [release spec](bench/specs/RELEASE-READINESS-V1.md) becomes GA; an exception is a release-manager decision disclosed in the release notes (v0.27.0 shipped with two, and #1305 adds the rule to the spec).
+- **Lifecycle reliability.** Every release candidate runs a real-host gauntlet (install, upgrade, rollback, restart, rotation, long sessions). Only a candidate that passes the [release spec](bench/specs/RELEASE-READINESS-V1.md) becomes GA. v0.27.0 shipped with two disclosed exceptions; #1305 proposes a narrow spec clause for those two cases only.
 
 See the [benchmark methodology](benchmarks/METHODOLOGY.md) and [benchmark vision and attribution](bench/VISION-AND-ATTRIBUTION.md).
