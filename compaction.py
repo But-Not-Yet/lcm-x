@@ -678,6 +678,7 @@ class CompactionMixin:
         context = self._thread_context
         state = self._bypass_compress_state()
         budget = context.foreground_budget = self._new_foreground_budget()
+        context.bypass_minted_engine_uids = []  # never recorded: this pass drops only the uids it minted
         returned = None
         state["_last_compression_status"] = "running"
         state["_last_compression_noop_reason"] = ""
@@ -710,6 +711,10 @@ class CompactionMixin:
             raise
         finally:
             context.foreground_budget = None
+            pending = self.__dict__.get("_engine_uids_pending")
+            for uid in vars(context).pop("bypass_minted_engine_uids", None) or ():
+                if pending is not None:
+                    pending.pop(uid, None)
             self._finish_foreground_budget(budget, returned)
 
     def _new_foreground_budget(self) -> ForegroundBudget:
