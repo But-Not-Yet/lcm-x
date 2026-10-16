@@ -2441,7 +2441,9 @@ class TestMessageStore:
         lock_conn.execute("BEGIN IMMEDIATE")
         attempted = threading.Event()
         errors = []
-        store._conn.set_trace_callback(lambda sql: attempted.set() if "INSERT INTO messages" in sql else None)
+        # append() opens its write with BEGIN IMMEDIATE; that statement is the one that waits on the lock.
+        store._conn.set_trace_callback(
+            lambda sql: attempted.set() if sql.lstrip().upper().startswith("BEGIN") else None)
 
         def append():
             try:
