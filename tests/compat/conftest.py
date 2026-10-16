@@ -29,10 +29,10 @@ def host_root():
 def old_tree(tmp_path_factory, host_root):
     trees = {}
 
-    def extract(reader):
-        if reader not in trees:
+    def extract(reader, pins=None):
+        commit = (READERS if pins is None else pins)[reader]
+        if commit not in trees:
             root = Path(__file__).resolve().parents[2]
-            commit = READERS[reader]
             if subprocess.run(["git", "-C", str(root), "cat-file", "-e", f"{commit}^{{commit}}"],
                               capture_output=True).returncode:
                 missing_prerequisite(f"the {reader} commit {commit} is not available")
@@ -41,8 +41,8 @@ def old_tree(tmp_path_factory, host_root):
             old = tmp_path_factory.mktemp(reader)
             with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
                 tar.extractall(old, filter="data")
-            trees[reader] = old
-        return trees[reader]
+            trees[commit] = old
+        return trees[commit]
 
     return extract
 
