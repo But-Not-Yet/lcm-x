@@ -85,6 +85,11 @@ def _host_estimate(messages) -> Optional[int]:
         return None
 
 
+def survival_reserve_fraction(config: Any) -> float:
+    """Resolve the survival reserve with the existing default, coercion and clamp."""
+    return min(0.9, max(0.0, float(getattr(config, "survival_reserve", 0.15) or 0.0)))
+
+
 class SurvivalFitMixin:
     """Mixed into LCMEngine; reads ``self._store``, ``self._config`` and ``self.context_length``."""
 
@@ -100,7 +105,7 @@ class SurvivalFitMixin:
             return None
         if _positive_int(window_cap):  # #608: the size of a request the provider rejected
             window = min(window, window_cap)
-        reserve = min(0.9, max(0.0, float(getattr(self._config, "survival_reserve", 0.15) or 0.0)))
+        reserve = survival_reserve_fraction(self._config)
         # system prompt + tools the host adds; more than half the window is a stale or synthetic observation
         overhead = min(window // 2, self._survival_host_overhead(messages, observed_tokens))
         ceiling = int(window * (1 - reserve))
