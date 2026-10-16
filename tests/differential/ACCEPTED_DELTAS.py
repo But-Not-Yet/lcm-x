@@ -11,6 +11,7 @@ class AcceptedDelta:
     oracle: str
     reason: str
     predicate: Callable
+    baselines: tuple[str, ...]
 
 
 def ga_marked_user(case, ga, cand, failure=None):
@@ -25,6 +26,7 @@ ACCEPTED_DELTAS = [AcceptedDelta(
     "D916_GA_MARKED_USER", "https://github.com/electricsheephq/lcm-x/issues/916",
     ("projection", "public"), "R1", "GA fit with a mark-only user row; #916 deliberately preserves its text. Residual room: #1225.",
     ga_marked_user,
+    baselines=("v0.26.2",),
 )]
 
 
@@ -39,6 +41,7 @@ ACCEPTED_DELTAS.append(AcceptedDelta(
     "D1233_LAST_RESORT_USER_MARK", "https://github.com/electricsheephq/lcm-x/issues/1233",
     ("projection",), "P_USER", "#1233: nonempty subset of GA user marks, and no candidate overflow where GA fit.",
     last_resort_user_mark,
+    baselines=("v0.26.2",),
 ))
 
 
@@ -52,6 +55,7 @@ ACCEPTED_DELTAS.append(AcceptedDelta(
     "D1123_64K_LEAF_TRADE", "https://github.com/electricsheephq/lcm-x/issues/1123",
     ("public",), "R3", "#1123 / PR #1129: 24K leaves trade 46 for 65 provider calls at 64K; compress runs fall.",
     i1123_leaf_trade,
+    baselines=("v0.26.2",),
 ))
 
 
@@ -65,4 +69,5 @@ ACCEPTED_DELTAS.append(AcceptedDelta(
     "D1123_40K_COMPRESS_TRADE", "https://github.com/electricsheephq/lcm-x/issues/1123",
     ("public",), "R3", "#1123 / PR #1129: 40K sweep/hold cadence costs 113 vs 93 runs; provider calls fall 166 to 165.",
     i1123_40k_compress_trade,
+    baselines=("v0.26.2",),
 ))

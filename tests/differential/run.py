@@ -11,13 +11,13 @@ import time
 from .ACCEPTED_DELTAS import ACCEPTED_DELTAS
 from .cases import exact_cases, generated_cases, projection_cases
 from .oracles import compare
-from .trees import ROOT, PrerequisiteUnavailable, check_host, materialize, resolve
+from .trees import BASELINE_CONFIG, DEFAULT_BASELINE, ROOT, PrerequisiteUnavailable, check_host, materialize, resolve
 
 
-def run(cases, out, baseline="v0.26.2", candidate="worktree", seed=1227, baseline_config=None):
+def run(cases, out, baseline=DEFAULT_BASELINE, candidate="worktree", seed=1227, baseline_config=None):
     if os.environ.get("LCM_DIFFERENTIAL") != "1":
         raise RuntimeError("set LCM_DIFFERENTIAL=1 to opt in")
-    baseline_config = baseline_config or os.environ.get("LCM_DIFFERENTIAL_BASELINE_CONFIG", "managed")
+    baseline_config = baseline_config or os.environ.get("LCM_DIFFERENTIAL_BASELINE_CONFIG") or BASELINE_CONFIG.get(baseline, "bare")
     if baseline_config not in {"bare", "managed"}:
         raise ValueError("baseline_config must be bare or managed")
     check_host()
@@ -28,7 +28,8 @@ def run(cases, out, baseline="v0.26.2", candidate="worktree", seed=1227, baselin
              "candidate": ROOT if candidate == "worktree" else materialize(candidate, cache)}
     summary = dict(baseline=resolve(baseline), candidate=resolve("HEAD" if candidate == "worktree" else candidate),
                    baseline_config=baseline_config, seed=seed, cases=len(cases), counts={}, delta_absorption={}, stale_deltas=[], unexplained=[],
-                   accepted=[], coverage={}, timings={}, missing_seams={}, absolute_over_window=[])
+                   accepted=[], coverage={}, timings={}, missing_seams={}, absolute_over_window=[],
+                   inherited_user_marks=dict(cases=0, marks=0))
     counts, absorbed = Counter(), {delta.id: set() for delta in ACCEPTED_DELTAS}
     for layer in sorted({case["layer"] for case in cases}):
         sample = [case for case in cases if case["layer"] == layer]
@@ -49,9 +50,13 @@ def run(cases, out, baseline="v0.26.2", candidate="worktree", seed=1227, baselin
                                                           mean_case_seconds=sum(r["seconds"] for r in records) / len(records))
             summary["missing_seams"][f"{layer}/{label}"] = sorted({seam for record in records for seam in record["missing_seams"]})
         for case, ga, cand in zip(sample, results["ga"], results["candidate"]):
+            if layer == "projection" and baseline != "v0.26.2" and "error" not in ga and "error" not in cand:
+                inherited = set(cand["user_marks"]) & set(ga["user_marks"])
+                summary["inherited_user_marks"]["cases"] += bool(inherited)
+                summary["inherited_user_marks"]["marks"] += len(inherited)
             if layer == "public" and "error" not in ga and "error" not in cand:
                 summary["coverage"][case["id"]] = dict(ga=ga["uncovered_rows"], candidate=cand["uncovered_rows"])
-            for failure in compare(case, ga, cand):
+            for failure in compare(case, ga, cand, baseline=baseline):
                 key = f"{layer}/{case['family']}/{failure['oracle']}"
                 counts[key] += 1
                 record = dict(case_id=case["id"], layer=layer, **failure)
@@ -70,6 +75,7 @@ def run(cases, out, baseline="v0.26.2", candidate="worktree", seed=1227, baselin
     (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
     lines = ["# Differential report", f"Baseline: `{summary['baseline']}`; candidate: `{summary['candidate']}`.",
              f"Baseline config: {baseline_config}.", f"Cases: {len(cases)}; seed: {seed}; unexplained events: {len(summary['unexplained'])}.",
+             f"Inherited user marks: {summary['inherited_user_marks']['cases']} cases; {summary['inherited_user_marks']['marks']} marks.",
              "", "## Counts (layer / family / oracle)", "", "```json", json.dumps(summary["counts"], indent=2), "```",
              "", f"Delta absorption (cases): {summary['delta_absorption']}",
              f"Zero-absorption deltas (stale on a full run): {summary['stale_deltas']}",
@@ -83,9 +89,9 @@ def run(cases, out, baseline="v0.26.2", candidate="worktree", seed=1227, baselin
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--baseline", default=os.environ.get("LCM_DIFFERENTIAL_BASELINE", "v0.26.2"))
+    parser.add_argument("--baseline", default=os.environ.get("LCM_DIFFERENTIAL_BASELINE", DEFAULT_BASELINE))
     parser.add_argument("--baseline-config", choices=["bare", "managed"],
-                        default=os.environ.get("LCM_DIFFERENTIAL_BASELINE_CONFIG", "managed"))
+                        default=os.environ.get("LCM_DIFFERENTIAL_BASELINE_CONFIG"))
     parser.add_argument("--candidate", default=os.environ.get("LCM_DIFFERENTIAL_CANDIDATE", "worktree"))
     parser.add_argument("--layers", default="public,projection")
     parser.add_argument("--cases", type=int, default=60)
