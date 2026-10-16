@@ -597,7 +597,10 @@ def _summary_contract_shape(content: str) -> str:
 
 
 _UNCLOSED_BODY_TAG_RE = re.compile(
-    r"<[/|]?[A-Za-z][\w:.-]*(?:\s[^<>]*)?\|?>|\[\s*(?:think|thinking|reasoning|thought)\s*\]", re.IGNORECASE)
+    r"<[/|]?[A-Za-z][\w:.-]*(?:\s[^<>]*)?\|?>|\[\s*(?:think|thinking|reasoning|thought)\s*\]"
+    # Spaced spellings that _REASONING_START_RE accepts only at a line start, found anywhere in the body.
+    r"|<\s*(?:/\s*)?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b[^<>]*>"
+    r"|<\|\s*(?:start_of_)?(?:think|thinking|reasoning|thought)\s*\|>", re.IGNORECASE)
 
 
 def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[str, str, tuple[str, ...]]:
