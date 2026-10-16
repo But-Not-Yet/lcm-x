@@ -15,7 +15,7 @@ dispatch. No execution before owner go (new lane; full-run spend needs sizing)._
 ## What the official machinery already provides (recon receipts, adapter worktree)
 
 **PATH PIN (cold-start):** all files below live in the official-benchmark adapter worktree
-`/Volumes/LEXAR/hermes-work/wt-bench-h1-v2adapter` (branch `bench/h1-v2-adapter`, org fork
+`${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}/hermes-work/wt-bench-h1-v2adapter` (branch `bench/h1-v2-adapter`, org fork
 100yenadmin/LongMemEval-V2) — NOT in the hermes-lcm repo. This is the authoritative checkout; ignore other
 longmemeval clones on disk. Full P0 protocol pin (file:line cites): comment on issue #145.
 

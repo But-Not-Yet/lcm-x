@@ -1,5 +1,11 @@
 # Scale389 benchmark instrument
 
+Its results directory is external data and is not part of this repository.
+Set `LCMX_BENCH_ROOT` to the bench data root: `runs/` holds archived run
+folders and `hermes-work/` holds datasets, stores, caches and checkouts.
+Explicit CLI paths and existing per-path environment overrides still work;
+imports and `--help` do not require the root.
+
 This is the promoted F34 Phase-1B scale probe. It is bench-side only and uses
 Python's standard library (the product's existing embedding provider may use
 NumPy during a real query run).
@@ -26,7 +32,7 @@ Offline acceptance:
 
 ```sh
 python bench/instruments/scale389/archive_regression.py \
-  --output /Volumes/LEXAR/Codex/session-notes/2026-07-29/hermes-r3-1/artifacts/laneINSTPREP-logs/archive-regression.json
+  --output ${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}/runs/2026-07-29/hermes-r3-1/artifacts/laneINSTPREP-logs/archive-regression.json
 pytest -q bench/instruments/scale389/tests
 ```
 

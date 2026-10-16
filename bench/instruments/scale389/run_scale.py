@@ -15,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from bench.tools.benchpaths import bench_path
 from bench.tools.pinverify import verify as verify_pins  # noqa: E402
 from bench.tools.storefreeze import (  # noqa: E402
     verify_manifest,
@@ -24,8 +25,7 @@ from bench.tools.storefreeze import (  # noqa: E402
 
 SCRIPT = Path(__file__).with_name("phase1a.py")
 DEFAULT_RESULTS = Path(
-    "/Volumes/LEXAR/Codex/session-notes/2026-07-29/"
-    "hermes-r3-1/artifacts/laneINSTPREP-logs/scale389-results"
+    "runs/2026-07-29/hermes-r3-1/artifacts/laneINSTPREP-logs/scale389-results"
 )
 
 
@@ -87,7 +87,7 @@ def run_queries(args: argparse.Namespace) -> None:
 
 
 def add_common(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--results", type=Path, default=DEFAULT_RESULTS)
+    parser.add_argument("--results", type=Path)
     parser.add_argument("--pins", type=Path)
     parser.add_argument("--store-dir", type=Path)
     parser.add_argument("--store-manifest", type=Path)
@@ -135,6 +135,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    args.results = args.results or bench_path(DEFAULT_RESULTS)
     args.results.mkdir(parents=True, exist_ok=True)
     _verify_pins(args, "pre-run")
     _verify_store(args, "pre-run")

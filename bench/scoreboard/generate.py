@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import sys
 from datetime import date
 from html import escape as html_escape
@@ -39,6 +40,11 @@ REQUIRED_FIELDS = (
     "caveats",
 )
 SCALAR_FIELDS = REQUIRED_FIELDS[:-2]
+DURABLE_EVIDENCE_SINCE = date(2026, 10, 16)
+DURABLE_URL = re.compile(
+    r"https://github\.com/[^/?#\s]+/[^/?#\s]+/"
+    r"(?:releases/download/[^/?#\s]+/[^/?#\s]+|blob/[0-9a-fA-F]{40}/[^?#\s]+)"
+)
 
 
 class ScoreboardError(ValueError):
@@ -75,16 +81,23 @@ def _validate_row(row: Any, line_number: int) -> dict[str, Any]:
     if row["tier"] not in {"P", "F"}:
         raise _error(line_number, "field 'tier' must be 'P' or 'F'")
     try:
-        date.fromisoformat(row["date"])
+        completed = date.fromisoformat(row["date"])
     except ValueError:
         raise _error(line_number, "field 'date' must be an ISO date") from None
 
-    for field in ("evidence", "caveats"):
+    for field in ("evidence", "caveats", "local_raw"):
+        if field not in row:
+            continue
         values = row[field]
         if not isinstance(values, list):
             raise _error(line_number, f"field '{field}' must be a list")
         if any(not isinstance(item, str) for item in values):
             raise _error(line_number, f"field '{field}' items must be strings")
+
+    if completed >= DURABLE_EVIDENCE_SINCE and any(
+        not DURABLE_URL.fullmatch(item) for item in row["evidence"]
+    ):
+        raise _error(line_number, "field 'evidence' entries must be durable GitHub URLs")
 
     if "superseded_by" in row:
         successor = row["superseded_by"]
@@ -186,9 +199,11 @@ def _render_summary(rows: Iterable[dict[str, Any]]) -> list[str]:
 def _render_disclosure(row: dict[str, Any]) -> list[str]:
     lines = [f"### <a id=\"{html_escape(row['id'], quote=True)}\"></a>{_inline(row['id'])}", ""]
     fields = list(REQUIRED_FIELDS) + (["superseded_by"] if "superseded_by" in row else [])
+    if "local_raw" in row:
+        fields.insert(fields.index("caveats"), "local_raw")
     for field in fields:
         lines.append(f"**{field}:**")
-        if field in ("evidence", "caveats"):
+        if field in ("evidence", "caveats", "local_raw"):
             values = row[field]
             lines.extend(f"- {_inline(item)}" for item in values or ["none"])
         else:

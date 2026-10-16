@@ -123,13 +123,13 @@ question-specific and can't be cached, but the underlying SEARCH hits can). Late
 ## 10. UPDATE 07-25 (Opus 5) — arm-E run LOCATIONS (a monitoring gap that cost 30 min)
 The in-flight arm-E promotion writes to TWO places; monitoring only the prep dir looks like a dead run:
 - **--output-dir** (traces, run_args, later per_question): `artifacts/W3B-PROMOTION-PREP/FULL-RUN-{web,enterprise}/`
-- **LOGS + monitor** (the authoritative progress signal): `/Volumes/LEXAR/Codex/session-notes/2026-07-25/hermes-armE-promotion/artifacts/full451-{web,enterprise}.log` (+ `monitor.sh`, `monitor-state.tsv`)
+- **LOGS + monitor** (the authoritative progress signal): `${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}/runs/2026-07-25/hermes-armE-promotion/artifacts/full451-{web,enterprise}.log` (+ `monitor.sh`, `monitor-state.tsv`)
 Stage order per domain: Building prompts (agentic/state curation) → **Generating** (the fixed 9B reader; the long
 pole) → Scoring → per_question.jsonl appears ONLY at the end. `scored=0` while `traces=240/211` is NORMAL mid-run.
 RULE: for any run, locate its stdout log via `lsof -p <pid> | grep 1w` before concluding it is stalled.
 
 ## 11. INCIDENT 07-25 — macOS revoked removable-volume access at the app upgrade
-Every `/Volumes/LEXAR` path returned EPERM (read AND write, sandboxed and not) while the internal disk, `~/.claude`
+Every `${LCMX_BENCH_ROOT:?set LCMX_BENCH_ROOT to the bench data root}` path returned EPERM (read AND write, sandboxed and not) while the internal disk, `~/.claude`
 and `gh` worked; disk was healthy. Fix is owner-only: System Settings → Privacy & Security → Files and Folders /
 Full Disk Access → grant Claude. Already-running child processes KEEP their pre-revocation grant (the arm-E run
 survived untouched). LESSON: on a total-volume EPERM, check `ls /Volumes/*` — if the internal disk is OK and one
