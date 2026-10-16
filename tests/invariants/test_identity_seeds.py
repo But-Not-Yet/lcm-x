@@ -813,6 +813,49 @@ def test_restart_repeated_user_1328():
         machine.teardown()
 
 
+class ReplayUserCollapsed(AssertionError):
+    """Only #1328's final repeated user missing after an unchanged replay."""
+
+
+@pytest.mark.xfail(strict=True, reason="#1328: unchanged replay consumes the fresh repeated user's proof",
+                   raises=ReplayUserCollapsed)
+def test_restart_replay_user_1328():
+    """Engine API seed; the CLI refuses manual compression under four rows."""
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.exactly_once()
+        machine.cold_resume()
+        machine.exactly_once()
+        machine.compress()
+        machine.exactly_once()
+        assert machine.engine._last_compression_status == "compacted"
+        proof = machine.engine._compress_commit_proof
+        assert proof and proof.get("emissions")
+        previous = deepcopy(machine.host)
+        machine.replay()
+        machine.exactly_once()
+        assert machine.host == previous
+        assert machine.engine._compress_commit_proof is None
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        expected = list(map(identity, machine.occurrences))
+        assert len(expected) == 6
+        assert expected[0] == expected[-2]
+        assert machine.occurrences[0]["timestamp"] != machine.occurrences[-2]["timestamp"]
+        actual = list(map(identity, machine.rows()))
+        try:
+            machine.exactly_once()
+        except AssertionError as error:
+            if actual == expected[:-2] + expected[-1:]:
+                raise ReplayUserCollapsed(str(error)) from error
+            raise
+    finally:
+        machine.teardown()
+
+
 @settings(PROFILE)
 @given(case=st.sampled_from(("known-open", "distinct-text", "no-compress", "one-compress", "four-row", "tool-tail")),
        cold=st.booleans())

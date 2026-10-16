@@ -624,12 +624,13 @@ def unanswered_before_next_turn(point, host, include_known_open):
 KNOWN_OPEN[RESTART_PENDING] = unanswered_before_next_turn
 
 
-def repeated_user_after_recompression(proof_lost, proof, host, occurrences, user):
-    """#1328: unchanged recompression lost the preceding output's emission proof.
+def repeated_user_after_proof_loss(proof_lost, proof, host, occurrences, user):
+    """#1328: the unchanged emitted view lost its proof before a fresh user.
 
-    The two compressions have no intervening delivery. Role repair moves the
-    fresh repeated user before the old cursor in this emitted-head/plain-tail
-    shape. Neither equal text nor a short host view alone selects the input.
+    No-progress recompression or unchanged replay consumes the proof without
+    a delivery. Role repair then moves the fresh repeated user before the old
+    cursor in this emitted-head/plain-tail shape. Text or length alone cannot
+    select the input; the earlier occurrence must have a different timestamp.
     """
     return (proof_lost and proof is None
             and [row["role"] for row in host] == ["user", "user", "assistant"]
@@ -638,7 +639,7 @@ def repeated_user_after_recompression(proof_lost, proof, host, occurrences, user
                     and row.get("timestamp") != user.get("timestamp") for row in occurrences[:-2]))
 
 
-KNOWN_OPEN[1328] = repeated_user_after_recompression
+KNOWN_OPEN[1328] = repeated_user_after_proof_loss
 
 
 class RestartMachine(RotationMachine):
@@ -660,17 +661,29 @@ class RestartMachine(RotationMachine):
     @precondition(lambda self: bool(self.host))
     @rule()
     def compress(self):
-        previous = list(map(identity, self.host))
+        previous = deepcopy(self.host)
         prior_proof = self.engine._compress_commit_proof
         consecutive = self.last_compress_sequence == self.sequence
         super().compress()
-        current = list(map(identity, self.host))
+        current = deepcopy(self.host)
         if (consecutive and prior_proof and prior_proof.get("emissions")
                 and previous == current and self.engine._compress_commit_proof is None):
             self.proof_lost_view = current
         elif current != self.proof_lost_view or self.engine._compress_commit_proof is not None:
             self.proof_lost_view = None
         self.last_compress_sequence = self.sequence
+
+    @precondition(lambda self: bool(self.host))
+    @rule()
+    def replay(self):
+        previous = deepcopy(self.host)
+        prior_proof = self.engine._compress_commit_proof
+        super().replay()
+        if (prior_proof and prior_proof.get("emissions") and previous == self.host
+                and self.engine._compress_commit_proof is None):
+            self.proof_lost_view = previous
+        elif self.host != self.proof_lost_view or self.engine._compress_commit_proof is not None:
+            self.proof_lost_view = None
 
     def _persist_host_view(self, session, messages, parent=None):
         # Model only the host's persisted columns, not LCM's private metadata
@@ -730,7 +743,7 @@ class RestartMachine(RotationMachine):
         if is_retry and not self.include_known_open and KNOWN_OPEN[1179](self.host, user):
             return
         proof_lost = (self.proof_lost_view is not None
-                      and self.proof_lost_view == list(map(identity, self.host)))
+                      and self.proof_lost_view == self.host)
         if (not self.include_known_open and not is_retry
                 and KNOWN_OPEN[1328](proof_lost, self.engine._compress_commit_proof,
                                     self.host, self.occurrences, user)):
