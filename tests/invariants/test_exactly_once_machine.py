@@ -540,7 +540,8 @@ class GatewayResetMachine(ExactlyOnceMachine):
         if len(rows) == len(self.occurrences):  # a lost or extra row is the oracle's to report, with its diagnosis
             assert [r["session_id"] for r in rows] == [r["session_id"] for r in self.occurrences], "session ownership"
         others = self.engine._store.connection.execute(
-            "SELECT count(*) FROM messages WHERE conversation_id != ?", ("identity-conversation",)).fetchone()[0]
+            "SELECT count(*) FROM messages WHERE conversation_id IS NULL OR conversation_id != ?",
+            ("identity-conversation",)).fetchone()[0]
         assert others == 0, others
         return rows
 
