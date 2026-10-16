@@ -20,7 +20,7 @@ _preflight_automatic_request _preflight_below_threshold_cleanup_only
 _preflight_cleanup_only_due_to_boundary_cooldown _pressure_yield_blocked_streak
 _pressure_yield_invocation_verdict _pressure_yield_preflight_candidate _pressure_yield_streak_counted
 _pressure_yield_tail_token_limit _stub_first_exit_now _survival_fit_emission _survival_fit_reason
-_compress_commit_proof
+_compress_commit_proof _current_compress_store_ids_by_message_id
 """.split()
 
 
@@ -292,3 +292,133 @@ def test_child_preserves_armed_preflight_handoffs(tmp_path, monkeypatch):
         after = _snapshot(engine)
         for name in PREFLIGHT_HANDOFFS:
             assert before[name] is True and after[name] is True
+
+
+@pytest.mark.parametrize("site", ["ignored_backlog", "leaf_candidate", "ingest", "dependent_reply"])
+@pytest.mark.parametrize("exit_path", ["return", "inner_error", "outer_error", "map_error"])
+def test_store_id_scopes_restore_outer_identity(tmp_path, monkeypatch, site, exit_path):
+    """Each temporary map restores by identity, including nested readers and failures."""
+    pin_char_counter(monkeypatch)
+    with engine_context(tmp_path, window=200_000, ignore_message_patterns=["ignored"],
+                        large_output_externalization_enabled=False) as engine:
+        outer, inner = assistant("outer visible"), assistant("inner visible")
+        original = {999: 999}
+        maps = {id(outer): {id(outer): 101}, id(inner): {id(inner): 202}}
+        engine._current_compress_store_ids_by_message_id = original
+        monkeypatch.setattr(engine, "_fresh_tail_start", len)
+        monkeypatch.setattr(engine, "_leading_anchor_count", lambda messages: 0)
+        monkeypatch.setattr(engine, "_replay_occurrences", lambda messages: (list(messages), True))
+        reads, builds, stack = [], [], []
+
+        class FinishedIngest(Exception):
+            """Stop after the ingest scope, before unrelated persistence work."""
+
+        def after_ingest_scope(messages):
+            raise FinishedIngest
+
+        monkeypatch.setattr(engine, "_redact_active_replay_messages", after_ingest_scope)
+
+        def build(messages, occurrences=None):
+            assert len(messages) == 1
+            assert occurrences == (messages if site in {"ignored_backlog", "leaf_candidate"} else None)
+            builds.append(messages[0])
+            if exit_path == "map_error":
+                raise RuntimeError("map construction failed")
+            return maps[id(messages[0])]
+
+        monkeypatch.setattr(engine, "_get_store_id_map_for_messages", build)
+
+        def stored_row(store_id):
+            reads.append(store_id)
+            assert store_id == maps[id(stack[-1])][id(stack[-1])]
+            return assistant("ignored")
+
+        monkeypatch.setattr(engine._store, "get", stored_row)
+        mapped_reader = engine._mapped_stored_row_matches_ignore_message_patterns
+
+        def invoke(message):
+            stack.append(message)
+            try:
+                if site == "ignored_backlog":
+                    engine._has_ignored_backlog_outside_fresh_tail([message])
+                elif site == "leaf_candidate":
+                    engine._leaf_compaction_candidate_status_once([message])
+                elif site == "dependent_reply":
+                    engine._drop_preexisting_generated_ignored_dependent_eof_replies([message], [{"store": "fixture"}])
+                else:
+                    with pytest.raises(FinishedIngest):
+                        engine._ingest_messages([message])
+            finally:
+                stack.pop()
+
+        def observe(message):
+            active = maps[id(message)]
+            assert engine._current_compress_store_ids_by_message_id is active
+            assert mapped_reader(message) is True  # The real engine reader must use this scope's map.
+            if message is inner:
+                if exit_path == "inner_error":
+                    raise RuntimeError("inner scope failed")
+            else:
+                if exit_path == "inner_error":
+                    with pytest.raises(RuntimeError, match="inner scope failed"):
+                        invoke(inner)
+                else:
+                    invoke(inner)
+                assert engine._current_compress_store_ids_by_message_id is active
+                # Restore the same object, not a copy of its old contents.
+                active[303] = 404
+                if exit_path == "outer_error":
+                    raise RuntimeError("outer scope failed")
+            return True
+
+        monkeypatch.setattr(engine, "_mapped_stored_row_matches_ignore_message_patterns", observe)
+        monkeypatch.setattr(engine, "_matches_preexisting_generated_ignored_dependent_reply",
+                            lambda message, text, records: observe(message))
+        if exit_path in {"outer_error", "map_error"}:
+            with pytest.raises(RuntimeError, match="outer scope failed|map construction failed"):
+                invoke(outer)
+        else:
+            invoke(outer)
+        assert engine._current_compress_store_ids_by_message_id is original
+        assert original == {999: 999}
+        assert builds == ([outer] if exit_path == "map_error" else [outer, inner])
+        assert reads == ([] if exit_path == "map_error" else [101, 202])
+        if exit_path != "map_error":
+            assert maps[id(outer)][303] == 404
+
+
+def test_running_compress_reader_uses_pass_store_ids(tmp_path, monkeypatch):
+    """The provider boundary observes the current pass map, not a preflight map."""
+    pin_char_counter(monkeypatch)
+    with engine_context(tmp_path, window=200_000, fresh_tail_count=2, leaf_chunk_tokens=400,
+                        ignore_message_patterns=["never-match-fixture"],
+                        large_output_externalization_enabled=False) as engine:
+        objects, reads, observed = {}, [], []
+        build = engine._get_store_id_map_for_messages
+        get = engine._store.get
+
+        def remember(messages, occurrences=None):
+            objects.update((id(message), message) for message in messages)
+            return build(messages, occurrences)
+
+        def read(store_id):
+            reads.append(store_id)
+            return get(store_id)
+
+        def summarize(*args, **kwargs):
+            active = engine._current_compress_store_ids_by_message_id
+            assert active
+            message_id, store_id = next(iter(active.items()))
+            reads.clear()
+            assert engine._mapped_stored_row_matches_ignore_message_patterns(objects[message_id]) is False
+            assert reads == [store_id]
+            observed.append(active)
+            return ScriptedSummarizer.healthy_reply
+
+        monkeypatch.setattr(engine, "_get_store_id_map_for_messages", remember)
+        monkeypatch.setattr(engine._store, "get", read)
+        summaries = ScriptedSummarizer(mode="scripted", fn=summarize).install(monkeypatch)
+        result = engine.compress(_history(), force=True)
+        assert summaries.calls and observed and len(result) < len(_history())
+        # The pass-level assignment is deliberately persistent, unlike temporary scopes.
+        assert engine._current_compress_store_ids_by_message_id is observed[-1]
