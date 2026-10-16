@@ -273,11 +273,11 @@ class ProcessCell:
 
     def crash(self, t: int) -> None:
         """Called by the provider while it holds turn t's request: a TRUE mid-turn crash of the host."""
-        kind, phase = "crash_after_compaction_before_reply", self.phase
-        self.fired.add(kind)  # run_phase may observe ProcessGone as soon as the signal is sent
-        kill_monotonic_ns = time.monotonic_ns()
+        kind = "crash_after_compaction_before_reply"
+        # Record every phase-dependent piece before the signal: once the host is gone, run_phase may advance the
+        # phase and finish the run. The host waits on this held request meanwhile, so the crash point is unchanged.
+        self.fire(kind, t, phase=self.phase, kill_monotonic_ns=time.monotonic_ns())
         self.proc.kill()
-        self.fire(kind, t, phase=phase, kill_monotonic_ns=kill_monotonic_ns)
 
     def cancel(self) -> None:
         self.proc.notify("session/cancel", {"sessionId": self.sid})
