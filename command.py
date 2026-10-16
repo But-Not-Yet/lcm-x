@@ -17,6 +17,7 @@ import time
 from typing import Any
 import uuid
 
+from .command_auth import CommandInvocation, Decision, authorize
 from .db_bootstrap import (
     _create_stem_fts,
     check_external_content_fts_integrity,
@@ -104,21 +105,6 @@ from .vector_store import EmbeddingIdentity, EmbeddingPublishOutcome, VectorStor
 _EMBEDDING_BACKFILL_CLAIM_KEY = "lcm_embedding_backfill_claim"
 _EMBEDDING_BACKFILL_CLAIM_TTL_S = 10 * 60
 _EMBEDDING_BACKFILL_BATCH_SIZE = 32
-
-# Command paths; arguments do not change WRITE classification. Unknown paths
-# also default to WRITE. Plain doctor uses SQLite's FTS integrity-check INSERT.
-READ_LCM_SUBCOMMANDS = frozenset({
-    "status", "help", "doctor clean", "doctor clean lifecycle", "doctor source",
-    "doctor retention", "rotate", "rollups", "preset show", "preset suggest",
-})
-WRITE_LCM_SUBCOMMANDS = frozenset({
-    "doctor", "doctor clean apply", "doctor clean lifecycle apply",
-    "doctor repair", "doctor repair apply", "doctor repair level3",
-    "doctor repair level3 apply", "doctor repair schema-stamp",
-    "doctor repair schema-stamp apply", "doctor source apply", "backup",
-    "rotate apply", "rollups rebuild", "assertions rebuild", "preset apply",
-    "embed warmup", "embed backfill",
-})
 
 
 def _env_float(key: str, default: float) -> float:
@@ -5797,48 +5783,34 @@ def handle_lcm_command(
     context_conversation_id: str = "",
 ) -> str:
     tokens = [part.strip() for part in (raw_args or "").strip().split() if part.strip()]
-    profiles_known = bool(session_profile and engine_profile)
-    if profiles_known and session_profile != engine_profile:
-        return (
-            "The command could not resolve this session's LCM engine in this process; "
-            "run it from a process launched for this profile."
+    invocation = CommandInvocation(
+        command=tuple(tokens),
+        session_engine_resolved=session_engine_resolved,
+        session_context_present=session_context_present,
+        session_profile=session_profile, engine_profile=engine_profile,
+        context_session_id=context_session_id,
+        context_conversation_id=context_conversation_id,
+    )
+    decision = authorize(invocation)
+    if decision is Decision.READ_BINDINGS:
+        invocation = dataclasses.replace(
+            invocation,
+            bound_session_id=str(getattr(engine, "_session_id", "") or ""),
+            bound_conversation_id=str(getattr(engine, "_conversation_id", "") or ""),
         )
-    if session_context_present:
-        path = " ".join(part.lower() for part in tokens) or "status"
-        if path.startswith("preset show "):
-            path = "preset show"
-        bound_session_id = str(getattr(engine, "_session_id", "") or "")
-        bound_conversation_id = str(getattr(engine, "_conversation_id", "") or "")
-        profiles_equal = profiles_known and session_profile == engine_profile
-        bound_to_invoker = bool(
-            (context_session_id and bound_session_id == context_session_id)
-            or (context_conversation_id and bound_conversation_id == context_conversation_id)
+        decision = authorize(invocation)
+    if decision is Decision.CHECK_RESIDENT:
+        invocation = dataclasses.replace(
+            invocation, resident_engine_present=has_resident_lcm_engine(),
         )
-        # Session-first, like the resolver: the conversation key decides only
-        # when the invocation carries no session id.
-        bound_to_invoker_strict = bool(
-            bound_session_id == context_session_id if context_session_id
-            else context_conversation_id and bound_conversation_id == context_conversation_id
-        )
-        if (
-            path not in READ_LCM_SUBCOMMANDS and not (
-                (session_engine_resolved and (profiles_equal or (not profiles_known and bound_to_invoker)))
-                or (not session_engine_resolved and profiles_equal and (
-                    bound_to_invoker_strict or (
-                        not bound_session_id and not bound_conversation_id and not has_resident_lcm_engine()
-                    )
-                ))
-            )
-        ):
-            return (
-                "The command could not prove ownership of this session's LCM engine; "
-                "retry after the session has started."
-            )
+        decision = authorize(invocation)
+    if decision in (Decision.PROFILE_MISMATCH, Decision.OWNERSHIP_UNPROVEN):
+        return decision.value
     if not session_engine_resolved:
         result = handle_lcm_command(raw_args, engine)
-        if profiles_known and session_profile == engine_profile:
-            return result
-        return result + f"\nstore: {engine._store.db_path}"
+        if decision is Decision.ALLOW_WITH_STORE:
+            return result + f"\nstore: {engine._store.db_path}"
+        return result
     if not tokens:
         return _status_text(engine)
 
