@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from tests.behaviour import ingest_trace_harness as harness
 from tests.behaviour.ingest_trace_harness import (
     GOLDEN, OBSERVED_ATTRIBUTES, SCENARIOS, TRACE_GUIDANCE, IngestCanonical,
     engine_attributes, engine_module, first_difference, observe,
@@ -132,3 +134,92 @@ def test_uid_scenarios_bind_durable_rows(name: str, tmp_path: Path) -> None:
     assert all(row[3] == "canonical" for row in bindings)
     assert state["_host_uid_counters"]["unbound.agree_new"] == len(bindings)
     assert not any(key.startswith("skipped.") for key in state["_host_uid_counters"])
+
+
+@pytest.mark.parametrize("damage", ["truncate", "delete"])
+def test_payload_observation_detects_damaged_externalization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str,
+) -> None:
+    pin: Any = pin_char_counter
+    context: Any = engine_context
+    pin(monkeypatch)
+    install_clock(monkeypatch)
+    with context(tmp_path, window=200000, conversation_id="trace-conversation", embeddings_enabled=False,
+                 large_output_externalization_enabled=True, large_output_externalization_threshold_chars=100,
+                 large_output_active_replay_stubbing_enabled=True,
+                 large_output_active_replay_stub_threshold_tokens=10,
+                 large_output_externalization_path=str(tmp_path / "home" / "payloads")) as engine:
+        incoming = [{"role": "tool", "tool_call_id": "call-1", "content": "durable output words " * 100}]
+        engine._ingest_messages(incoming)
+        canonical = IngestCanonical(tmp_path, incoming)
+        before = canonical.value(harness.payload_observation(engine))
+        assert len(before) == 1
+        entry = before[0]
+        path = tmp_path / "home" / "payloads" / entry["ref"]
+        raw = path.read_bytes()
+        assert entry["exists"] is True
+        assert entry["bytes"] == len(raw)
+        assert entry["sha256"] == hashlib.sha256(raw).hexdigest()
+        assert entry["read"]["content"] == incoming[0]["content"]
+        assert entry["read"]["content_truncated"] is False
+        if damage == "truncate":
+            path.write_bytes(b"{")
+        else:
+            path.unlink()
+        after = canonical.value(harness.payload_observation(engine))
+        assert after != before
+        assert after[0]["ref"] == entry["ref"]
+        assert after[0]["exists"] is (damage == "truncate")
+        assert after[0]["bytes"] == (1 if damage == "truncate" else None)
+        assert "error" in after[0]["read"]
+        with ExitStack() as engines:
+            fresh = reopen(engine, tmp_path, engines)
+            assert canonical.value(harness.payload_observation(fresh)) == after
+
+
+@pytest.mark.parametrize("name", [case.name for case in SCENARIOS if case.shape == "tool-stub"])
+def test_externalized_manifest_recorded_after_ingest_and_cold_reopen(name: str, tmp_path: Path) -> None:
+    payloads: list[str] = []
+    observe(next(case for case in SCENARIOS if case.name == name), tmp_path, payloads=payloads)
+    for label in ("payloads-after", "payloads-cold"):
+        manifest = json.loads(next(event.removeprefix(label + " ") for event in payloads
+                                   if event.startswith(label + " ")))
+        assert len(manifest) == (2 if name in {"tool-stub-pair", "tool-stub-host-held"} else 1)
+        assert all(entry["exists"] and entry["bytes"] > 0 and len(entry["sha256"]) == 64
+                   and entry["read"]["content"] for entry in manifest)
+
+
+def test_reopen_preserves_bound_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pin: Any = pin_char_counter
+    context: Any = engine_context
+    pin(monkeypatch)
+    install_clock(monkeypatch)
+    with context(tmp_path, window=131072, platform="cli", conversation_id="bound-conversation",
+                 embeddings_enabled=False) as old, ExitStack() as engines:
+        old._ingest_messages([{"role": "user", "content": "before reopen"}])
+        fresh = reopen(old, tmp_path, engines)
+        fresh._ingest_messages([{"role": "user", "content": "after reopen"}])
+        rows = fresh._store.get_session_messages("S")
+        assert len(rows) == 2
+        assert rows[0]["source"] == rows[1]["source"] == "cli"
+        assert fresh._conversation_id == "bound-conversation"
+        assert fresh.context_length == 131072
+
+
+def test_sequence_rotation_cold_row_stays_in_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    original = harness.reopen
+
+    def reopen_with_cold_row(engine: Any, root: Path, engines: ExitStack) -> Any:
+        fresh = original(engine, root, engines)
+        fresh._ingest_messages([{"role": "user", "content": "cold-phase row"}])
+        return fresh
+
+    monkeypatch.setattr(harness, "reopen", reopen_with_cold_row)
+    payloads: list[str] = []
+    observe(next(case for case in SCENARIOS if case.name == "sequence-rotation"), tmp_path, payloads=payloads)
+    state = json.loads(next(event.removeprefix("cold-state ") for event in payloads
+                            if event.startswith("cold-state ")))
+    rows = [row for row in state["tables"]["messages"] if row[5] == "cold-phase row"]
+    assert len(rows) == 1
+    assert rows[0][1] == "child"
+    assert state["_session_id"] == "child"
