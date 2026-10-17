@@ -258,7 +258,8 @@ def test_review_lanes_hint_never_blocks_readiness(checks_present):
     [
         *[
             ([{"filename": path}], ["lcm-memory-preservation", "turn-path"], BOTH_LANES)
-            for path in ("engine.py", "survival_fit.py", "__init__.py", "compaction.py", "identity_anchor.py")
+            for path in ("engine.py", "survival_fit.py", "__init__.py", "compaction.py", "identity_anchor.py",
+                         "recognition_matching.py", "emission_projection.py")
         ],
         *[
             ([{"filename": path}], ["lcm-memory-preservation"], BOTH_LANES)
@@ -282,7 +283,7 @@ def test_review_lanes_hint_never_blocks_readiness(checks_present):
         ),
     ],
     ids=["engine", "survival-fit", "pre-llm-hook", "compaction", "ingest-identity",
-         "preset-only", "store-only", "tools-only", "rename-into-turn-path", "rename-out-of-turn-path",
+         "recognition-matching", "emission-projection", "preset-only", "store-only", "tools-only", "rename-into-turn-path", "rename-out-of-turn-path",
          "docs-only", "rename-across-policy-boundary"],
 )
 def test_review_lanes_hint_maps_changed_paths(changed_files, risks, lanes):
