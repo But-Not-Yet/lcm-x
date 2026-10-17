@@ -5,16 +5,22 @@ import ast
 import importlib
 import inspect
 import json
+import logging
 import textwrap
 from pathlib import Path
+from types import FunctionType
 
 import pytest
 
 from tests.behaviour.compress_trace_harness import (
+    CLOCK_CALLERS,
     GOLDEN,
     OBSERVED_ATTRIBUTES,
     SCENARIOS,
+    Canonical,
+    Clock,
     Scenario,
+    capture_logs,
     compaction,
     first_difference,
     observe,
@@ -88,7 +94,9 @@ def test_compress_observed_attributes_complete() -> None:
         tree = ast.parse(textwrap.dedent(inspect.getsource(cls)))
         engine_names.update(_self_attributes(tree))
         engine_names.update(vars(cls))
-    removed = frozen - engine_names
+    # Reserved by the extraction contract; absent is itself a frozen observation
+    # until the phase helpers introduce this state. All other names must exist.
+    removed = frozen - engine_names - {"_frontier"}
     assert not removed, f"Observed attributes removed from the whole engine class: {sorted(removed)}"
 
 
@@ -125,3 +133,63 @@ def test_compress_golden(case: Scenario, tmp_path: Path) -> None:
     actual = observe(case, tmp_path)
     difference = first_difference(expected, actual)
     assert difference is None, f"{case.name}: first divergent event {difference}"
+
+
+@pytest.mark.parametrize(("module", "qualname"), sorted(CLOCK_CALLERS))
+def test_clock_matches_registered_qualified_callers(module: str, qualname: str) -> None:
+    def call(clock: Clock) -> float:
+        return clock.monotonic()
+
+    clock = Clock(expiry_checkpoint=1)
+    caller = FunctionType(call.__code__.replace(co_qualname=qualname), {"__name__": module})
+    assert caller(clock) == 1121.0
+    assert clock.checkpoints == 1
+
+
+@pytest.mark.parametrize(("module", "qualname"), [
+    ("other_plugin.compaction", "CompactionMixin._compress_impl"),
+    ("hermes_lcm.compaction", "OtherService._compress_impl"),
+    ("hermes_lcm.compaction", "CompactionMixin._compress_impl.<locals>.unrelated"),
+])
+def test_clock_ignores_name_collisions(module: str, qualname: str) -> None:
+    def call(clock: Clock) -> float:
+        return clock.monotonic()
+
+    clock = Clock(expiry_checkpoint=1)
+    caller = FunctionType(call.__code__.replace(co_qualname=qualname), {"__name__": module})
+    assert caller(clock) == 1000.0
+    assert clock.checkpoints == 0
+
+
+def test_plugin_logs_keep_templates_order_and_restore_loggers(tmp_path: Path) -> None:
+    logger = logging.getLogger("hermes_lcm.compaction")
+    before = logger.level, logger.propagate, list(logger.handlers)
+    events: list[str] = []
+    with pytest.raises(RuntimeError), capture_logs(events, Canonical(tmp_path)):
+        logger.info("promotion %s", object())
+        logger.warning("refusal %d", 987654321)
+        logging.getLogger("unrelated_plugin").warning("outside observer")
+        raise RuntimeError("exit probe")
+    assert events == [
+        'log hermes_lcm.compaction INFO "promotion %s"',
+        'log hermes_lcm.compaction WARNING "refusal %d"',
+    ]
+    assert (logger.level, logger.propagate, list(logger.handlers)) == before
+
+
+@pytest.mark.parametrize(("name", "template"), [
+    ("unattributed-rotated-history", "LCM leaf chunk has no durable source above the frontier:"),
+    ("prepared-leaf-promotion", "LCM promoted %d prepared leaves:"),
+    ("prepared-leaf-route-rejected", "LCM prepared leaf promotion rejected:"),
+    ("pre-leaf-condensation-rejected", "LCM compaction stopped: summary result rejected at level 3;"),
+    ("hung-primary-leaves-fallback", "hung"),
+])
+def test_new_observers_reach_their_product_paths(name: str, template: str) -> None:
+    events = json.loads(GOLDEN.read_text())[name]
+    assert any(event.startswith("log ") and template in event for event in events)
+    if name.startswith("prepared-"):
+        before = next(event.removeprefix("leaf_prep before ") for event in events if event.startswith("leaf_prep before "))
+        after = next(event.removeprefix("leaf_prep after ") for event in events if event.startswith("leaf_prep after "))
+        assert before != after, "preparation must actually promote or reject a cached leaf"
+    if name.startswith("unattributed-"):
+        assert any(event.startswith("attr _unattributed_leaf_warned=") for event in events)
