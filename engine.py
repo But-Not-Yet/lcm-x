@@ -737,6 +737,7 @@ class LCMEngine(
         # #671: the latest stub-first exit (tokens before/after, target, backlog rows) and this compress()'s.
         self._last_stub_first_exit: Optional[dict[str, int]] = None
         self._stub_first_exit_now: Optional[dict[str, int]] = None
+        self._compress_calls = 0  # #1116: which compress() a stub-first proof came from
         self._last_compression_status = "idle"
         self._last_compression_noop_reason = ""
         # Ingest-failure tracking. The core promise is that nothing is ever
@@ -1710,6 +1711,17 @@ class LCMEngine(
         return summary_route_available(
             self._config.summary_model, self._config.summary_fallback_models, self._summary_circuit_breaker)
 
+    def _hung_summary_route_has_fallback(self, budget: ForegroundBudget) -> bool:
+        """Only this pass's hang can waive its hold, while another route in the chain is still usable
+        (the primary too, when the hang was on a fallback)."""
+        return (
+            budget.hung_route is not None
+            and not self._summary_circuit_breaker.allows(budget.hung_route)
+            and any(self._summary_circuit_breaker.allows(model) for model in _summary_model_chain(
+                self._config.summary_model, self._config.summary_fallback_models)
+                if model != budget.hung_route)
+        )
+
     def _fit_can_rescue(self, force_overflow: bool) -> bool:
         """#652: false when forced or no survival fit can keep the request under the window (fit off, or
         window unknown); only then does a level 3 truncation still converge as before."""
@@ -2188,6 +2200,8 @@ class LCMEngine(
     def _leaf_target_tokens(self, source_tokens: int) -> int:
         """Leaf summary target (#614); defaults give a fixed 2,000-token target: min(2000, max(2000, 20%)).
 
+        An explicit ratio has no effect while minimum equals maximum; set LCM_LEAF_TARGET_MAX_TOKENS
+        to enable the ratio or a minimum above the default cap. Environment loading warns about these cases.
         A config object built without the #614 fields uses the class defaults.
         """
         cfg = self._config
@@ -2211,11 +2225,17 @@ class LCMEngine(
         budget = self._foreground_call_budget()
         max_attempts = 3
         attempt_number = 0
+        clip_budget = self._config.leaf_chunk_tokens
+        floor = min(clip_budget, _LEAF_RESCUE_FLOOR_TOKENS)
 
         while attempt_chunk and attempt_number < max_attempts:
             attempt_number += 1
             source_tokens = count_messages_tokens(attempt_chunk)
-            serialized, clipped = self._serialize_messages_with_clip(attempt_chunk)
+            serialized, clipped = (
+                self._serialize_messages_with_clip(attempt_chunk)
+                if clip_budget == self._config.leaf_chunk_tokens else
+                self._serialize_messages_with_clip(attempt_chunk, budget_tokens=clip_budget)
+            )
             token_budget = self._leaf_target_tokens(source_tokens)
             logger.info(  # #611 recorder: the serialized summariser input of this leaf call
                 "LCM leaf summary input: input_tokens=%d source_tokens=%d messages=%d",
@@ -2228,6 +2248,15 @@ class LCMEngine(
                 if attempt_number < max_attempts else []
             )
             can_rescue = bool(rescue_chunk) and len(rescue_chunk) < len(attempt_chunk)
+            rescue_budget = clip_budget
+            # #1132: an indivisible chunk, or an oversized final shrink, can still use #611's floor clip.
+            if (attempt_number < max_attempts and clip_budget > floor and count_tokens(serialized) > floor
+                    and (not can_rescue or (attempt_number + 1 >= max_attempts
+                                           and count_messages_tokens(rescue_chunk) > floor))):
+                if not can_rescue:
+                    rescue_chunk = attempt_chunk
+                rescue_budget = floor
+                can_rescue = True
             try:
                 timeout_seconds = self._config.summary_timeout_ms / 1000
                 if budget is not None:  # #605: the chain caps each attempt; refuse here before any work
@@ -2264,10 +2293,11 @@ class LCMEngine(
                 if level == 3 and provenance.get("context_length_error") and summary_text != serialized and can_rescue:
                     logger.warning(
                         "LCM leaf summarization retrying with smaller oldest chunk after a context-length "
-                        "refusal (attempt %d/%d, %d→%d messages)",
-                        attempt_number, max_attempts, len(attempt_chunk), len(rescue_chunk),
+                        "refusal (attempt %d/%d, %d→%d messages, clip budget %d→%d tokens)",
+                        attempt_number, max_attempts, len(attempt_chunk), len(rescue_chunk), clip_budget, rescue_budget,
                     )
                     attempt_chunk = rescue_chunk
+                    clip_budget = rescue_budget
                     continue
                 self._last_leaf_summary_model = provenance.get("model", "")
                 self._last_leaf_content_filter_error = bool(provenance.get("content_filter_error"))
@@ -2279,10 +2309,7 @@ class LCMEngine(
                     raise  # a smaller chunk cannot get the time back
                 if attempt_number >= max_attempts or not self._is_retry_worthy_leaf_summary_error(exc):
                     raise
-                smaller_chunk = self._next_leaf_rescue_chunk(
-                    attempt_chunk, source_tokens, final=attempt_number + 1 >= max_attempts
-                )
-                if not smaller_chunk or len(smaller_chunk) >= len(attempt_chunk):
+                if not can_rescue:
                     raise
                 logger.warning(
                     "LCM leaf summarization retrying with smaller oldest chunk after retry-worthy failure: %s (attempt %d/%d, %d→%d messages)",
@@ -2290,9 +2317,10 @@ class LCMEngine(
                     attempt_number,
                     max_attempts,
                     len(attempt_chunk),
-                    len(smaller_chunk),
+                    len(rescue_chunk),
                 )
-                attempt_chunk = smaller_chunk
+                attempt_chunk = rescue_chunk
+                clip_budget = rescue_budget
 
         raise RuntimeError("adaptive leaf rescue exhausted without a valid chunk")
 
@@ -3500,6 +3528,17 @@ class LCMEngine(
         self._apply_session_start_metadata(session_id, kwargs)
         self._last_compacted_store_id = int(state.current_frontier_store_id or 0)
         proof = self._compress_commit_proof
+        if (
+            proof
+            and proof.get("stub_first")
+            and proof.get("stub_first_compress_call") == self._compress_calls  # the call whose list was committed
+            and proof.get("session_id") == session_id
+            and proof.get("conversation_id") == self._conversation_id
+            and not (proof.get("published") or proof.get("native") or proof.get("recovery") or proof.get("filtered"))
+        ):
+            # #1116: Hermes fires this boundary only after it committed the compression, so the stub-first list
+            # compress() handed it is the host's now: its proof becomes durable, as the rotation re-key does.
+            self._persist_compress_commit_proof(proof, last_store_id=proof.get("stub_first_last_store_id"))
         cursor_proven = bool(
             proof
             and proof.get("session_id") == session_id
@@ -3869,7 +3908,7 @@ class LCMEngine(
                     emission["scope"] = {**(emission.get("scope") or {}), "session_id": session_id}
             commit_proof["input"] = None
             if (commit_proof.get("published") or commit_proof.get("native") or commit_proof.get("recovery")
-                    or commit_proof.get("filtered")):
+                    or commit_proof.get("filtered") or commit_proof.get("stub_first")):
                 self._persist_compress_commit_proof(commit_proof)
         elif can_reassign:
             # No transferred commit proof (proof creation failed, an end that
@@ -4516,6 +4555,8 @@ class LCMEngine(
                 session_id,
             )
             return
+        unflushed = max(0, len(messages) - self._ingest_cursor)
+        ingest_finished = False
         try:
             with _temporary_sqlite_busy_timeout(
                 [
@@ -4537,18 +4578,21 @@ class LCMEngine(
                         messages,
                         allow_session_end_replay_proof=is_current_session_full_history_end,
                     )
+                    ingest_finished = True
                 except KeyboardInterrupt:
                     logger.warning(
                         "LCM session-end raw-message ingest interrupted; "
-                        "final messages may be absent from the plugin-local store"
+                        "final messages may be absent from the plugin-local store unflushed=%d",
+                        unflushed,
                     )
                     return
                 except Exception as exc:
                     if _is_sqlite_locked_error(exc):
                         logger.warning(
                             "LCM session-end raw-message ingest skipped due to SQLite lock after short wait; "
-                            "final messages may be absent from the plugin-local store: %s",
+                            "final messages may be absent from the plugin-local store: %s unflushed=%d",
                             exc,
+                            unflushed,
                         )
                         return
                     raise
@@ -4587,13 +4631,17 @@ class LCMEngine(
                 # helper writes only when session_id == self._session_id).
                 self._remember_session_end_replay_snapshot(session_id, messages)
         except KeyboardInterrupt:
-            logger.warning("LCM session-end ingest/finalize interrupted before bounded flush completed")
+            logger.warning(
+                "LCM session-end ingest/finalize interrupted before bounded flush completed%s",
+                f" unflushed={unflushed}" if not ingest_finished else "",
+            )
             return
         except Exception as exc:
             if _is_sqlite_locked_error(exc):
                 logger.warning(
-                    "LCM session-end ingest/finalize skipped due to SQLite lock before bounded flush: %s",
+                    "LCM session-end ingest/finalize skipped due to SQLite lock before bounded flush: %s%s",
                     exc,
+                    f" unflushed={unflushed}" if not ingest_finished else "",
                 )
                 return
             raise
@@ -6447,6 +6495,7 @@ class LCMEngine(
         messages: List[Dict[str, Any]],
         *,
         timeout_seconds: Optional[float] = None,
+        deadline: Optional[float] = None,
     ) -> None:
         """Best-effort extraction of decisions before compaction."""
         try:
@@ -6456,16 +6505,20 @@ class LCMEngine(
                 base = self._hermes_home or os.path.expanduser("~/.hermes")
                 output_path = os.path.join(base, "lcm-extractions")
             extraction_model = self._config.extraction_model or self._config.summary_model
+            timeout = timeout_seconds if timeout_seconds is not None else self._config.summary_timeout_ms / 1000
+            if deadline is not None:
+                timeout = min(timeout_seconds or self._config.summary_timeout_ms / 1000, deadline - time.monotonic())
+                if timeout < 1.0:
+                    logger.debug(
+                        "Pre-compaction extraction skipped: less than 1s remains after reserving the next summary call"
+                    )
+                    return
             extract_before_compaction(
                 serialized_messages=serialized,
                 output_path=output_path,
                 session_id=self._session_id or "",
                 model=extraction_model,
-                timeout=(
-                    timeout_seconds
-                    if timeout_seconds is not None
-                    else self._config.summary_timeout_ms / 1000
-                ),
+                timeout=timeout,
             )
         except Exception as e:
             logger.warning("Pre-compaction extraction failed (non-blocking): %s", e)
@@ -6690,12 +6743,14 @@ class LCMEngine(
 
     def _serialize_messages_with_clip(
         self, messages: List[Dict[str, Any]], session_id: Optional[str] = None,
+        budget_tokens: Optional[int] = None,
     ) -> Tuple[str, bool]:
         """Serialize messages into labeled text for the summarizer.
 
         *session_id* names the session that owns the rows; it defaults to the
         bound session. A large tool result is externalized under that session.
-        Message texts, tool arguments and previews share leaf_chunk_tokens (#611).
+        Message texts, tool arguments and previews share budget_tokens (#611),
+        defaulting to leaf_chunk_tokens when omitted.
         """
         parts: List[List[Any]] = []  # per message: literal strings and indexes into texts
         texts: List[str] = []
@@ -6771,7 +6826,8 @@ class LCMEngine(
 
             parts.append([f"[{role.upper()}]: ", text(content)])
 
-        clipped_texts = clip_to_budget(texts, self._config.leaf_chunk_tokens, kinds)
+        clipped_texts = clip_to_budget(
+            texts, self._config.leaf_chunk_tokens if budget_tokens is None else budget_tokens, kinds)
         clipped = any(before != after for before, after in zip(texts, clipped_texts))
         texts = clipped_texts
         return "\n\n".join("".join(texts[x] if isinstance(x, int) else x for x in part) for part in parts), clipped

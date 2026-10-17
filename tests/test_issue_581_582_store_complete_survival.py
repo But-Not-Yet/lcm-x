@@ -73,13 +73,20 @@ def _covered(engine) -> list[int]:
             if node.source_type == "messages" for store_id in node.source_ids]
 
 
-def _assert_contiguous(engine) -> None:
+def _assert_contiguous(engine, copy_proofs=None) -> None:
     """Every owned row at or below the frontier is covered by a summary exactly once, or excluded by an
-    existing rule (none are here): the publication proof, re-checked from the outside."""
+    existing rule (none are here), or a proven copy whose earlier byte-equal twin is covered:
+    the publication proof, re-checked from the outside over non-copies."""
     covered = Counter(_covered(engine))
     frontier = _frontier(engine)
     below = [int(row["store_id"]) for row in _rows(engine) if int(row["store_id"]) <= frontier]
-    assert below and all(covered[store_id] == 1 for store_id in below), (frontier, below, covered)
+    copies = copy_proofs or {}
+    rows = {int(row["store_id"]): row for row in _rows(engine)}
+    columns = ("role", "content", "tool_call_id", "tool_calls", "tool_name")
+    for copy, twin in copies.items():
+        assert twin < copy <= frontier and covered[twin] == 1 and covered[copy] == 0
+        assert all(rows[copy].get(key) == rows[twin].get(key) for key in columns)
+    assert below and all(covered[store_id] == 1 for store_id in below if store_id not in copies), (frontier, below, covered)
 
 
 def _eva_store(tmp_path):
