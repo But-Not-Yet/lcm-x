@@ -108,7 +108,7 @@ why in the PR.
 
 Maintainers use the protected-main `.agents/skills/land-pr/SKILL.md`:
 
-- enforcement is strict exact-head CI: the six required checks must pass on the pinned
+- enforcement is strict exact-head CI: the seven required checks (the six `CI` checks plus `differential`) must pass on the pinned
   `headRefOid` with trusted workflow identities;
 - AI review is recorded evidence, not enforcement: every PR needs at least one independent
   review of the exact head, and review-provenance-policy or LCM memory-preservation risk (the
