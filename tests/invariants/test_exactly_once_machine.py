@@ -107,7 +107,7 @@ def cold_stale_proof(stale_proof, operation):
     return operation == "cold_resume" and stale_proof
 
 
-KNOWN_OPEN = {1179: retry_resend_1179, 1286: cold_stale_proof}
+KNOWN_OPEN = {1286: cold_stale_proof}
 
 REPROJECTED_USER = "#503: repeated recovery fit maps a projected user to an older equal-text source"
 
@@ -203,9 +203,6 @@ class ExactlyOnceMachine(RuleBasedStateMachine):
         if retry and len(self.host) >= 4 and self.host[-2]["role"] == "user":
             user["content"] = deepcopy(self.host[-2]["content"])
         is_retry = retry and retry_resend_1179(self.host, user)
-        if is_retry and not self.include_known_open:
-            if KNOWN_OPEN[1179](self.host, user):
-                return  # exclude this input shape, never an observed oracle failure
         if is_retry:
             self.host = self.host[:-2]
         batch = [user]
@@ -642,6 +639,20 @@ def unanswered_before_next_turn(point, host, include_known_open):
 KNOWN_OPEN[RESTART_PENDING] = unanswered_before_next_turn
 
 
+RETRY_MERGED_SCAFFOLD = "#1179: retry beside a host-merged scaffold after compaction"
+
+
+def retry_beside_merged_scaffold(engine, host, user):
+    """The retry repeats the suffix of an earlier proof-bound merged row."""
+    projection, identities = engine._occurrence_replay_identities(host, engine._active_emission_proof())
+    return any(entry.generated_span is not None and entry.kind == "summary"
+               and projected is not None and projected[1] == user["content"]
+               for entry, projected in zip(projection.entries[:-2], identities[:-2]))
+
+
+KNOWN_OPEN[RETRY_MERGED_SCAFFOLD] = retry_beside_merged_scaffold
+
+
 def repeated_user_after_proof_loss(proof_lost, proof, host, occurrences, user):
     """#1328: the unchanged emitted view lost its proof before a fresh user.
 
@@ -759,7 +770,10 @@ class RestartMachine(RotationMachine):
         if retry and len(self.host) >= 4 and self.host[-2]["role"] == "user":
             user["content"] = deepcopy(self.host[-2]["content"])
         is_retry = retry and retry_resend_1179(self.host, user)
-        if is_retry and not self.include_known_open and KNOWN_OPEN[1179](self.host, user):
+        if (is_retry and not self.include_known_open
+                and KNOWN_OPEN[RETRY_MERGED_SCAFFOLD](self.engine, self.host, user)):
+            # #1179 sibling S1 (#1446): retry beside a host-merged scaffold after compaction.
+            # This replay retries its plain suffix; the earlier merged row fails on the next cold resume.
             return
         self.proof_lost_view = None
         if is_retry:
