@@ -78,13 +78,23 @@ def identity(message):
             tuple((call["id"], call.get("type"), call["function"]["name"], arguments(call)) for call in calls))
 
 
-def assert_occurrences(expected, stored):
+def ingest_diagnostics(engine):
+    """Read recorded state only; the legacy cursor property delegates to FrontierState."""
+    missing = "not recorded" if engine is not None else "engine not supplied"
+    return "; ".join(
+        f"{name}={getattr(engine, name, missing)!r}"
+        for name in ("_ingest_cursor", "_last_ingest_reconciliation",
+                     "_ingest_failure_count", "_last_ingest_error")
+    )
+
+
+def assert_occurrences(expected, stored, *, engine=None):
     wanted, actual = list(map(identity, expected)), list(map(identity, stored))
     duplicates, collapses = Counter(actual) - Counter(wanted), Counter(wanted) - Counter(actual)
     assert actual == wanted, (
         f"duplicates={dict(duplicates)}; collapses={dict(collapses)}; "
         f"order_mismatch={not duplicates and not collapses}; "
-        f"expected={wanted}; stored={actual}"
+        f"expected={wanted}; stored={actual}; {ingest_diagnostics(engine)}"
     )
 
 
@@ -250,7 +260,7 @@ class ExactlyOnceMachine(RuleBasedStateMachine):
         # Exceptions cannot mask failures: assert that generated inputs stay out
         # of those domains, then compare the complete ordered occurrence ledger.
         assert not any(predicate(self.host, self.occurrences) for predicate in EXCEPTIONS.values())
-        assert_occurrences(self.occurrences, self.rows())
+        assert_occurrences(self.occurrences, self.rows(), engine=self.engine)
 
     def teardown(self):
         try:
