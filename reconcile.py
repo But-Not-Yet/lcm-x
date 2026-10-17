@@ -579,6 +579,11 @@ class _TailReplayCandidate:
     candidate_has_lossy_redacted_replay_identity: bool = field(init=False)
     candidate_ends_with_replayed_tool_result: bool = field(init=False)
     matches_tool_anchored_stale_window: bool = field(init=False)
+    candidate_has_persisted_marker: bool = field(init=False)
+    matches_durable_persisted_output_full_replay: bool = field(init=False)
+    candidate_has_unrecoverable_persisted_marker: bool = field(init=False)
+    matches_inline_generation_cleanup_tail: bool = field(init=False)
+    raw_suffix_needs_cleanup_equivalence: bool = field(init=False)
 
 
 class ReconcileMixin:
@@ -2115,6 +2120,62 @@ class ReconcileMixin:
         candidate.candidate_ends_with_replayed_tool_result = candidate_ends_with_replayed_tool_result
         candidate.matches_tool_anchored_stale_window = matches_tool_anchored_stale_window
 
+    def _collect_persisted_replay_evidence(
+        self, run: _TailReplayRun, candidate: _TailReplayCandidate,
+    ) -> None:
+        stored_tail = run.stored_tail
+        stored_tail_rows = run.stored_tail_rows
+        sanitized_replay_tail = run.sanitized_replay_tail
+        candidate_identity_messages = candidate.candidate_identity_messages
+        candidate_prefix = candidate.candidate_prefix
+        matches_raw_tail = candidate.matches_raw_tail
+
+        candidate_has_persisted_marker = any(
+            str(msg.get("role") or "") == "tool"
+            and _is_hermes_persisted_output_marker(normalize_content_value(msg.get("content")) or "")
+            for msg in candidate_identity_messages
+        )
+        matches_durable_persisted_output_full_replay = self._matches_persisted_output_durable_full_replay(
+            candidate_identity_messages,
+            candidate_prefix,
+            stored_tail,
+            stored_tail_rows,
+        )
+        candidate_has_unrecoverable_persisted_marker = any(
+            str(msg.get("role") or "") == "tool"
+            and _is_hermes_persisted_output_marker(normalize_content_value(msg.get("content")) or "")
+            and recover_hermes_persisted_output_with_file_stat(
+                normalize_content_value(msg.get("content")) or ""
+            )
+            is None
+            for msg in candidate_identity_messages
+        )
+        matches_inline_generation_cleanup_tail = False
+        if candidate_has_unrecoverable_persisted_marker:
+            generationless_sanitized_tail = [
+                self._strip_inline_persisted_output_generation_identity(identity)
+                for identity in sanitized_replay_tail
+            ]
+            generationless_candidate_prefix = [
+                self._strip_inline_persisted_output_generation_identity(identity)
+                for identity in candidate_prefix
+            ]
+            matches_inline_generation_cleanup_tail = self._matches_store_tail_suffix(
+                generationless_sanitized_tail,
+                generationless_candidate_prefix,
+            )
+        raw_tail_suffix = stored_tail[-len(candidate_prefix) :] if matches_raw_tail else []
+        raw_suffix_needs_cleanup_equivalence = any(
+            self._active_cleanup_replay_identity(identity) != identity
+            for identity in raw_tail_suffix
+        )
+
+        candidate.candidate_has_persisted_marker = candidate_has_persisted_marker
+        candidate.matches_durable_persisted_output_full_replay = matches_durable_persisted_output_full_replay
+        candidate.candidate_has_unrecoverable_persisted_marker = candidate_has_unrecoverable_persisted_marker
+        candidate.matches_inline_generation_cleanup_tail = matches_inline_generation_cleanup_tail
+        candidate.raw_suffix_needs_cleanup_equivalence = raw_suffix_needs_cleanup_equivalence
+
     def _find_reconciled_cursor_for_store_tail(
         self,
         messages: List[Dict[str, Any]],
@@ -2201,45 +2262,12 @@ class ReconcileMixin:
             )
             if (matches_visible_sanitized_tail or matches_visible_raw_tail) and not early_candidate_has_unrecoverable_persisted_marker:
                 return cursor
-            candidate_has_persisted_marker = any(
-                str(msg.get("role") or "") == "tool"
-                and _is_hermes_persisted_output_marker(normalize_content_value(msg.get("content")) or "")
-                for msg in candidate_identity_messages
-            )
-            matches_durable_persisted_output_full_replay = self._matches_persisted_output_durable_full_replay(
-                candidate_identity_messages,
-                candidate_prefix,
-                stored_tail,
-                stored_tail_rows,
-            )
-            candidate_has_unrecoverable_persisted_marker = any(
-                str(msg.get("role") or "") == "tool"
-                and _is_hermes_persisted_output_marker(normalize_content_value(msg.get("content")) or "")
-                and recover_hermes_persisted_output_with_file_stat(
-                    normalize_content_value(msg.get("content")) or ""
-                )
-                is None
-                for msg in candidate_identity_messages
-            )
-            matches_inline_generation_cleanup_tail = False
-            if candidate_has_unrecoverable_persisted_marker:
-                generationless_sanitized_tail = [
-                    self._strip_inline_persisted_output_generation_identity(identity)
-                    for identity in sanitized_replay_tail
-                ]
-                generationless_candidate_prefix = [
-                    self._strip_inline_persisted_output_generation_identity(identity)
-                    for identity in candidate_prefix
-                ]
-                matches_inline_generation_cleanup_tail = self._matches_store_tail_suffix(
-                    generationless_sanitized_tail,
-                    generationless_candidate_prefix,
-                )
-            raw_tail_suffix = stored_tail[-len(candidate_prefix) :] if matches_raw_tail else []
-            raw_suffix_needs_cleanup_equivalence = any(
-                self._active_cleanup_replay_identity(identity) != identity
-                for identity in raw_tail_suffix
-            )
+            self._collect_persisted_replay_evidence(run, candidate)
+            candidate_has_persisted_marker = candidate.candidate_has_persisted_marker
+            matches_durable_persisted_output_full_replay = candidate.matches_durable_persisted_output_full_replay
+            candidate_has_unrecoverable_persisted_marker = candidate.candidate_has_unrecoverable_persisted_marker
+            matches_inline_generation_cleanup_tail = candidate.matches_inline_generation_cleanup_tail
+            raw_suffix_needs_cleanup_equivalence = candidate.raw_suffix_needs_cleanup_equivalence
             if (
                 not matches_sanitized_tail
                 and not matches_raw_tail
