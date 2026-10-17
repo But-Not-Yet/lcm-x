@@ -15,10 +15,13 @@ import hashlib
 import importlib
 import inspect
 import json
+import logging
 import re
 import sqlite3
 import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,6 +38,7 @@ compaction: Any = importlib.import_module("hermes_lcm.compaction")
 escalation: Any = importlib.import_module("hermes_lcm.escalation")
 dag: Any = importlib.import_module("hermes_lcm.dag")
 tokens: Any = importlib.import_module("hermes_lcm.tokens")
+leaf_prep: Any = importlib.import_module("hermes_lcm.leaf_prep")
 harness: Any = importlib.import_module("tests.harness")
 GOLDEN = Path(__file__).parents[1] / "fixtures" / "compress_trace.json"
 Trace = list[str]
@@ -193,6 +197,47 @@ SCENARIOS = (
     Scenario("optional-extraction-host-unavailable", overrides=(
         ("extraction_enabled", True), ("dynamic_leaf_chunk_enabled", True),
         ("assertion_extraction_enabled", True))),
+    Scenario("unattributed-rotated-history", setup="rotated", retry=True,
+             overrides=(("fresh_tail_pressure_yield_enabled", False),)),
+    Scenario("prepared-leaf-promotion", setup="prepared", sweep=True, force=False,
+             current_tokens=150000, overrides=(("background_leaf_prep_enabled", True),
+             ("background_leaf_prep_max_calls", 64), ("context_threshold", 0.75),
+             ("max_assembly_tokens", 200000),
+             ("large_output_externalization_path", ""))),
+    Scenario("prepared-leaf-route-rejected", setup="prepared-route-changed", force=False,
+             current_tokens=150000, overrides=(("background_leaf_prep_enabled", True),
+             ("background_leaf_prep_max_calls", 64), ("context_threshold", 0.75),
+             ("max_assembly_tokens", 200000),
+             ("large_output_externalization_path", ""))),
+)
+
+
+# Frozen before phase extraction: use code qualnames, never a bare function
+# name that could also belong to an unrelated service or a nested callback.
+CLOCK_CALLERS = frozenset(
+    ("hermes_lcm.compaction", "CompactionMixin." + name)
+    for name in (
+        "_compress_impl",
+        "_begin_compression",
+        "_ingest_compression_view",
+        "_compress_impl.<locals>.sweep_step_done",
+        "_prepare_compression_sweep",
+        "_condense_before_leaves",
+        "_admit_leaf_and_adopt_replay",
+        "_filter_leaf_backlog",
+        "_select_leaf_candidate",
+        "_prepare_leaf_input",
+        "_summarize_selected_leaf",
+        "_build_leaf_publication",
+        "_publish_selected_leaf",
+        "_advance_after_leaf",
+        "_settle_leaf_stop",
+        "_finish_without_leaf",
+        "_condense_after_leaves",
+        "_finish_with_leaf",
+        "sweep_step_done",
+        "warn_rejected",
+    )
 )
 
 
@@ -207,7 +252,8 @@ class Clock:
         if self.expiry_checkpoint:
             frame = inspect.currentframe()
             assert frame is not None and frame.f_back is not None
-            if frame.f_back.f_code.co_name in {"_compress_impl", "sweep_step_done"}:
+            caller = frame.f_back
+            if (caller.f_globals.get("__name__"), caller.f_code.co_qualname) in CLOCK_CALLERS:
                 self.checkpoints += 1
                 if self.checkpoints == self.expiry_checkpoint:
                     self.now += 121.0
@@ -238,7 +284,8 @@ class LiteralPattern:
 # Deliberately frozen: extracting compaction phases must not change observation.
 # The original 123 names include callable fingerprints. Four existing helper
 # state fields complete the original transitive inventory. The two hung-route
-# fields added on the R3 train are also read/written by compaction. Update deliberately
+# fields added on the R3 train and the leaf preparation/refusal state are also
+# read/written by compaction. Update deliberately
 # when changing this list, never derive the runtime observer from source.
 OBSERVED_ATTRIBUTES = (
     "_active_replay_placeholder_digest",
@@ -271,6 +318,7 @@ OBSERVED_ATTRIBUTES = (
     "_fit_can_rescue",
     "_foreground_budget",
     "_fresh_tail_start",
+    "_frontier",
     "_generated_context_carrier_remainder",
     "_generated_placeholder_digest_budget_for_active_replay",
     "_generated_placeholder_digest_ordinals_for_active_replay",
@@ -299,11 +347,13 @@ OBSERVED_ATTRIBUTES = (
     "_last_hidden_backlog",
     "_last_leaf_content_filter_error",
     "_last_leaf_level_3_verbatim",
+    "_last_leaf_summary_model",
     "_last_overflow_recovery_failed",
     "_last_stub_first_exit",
     "_last_threshold_full_sweep",
     "_latest_user_context_anchor",
     "_leading_anchor_count",
+    "_leaf_rescue_admit",
     "_lifecycle",
     "_load_compression_carry_ranges",
     "_load_generated_ignored_dependent_reply_records",
@@ -364,6 +414,7 @@ OBSERVED_ATTRIBUTES = (
     "_sweep_budget_hold_until",
     "_take_leaf_summary_model",
     "_thread_context_session_id",
+    "_unattributed_leaf_warned",
     "_working_leaf_chunk_tokens",
     "_write_generated_ignored_placeholder_hash_counts",
     "_write_generated_ignored_placeholder_hash_ordinals",
@@ -557,6 +608,45 @@ def connections(engine: Any) -> list[tuple[str, sqlite3.Connection]]:
     return found
 
 
+@contextmanager
+def capture_logs(events: Trace, canonical: Canonical) -> Iterator[None]:
+    """Observe plugin records in order, without formatting run-dependent args."""
+    class TraceHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            events.append(f"log {record.name} {record.levelname} " + encoded(canonical.text(str(record.msg))))
+
+    handler = TraceHandler()
+    loggers = [logging.getLogger(name) for name in sorted(logging.Logger.manager.loggerDict)
+               if name == "hermes_lcm" or name.startswith("hermes_lcm.")]
+    previous = [(logger, logger.level, logger.propagate) for logger in loggers]
+    try:
+        for logger, _, _ in previous:
+            logger.setLevel(logging.DEBUG)
+            logger.addHandler(handler)
+            logger.propagate = False  # one event even when a plugin child has a parent logger
+        yield
+    finally:
+        for logger, level, propagate in previous:
+            logger.removeHandler(handler)
+            logger.setLevel(level)
+            logger.propagate = propagate
+        handler.close()
+
+
+def prepared_state(engine: Any, canonical: Canonical) -> Any:
+    """Read the ready cache without ready_chain()'s stale-chain eviction.
+
+    The worker's private SQLite connection is read-only and closed before
+    compression. There is no SQL ready-chain table: promotion/rejection writes
+    this in-memory cache. Snapshot it directly under its own lock instead.
+    """
+    prep = leaf_prep._LEAF_PREP
+    key = (str(engine._store.db_path), engine._conversation_id)
+    with prep._condition:
+        return canonical.value({"chain": list(prep._cache.get(key, [])),
+                                "counters": dict(prep.counters)})
+
+
 def state(engine: Any, canonical: Canonical) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for name in OBSERVED_ATTRIBUTES:
@@ -580,6 +670,7 @@ def observe(case: Scenario, root: Path) -> Trace:
         pin: Any = pin_char_counter
         pin(patch)
         install_clock(patch, clock)
+        patch.setattr(leaf_prep, "_LEAF_PREP", leaf_prep._LeafPrep())
         patch.setenv("HERMES_HOME", str(root / "home"))
         if case.setup == "no-identity":
             patch.setenv("LCM_IDENTITY_ANCHOR", "false")
@@ -632,6 +723,20 @@ def observe(case: Scenario, root: Path) -> Trace:
                 setattr(engine._compaction_request, case.request, True)
             provider = Provider(case, clock, events, canonical, engine)
             patch.setattr(escalation, "_call_llm_for_summary", provider)
+            if case.setup == "rotated":
+                engine.ingest(view)
+                assert engine.rotate_active_session(apply=True)["ok"]
+            if case.setup.startswith("prepared"):
+                engine.ingest(view)
+                engine.last_prompt_tokens = case.current_tokens
+                engine._prepare_leaves_after_turn(view)
+                assert leaf_prep._LEAF_PREP.wait_idle(10), "preparation worker did not finish"
+                assert leaf_prep._LEAF_PREP.status()["cached_leaves"] > 0
+                # Setup calls are outside the trace. Foreground provider numbering starts at one.
+                events.clear()
+                provider.calls = 0
+                if case.setup == "prepared-route-changed":
+                    engine._config.summary_model = "changed-trace-model"
             initial = state(engine, canonical)
             conns = connections(engine)
             shapes: dict[tuple[str, str], int] = {}
@@ -652,52 +757,55 @@ def observe(case: Scenario, root: Path) -> Trace:
 
             for name, conn in conns:
                 conn.set_trace_callback(partial(trace_sql, name))
-            try:
-                for attempt in range(2 if case.retry else 1):
-                    events.append(f"compress attempt={attempt + 1}")
-                    returned = view
-                    # The public wrapper owns these scopes. Invoke the target
-                    # directly so its return/state precede survival-fit changes.
-                    engine._foreground_budget = engine._new_foreground_budget()
-                    if case.mode == "spent":
-                        clock.now += 121
-                    if case.mode == "open-after-first" and attempt:
-                        for _ in range(3):
-                            engine._summary_circuit_breaker.record_failure("trace-model")
-                    try:
-                        with engine._fresh_tail_pressure_yield_invocation():
-                            returned = engine._compress_impl(view, current_tokens=case.current_tokens,
-                                                             force=case.force, focus_topic=case.focus)
-                        events.append("return " + compact(canonical.value(returned)))
-                    except BaseException as exc:
-                        if not isinstance(exc, (Exception, HostInterrupted)):
-                            raise
-                        events.append(f"raise {type(exc).__name__} message={compact(canonical.text(str(exc)))}")
-                    # This host contract exposes _assemble_context rather than a public assemble().
-                    leading = engine._leading_anchor_count(returned)
-                    try:
-                        assembled = engine._assemble_context(returned[0] if leading else None, returned[leading:],
-                            **({"retained_user_message": returned[1]} if leading == 2 else {}))
-                        events.append("assemble")
-                        events.extend(f"message {row.get('role')} "
-                                      f"{fingerprint(canonical.text(str(row.get('content', ''))))}"
-                                      for row in assembled)
-                    except Exception as exc:
-                        events.append(f"assemble raise {type(exc).__name__}")
-                    if case.setup == "replay":
-                        view = returned
-                final = state(engine, canonical)
-                for name, value in final.items():
-                    if value != initial[name]:
-                        events.append(f"attr {name}={compact(value)}")
-                events.append(f"attrs count={len(final)} sha256={hashlib.sha256(encoded(final).encode()).hexdigest()}")
-                for name, reason in sorted(canonical.excluded.items()):
-                    events.append(f"excluded {name}={reason}")
-            finally:
-                for _, conn in conns:
-                    conn.set_trace_callback(None)
-                if case.shape == "child":
-                    engine._clear_thread_context_stateless("trace-child")
+            with capture_logs(events, canonical):
+                try:
+                    for attempt in range(2 if case.retry else 1):
+                        events.append(f"compress attempt={attempt + 1}")
+                        events.append("leaf_prep before " + compact(prepared_state(engine, canonical)))
+                        returned = view
+                        # The public wrapper owns these scopes. Invoke the target
+                        # directly so its return/state precede survival-fit changes.
+                        engine._foreground_budget = engine._new_foreground_budget()
+                        if case.mode == "spent":
+                            clock.now += 121
+                        if case.mode == "open-after-first" and attempt:
+                            for _ in range(3):
+                                engine._summary_circuit_breaker.record_failure("trace-model")
+                        try:
+                            with engine._fresh_tail_pressure_yield_invocation():
+                                returned = engine._compress_impl(view, current_tokens=case.current_tokens,
+                                                                 force=case.force, focus_topic=case.focus)
+                            events.append("return " + compact(canonical.value(returned)))
+                        except BaseException as exc:
+                            if not isinstance(exc, (Exception, HostInterrupted)):
+                                raise
+                            events.append(f"raise {type(exc).__name__} message={compact(canonical.text(str(exc)))}")
+                        events.append("leaf_prep after " + compact(prepared_state(engine, canonical)))
+                        # This host contract exposes _assemble_context rather than a public assemble().
+                        leading = engine._leading_anchor_count(returned)
+                        try:
+                            assembled = engine._assemble_context(returned[0] if leading else None, returned[leading:],
+                                **({"retained_user_message": returned[1]} if leading == 2 else {}))
+                            events.append("assemble")
+                            events.extend(f"message {row.get('role')} "
+                                          f"{fingerprint(canonical.text(str(row.get('content', ''))))}"
+                                          for row in assembled)
+                        except Exception as exc:
+                            events.append(f"assemble raise {type(exc).__name__}")
+                        if case.setup == "replay":
+                            view = returned
+                    final = state(engine, canonical)
+                    for name, value in final.items():
+                        if value != initial[name]:
+                            events.append(f"attr {name}={compact(value)}")
+                    events.append(f"attrs count={len(final)} sha256={hashlib.sha256(encoded(final).encode()).hexdigest()}")
+                    for name, reason in sorted(canonical.excluded.items()):
+                        events.append(f"excluded {name}={reason}")
+                finally:
+                    for _, conn in conns:
+                        conn.set_trace_callback(None)
+                    if case.shape == "child":
+                        engine._clear_thread_context_stateless("trace-child")
     return events
 
 
