@@ -27,6 +27,7 @@ jobs:
             codex_routing.py
             compaction.py
             dag.py
+            emission_projection.py
             engine.py
             escalation.py
             externalize.py
@@ -41,6 +42,7 @@ jobs:
             message_content.py
             placeholder_ledger.py
             prefix_matching.py
+            recognition_matching.py
             reconcile.py
             sanitize.py
             store_complete.py

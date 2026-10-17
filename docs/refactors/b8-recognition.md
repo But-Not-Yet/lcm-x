@@ -5,6 +5,13 @@ This refactor moves decomposition and occurrence matching into
 into `emission_projection.py`. Executable function bodies stay unchanged;
 annotations describe the existing heterogeneous row and proof dictionaries.
 
+This is one extraction, not two. Identity recognition reads emission projection
+through the `reconcile._project_emitted_occurrences` seam, so the two modules move
+as one unit, and `tests/test_recognition_extraction_contract.py` pins that joint
+seam. Both new modules are turn-path files: they are listed in `TURN_PATH_FILES`
+(differential workflow and `scripts/maintainer_gate.py`) and in the I1, I2 and
+I10 rows of `docs/invariants.md`.
+
 The original import paths in `identity_anchor` and `reconcile` remain available.
 In particular, `reconcile._project_emitted_occurrences` remains the lookup seam
 for reconciliation and the lazy import in identity recognition. The existing
