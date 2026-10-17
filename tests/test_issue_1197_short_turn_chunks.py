@@ -191,10 +191,38 @@ def test_t5_fresh_identity_records_current_revision_without_fill(store):
     ).fetchall()
 
 
-def test_t2_manual_backfill_and_full_policy_stamp_revision(store):
+@pytest.mark.parametrize("policy", ["conversational", "full"])
+def test_t2_manual_backfill_and_full_policy_stamp_revision(store, policy):
     seed_old(store)
-    assert run(store, incremental=False)["embedded"] == 5
+    assert run(store, incremental=False, policy=policy)["embedded"] == (6 if policy == "full" else 5)
     assert revision(store) == 2
+
+
+@pytest.mark.parametrize("policy", ["conversational", "full"])
+def test_limited_manual_backfill_preserves_automatic_gapfill(store, policy):
+    seed_old(store)
+    _, vectors, identity, provider = store
+    assert command._chunk_policy_revision(vectors.connection, identity.identity_hash) == 1
+    first = run(store, incremental=False, policy=policy, limit=1)
+    assert first["pending"] > first["embedded"] == 1
+    assert first["remaining"] > 0
+    assert revision(store) != chunking.CHUNK_POLICY_REVISION
+
+    for _ in range(12):
+        if run(store)["embedded"] == 0 and revision(store) == chunking.CHUNK_POLICY_REVISION:
+            break
+    else:
+        pytest.fail("automatic conversational gap-fill did not finish")
+    for store_id, text in ((3, FACT), (4, "Pixel is grey"), (6, "I work Fridays")):
+        assert provider.texts.count(text) == 1
+        assert vectors.connection.execute(
+            "SELECT COUNT(*) FROM lcm_chunk_meta WHERE store_id = ? AND identity_hash = ?",
+            (store_id, identity.identity_hash),
+        ).fetchone()[0] == 1
+    assert revision(store) == chunking.CHUNK_POLICY_REVISION
+    before = list(provider.texts)
+    assert run(store)["embedded"] == 0
+    assert provider.texts == before
 
 
 def test_t2_full_policy_never_fills_old_range(store):

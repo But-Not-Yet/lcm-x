@@ -4827,10 +4827,6 @@ def _chunk_backfill_run(
                 record_progress=incremental,
             )
             authorized_uncertain_ids = set()
-        if not incremental and not retry_uncertain and (
-            policy == "full" or _chunk_policy_revision(conn, identity) >= CHUNK_POLICY_REVISION
-        ):
-            _record_chunk_policy_revision(conn, identity)
         (
             documents,
             privacy_revision,
