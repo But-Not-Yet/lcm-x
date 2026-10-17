@@ -8761,56 +8761,10 @@ class LCMEngine(
             else:
                 result.append(proactive_msg)
 
-        generated_context_row: Optional[Dict[str, Any]] = None
-        carried_tail: Optional[Dict[str, Any]] = None
-        folded_source_store_id = 0
-        folded_result_index: Optional[int] = None
-        folded_original_tail: Optional[Dict[str, Any]] = None
-        if retained_generated_context_parts:
-            generated_context = "\n\n---\n\n".join(
-                retained_generated_context_parts
-            )
-            if (
-                tail_selected
-                and tail_selected[0].get("role") == summary_role
-            ):
-                source_ids = self._get_store_id_map_for_messages(tail_selected)
-                folded_source_store_id = int(
-                    source_ids.get(id(tail_selected[0])) or 0
-                )
-                if folded_source_store_id > 0:
-                    folded_original_tail = tail_selected[0]
-                    folded_result_index = len(result)
-                    tail_selected = [
-                        self._prepend_generated_context_to_message(
-                            folded_original_tail,
-                            generated_context,
-                        ),
-                        *tail_selected[1:],
-                    ]
-                    normalized_tail = normalize_content_value(folded_original_tail.get("content")) or ""
-                    if isinstance(folded_original_tail.get("content"), str):
-                        emission_candidates.append({
-                            "kind": "objective" if generated_context.lstrip().startswith(_PRESERVED_OBJECTIVE_CONTEXT_PREFIX) else "summary",
-                            "span": generated_context + ("\n\n---\n\n" if normalized_tail else ""),
-                            "retained_source": {"store_id": folded_source_store_id},
-                            "full_identity": _emission_identity(tail_selected[0]),
-                            "row": tail_selected[0],
-                        })
-                else:
-                    logger.warning(
-                        "LCM omitted generated context because the same-role "
-                        "tail occurrence lacked durable lineage"
-                    )
-            else:
-                generated_context_row = {"role": summary_role, "content": generated_context}
-                result.append(generated_context_row)
-                emission_candidates.append({
-                    "kind": "objective" if generated_context.lstrip().startswith(_PRESERVED_OBJECTIVE_CONTEXT_PREFIX) else "summary",
-                    "span": generated_context,
-                    "full_identity": _emission_identity(result[-1]),
-                    "row": result[-1],
-                })
+        (generated_context_row, carried_tail, folded_source_store_id,
+         folded_result_index, folded_original_tail, tail_selected) = self._fold_generated_context(
+            retained_generated_context_parts, tail_selected, summary_role, result, emission_candidates,
+        )
 
         # Fresh tail. A user-role summary directly ahead of a historical user
         # row is emitted as the carrier a host's alternation repair would build
@@ -9043,6 +8997,63 @@ class LCMEngine(
                             summary_parts[0] = anchor_part = candidate
                             break
         return summary_budget, anchor_part
+
+    def _fold_generated_context(
+        self, retained_generated_context_parts, tail_selected, summary_role, result, emission_candidates,
+    ) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], int,
+               Optional[int], Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+        generated_context_row: Optional[Dict[str, Any]] = None
+        carried_tail: Optional[Dict[str, Any]] = None
+        folded_source_store_id = 0
+        folded_result_index: Optional[int] = None
+        folded_original_tail: Optional[Dict[str, Any]] = None
+        if retained_generated_context_parts:
+            generated_context = "\n\n---\n\n".join(
+                retained_generated_context_parts
+            )
+            if (
+                tail_selected
+                and tail_selected[0].get("role") == summary_role
+            ):
+                source_ids = self._get_store_id_map_for_messages(tail_selected)
+                folded_source_store_id = int(
+                    source_ids.get(id(tail_selected[0])) or 0
+                )
+                if folded_source_store_id > 0:
+                    folded_original_tail = tail_selected[0]
+                    folded_result_index = len(result)
+                    tail_selected = [
+                        self._prepend_generated_context_to_message(
+                            folded_original_tail,
+                            generated_context,
+                        ),
+                        *tail_selected[1:],
+                    ]
+                    normalized_tail = normalize_content_value(folded_original_tail.get("content")) or ""
+                    if isinstance(folded_original_tail.get("content"), str):
+                        emission_candidates.append({
+                            "kind": "objective" if generated_context.lstrip().startswith(_PRESERVED_OBJECTIVE_CONTEXT_PREFIX) else "summary",
+                            "span": generated_context + ("\n\n---\n\n" if normalized_tail else ""),
+                            "retained_source": {"store_id": folded_source_store_id},
+                            "full_identity": _emission_identity(tail_selected[0]),
+                            "row": tail_selected[0],
+                        })
+                else:
+                    logger.warning(
+                        "LCM omitted generated context because the same-role "
+                        "tail occurrence lacked durable lineage"
+                    )
+            else:
+                generated_context_row = {"role": summary_role, "content": generated_context}
+                result.append(generated_context_row)
+                emission_candidates.append({
+                    "kind": "objective" if generated_context.lstrip().startswith(_PRESERVED_OBJECTIVE_CONTEXT_PREFIX) else "summary",
+                    "span": generated_context,
+                    "full_identity": _emission_identity(result[-1]),
+                    "row": result[-1],
+                })
+        return (generated_context_row, carried_tail, folded_source_store_id,
+                folded_result_index, folded_original_tail, tail_selected)
 
     def _mint_assembled_engine_uids(self, result, candidates, summary_message, carried_tail, recall_row,
                                     context_row, tail_selected) -> None:
