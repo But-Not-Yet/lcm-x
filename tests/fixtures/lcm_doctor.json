@@ -1105,7 +1105,7 @@
         {
           "check": "messages_fts_integrity",
           "status": "fail",
-          "detail": "fts5: checksum mismatch for table \"messages_fts\""
+          "detail": "<sqlite fts integrity error>"
         },
         {
           "check": "messages_fts_integrity_background_flag",

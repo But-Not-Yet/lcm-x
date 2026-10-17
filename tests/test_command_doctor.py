@@ -305,9 +305,19 @@ def doctor_engine(
         engine.shutdown()
 
 
+# SQLite builds word a corrupted FTS5 shadow table differently; both mean the same failed check.
+FTS_INTEGRITY_ERRORS = frozenset({
+    'fts5: checksum mismatch for table "messages_fts"',
+    "database disk image is malformed",
+})
+
+
 def normalize(value: Any, tmp_path: Path) -> Any:
-    """Normalize only scratch paths and physical SQLite allocation sizes."""
+    """Normalize scratch paths, physical SQLite allocation sizes and SQLite's FTS error wording."""
     if isinstance(value, dict):
+        detail = value.get("detail")
+        if value.get("check") == "messages_fts_integrity" and isinstance(detail, str) and detail in FTS_INTEGRITY_ERRORS:
+            value = {**value, "detail": "<sqlite fts integrity error>"}
         return {
             k: "<size>"
             if k in {"database_size_bytes", "wal_size_bytes"}
