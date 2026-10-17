@@ -428,8 +428,8 @@ def test_repeated_recovery_preserves_user_source(recoveries):
 
 @pytest.mark.parametrize("first_text", [
     pytest.param("alpha", id="distinct-source-control"),
-    pytest.param("βeta", id="equal-source-warm", marks=pytest.mark.xfail(
-        strict=True, reason=REPROJECTED_USER, raises=ReprojectedUserStored)),
+    # #1403: the accepted compaction prefix keeps the warm ingest from re-storing the projected user.
+    pytest.param("βeta", id="equal-source-warm"),
 ])
 def test_recovery_reprojection_warm_ingest(first_text):
     machine = RecoveryMachine()
