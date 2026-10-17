@@ -35,8 +35,11 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
-def identity(row):
-    return json.dumps({"role": row["role"], "content": row.get("content") or ""}, sort_keys=True)
+def identity(row, *, timestamp=True):
+    value = {"role": row["role"], "content": row.get("content") or ""}
+    if timestamp:
+        value["timestamp"] = row.get("timestamp")
+    return json.dumps(value, sort_keys=True)
 
 
 def workload(seed):
@@ -64,10 +67,11 @@ def run_cell(args, root, arm, seed):
     pkg = types.ModuleType("hermes_lcm")
     pkg.__path__ = [str(args.product_source)]
     sys.modules["hermes_lcm"] = pkg  # avoid plugin registration, exactly as repository tests do
-    engine_module, config, prep, escalation, tokens = [importlib.import_module("hermes_lcm." + n)
-        for n in ("engine", "config", "leaf_prep", "escalation", "tokens")]
     # Pin the deterministic slice-1 token estimator; no model downloads or host model guessing.
+    tokens = importlib.import_module("hermes_lcm.tokens")
     tokens.count_tokens = lambda text: 0 if not text else tokens._fallback_token_estimate(text)
+    engine_module, config, prep, escalation = [importlib.import_module("hermes_lcm." + n)
+        for n in ("engine", "config", "leaf_prep", "escalation")]
     importlib.import_module("hermes_lcm.survival_fit")._host_estimate = lambda messages: None
     counts, calls, lock = Counter(), [], threading.Lock()
 
@@ -141,15 +145,16 @@ def run_cell(args, root, arm, seed):
 
     def probe(turn, phase):
         with sqlite3.connect(f"file:{home / 'lcm.db'}?mode=ro", uri=True) as db:
-            rows = [dict(store_id=i, identity=identity(dict(role=r, content=c))) for i, r, c in
-                    db.execute("SELECT store_id, role, content FROM messages ORDER BY store_id")]
+            rows = [dict(store_id=i, identity=identity(dict(role=r, content=c, timestamp=t)),
+                         active_identity=identity(dict(role=r, content=c), timestamp=False)) for i, r, c, t in
+                    db.execute("SELECT store_id, role, content, observed_at FROM messages ORDER BY store_id")]
             leaves = [json.loads(r[0]) for r in db.execute(
                 "SELECT source_ids FROM summary_nodes WHERE depth=0 AND source_type='messages' ORDER BY node_id")]
         frontier = engine._lifecycle.get_by_conversation("bgprep").current_frontier_store_id
         live = []
         for msg in view:
             remainder = engine._generated_context_carrier_remainder(msg)
-            live.append(identity({**msg, "content": remainder} if remainder is not None else msg))
+            live.append(identity({**msg, "content": remainder} if remainder is not None else msg, timestamp=False))
         p = dict(turn=turn, phase=phase, expected=list(expected), rows=rows, leaf_sources=leaves,
                  frontier=frontier, active_view=live, activity=activity())
         probes.append(p)
