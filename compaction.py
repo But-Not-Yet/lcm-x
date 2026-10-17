@@ -2259,6 +2259,7 @@ class CompactionMixin:
             leaf_compacted_this_turn, no_call_only, refused_input = True, False, None
             budget.progress, budget.leaves = budget.progress or "leaf", budget.leaves + 1
             self._sweep_budget_hold_until = 0.0  # #608: a stored leaf ends the hold
+            self._hung_summary_strike, self._sweep_budget_hold_turn_paced = None, False
             self._no_progress_hold, self._no_progress_candidate = None, False  # #651: hidden-only leaves too
             leaf_passes += 1
             level3_leaves += _level == 3
@@ -2354,7 +2355,12 @@ class CompactionMixin:
             )
             if not leaf_compacted_this_turn:
                 noop_reason = "summary route unavailable"
-                self._start_sweep_budget_hold(seconds_left)
+                self._start_sweep_budget_hold(seconds_left, turn_paced=(
+                    self._sweep_budget_hold_turn_paced
+                    and self._sweep_budget_hold_active()
+                    and self._hung_summary_strike is not None
+                    and self._hung_summary_strike[0] == self._hold_conversation_key()
+                ))
         elif sweep_stop_reason == "summary_result_rejected":
             warn_rejected()
             if not leaf_compacted_this_turn:
@@ -2372,6 +2378,11 @@ class CompactionMixin:
                     ", ".join(f"{step}={seconds:.1f}s" for step, seconds in sweep_step_seconds.items()),
                 )
                 if not force_overflow and pre_leaf_condensation_passes == 0:  # #909: stored condensation is progress
+                    first_hang = budget.hung_route is not None and (
+                        self._hung_summary_strike is None
+                        or self._hung_summary_strike[0] != self._hold_conversation_key())
+                    if first_hang:
+                        self._hung_summary_strike = (self._hold_conversation_key(), budget.hung_route)
                     if self._hung_summary_route_has_fallback(budget):
                         self._no_progress_candidate = False  # let the next automatic pass try the fallback
                         logger.info(
@@ -2379,7 +2390,9 @@ class CompactionMixin:
                             "fallback route available", budget.hung_route,
                         )
                     else:
-                        self._start_sweep_budget_hold()
+                        if first_hang:
+                            self._no_progress_candidate = False
+                        self._start_sweep_budget_hold(turn_paced=first_hang)
             self._refresh_raw_backlog_debt(
                 working_messages,
                 observed_tokens=observed_prompt_tokens,
