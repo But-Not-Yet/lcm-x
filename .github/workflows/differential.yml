@@ -30,8 +30,12 @@ jobs:
             compaction_policy.py
             compaction_request.py
             compress_run.py
+            config.py
             dag.py
+            db_bootstrap.py
+            diagnostics.py
             engine.py
+            engine_registry.py
             escalation.py
             externalize.py
             extraction.py
@@ -44,11 +48,21 @@ jobs:
             lifecycle_state.py
             message_analysis.py
             message_content.py
+            message_patterns.py
+            model_routing.py
             placeholder_ledger.py
+            plugin_identity.py
             prefix_matching.py
             reconcile.py
             reset_state.py
+            rollup_builder.py
+            rollup_periods.py
+            rollup_store.py
             sanitize.py
+            schemas.py
+            session_patterns.py
+            sqlite_util.py
+            store.py
             store_complete.py
             summary_attempt.py
             summary_input_clip.py
@@ -57,6 +71,7 @@ jobs:
             survival_fit.py
             tokens.py
             tool_pairs.py
+            tool_registry.py
         run: |
           relevant=true
           if [[ "$EVENT_NAME" == pull_request ]]; then
