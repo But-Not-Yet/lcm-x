@@ -187,6 +187,7 @@ def token_counter():
         sys.modules[spec.name] = importlib.util.module_from_spec(spec)
     from differential_counter import tokens
     with module_patches() as patch:
+        patch(tokens, "_encoder_generation", tokens._encoder_generation + 1)
         patch(tokens, "_encoder_ready", True)
         patch(tokens, "_encoder", None)
         yield tokens
