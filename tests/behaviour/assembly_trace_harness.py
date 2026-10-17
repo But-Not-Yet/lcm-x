@@ -1,6 +1,6 @@
 """Real assembly observations for I3/I4/I9/I10/I13, before phase extraction.
 
-Regenerate once after the stamping regroup (Refs #1271)::
+Frozen after the stamping regroup (Refs #1271, #1398). Regenerate intentionally::
 
     python -m tests.behaviour.assembly_trace_harness --repo "$TREE" --out tests/fixtures/assembly_trace.json
 
@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import ast
 import dataclasses
+import gc
 import hashlib
 import importlib
 import inspect
@@ -237,6 +238,7 @@ SCENARIOS = (
     Scenario('metadata-absent', 15, depths=(0,), metadata=False),
     Scenario('metadata-present', 15, depths=(0,)),
     Scenario('trial-fold', 16, shape='fold', retained=True, depths=(0,), persist=False),
+    Scenario('trial-standalone', 16, shape='pair', depths=(0,), persist=False),
     Scenario('trial-external', 16, shape='huge-result', external=True, persist=False, stored=False),
     Scenario('lineage-write-failure', 17, shape='fold', retained=True, depths=(0,), fault=True),
     Scenario('lineage-clear', 17),
@@ -473,6 +475,8 @@ def observe(case: Scenario, root: Path) -> Trace:
             events.extend(f'before {name} ' + canonical.compact(value) for name, value in initial.items())
             # Code objects are the qualified observer identity, never co_name.
             target = inspect.unwrap(engine_module.LCMEngine._assemble_context).__code__
+            cleanup = engine_module.LCMEngine._sanitize_active_context_messages.__code__
+            visibility = engine_module._stamp_generated_model_only.__code__
             counters = {engine_module.count_message_tokens.__code__, engine_module.count_messages_tokens.__code__,
                         engine_module.count_tokens.__code__}
             services: dict[CodeType, str] = {}
@@ -489,6 +493,19 @@ def observe(case: Scenario, root: Path) -> Trace:
                 if code is target and event == 'call':
                     entries += 1
                     events.append('assembly enter rejected=' + canonical.compact(frame.f_locals.get('_reply_rejected')))
+                caller = frame.f_back
+                if (event == 'call' and code in {cleanup, visibility} and caller is not None
+                        and caller.f_code is target and 'existing_folded_lineage' in caller.f_locals
+                        and caller.f_locals.get('folded_original_tail') is not None):
+                    # Fold recovery currently has no generated rows. Record the
+                    # shared provenance list, including when empty: cleanup must
+                    # update the same collection used by the final visibility pass.
+                    generated = frame.f_locals.get('generated_rows')
+                    kind = 'cleanup' if code is cleanup else 'visibility'
+                    events.append(f'fold provenance {kind} ' + encoded({
+                        'assembly_owned': generated is caller.f_locals['generated_rows'],
+                        'rows': len(generated) if generated is not None else None,
+                    }))
                 label = services.get(code)
                 if code in counters and frame.f_back is not None and frame.f_back.f_code.co_filename == target.co_filename:
                     label = 'counter ' + code.co_qualname
@@ -529,6 +546,10 @@ def observe(case: Scenario, root: Path) -> Trace:
             logger.addHandler(handler)
             old_profile = sys.getprofile()
             old_thread_profile = threading.getprofile()
+            gc_enabled = gc.isenabled()
+            # Cyclic finalizers from earlier tests are not assembly side effects.
+            # Defer automatic collection until the process-wide observer is off.
+            gc.disable()
             active = True
             sys.setprofile(profile)
             threading.setprofile(profile)
@@ -555,6 +576,8 @@ def observe(case: Scenario, root: Path) -> Trace:
                 active = False
                 logger.removeHandler(handler)
                 logger.setLevel(prior_level)
+                if gc_enabled:
+                    gc.enable()
             events.append(f'assembly entries={entries} payload ' + ' '.join(f'{kind}={count}' for kind, count in scans.items()))
             events.append('result aliases ' + encoded(canonical.graph(result)))
             events.extend(f'row {i} {canonical.compact(row)}' for i, row in enumerate(result or []))
@@ -585,7 +608,7 @@ def main() -> None:
     parser.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='assembly-trace-') as directory:
-        result = {case.name: observe(case, Path(directory) / case.name) for case in SCENARIOS}
+        result = {case.name: observe(case, Path(directory).resolve() / case.name) for case in SCENARIOS}
     args.out.write_text(json.dumps(result, sort_keys=True, indent=0) + '\n')
     print(f'Wrote {len(result)} assembly scenarios')
 
