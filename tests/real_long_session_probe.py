@@ -39,9 +39,25 @@ def canonical(message: dict[str, Any]) -> str:
     if isinstance(calls, str):
         fields["tool_calls"] = json.loads(calls)
     fields["tool_calls"] = [{k: c[k] for k in ("id", "type", "function")} for c in (fields["tool_calls"] or [])] or None
+    # Hermes serializes tool arguments compactly at the provider boundary.
+    # Compare their JSON values, retaining exact tool IDs, names and content.
+    for call in fields["tool_calls"] or []:
+        function = call["function"]
+        call["function"] = {**function, "arguments": json.loads(function["arguments"])}
     fields["tool_call_id"] = fields["tool_call_id"] or None
     fields["content"] = fields["content"] or ""
     return json.dumps(fields, sort_keys=True).replace(str(Path.home()), "<HOME>")
+
+
+def assert_ordered_tail(messages: list[dict[str, Any]], protected: list[str],
+                        carrier_remainder: str | None = None) -> None:
+    """Match a suffix exactly; only its first row may carry a verified summary."""
+    emitted = [canonical(m) for m in messages[-len(protected):]]
+    if emitted and emitted != protected and carrier_remainder is not None:
+        first = json.loads(emitted[0])
+        if first["role"] == "user":
+            emitted[0] = canonical({**first, "content": carrier_remainder})
+    assert emitted == protected, "I2 assembly: ordered fresh tail changed"
 
 
 def paired(messages: list[dict[str, Any]]) -> None:
@@ -147,6 +163,8 @@ def run(first: int, last: int, out: Path) -> None:
     timings: list[dict[str, Any]] = []
     compactions: list[dict[str, Any]] = []
     checks: list[dict[str, Any]] = []
+    tails: list[dict[str, Any]] = []
+    pending_tail: list[str] | None = None
 
     def main_reply(messages: list[dict[str, Any]]) -> dict[str, Any]:
         nonlocal issued
@@ -178,6 +196,7 @@ def run(first: int, last: int, out: Path) -> None:
     original_serve = provider.serve
 
     def serve(handler: Any, body: dict[str, Any], api: str) -> None:
+        nonlocal pending_tail
         if fake.role_of(body.get("model", "")) == "main":
             messages = body["messages"]
             try:
@@ -187,8 +206,16 @@ def run(first: int, last: int, out: Path) -> None:
                 assert any(OBJECTIVE in str(m.get("content") or "") for m in messages), \
                     f"I2 assembly at turn {turn}: objective missing"
                 paired(messages)
+                if pending_tail is not None:
+                    # The provider must receive the very same emitted suffix,
+                    # including any verified summary carrier at position zero.
+                    assert_ordered_tail(messages, pending_tail)
+                    tails[-1]["provider_checked"] = True
+                    pending_tail = None
             except AssertionError as exc:
                 failures.append(str(exc))
+                (out / "provider-mismatch.json").write_text(json.dumps(
+                    {"turn": turn, "messages": messages, "expected_tail": pending_tail}, indent=2))
         original_serve(handler, body, api)
 
     provider.serve = serve
@@ -234,23 +261,21 @@ def run(first: int, last: int, out: Path) -> None:
     original_compress = engine.compress
 
     def compress(messages: list[dict[str, Any]], *args: Any, **kwargs: Any) -> Any:
+        nonlocal pending_tail
         protected = [canonical(m) for m in messages[-TAIL:]]
         started = time.perf_counter()
         result = original_compress(messages, *args, **kwargs)
         compactions.append({"turn": turn, "seconds": time.perf_counter() - started,
                             "status": engine._last_compression_status})
-        emitted = [json.loads(canonical(m)) for m in result]
-        for raw in protected:
-            message = json.loads(raw)
-            # Assembly may prefix the first tail user with its summary carrier.
-            matches = [m for m in emitted if m["role"] == message["role"]
-                       and m["tool_call_id"] == message["tool_call_id"]
-                       and m["tool_calls"] == message["tool_calls"]
-                       and message["content"] in m["content"]]
-            if not matches:
-                failures.append(f"I2 assembly at turn {turn}: fresh-tail protected row changed: {raw[:180]}")
-                (out / "tail-mismatch.json").write_text(json.dumps({"protected": protected, "emitted": emitted}, indent=2))
-                break
+        emitted = result[-len(protected):]
+        remainder = engine._generated_context_carrier_remainder(emitted[0]) if emitted else None
+        try:
+            assert_ordered_tail(result, protected, remainder)
+        except AssertionError as exc:
+            failures.append(f"{exc} at turn {turn}")
+        pending_tail = [canonical(m) for m in emitted]
+        tails.append({"turn": turn, "protected": protected, "emitted": pending_tail,
+                      "carrier_remainder": remainder, "provider_checked": False})
         return result
 
     engine.compress = compress
@@ -283,7 +308,7 @@ def run(first: int, last: int, out: Path) -> None:
             assert list((home / "lcm_externalized").rglob("*.json")), "I3 recall: no large outputs externalized"
     finally:
         (out / f"phase-{first}.json").write_text(json.dumps({"checkpoints": checks, "turns": timings,
-                                                          "compactions": compactions}, indent=2))
+                                                          "compactions": compactions, "tails": tails}, indent=2))
         ledger_path.write_text(json.dumps(ledger, indent=2))
         engine.shutdown()
         state.close()
