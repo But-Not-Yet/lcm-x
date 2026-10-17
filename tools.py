@@ -35,6 +35,7 @@ from .diagnostics import (
     _has_lifecycle_fragmentation,
     _state_db_path_for_engine,
     doctor_guidance_for_checks,
+    survival_fit_count,
 )
 from .dag import build_nodes_fts_spec
 from .db_bootstrap import (
@@ -6404,6 +6405,7 @@ def lcm_status(args: Dict[str, Any], **kwargs) -> str:
         ),
         "last_compression_status": full_status.get("last_compression_status", "idle"),
         "last_compression_noop_reason": full_status.get("last_compression_noop_reason", ""),
+        "last_survival_fit": full_status.get("last_survival_fit"),
         "threshold_full_sweep": full_status.get("threshold_full_sweep"),
         "last_stub_first_exit": full_status.get("last_stub_first_exit"),
         "no_progress_hold": full_status.get("no_progress_hold"),
@@ -6908,6 +6910,12 @@ def lcm_doctor(args: Dict[str, Any], **kwargs) -> str:
             "detail": f"{usage_pct}% used, compaction triggers at {threshold_pct}%",
         })
 
+    # #1162: expose the same survival-fit counter (including last_cause) as /lcm doctor.
+    try:
+        survival_fit = engine._store.read_metadata_json("survival_fit:counter")
+    except Exception:
+        survival_fit = None
+
     # 8. Compaction progress (#1162): consecutive over-threshold passes that stored no leaf
     streak = engine._zero_leaf_streak_status() if hasattr(engine, "_zero_leaf_streak_status") else None
     checks.append({
@@ -6924,6 +6932,7 @@ def lcm_doctor(args: Dict[str, Any], **kwargs) -> str:
 
     return json.dumps({
         "overall": overall,
+        "survival_fit": survival_fit if survival_fit_count(survival_fit) != 0 else None,
         "runtime_identity": engine.get_runtime_identity(),
         "checks": checks,
         "guidance": doctor_guidance_for_checks(checks),

@@ -30,6 +30,7 @@ from .escalation import (
     ForegroundEstimates,
     SweepBudgetExhausted,
     UnattributedRescueRefused,
+    _summary_call,
 )
 from .externalize import ingest_payload_writes, payload_lookup_scope
 from .fresh_tail import tool_group_safe_end
@@ -583,6 +584,8 @@ class CompactionMixin:
         self._last_compress_leaves = None
         self._last_hidden_backlog = None
         self._compress_forced_overflow = False
+        self._last_compression_noop_reason = ""  # #1162: a fit's cause belongs to this pass
+        _summary_call.error = None  # the thread-local summary failure must not outlive its pass
         budget = self._foreground_budget = self._new_foreground_budget()  # #605 K1: the clock starts here
         thread_context = getattr(self, "_thread_context", None)  # D5: per thread; the engine is shared with live children
         if thread_context is not None:
@@ -635,6 +638,8 @@ class CompactionMixin:
                 result = messages
             reason = self._survival_fit_reason or str(self._last_compression_status or "unknown")
             result = self._survival_fit(messages, result, current_tokens,
+                                        summary_failure=budget.summary_failure if not self._survival_fit_reason else "",
+                                        fit_cause=self._last_compression_noop_reason if not self._survival_fit_reason else "",
                                         **self._survival_fit_args(messages, current_tokens, reason, bypass_cooldown,
                                                                   automatic=not force and not self._compress_forced_overflow
                                                                   and self._last_compression_status != "error"))
@@ -673,6 +678,7 @@ class CompactionMixin:
                     self._store.rollback_pending_write()
                     reason = self._survival_fit_reason
                     fitted = self._survival_fit(messages, messages, current_tokens, after_exception=True,
+                                                summary_failure=budget.summary_failure,
                                                 **self._survival_fit_args(messages, current_tokens, reason,
                                                                           bypass_cooldown))
                 except Exception:
