@@ -6,6 +6,7 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
+- Config: `LCM_STUB_FIRST_EXIT_TARGET_RATIO` (default `0`, env only) lowers the stub-first exit's target to min(threshold - `LCM_LEAF_CHUNK_TOKENS`, 0.95 x threshold, int(ratio x threshold)); stub cuts that stay over it take the leaf path as before. With a large window the built-in target leaves a long live list (712,500 tokens at a 750,000-token threshold); `0.2` exits only at 150,000 or under. `0` keeps today's target; a negative value, a value over `1` or a non-number keeps it with a config warning. `lcm_status` `last_stub_first_exit` and the `LCM compaction stop:` line show the applied target, and `lcm_status` `config` shows the ratio. Unset, compaction is unchanged. (#1193, #671)
 - Fix: E2 canonical uid copy evidence never excludes user rows; sync the shadow-mode copy-exclusion docs. (#1124, #1146)
 - Fix: repeated tool groups are excluded whole or kept whole; E1 preserves occurrences with their own uid binding. (#1146, #1154)
 - Fix: proven hidden re-ingest copies no longer consume leaf input or count as hidden backlog. Exclusion requires an earlier owned byte-equal twin that an existing summary or the same leaf covers, tool-call identity or canonical host-uid evidence, and a non-lossy identity. The publication transaction rechecks each copy's bytes, ownership and twin coverage. Stored rows, ingest behavior and the schema are unchanged. (#1124)
