@@ -41,6 +41,7 @@ if __name__ == "__main__":
     sys.modules["hermes_lcm"] = package
 
 import tests.conftest  # noqa: E402, F401
+from tests.behaviour.frontier_observer import observed_attribute  # noqa: E402
 from tests.phase0_hygiene import product_env_keys
 from tests.harness import engine_context, pin_char_counter  # noqa: E402
 
@@ -188,6 +189,10 @@ SCENARIOS = (
     Scenario("tool-duplicate-result", shape="tools", variant="duplicate-result"),
     Scenario("host-rewrite-head", shape="whitespace", variant="rewrite"),
     Scenario("commit-proof-extends-tail", proof="v3", variant="proof-extends"),
+    Scenario("empty-replaced-carry", count=0, proof="carry", variant="replaced-carry"),
+    Scenario("second-proof-publication", variant="new", proof="delayed"),
+    *[Scenario(f"retirement-{variant}", proof="v4", variant=variant)
+      for variant in ("retire-replay", "retire-scaffold", "retire-new", "retire-error")],
     *[Scenario(f"folded-engine-{variant}", mode="matcher", proof="engine", variant=variant)
       for variant in ("folded-ordered", "folded-reversed", "folded-duplicate", "folded-missing")],
 )
@@ -336,7 +341,7 @@ class LiteralPattern:
 def snapshot(engine: Any, canonical: Canonical) -> dict[str, Any]:
     state: dict[str, Any] = {}
     for name in sorted(OBSERVED_ATTRIBUTES):
-        value = getattr(engine, name, {"absent": True})
+        value = observed_attribute(engine, name)
         if name == "_store":
             value = {table: [tuple(row) for row in engine._store._conn.execute(f"SELECT * FROM {table} ORDER BY 1")]
                      for table in ("messages", "metadata")}
@@ -417,6 +422,10 @@ def observe(case: Scenario, root: Path) -> Trace:
                 incoming = [dict(NOTE)]
             elif case.variant == "objective":
                 incoming = [{"role": "user", "content": "[Current user objective preserved from compacted history]\ninspect"}]
+            if case.variant == "replaced-carry":
+                incoming = [{"role": "assistant", "content": "carried answer"},
+                            {"role": "user", "content": "carried prompt"}]
+                engine._store.append_batch("parent", incoming)
             if case.variant.startswith("folded-"):
                 incoming[0]["content"] += "\n[Recent Summary (d1, node 1)]\n[Expand for details: node 1]"
                 assert engine._write_folded_tail_lineage(incoming[0], 1)
@@ -429,6 +438,25 @@ def observe(case: Scenario, root: Path) -> Trace:
                 incoming.insert(0, dict(NOTE))
                 assert engine._compacted_active_replay_snapshot_digest(incoming)
             seed_proof(engine, case, incoming)
+            delayed_proof = None
+            if case.proof == "delayed":
+                seed_proof(engine, dataclasses.replace(case, proof="v3"), incoming)
+                delayed_proof = engine._store.read_metadata_json("compaction_commit_proof:S")
+                engine._store._conn.execute("DELETE FROM metadata WHERE key='compaction_commit_proof:S'")
+                engine._store._conn.commit()
+            if case.variant.startswith("retire-"):
+                node_type = importlib.import_module("hermes_lcm.dag").SummaryNode
+                node = node_type(session_id="S", depth=0, summary="Verified summary.", token_count=4,
+                                 source_token_count=8, source_ids=[1, 2], source_type="messages", expand_hint="verified")
+                node_id = engine._dag.add_node(node)
+                engine._last_compacted_store_id = 2
+                head = {"role": "user", "content": (
+                    f"[Recent Summary (d0, node {node_id})]\nVerified summary.\n[Expand for details: verified]")}
+                incoming = [head] + incoming
+                if case.variant == "retire-scaffold":
+                    incoming = [head]
+                elif case.variant == "retire-new":
+                    incoming = [head, {"role": "user", "content": "new unmatched turn"}]
             if case.variant == "empty-child":
                 engine._store._conn.execute("DELETE FROM messages WHERE session_id='S'")
                 engine._store._conn.commit()
@@ -447,11 +475,13 @@ def observe(case: Scenario, root: Path) -> Trace:
                     incoming *= 2
                 if case.variant == "new":
                     incoming.insert(0, {"role": "user", "content": "fresh"})
-            if case.proof == "carry":
+            if case.proof == "carry" and case.variant != "replaced-carry":
                 key = "compaction_commit_proof:S"
                 proof = engine._store.read_metadata_json(key)
                 proof["effective_sha256"] = ["0" * 64]
                 engine._store.write_metadata_json([key], encoded(proof))
+            if case.variant == "replaced-carry":
+                incoming[-1] = {"role": "user", "content": "replacement prompt"}
             if case.variant == "placeholder":
                 incoming[1] = {"role": "assistant", "content": engine._ignored_active_replay_placeholder("IGNORE THIS ROW")}
                 engine._remember_generated_ignored_placeholder_hash(engine._active_replay_placeholder_digest(incoming[1]["content"]))
@@ -540,7 +570,9 @@ def observe(case: Scenario, root: Path) -> Trace:
             def wrap(name: str, original: Callable[..., Any]) -> Callable[..., Any]:
                 def observed(*args: Any, **kwargs: Any) -> Any:
                     events.append(f"store {name} " + compact(canonical.value([args, kwargs])))
-                    fail = case.fault == name or (case.variant == "write-error" and name == "write_metadata_json")
+                    fail = (case.fault == name or (case.variant == "write-error" and name == "write_metadata_json")
+                            or (case.variant == "retire-error" and name == "get_session_tail"
+                                and getattr(engine, "_retired_durable_proof", None) is not None))
                     if fail:
                         engine._store._conn.set_authorizer(lambda *_: sqlite3.SQLITE_DENY)
                     try:
@@ -552,6 +584,9 @@ def observe(case: Scenario, root: Path) -> Trace:
                         if fail:
                             engine._store._conn.set_authorizer(None)
                     events.append("store result " + compact(canonical.value(result)))
+                    if name == "get_session_messages" and delayed_proof is not None:
+                        # A second connection can publish between the two proof reads.
+                        engine._store.write_metadata_json(["compaction_commit_proof:S"], encoded(delayed_proof))
                     return result
                 return observed
 
