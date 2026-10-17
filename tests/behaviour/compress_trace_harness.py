@@ -213,7 +213,10 @@ class Clock:
         if self.expiry_checkpoint:
             frame = inspect.currentframe()
             assert frame is not None and frame.f_back is not None
-            if frame.f_back.f_code.co_name in {"_compress_impl", "sweep_step_done"}:
+            # Phase extraction preserves these original orchestrator clock calls.
+            if frame.f_back.f_code.co_name in {
+                "_compress_impl", "_begin_compression", "_ingest_compression_view", "sweep_step_done",
+            }:
                 self.checkpoints += 1
                 if self.checkpoints == self.expiry_checkpoint:
                     self.now += 121.0
