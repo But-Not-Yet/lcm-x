@@ -434,10 +434,10 @@ def compact(value: Any) -> str:
 def sql_event(connection: str, sql: str, shapes: dict[tuple[str, str], int], events: Trace) -> str:
     if sql in {"BEGIN IMMEDIATE", "BEGIN", "COMMIT", "ROLLBACK"}:
         return "sql " + sql
-    # Internal FTS callbacks already contain placeholders; quoted names there
-    # are identifiers. Other callbacks contain expanded values, which must not
-    # be embedded in the golden. Keep every column and expression in the shape.
-    shape = sql if sql.startswith("-- ") else re.sub(
+    # SQLite-internal FTS callbacks are filtered before normalization.
+    # LCM callbacks contain expanded values, which must not be embedded in the
+    # golden. Keep every column and expression in the shape.
+    shape = re.sub(
         r"'(?:''|[^'])*'|(?<![\w])\d+(?:\.\d+)?(?![\w])", "?", sql)
     key = (connection, shape)
     if key not in shapes:
@@ -637,6 +637,10 @@ def observe(case: Scenario, root: Path) -> Trace:
             shapes: dict[tuple[str, str], int] = {}
 
             def trace_sql(connection: str, sql: str) -> None:
+                # SQLite-internal FTS5 statements vary by SQLite build.
+                # Filter raw SQL before normalization can erase quoted schema names.
+                if sql.lstrip().startswith("--") or re.search(r"(['\"])(main|temp)\1\s*\.", sql):
+                    return
                 normalized = canonical.text(sql.strip())
                 if re.match(r"(?:--\s*)?(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|ALTER|BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE)\b",
                             normalized, re.IGNORECASE):
