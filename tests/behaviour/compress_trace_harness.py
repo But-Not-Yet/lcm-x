@@ -16,6 +16,7 @@ import importlib
 import inspect
 import json
 import logging
+import os
 import re
 import sqlite3
 import tempfile
@@ -32,6 +33,7 @@ import pytest
 # The plugin is directory-loaded by Hermes, not installed as a Python package.
 # Reuse the suite's registration when invoked with python -m outside pytest.
 import tests.conftest  # noqa: F401
+from tests.phase0_hygiene import product_env_keys
 from tests.harness import engine_context, pin_char_counter
 
 compaction: Any = importlib.import_module("hermes_lcm.compaction")
@@ -826,6 +828,10 @@ def first_difference(expected: Trace, actual: Trace) -> str | None:
 
 
 def main() -> None:
+    # Match suite isolation and also discard unknown inherited LCM settings.
+    for key in set(os.environ) | product_env_keys(Path(__file__).resolve().parents[2]):
+        if key.startswith("LCM_") or key in product_env_keys(Path(__file__).resolve().parents[2]):
+            os.environ.pop(key, None)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--regenerate", action="store_true")
     args = parser.parse_args()
