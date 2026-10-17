@@ -21,6 +21,7 @@ import uuid
 from collections import Counter, deque
 from contextlib import contextmanager
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -170,6 +171,21 @@ from . import tools as lcm_tools
 
 logger = logging.getLogger(__name__)
 _NATIVE_RECOVERY_WARNING_LOGGED = False
+
+
+@lru_cache(maxsize=1)
+def _model_only_display_metadata_key() -> Optional[str]:
+    """Older hosts keep today's display behavior; resolve the host capability once."""
+    try:
+        from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
+        return MODEL_ONLY_DISPLAY_METADATA_KEY
+    except (ImportError, AttributeError):
+        return None
+
+
+def _model_only_display_metadata_keys() -> frozenset:
+    """Every key that can hide a row: the literal key and the host-advertised one."""
+    return frozenset(k for k in ("model_only", _model_only_display_metadata_key()) if k)
 
 _ASSERTION_EXTRACTION_PROCESS_SLOT = threading.BoundedSemaphore(1)
 _EMBEDDING_SCHEMA_READY: set[tuple[Path, bool]] = set()
@@ -866,6 +882,8 @@ class LCMEngine(
         # #618: it holds only the conversation it was armed for.
         self._sweep_budget_hold_until: float = 0.0
         self._sweep_budget_hold_conversation = ""
+        self._sweep_budget_hold_turn_paced = False
+        self._hung_summary_strike: Optional[tuple[str, str]] = None
         # #651: (monotonic until, reason) after an automatic threshold pass made no progress or
         # the host refused one. #597: a progress refusal also ends at turn end.
         self._no_progress_hold: Optional[tuple[float, str]] = None
@@ -1773,10 +1791,14 @@ class LCMEngine(
         self._last_boundary_skip_time = 0
         return False
 
-    def _start_sweep_budget_hold(self, seconds: Optional[float] = None) -> None:
+    def _start_sweep_budget_hold(self, seconds: Optional[float] = None, *, turn_paced: bool = False) -> None:
         hold = _SWEEP_BUDGET_HOLD_SECONDS if seconds is None else min(_SWEEP_BUDGET_HOLD_SECONDS, max(1.0, seconds))
         self._sweep_budget_hold_until = time.monotonic() + hold
         self._sweep_budget_hold_conversation = self._hold_conversation_key()  # #618
+        if turn_paced and not self._sweep_budget_hold_turn_paced:
+            logger.info("LCM hung summary hold armed until turn end (cap %.0fs): %s",
+                        hold, self._hung_summary_strike[1])
+        self._sweep_budget_hold_turn_paced = turn_paced
 
     def _hold_conversation_key(self) -> str:
         """#618: the conversation a #608 hold belongs to."""
@@ -1906,6 +1928,15 @@ class LCMEngine(
         """#597/#922/#904: end turn-paced holds at the end of a foreground turn of this engine (never a
         bypassed auxiliary/stateless call); cheap, fail-soft host notification."""
         try:
+            if (self._sweep_budget_hold_turn_paced and self._hung_summary_strike is not None
+                    and self._hung_summary_strike[0] == self._hold_conversation_key()
+                    and self._sweep_budget_hold_conversation == self._hold_conversation_key()
+                    and self._sweep_budget_hold_active()
+                    and not self._bypasses_lcm_context_management()):
+                route = self._hung_summary_strike[1]
+                self._sweep_budget_hold_until, self._sweep_budget_hold_turn_paced = 0.0, False
+                self._summary_circuit_breaker.release_hang(route)
+                logger.info("LCM hung summary hold released at turn end: %s", route)
             hold = self._no_progress_hold
             if (hold is not None and hold[1] in _TURN_END_HOLD_REASONS
                     and not self._bypasses_lcm_context_management()):
@@ -6967,6 +6998,7 @@ class LCMEngine(
         *,
         insert_missing_tool_stubs: bool = True,
         merge_adjacent_assistants: bool = True,
+        generated_rows: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """Drop unsafe assistant-only noise, then repair tool sequencing.
 
@@ -6984,7 +7016,10 @@ class LCMEngine(
         cleaned: list[Dict[str, Any]] = []
         dropped_assistant_messages = 0
         stripped_assistant_messages = 0
+        generated_ids = {id(row) for row in generated_rows or []}
+        cleaned_generated = []
         for msg in messages:
+            generated = id(msg) in generated_ids
             msg = self._sanitize_active_preserved_objective_message(msg)
             if msg.get("role") == "assistant":
                 cleaned_msg = _clean_active_assistant_message(msg)
@@ -6994,8 +7029,12 @@ class LCMEngine(
                 if cleaned_msg is not msg:
                     stripped_assistant_messages += 1
                 cleaned.append(cleaned_msg)
+                if generated:
+                    cleaned_generated.append(cleaned_msg)
                 continue
             cleaned.append(msg)
+            if generated:
+                cleaned_generated.append(msg)
 
         if dropped_assistant_messages:
             logger.info(
@@ -7012,12 +7051,15 @@ class LCMEngine(
             cleaned,
             insert_missing_tool_stubs=insert_missing_tool_stubs,
         )
+        if generated_rows is not None:
+            # Follow cleanup copies without giving a carrier the generated row's identity.
+            generated_rows[:] = cleaned_generated
         if not merge_adjacent_assistants:
             return paired
         # Merge any assistant rows left adjacent once tool rows were dropped —
         # emit an alternation-clean active context so downstream loads don't
         # have to repair it and the persisted message count matches replay.
-        return _merge_adjacent_assistant_messages(paired)
+        return _merge_adjacent_assistant_messages(paired, generated_rows=generated_rows)
 
     @staticmethod
     def _active_tool_stub_content(original_content: Any, placeholder: str) -> Any:
@@ -7651,6 +7693,13 @@ class LCMEngine(
     ) -> Dict[str, Any]:
         """Fold generated context into a same-role tail without losing metadata."""
         merged = message.copy()
+        hide_keys = _model_only_display_metadata_keys()
+        if hide_keys & set(merged.get("display_metadata") or {}):
+            metadata = {key: value for key, value in merged["display_metadata"].items() if key not in hide_keys}
+            if metadata:
+                merged["display_metadata"] = metadata
+            else:
+                merged.pop("display_metadata", None)
         content = message.get("content")
         if isinstance(content, list):
             merged["content"] = [
@@ -8378,10 +8427,12 @@ class LCMEngine(
                                          proactive_msg, generated_context_row, tail_selected)
         result.extend(tail_selected)
 
+        generated_rows = [row for row in result if any(row is source for source in
+                          (summary_message, proactive_msg, generated_context_row))]
         # ── Active-context cleanup / tool-pair guardrail ──
         # Drop assistant turns that carry only blank/internal structured content,
         # then ensure provider-valid tool-call/result sequencing.
-        result = self._sanitize_active_context_messages(result)
+        result = self._sanitize_active_context_messages(result, generated_rows=generated_rows)
         if leading_msg is None:
             while result and result[0].get("role") in {"assistant", "tool"}:
                 result = result[1:]
@@ -8411,7 +8462,9 @@ class LCMEngine(
                     trimmed = msg.copy()
                     trimmed["content"] = "\n\n---\n\n".join(parts)
                     trimmed_result.append(trimmed)
-            result = self._sanitize_active_context_messages(trimmed_result)
+                    generated_rows = [trimmed if row is msg else row
+                                      for row in generated_rows]
+            result = self._sanitize_active_context_messages(trimmed_result, generated_rows=generated_rows)
         if kept_reply is not None and (why := self._kept_reply_rejection(
                 result, kept_reply, kept_reply["objective"] and bool(anchor_candidates),
                 ([system_msg] if system_msg is not None else []) + ([retained_user_message] if retained_user_message
@@ -8419,6 +8472,16 @@ class LCMEngine(
             return self._assemble_context(  # #1162 E: the next step, or the base output with the residual log
                 system_msg, tail_messages, assembly_cap_override, include_lcm_note, retained_user_message,
                 stub_over_cap_tool_results, persist, (*kept_reply["rejected"], f"step{kept_reply['step']}={why}"))
+
+        # Stamp only final standalone generated occurrences, never a same-text host row.
+        # Explicit carriers and assistant merges with human text are not generated rows.
+        # Measurement candidates above never receive display metadata.
+        key = _model_only_display_metadata_key() if generated_rows else None
+        if key is not None:
+            generated_ids = {id(row) for row in generated_rows}
+            for row in result:
+                if id(row) in generated_ids:
+                    row["display_metadata"] = {**(row.get("display_metadata") or {}), key: True}
         if not persist:
             return result
 

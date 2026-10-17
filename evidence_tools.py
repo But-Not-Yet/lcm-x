@@ -100,7 +100,7 @@ def lcm_query_state(args: Dict[str, Any], **kwargs: Any) -> str:
 
     raw_kinds = args.get("kinds")
     kinds: list[str] | None = None
-    if raw_kinds is not None:
+    if raw_kinds is not None and raw_kinds != []:  # [] means "not provided" (#1194)
         if not isinstance(raw_kinds, list) or not raw_kinds:
             return json.dumps({"error": "kinds must be a non-empty array"})
         kinds = [str(value or "").strip().lower() for value in raw_kinds]

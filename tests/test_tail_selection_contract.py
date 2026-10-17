@@ -90,7 +90,7 @@ def test_engine_tail_contract(tmp_path, monkeypatch, name, rows, cap, indexes, c
         # Observe the real sanitizer, including its unmerged input to the final pass.
         assert len(phases) == 2
         assert phases[0][1] == {"insert_missing_tool_stubs": False, "merge_adjacent_assistants": False}
-        assert phases[1][1] == {}
+        assert phases[1][1] == {"generated_rows": []}
         selected = phases[1][0][1:]
         assert len(selected) == len(indexes)
         assert all(message is rows[index] for message, index in zip(selected, indexes))

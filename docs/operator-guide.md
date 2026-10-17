@@ -499,6 +499,15 @@ circuit immediately (#1137). That window is the smaller of the configured summar
 foreground budget minus the finalize and leaf reserves. It logs one WARNING per opening naming the route
 and saying it used the whole window. The current compaction still stops on its budget; a fallback route
 can run on the next compaction. A cut after receiving only a partial window leaves the circuit unchanged.
+When no other route is usable, the first hang since the conversation's last stored leaf holds automatic
+compaction until foreground turn end, with a 600 s backstop (#1096). At turn end only that conversation's
+hung circuit is released for one ordinary retry; bypassed sessions cannot release it. A second hang keeps
+the 600 s sweep and no-progress holds. Without turn-end notifications the backstop applies as before.
+A hang waived because a fallback route was usable also counts as the conversation's first hang, so a
+later sole-route hang before a leaf is stored takes the 600 s path. On a first hang, `lcm_status` shows
+the sweep hold but no no-progress hold; the 600 s backstop applies to the sweep hold.
+A stored leaf or conversation/session reset clears the strike. Other circuit errors and hold reasons,
+forced overflow and survival-ceiling exemptions are unchanged. INFO logs name the route at arm and release.
 
 When a leaf's own level 1 and level 2 results are rejected and the survival fit can keep the request under the
 window, the compaction writes no leaf and no node for it and keeps its rows for a later pass (#652). A level 3
@@ -913,7 +922,9 @@ What the main knobs do:
   plugin cannot interrupt a step that is already running (a store step, the
   host's stream read between two chunks, assembly, the fit), so a compaction can
   still end past the hard bound; the INFO line `LCM compaction stop:` gives the
-  reason, the leaves and the seconds before, during and after the calls. A call
+  reason, the leaves and the seconds before, during and after the calls. With
+  `reason=error`, a trailing `failure=` field names the cause when known, such as
+  `publication_invariant_conflict` or `exception:RuntimeError` (one token). A call
   cut by the budget is not a summary-route failure, and a compaction uses one
   spend-guard slot however many calls it makes; rollups count on their own guard.
   The same budget covers a compaction with the sweep off, a manual `/compress`, a
@@ -1076,7 +1087,8 @@ no condensation and no summariser call. The rows no leaf summarised stay stored 
 are recorded as raw backlog; the stop reason `stub_first_exit` is a partial stop in
 `lcm_status` (`last_stub_first_exit`, and the threshold sweep record when the sweep is
 on), the doctor and the `LCM compaction stop:` line, with the tokens before and after,
-the target and the backlog rows left. Recovery attempts, forced overflow and calls
+the target and the backlog rows left. On error stops, `reason=error` stays unchanged
+and a trailing `failure=` field names the known cause (#1180). Recovery attempts, forced overflow and calls
 below the threshold never take this exit; when the cuts miss the target the
 compaction runs as before.
 
