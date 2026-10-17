@@ -576,8 +576,8 @@ use the default with one WARNING per process. `/lcm doctor` shows the effective
 | `LCM_FRESH_TAIL_PRESSURE_YIELD_MIN_OBSERVATIONS` | `3` | Consecutive tail-blocked compaction attempts under host-observed pressure before the yield engages; any attempt not blocked by the tail resets the count; `1` yields on first observation |
 | `LCM_INCREMENTAL_MAX_DEPTH` | `3` | Max DAG condensation depth (`-1` = unlimited, `0` = leaf only); enables hierarchical summarization |
 | `LCM_LEAF_CHUNK_TOKENS` | `24000` | Raw-backlog floor before leaf compaction; with dynamic chunking enabled, the base chunk target |
-| `LCM_LEAF_TARGET_RATIO` | `0.20` | Leaf summary target as a share of the leaf's source tokens (`> 0` and `<= 1`); target = `min(MAX, max(MIN, int(source_tokens * RATIO)))` and the first summary call gets `max_tokens` = 2 × target (#614) |
-| `LCM_LEAF_TARGET_MIN_TOKENS` | `2000` | Floor of the leaf summary target (`>= 1`) |
+| `LCM_LEAF_TARGET_RATIO` | `0.20` | Leaf summary target as a share of the leaf's source tokens (`> 0` and `<= 1`); target = `min(MAX, max(MIN, int(source_tokens * RATIO)))` and the first summary call gets `max_tokens` = 2 × target (#614). Setting only the ratio has no effect while MIN equals MAX and emits a warning; set `LCM_LEAF_TARGET_MAX_TOKENS` above MIN to enable the ratio |
+| `LCM_LEAF_TARGET_MIN_TOKENS` | `2000` | Floor of the leaf summary target (`>= 1`); a minimum above the default cap also needs `LCM_LEAF_TARGET_MAX_TOKENS`, otherwise it resets with a warning naming that key |
 | `LCM_LEAF_TARGET_MAX_TOKENS` | `2000` | Cap of the leaf summary target (`>=` the floor); an out-of-range value of any of the three keys falls back to its default with a config warning |
 | `LCM_DYNAMIC_LEAF_CHUNK_ENABLED` | `false` | Enable backlog-sized leaf chunk targets; when off, one leaf takes at most max(`LCM_LEAF_CHUNK_TOKENS`, `LCM_DYNAMIC_LEAF_CHUNK_MAX`) of the oldest non-tail raw backlog, capped at 40% of a known window |
 | `LCM_DYNAMIC_LEAF_CHUNK_MAX` | `40000` | Upper bound for dynamic leaf chunk targets |
@@ -1066,6 +1066,16 @@ resolves the same active LCM runtime as `lcm_status`, including its foreground
 view while an ignored or stateless side channel is bound. Before the first
 normal message constructs an agent, or in a genuinely sessionless process,
 `session_id: (unbound)` and `threshold_tokens: (uninitialized)` remain expected.
+
+### Reporting a bug
+
+Run the read-only `/lcm status` and `/lcm doctor` diagnostics, or ask your agent to use
+`lcm_status` and `lcm_doctor` with default arguments if slash commands are unavailable.
+Slash commands are disabled by default; never run repair or apply modes to reproduce a bug.
+From the next release, ask your Hermes agent to "report a problem with LCM-X"; it shows a draft for your approval.
+Search existing issues, then use the [bug report form](https://github.com/electricsheephq/lcm-x/issues/new?template=bug_report.yml).
+Include versions and short, redacted excerpts from `hermes logs -n 300 | grep -i lcm`.
+For security problems, use the [private advisory form](https://github.com/electricsheephq/lcm-x/security/advisories/new).
 
 ## Architecture
 

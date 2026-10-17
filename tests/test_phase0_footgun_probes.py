@@ -12,7 +12,6 @@ from hermes_lcm.presets import shipped_presets
 from hermes_lcm.vector_store import VectorStore
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="P0.9.1 stale preset leaf chunks — fix in the post-GA window")
 @pytest.mark.parametrize("preset", shipped_presets(), ids=lambda preset: preset.name)
 def test_preset_leaf_chunk_matches_product_default(preset):
     # #1129 raised the leaf default to 24k. #1139 caps the summary PREFIX

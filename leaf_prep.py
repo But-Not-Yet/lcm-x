@@ -643,12 +643,13 @@ class _LeafPrep:
                     focus_topic=job.focus_topic,
                     circuit_breaker=job.breaker,
                     spend_guard=guard,
-                    serialize=lambda batch: _serialize_leaf_input(
+                    serialize=lambda batch, budget_tokens=None: _serialize_leaf_input(
                         batch,
                         config=config,
                         hermes_home=job.hermes_home,
                         session_id=job.session_id,
                         externalize_write=False,
+                        budget_tokens=budget_tokens,
                     ),
                     leaf_target_tokens=lambda tokens: _leaf_target_tokens_for(
                         config, tokens
