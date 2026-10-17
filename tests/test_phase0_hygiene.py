@@ -90,6 +90,34 @@ def test_trace_regeneration_restores_environment(tmp_path, monkeypatch, name, ra
     assert restored, "trace regeneration did not restore the exact environment"
 
 
+@pytest.mark.parametrize("name", ["assembly", "reconcile"])
+def test_trace_regeneration_scrubs_selected_tree_settings(tmp_path, monkeypatch, name):
+    harness = importlib.import_module(f"tests.behaviour.{name}_trace_harness")
+    key = "LCM_SELECTED_TREE_ONLY"
+    assert key not in product_env_keys(ROOT)
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    module = selected / "reconcile.py"
+    module.write_text(f"import os\nSETTING = os.environ.get({key!r})\n", encoding="utf-8")
+    monkeypatch.setenv(key, "inherited")
+    before = dict(os.environ)
+    destination = tmp_path / "trace.json"
+    monkeypatch.setattr(harness, "SCENARIOS", harness.SCENARIOS[:1])
+    monkeypatch.setattr(sys, "argv", [
+        "trace", "--repo", str(selected), "--out", str(destination)])
+    if name == "reconcile":
+        monkeypatch.setattr(harness.reconcile, "__file__", str(module))
+
+    def observe_clean(case, root):
+        assert key not in os.environ, "selected-tree product setting survived scrub"
+        return ["clean settings"]
+
+    monkeypatch.setattr(harness, "observe", observe_clean)
+    harness.main()
+    assert json.loads(destination.read_text()) == {harness.SCENARIOS[0].name: ["clean settings"]}
+    assert dict(os.environ) == before, "trace regeneration did not restore the exact environment"
+
+
 def test_product_env_derivation_covers_config_and_root_reads():
     keys = product_env_keys(ROOT)
     assert {spec.env_key for spec in ENV_FIELD_SPECS} <= keys
