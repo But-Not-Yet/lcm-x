@@ -22,8 +22,16 @@ REQUIRED = [
     {"context": "test (3.12)", "integration_id": 15368},
     {"context": "test (3.13)", "integration_id": 15368},
     {"context": "test (3.14)", "integration_id": 15368},
+    {"context": "differential", "integration_id": 15368},
 ]
+# Checked on the merge commit after landing; differential runs on PRs only.
+CI_REQUIRED = REQUIRED[:6]
 BOTH_LANES = ["acceptance", "adversarial"]
+TURN_PATH_PACKET = [
+    "Consumer enumeration: rg call sites for every changed helper and effects on each consumer.",
+    "Previous-GA differential row: tests/differential (opt-in).",
+    "Sibling shapes: neighbouring windows, row roles, and recovery paths.",
+]
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "maintainer_gate.py"
 
 
@@ -145,7 +153,7 @@ def test_readiness_rejects_a_merge_authorization_envelope():
 def test_pr_authored_policy_cannot_weaken_protected_main_policy():
     payload = ready_payload()
     payload["pr_policy"] = {"required_checks": []}
-    payload["checks"] = payload["checks"][:-1]
+    payload["checks"] = [c for c in payload["checks"] if c["context"] != "test (3.14)"]
 
     receipt = evaluate(payload)
 
@@ -191,7 +199,7 @@ def test_human_approval_cannot_substitute_for_a_required_check():
             "codeowner": True,
         }
     ]
-    payload["checks"] = payload["checks"][:-1]
+    payload["checks"] = [c for c in payload["checks"] if c["context"] != "test (3.14)"]
 
     receipt = evaluate(payload)
 
@@ -225,13 +233,21 @@ def test_retired_ai_review_check_is_not_required():
     )
 
 
-def test_review_lanes_hint_never_blocks_readiness():
+@pytest.mark.parametrize("checks_present", [True, False], ids=["ready", "blocked"])
+def test_review_lanes_hint_never_blocks_readiness(checks_present):
     payload = ready_payload()
+    if not checks_present:
+        payload["checks"] = []
     missing = evaluate(payload)
     payload["changed_files"] = [{"filename": "engine.py"}]
     supplied = evaluate(payload)
 
-    assert missing["decision"] == supplied["decision"] == "READY_FOR_AUTHORIZED_LANDING"
+    assert missing["decision"] == supplied["decision"] == (
+        "READY_FOR_AUTHORIZED_LANDING" if checks_present else "NOT_READY"
+    )
+    assert missing["blocker_codes"] == supplied["blocker_codes"]
+    assert supplied["review_lanes_hint"]["turn_path_probe_packet"] == TURN_PATH_PACKET
+    assert "turn_path_probe_packet" not in missing["review_lanes_hint"]
     assert missing["review_lanes_hint"]["changed_files"] == "unknown"
     assert missing["review_lanes_hint"]["required_review_lanes"] == BOTH_LANES
     assert supplied["review_lanes_hint"]["required_review_lanes"] == BOTH_LANES
@@ -240,7 +256,24 @@ def test_review_lanes_hint_never_blocks_readiness():
 @pytest.mark.parametrize(
     ("changed_files", "risks", "lanes"),
     [
-        ([{"filename": "engine.py"}], ["lcm-memory-preservation"], BOTH_LANES),
+        *[
+            ([{"filename": path}], ["lcm-memory-preservation", "turn-path"], BOTH_LANES)
+            for path in ("engine.py", "survival_fit.py", "__init__.py", "compaction.py", "identity_anchor.py")
+        ],
+        *[
+            ([{"filename": path}], ["lcm-memory-preservation"], BOTH_LANES)
+            for path in ("presets.py", "store.py", "tools.py")
+        ],
+        (
+            [{"filename": "engine.py", "previous_filename": "presets.py"}],
+            ["lcm-memory-preservation", "turn-path"],
+            BOTH_LANES,
+        ),
+        (
+            [{"filename": "presets.py", "previous_filename": "engine.py"}],
+            ["lcm-memory-preservation", "turn-path"],
+            BOTH_LANES,
+        ),
         ([{"filename": "docs/operator-guide.md"}, "README.md"], [], ["acceptance"]),
         (
             [{"filename": "docs/moved.md", "previous_filename": "AGENTS.md"}],
@@ -248,25 +281,34 @@ def test_review_lanes_hint_never_blocks_readiness():
             BOTH_LANES,
         ),
     ],
-    ids=["top-level-python", "docs-only", "rename-across-boundary"],
+    ids=["engine", "survival-fit", "pre-llm-hook", "compaction", "ingest-identity",
+         "preset-only", "store-only", "tools-only", "rename-into-turn-path", "rename-out-of-turn-path",
+         "docs-only", "rename-across-policy-boundary"],
 )
 def test_review_lanes_hint_maps_changed_paths(changed_files, risks, lanes):
     hint = review_lanes_hint(changed_files)
 
     assert hint["named_risks"] == risks
     assert hint["required_review_lanes"] == lanes
+    assert set(hint) == {"changed_files", "named_risks", "required_review_lanes"} | (
+        {"turn_path_probe_packet"} if "turn-path" in risks else set()
+    )
+    if "turn-path" in risks:
+        assert hint["turn_path_probe_packet"] == TURN_PATH_PACKET
 
 
 @pytest.mark.parametrize(
     "changed_files",
-    [[], [""], [{"filename": "  "}], [{"filename": "docs/a.md", "previous_filename": ""}]],
-    ids=["empty-list", "blank-string", "blank-filename", "blank-previous-filename"],
+    [None, [], [""], [{"filename": "  "}],
+     [{"filename": "docs/a.md", "previous_filename": ""}]],
+    ids=["unknown", "empty-list", "blank-string", "blank-filename", "blank-previous-filename"],
 )
 def test_unretrieved_changed_files_keep_both_review_lanes(changed_files):
     hint = review_lanes_hint(changed_files)
 
     assert hint["changed_files"] == "unknown"
     assert hint["named_risks"] is None
+    assert "turn_path_probe_packet" not in hint
     assert hint["required_review_lanes"] == BOTH_LANES
 
 
@@ -386,7 +428,26 @@ def test_post_merge_verifies_exact_merge_commit():
     receipt = evaluate(post_merge_payload())
 
     assert receipt["decision"] == "POST_MERGE_VERIFIED"
-    assert len(receipt["matched_trusted_checks"]) == len(REQUIRED)
+    assert len(receipt["matched_trusted_checks"]) == len(CI_REQUIRED)
+
+
+def test_post_merge_does_not_require_differential_on_the_merge_commit():
+    payload = post_merge_payload()
+    payload["checks"] = [c for c in payload["checks"] if c["context"] != "differential"]
+
+    receipt = evaluate(payload)
+
+    assert receipt["decision"] == "POST_MERGE_VERIFIED"
+
+
+def test_readiness_requires_differential_on_the_pr_head():
+    payload = ready_payload()
+    payload["checks"] = [c for c in payload["checks"] if c["context"] != "differential"]
+
+    receipt = evaluate(payload)
+
+    assert receipt["decision"] != "READY_FOR_AUTHORIZED_LANDING"
+    assert "TRUSTED_CHECK_UNSATISFIED:differential:15368" in receipt["blocker_codes"]
 
 
 def test_post_merge_rejects_an_open_pr():
