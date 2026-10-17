@@ -45,6 +45,7 @@ if __name__ == "__main__":
     sys.modules["hermes_lcm"] = package
 
 import tests.conftest  # noqa: F401
+from tests.behaviour.frontier_observer import HOLDER_NAME, legacy_frontier_fields, observed_attribute
 from tests.phase0_hygiene import product_env_keys
 from tests.harness import engine_context, pin_char_counter
 
@@ -90,6 +91,7 @@ def engine_attributes(source: str) -> set[str]:
         if name in visited:
             continue
         visited.add(name)
+        found.update(legacy_frontier_fields(methods[name]))
         for node in ast.walk(methods[name]):
             attr = None
             if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == 'self':
@@ -105,7 +107,7 @@ def engine_attributes(source: str) -> set[str]:
                 attr = key.value
             if attr in methods:
                 pending.append(attr)
-            elif attr is not None and not callable(getattr(engine_module.LCMEngine, attr, None)):
+            elif attr is not None and attr != HOLDER_NAME and not callable(getattr(engine_module.LCMEngine, attr, None)):
                 found.add(attr)
     return found
 
@@ -414,7 +416,7 @@ def setup(engine: Any, case: Scenario, patch: pytest.MonkeyPatch) -> tuple[Messa
 def snapshot(engine: Any, canonical: Canonical, result: Any = None) -> dict[str, Any]:
     state = {}
     for name in sorted(OBSERVED_ATTRIBUTES):
-        value = getattr(engine, name, {'absent': True})
+        value = observed_attribute(engine, name)
         if name == '_store':
             value = {table: [tuple(row) for row in engine._store._conn.execute(f'SELECT * FROM {table} ORDER BY 1')]
                      for table in ('messages', 'metadata')}
