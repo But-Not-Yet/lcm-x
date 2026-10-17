@@ -19,7 +19,7 @@ import stat
 import tempfile
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Callable, Dict, Iterator, List, Sequence
 
 from .externalize import (
     externalize_ingest_payload,
@@ -167,7 +167,7 @@ _PRIVATE_KEY_STRICT_MIN_CHARS = 16
 _PRIVATE_KEY_INLINE_RUN_RE = re.compile(r"[A-Za-z0-9+/]{16,}")
 # One-or-more backslashes covers every nesting depth of serialization
 # ("\\n" from json.dumps, "\\\\n" from json-of-json / logged JSON).
-def _split_serialized_pem_line(content: str):
+def _split_serialized_pem_line(content: str) -> Iterator[tuple[int, str]]:
     """Yield (offset, piece) splitting on escaped separators and bare quotes.
 
     Single linear pass. A regex here is quadratic on long backslash runs
@@ -1235,7 +1235,7 @@ def _looks_like_hex_hash_inventory(payload: str) -> bool:
     )
 
 
-def _iter_wrapped_base64_blocks(text: str):
+def _iter_wrapped_base64_blocks(text: str) -> Iterator[tuple[int, int, str]]:
     """Yield (start, end, payload) for line-wrapped base64 blocks.
 
     Implemented as a line scanner instead of a wide regex so long
@@ -1247,7 +1247,7 @@ def _iter_wrapped_base64_blocks(text: str):
     block_parts: list[str] = []
     block_end = 0
 
-    def finish_block():
+    def finish_block() -> tuple[int, int, str] | None:
         nonlocal block_start, block_parts, block_end
         if block_start is not None and block_parts:
             payload = "".join(block_parts)
@@ -1283,7 +1283,7 @@ def _iter_wrapped_base64_blocks(text: str):
         yield block
 
 
-def _replace_wrapped_base64_blocks(text: str, replace) -> str:
+def _replace_wrapped_base64_blocks(text: str, replace: Callable[[str], str]) -> str:
     chunks: list[str] = []
     cursor = 0
     changed = False
@@ -2302,7 +2302,7 @@ def _existing_quarantined_assistant_placeholder(
     *,
     role: str,
     session_id: str,
-    config,
+    config: object,
     hermes_home: str,
     reason: str,
 ) -> str | None:
