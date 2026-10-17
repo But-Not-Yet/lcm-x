@@ -141,22 +141,6 @@ def _engine_bound_session_id(engine) -> str:
     )
 
 
-def _ensure_engine_bound_to_session(
-    active_engine,
-    session_id: str,
-    *,
-    platform: str = "",
-    conversation_id: str = "",
-) -> None:
-    session_id = str(session_id or "")
-    if session_id and _engine_bound_session_id(active_engine) != session_id:
-        active_engine.on_session_start(
-            session_id,
-            platform=platform,
-            conversation_id=conversation_id or None,
-        )
-
-
 def _session_context_value(name: str) -> str:
     """Read task-local host session metadata with legacy env compatibility."""
     try:
@@ -786,7 +770,7 @@ def register(ctx):
             def _ingest_and_note(active_engine):
                 # The turn ended whether or not its ingest succeeded (#597).
                 try:
-                    return active_engine.ingest(history)
+                    ingested = active_engine.ingest(history)
                 finally:
                     try:
                         note = getattr(active_engine, "note_turn_complete", None)
@@ -794,6 +778,11 @@ def register(ctx):
                             note()
                     except Exception as exc:
                         logger.debug("LCM post_llm_call turn-complete notification error: %s", exc)
+                # #787 (default off): only an enqueue runs here; the preparation runs off-turn.
+                prepare = getattr(active_engine, "_prepare_leaves_after_turn", None)
+                if callable(prepare) and not kwargs.get("interrupted"):
+                    prepare(history)
+                return ingested
 
             def _bind_and_ingest(active_engine):
                 # The host-supplied engine or genuinely cold plugin prototype
