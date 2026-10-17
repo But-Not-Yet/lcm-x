@@ -83,6 +83,7 @@ NON_TURN_PATH_FILES = {
     "chunking.py",  # Explicit chunk backfill or default-off embeddings.
     "command.py",  # Explicit commands or default-off embedding backfill.
     "command_auth.py",  # Explicit slash-command authorization only.
+    "command_doctor.py",  # Read-only /lcm doctor text diagnostics only.
     "command_router.py",  # Explicit slash-command grammar only.
     "command_status.py",  # Operator status rendering only.
     "embedding_maintenance.py",  # Default-off embedding maintenance.
