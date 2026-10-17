@@ -328,6 +328,16 @@ prepends the policy. The canonical file and digest source is
 
 ## Troubleshooting
 
+### Session-end warning says `final messages may be absent`
+
+The interrupted or SQLite-lock raw-flush warning includes `unflushed=N`: the
+pending message count before the final ingest attempt, without message content.
+The outer ingest/finalize warning includes the same field only when ingest has
+not finished. The session-end SQLite busy timeout stays 50 ms. Resuming the same
+session and ingesting its full history recovers the missing tail without
+duplicates; starting a different session does not recover a never-resumed tail.
+This field measures that known window (#1160); it adds no retry or durable marker.
+
 ### `hermes plugins` shows `lcm-x (not found)` but LCM tools exist
 
 If `plugins.enabled` contains `hermes-lcm-x`, `context.engine: lcm-x` is set, and
@@ -414,7 +424,7 @@ Useful environment variables:
 | `LCM_CRITICAL_BUDGET_PRESSURE_RATIO` | `0.0` | Disabled at `0.0`; when set, permits critical-pressure bypasses for bounded deferred catch-up and cache-friendly follow-on condensation only |
 | `LCM_SURVIVAL_FIT` | `true` | When compaction cannot bring the returned list under the model window (a publication failure, a sweep deadline, a lock), drop the oldest whole user turns from live context until it fits; an oversized newest turn gets a bounded projection. Nothing is deleted: the rows stay stored and reachable with `lcm_grep` / `lcm_load_session`. Logs `LCM survival fit applied`, warns the user once, and `/lcm doctor` reports `survival_fit` |
 | `LCM_SURVIVAL_RESERVE` | `0.15` | Share of the model window the survival fit keeps free for the response and host overhead (the fit target is window x (1 - reserve), minus the observed host overhead) |
-| `LCM_HOST_MESSAGE_UID` | `shadow` | `shadow`: on a host that sends `message_uid`, records the row each uid was bound to in the droppable `host_uid_bindings` table and counts agreement with the existing identity matching; ingest, replay and emission are unchanged, and `/lcm doctor` reports `host_uid_*` counts only. `off`: no capture, no table writes, no counts and no log line. `on` (reserved) and any unknown value behave as `shadow`; an unknown value also logs one warning. Bindings are deleted with their messages, and lineage keys are namespaced by Hermes home, so one database shared by several homes keeps them apart |
+| `LCM_HOST_MESSAGE_UID` | `shadow` | `shadow`: on a host that sends `message_uid`, records the row each uid was bound to in the droppable `host_uid_bindings` table and counts agreement with the existing identity matching; ingest, replay and emission are unchanged, and `/lcm doctor` reports `host_uid_*` counts only. `off`: no capture, no table writes, no counts and no log line. Under `shadow` and `on`, canonical uid evidence can also exclude a proven hidden re-ingest copy of an assistant message from leaf summary input (the row stays stored and searchable); `off` disables that. `on` (reserved) and any unknown value behave as `shadow`; an unknown value also logs one warning. Bindings are deleted with their messages, and lineage keys are namespaced by Hermes home, so one database shared by several homes keeps them apart |
 | `LCM_SUMMARY_MODEL` | auxiliary | Override summarization model |
 | `LCM_SUMMARY_FALLBACK_MODELS` | empty | Comma-separated summarization models tried after `LCM_SUMMARY_MODEL` or the auxiliary task default fails |
 | `LCM_SUMMARY_CIRCUIT_BREAKER_FAILURE_THRESHOLD` | `2` | Consecutive failed summarization calls before a route is skipped temporarily |
@@ -487,6 +497,12 @@ source. A route opens with `LCM summary route circuit opened for <route> after N
 `... after N rejected result(s)`. Contract rejections append `contract=<check>` to `reason=no_content` and emit
 the content-free INFO line `LCM summary contract shape: check=<check> last_line=<list|heading|bold|trailing|missing|other>`.
 
+A budget-bound call that hangs after receiving at least 90% of the full usable window opens its route's
+circuit immediately (#1137). That window is the smaller of the configured summary timeout and the hard
+foreground budget minus the finalize and leaf reserves. It logs one WARNING per opening naming the route
+and saying it used the whole window. The current compaction still stops on its budget; a fallback route
+can run on the next compaction. A cut after receiving only a partial window leaves the circuit unchanged.
+
 When a leaf's own level 1 and level 2 results are rejected and the survival fit can keep the request under the
 window, the compaction writes no leaf and no node for it and keeps its rows for a later pass (#652). A level 3
 leaf, a deterministic cut of its source that keeps the start and the end, is still written when the cut is the
@@ -515,7 +531,7 @@ together, or make `model.provider` and `model.default` a pair the provider can s
 that fails the same way logs at DEBUG; a successful summary ends the episode. Other failures keep the threshold and
 cooldown above. `lcm_status` reports the circuit as `summary_route`: `state` (`open` while every summary route is
 refused, else `closed`), `seconds_left`, and for the primary route `last_error_class` (`config_error`,
-`provider_failure`, `rejected` or null after a success) and the `provider` and `model` the host reported.
+`provider_failure`, `hung`, `rejected` or null after a success) and the `provider` and `model` the host reported.
 
 Each new leaf and condensed node records the level that produced it (1, 2 or 3) and the model that answered
 (`""` for the host's default route, `deterministic` for level 3) in the `summary_node_provenance` table.
@@ -780,12 +796,14 @@ The current runtime preset dry-run previews are:
 # codex_gpt_long_context: near-272k GPT/Codex routes
 LCM_CONTEXT_THRESHOLD=0.75
 LCM_FRESH_TAIL_COUNT=24
-LCM_LEAF_CHUNK_TOKENS=8000
+LCM_LEAF_CHUNK_TOKENS=24000
+LCM_LEAF_TARGET_MAX_TOKENS=2000
 
 # codex_spark_context: near-128k GPT-5.3 Codex Spark routes
 LCM_CONTEXT_THRESHOLD=0.75
 LCM_FRESH_TAIL_COUNT=16
-LCM_LEAF_CHUNK_TOKENS=8000
+LCM_LEAF_CHUNK_TOKENS=24000
+LCM_LEAF_TARGET_MAX_TOKENS=2000
 ```
 
 ### Migrating off gpt-5.4 (codex-auth retirement 2026-08-31)
@@ -796,8 +814,7 @@ unchanged: its 272K window assumption is correct for both gpt-5.6 routes.
 [FINDING-F59](../bench/FINDING-F59-COMPACTION-PILOT-P0.md) recommends
 single-session LCM for long runs and records the measured regime guidance.
 
-`target_after_compaction=0.55` is still benchmark provenance, not a runtime
-setting, because the engine does not expose that live knob yet.
+The presets no longer carry `target_after_compaction`; the v0.27.1 low-water mark is part of background preparation (#787) and is off by default.
 
 For dashboards and agents, `lcm_status` also exposes the same information under
 `preset_suggestion` as read-only JSON: suggested preset name/family, selection
@@ -872,7 +889,10 @@ What the main knobs do:
   `LCM_LEAF_TARGET_MAX_TOKENS` set how long one leaf summary may be:
   `min(MAX, max(MIN, int(source_tokens * RATIO)))`, and the first summary call
   receives twice that as `max_tokens`. The defaults (`0.20`, `2000`, `2000`)
-  give a fixed 2,000-token target. Explicit settings still use the formula (#614).
+  give a fixed 2,000-token target. Setting only the ratio has no effect while
+  MIN equals MAX and emits a config warning; set `LCM_LEAF_TARGET_MAX_TOKENS`
+  above MIN to enable the ratio. A MIN above the default cap also needs MAX;
+  otherwise MIN resets with a warning naming `LCM_LEAF_TARGET_MAX_TOKENS` (#614, #1138).
 - `LCM_THRESHOLD_FULL_SWEEP_ENABLED=true` (the default) makes a threshold-triggered invocation
   keep draining oldest raw chunks outside the protected tail, even after prompt
   pressure falls below the trigger. It always uses the configured working leaf

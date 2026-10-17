@@ -60,6 +60,7 @@ class ResetStateMixin:
         # session that produced it (#483); any other reset drops it.
         self._compress_commit_proof = None
         self._last_emission_descriptors = None
+        self._retired_durable_proof = None  # #671: a stale durable proof retired by reconcile, by created_at
         self._clear_fresh_tail_pressure_yield_state()
         self._generated_ignored_active_replay_placeholder_hashes = set()
         self._generated_ignored_active_replay_placeholder_message_ids = set()

@@ -28,7 +28,7 @@ MASKED_ERROR = "invalid argument: OpenAI Responses request is missing input"
 @dataclass(frozen=True)
 class Outcome:
     name: str
-    # Calls per route on each sweep (time cuts use only the first route).
+    # Calls per route on each sweep (hangs use only the first available route).
     attempts: tuple[int, ...]
     error: str = ""
     classification: str | None = None
@@ -49,9 +49,12 @@ OUTCOMES = [
     Outcome("config-error", (1, 0, 0, 0), "Error code: 404 - unknown model", "config_error"),
     Outcome("content-filter", (2, 2, 2, 2), "Error code: 400 - content_filter"),
     Outcome("context-length-rescue", (2, 2, 2, 2), "maximum context length exceeded"),
-    Outcome("foreground-budget-cut", (1, 1, 1, 1), "request timed out", level=None),
-    Outcome("masked-budget-cut-1120", (1, 1, 1, 1), MASKED_ERROR, level=None),
-    Outcome("masked-host-deadline-1120", (1, 1, 1, 1), MASKED_ERROR, level=None),
+    # #1209: each full-window cut opens its route; later sweeps try the next route, then L3.
+    Outcome("foreground-budget-cut", (1, 1, 0, 0), "request timed out", "hung", level=None),
+    # #1209: a masked error at the budget-bound full-window deadline is also a hang.
+    Outcome("masked-budget-cut-1120", (1, 1, 0, 0), MASKED_ERROR, "hung", level=None),
+    # #1209: an installed deadline reached after the full host window opens the route.
+    Outcome("masked-host-deadline-1120", (1, 1, 0, 0), MASKED_ERROR, "hung", level=None),
 ]
 
 
@@ -92,7 +95,15 @@ def _skip_logs(models, config=False):
 def _expected_logs(outcome, models, sweep):
     attempts = outcome.attempts[sweep]
     if outcome.level is None:
-        return _attempt_logs(outcome, models[0])
+        # #1209: skip prior hung routes, log the new hang once, or exhaust both L1/L2 chains.
+        if sweep < len(models):
+            skipped = [("WARNING", f"LCM summary route skipped by open circuit: {model or '<task-default>'}")
+                       for model in models[:sweep]]
+            route = models[sweep] or "<task-default>"
+            return skipped + _attempt_logs(outcome, models[sweep]) + [
+                ("WARNING", f"LCM summary route circuit opened for {route}: "
+                 "route used the whole window; cooldown=<n>s")]
+        return _skip_logs(models) * 2 + [("DEBUG", "L3 deterministic truncation (<n> tokens)")]
     if outcome.level == 1:
         return [("DEBUG", "L1 summarization succeeded (<n> tokens)")]
     lines = []
@@ -181,6 +192,9 @@ def test_summary_outcome_table(monkeypatch, caplog, outcome, models):
     expected_spend = 0
     keys = [model or "<task-default>" for model in models]
     for sweep, attempts in enumerate(outcome.attempts):
+        # #1209: a full-window hang opens one route per sweep; no calls once all are open.
+        if outcome.classification == "hung":
+            attempts = int(sweep < len(models))
         caplog.clear()
         start = len(provider.calls)
         hard = 120.0 if outcome.name == "masked-host-deadline-1120" else 45.0 if outcome.level is None else 1000.0
@@ -190,14 +204,17 @@ def test_summary_outcome_table(monkeypatch, caplog, outcome, models):
                       model=models[0], fallback_models=list(models[1:]), timeout=60.0,
                       circuit_breaker=breaker, spend_guard=guard, budget=budget,
                       provenance=provenance, context_length_rescue=True)
-        if outcome.level is None:
+        # #1209: only a newly hung route cuts the sweep; all-open chains reach L3 instead.
+        if outcome.level is None and attempts:
             with pytest.raises(escalation.SweepBudgetExhausted) as raised:
                 escalation.summarize_with_escalation(SOURCE, **kwargs)
             assert str(raised.value) == "summariser call cut by the foreground budget"
             assert raised.value.reason == budget.stop_reason == "time_budget_exhausted"
             assert provenance == {}
         else:
-            assert escalation.summarize_with_escalation(SOURCE, **kwargs) == (outcome.result, outcome.level)
+            # #1209: after every route hangs, the next sweeps return deterministic L3.
+            level = 3 if outcome.level is None else outcome.level
+            assert escalation.summarize_with_escalation(SOURCE, **kwargs) == (outcome.result, level)
             expected_provenance = {"model": models[0] if outcome.level == 1 else "deterministic"}
             if outcome.name in {"content-filter", "context-length-rescue"}:
                 expected_provenance["content_filter_error" if outcome.name == "content-filter"
@@ -205,7 +222,9 @@ def test_summary_outcome_table(monkeypatch, caplog, outcome, models):
             assert provenance == expected_provenance
             assert budget.stop_reason == ""
 
-        called_models = models[:1] if outcome.level in (1, None) else models
+        # #1209: subsequent sweeps call the first route that has not hung, not the primary again.
+        called_models = (models[sweep:sweep + 1] if outcome.classification == "hung"
+                         else models[:1] if outcome.level == 1 else models)
         assert [(call.model, call.max_tokens) for call in provider.calls[start:]] == [
             (model, ceiling) for ceiling in (100, 50)[:attempts] for model in called_models]
         assert seen_timeouts[start:] == [40.0 if hard == 45.0 else 60.0] * (len(provider.calls) - start)
@@ -221,14 +240,22 @@ def test_summary_outcome_table(monkeypatch, caplog, outcome, models):
         assert breaker._failures == (dict.fromkeys(keys, failures) if failures else {})
         assert breaker._rejections == (dict.fromkeys(keys, rejections) if rejections else {})
         opened = bool(failures or rejections == 6 or outcome.classification == "config_error")
-        assert set(breaker._open_until) == (set(keys) if opened else set())
+        # #1209: only the routes that have consumed a full window are open.
+        opened_keys = set(keys[:sweep + 1]) if outcome.classification == "hung" else set(keys) if opened else set()
+        assert set(breaker._open_until) == opened_keys
         assert breaker._config_episodes == (set(keys) if outcome.classification == "config_error" else set())
-        assert [breaker.allows(model) for model in models] == [not opened] * len(models)
+        # #1209: a hung route is refused while an untried fallback remains usable.
+        assert [breaker.allows(model) for model in models] == [key not in opened_keys for key in keys]
         # Time spent on later routes reduces the primary's cooldown in the
         # configured-timeout cell; route_status reports the earliest reopening.
         seconds = 240 if opened and len(models) == 2 and outcome.name == "configured-timeout" else 300
+        # #1209: status stays closed until every route hangs; the primary keeps its hung class.
+        all_open = len(opened_keys) == len(keys)
+        # #1209: time spent hanging the fallback reduces the primary's remaining cooldown.
+        if outcome.classification == "hung" and len(models) == 2:
+            seconds = 300 - (hard - 5)
         assert breaker.route_status(models) == {
-            "state": "open" if opened else "closed", "seconds_left": seconds if opened else 0,
+            "state": "open" if all_open else "closed", "seconds_left": seconds if all_open else 0,
             "last_error_class": outcome.classification,
             "provider": None if outcome.level is None else "scripted",
             "model": None if outcome.level is None else models[0] or "default",
