@@ -3636,7 +3636,9 @@ class LCMEngine(
                 frontier,
             )
         self._last_compacted_store_id = frontier
-        self._rearm_embedding_maintenance()
+        if self._embedding_maintenance_retired:
+            self._rearm_embedding_maintenance()
+            self._schedule_embedding_maintenance()
         logger.info(
             "LCM re-bound %s after an unadopted compaction commit or another engine's end (frontier=%d)",
             self._session_id, frontier,
@@ -3712,7 +3714,9 @@ class LCMEngine(
             self._last_compacted_store_id,
             self._ingest_cursor if cursor_proven else "reconcile",
         )
-        self._rearm_embedding_maintenance()
+        if self._embedding_maintenance_retired:
+            self._rearm_embedding_maintenance()
+            self._schedule_embedding_maintenance()
         return True
 
     def _continue_compression_boundary(

@@ -487,6 +487,42 @@ def test_unadopted_compaction_rebind_rearms_embedding_maintenance(make_engine, m
     assert ran.is_set()
 
 
+@pytest.mark.parametrize("continuation", ["in-place", "unadopted"])
+def test_continuation_reschedules_retired_leaf_without_publication(
+    make_engine, scheduler, monkeypatch, continuation,
+):
+    passes = []
+    engine = make_engine()
+
+    def run(*_args, **_kwargs):
+        passes.append([
+            node.summary for node in engine._dag.get_session_nodes("session")
+        ])
+
+    monkeypatch.setattr(engine_mod, "run_incremental_embedding_pass", run)
+    _bind(engine)
+    assert engine.drain_embedding_maintenance(timeout=5)
+    passes.clear()
+    key = engine._rollup_maintenance_key("embeddings")
+    with _blocked_worker(scheduler) as release:
+        _publish_leaf(engine)
+        assert key in scheduler._queued_keys
+        engine.on_session_end("session", [])
+        assert engine._embedding_maintenance_retired
+        assert key not in scheduler._queued_keys
+        if continuation == "in-place":
+            engine.on_session_start(
+                "session", boundary_reason="compression", old_session_id="session",
+                platform="cli", context_length=200000,
+            )
+        else:
+            engine._rebind_after_unadopted_compaction_commit()
+        assert not engine._embedding_maintenance_retired
+        release.set()
+        assert engine.drain_embedding_maintenance(timeout=5)
+        assert passes == [["retirement test leaf"]]
+
+
 @pytest.mark.parametrize("ended_session", ["auxiliary", "stale", "same-id-bypass"])
 def test_nonforeground_end_preserves_embedding_maintenance(
     make_engine, scheduler, monkeypatch, ended_session,
