@@ -59,6 +59,14 @@ embedded the same way only with fastembed or a loopback Ollama endpoint, because
 (`--confirm-raw-text`) is per invocation. The pass shares the backfill lease and skips while a
 manual backfill holds it. `/lcm status` reports the backlog per corpus and the last pass.
 
+Background embedding maintenance follows the foreground session. A genuine session end (exit, `/new`, or an
+end after a cancelled compaction; never a compaction commit) stops scheduling new passes and drops this engine's
+queued passes without waiting; a pass already running is left to finish. Every live-session rebind re-arms
+maintenance and schedules a pass. Shutdown waits up to 2 s for an active pass. At process exit, maintenance
+stops at the next provider batch boundary and waits up to 10 s for that batch to publish; a pass or backfill cut
+short there reports `stop_reason: process_exit`, and the next pass picks up the unsent work. A backlog that holds
+steady between a session end and the next rebind is this designed pause, not a stalled pass.
+
 Vector identity binds provider, model, dimension, storage shape, and the active
 privacy revision. A policy change requires a new warmup/identity rather than
 mixing vectors. Evidence and status expose aggregate policy state, never matched
