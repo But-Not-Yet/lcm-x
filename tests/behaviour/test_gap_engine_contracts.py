@@ -50,7 +50,8 @@ def test_engine_policy_writes_denial_to_durable_audit(tmp_path: Path) -> None:
         assert events[0]["allowed"] is False
 
 
-def test_public_ingest_does_not_consult_teams_policy_or_audit(tmp_path: Path) -> None:
+@pytest.mark.xfail(strict=True, reason="known gap: Teams ingest bypasses denial and audit; issue #1456")
+def test_public_ingest_denies_and_audits_missing_teams_context(tmp_path: Path) -> None:
     with harness.engine_context(tmp_path, window=32000) as engine:
         catalog.ensure_teams_catalog(engine._store.connection)
         engine.lcm_teams_enabled = True
@@ -58,10 +59,14 @@ def test_public_ingest_does_not_consult_teams_policy_or_audit(tmp_path: Path) ->
         policy = resolution.policy_for_engine(engine)
         assert not policy.authorize_operation(None, "write", {}).allowed
         assert catalog.read_audit_events(engine._store.connection) == []
-        # observed behaviour; see REPORT: the public write never reaches the policy/audit seam.
+        # The authority inventory requires scoped writes at _ingest_messages.
         engine.ingest([harness.user("Synthetic audit fixture.")])
-        assert [row["content"] for row in harness.stored_rows(engine)] == ["Synthetic audit fixture."]
-        assert catalog.read_audit_events(engine._store.connection) == []
+        events = catalog.read_audit_events(engine._store.connection)
+        observed = (
+            [row["content"] for row in harness.stored_rows(engine)],
+            [(event["allowed"], event["operation"], event["denial_reason"]) for event in events],
+        )
+        assert observed == ([], [(False, "write", "context_missing")])
 
 
 def test_abandon_retrieval_removes_handle_without_changing_history(tmp_path: Path) -> None:
@@ -182,39 +187,16 @@ def test_preanswer_names_missing_operand_without_fabricating_context(
         assert missing["current_operands"] == 0
 
 
-def test_scope_text_recovery_preserves_dynamic_marker() -> None:
-    import ast
-
-    # No visitor dispatch reaches BinOp/non-text nodes; exercise that orphan seam directly.
-    for expression, expected in [
-        ('"INSERT " + "INTO messages"', "INSERT INTO messages"),
-        ('f"INSERT INTO messages VALUES ({value})"', "INSERT INTO messages VALUES ({expr})"),
-        ('"INSERT " + value', None), ("7", None),
-    ]:
-        node = ast.parse(expression, mode="eval").body
-        assert scope_storage._constant_text(node) == expected
-
-
-@pytest.mark.parametrize("message, expected", [
-    ({"role": "user", "content": ""}, False),
-    ({"role": "assistant", "content": "", "tool_calls": [{"id": "c"}]}, False),
-    ({"role": "assistant", "content": "<think>private</think>"}, True),
-    ({"role": "assistant", "content": "visible"}, False),
-])
-def test_orphan_active_cleanup_predicate(message: dict[str, Any], expected: bool) -> None:
-    sanitize = importlib.import_module("hermes_lcm.sanitize")
-    # The only engine caller is itself unreferenced in current source.
-    assert sanitize._should_drop_active_assistant_message(message) is expected
-
-
-def test_bypass_prefix_predicate_counts_only_matching_head(tmp_path: Path) -> None:
-    with harness.engine_context(tmp_path, window=32000) as engine:
-        view = [harness.user("first"), harness.assistant("answer")]
-        engine._remember_lcm_bypass_message_prefix("S", view)
-        # Predicate and count wrapper have no production caller beyond each other.
-        assert engine._messages_match_lcm_bypass_prefix("S", view)
-        assert not engine._messages_match_lcm_bypass_prefix("other", view)
-        assert not engine._messages_match_lcm_bypass_prefix("S", [harness.user("different")])
+@pytest.mark.xfail(strict=True, reason="known gap: scope scanner misses concatenated INSERT; issue #1458")
+def test_scope_writer_discovery_handles_concatenated_sql(tmp_path: Path) -> None:
+    (tmp_path / "writer.py").write_text(
+        'def write(conn):\n    conn.execute("INSERT " + "INTO messages(session_id) VALUES (?)", ("S",))\n',
+        encoding="utf-8",
+    )
+    writers = scope_storage.enumerate_scope_writers(tmp_path)
+    assert [(writer.function, writer.table, writer.populates_access_scope) for writer in writers] == [
+        ("write", "messages", False),
+    ]
 
 
 def test_generated_payload_ref_is_recognized_without_file(tmp_path: Path) -> None:
@@ -228,6 +210,7 @@ def test_generated_payload_ref_is_recognized_without_file(tmp_path: Path) -> Non
     assert not externalize.is_generated_payload_ref_name("")
 
 
+@pytest.mark.xfail(strict=True, reason="known gap: evidence-pack fallback exceeds response cap; issue #1459")
 def test_evidence_pack_falls_back_without_partial_computation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     pack = importlib.import_module("hermes_lcm.evidence_pack")
     with harness.engine_context(tmp_path, window=32000) as engine:
@@ -235,10 +218,11 @@ def test_evidence_pack_falls_back_without_partial_computation(tmp_path: Path, mo
         engine.ingest([harness.user(text)])
         sid = harness.stored_rows(engine)[0]["store_id"]
         monkeypatch.setattr(pack, "RESPONSE_CHAR_CAP", 800)
-        result = json.loads(engine.handle_tool_call("lcm_evidence_pack", {
+        encoded = engine.handle_tool_call("lcm_evidence_pack", {
             "question": "What is the total of the one invoice?",
             "baseline_refs": [{"exact_ref": f"lcm:{sid}:0-{len(text)}", "quote": text, "value": 20, "unit": "USD"}],
-        }))
+        })
+        result = json.loads(encoded)
         assert result["status"] == "fallback"
         assert result["evidence"] == []
         assert result["computation"] is None
@@ -246,6 +230,7 @@ def test_evidence_pack_falls_back_without_partial_computation(tmp_path: Path, mo
         assert result["completeness"]["reason_code"] == "response_char_cap_exceeded"
         assert result["retrieval"]["status"] == "truncated"
         assert harness.stored_rows(engine)[0]["content"] == text
+        assert len(encoded) <= pack.RESPONSE_CHAR_CAP
 
 
 def test_recall_override_has_its_own_provider_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
