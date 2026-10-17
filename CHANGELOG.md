@@ -6,6 +6,7 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
+- Fix: carry an accepted compaction prefix through the same ingest without auditing it against the stale cached list; outside that prefix, an unstamped stored copy needs a recorded canonical host-UID binding before a changed-prefix audit can consume it, preserving fresh repeated turns after proof loss. (#1403)
 - Fix: retry a busy session-end raw-message flush at later lifecycle boundaries and for up to five seconds at shutdown or process exit, preserving the ended session and replay order. (#1160)
 
 - Fix: a survival fit now says LCM could not summarise only when the pass's summary chain failed; every other fit says older messages left live context to keep the conversation within the model's context window. So a primary summary error followed by a usable fallback no longer gives the summary-failed warning. An exhausted chain still records its error for the pass. Doctor survival-fit history includes the last cause without changing the top-level status; the `lcm_doctor` tool returns the record as top-level `survival_fit` (or null), outside `checks`. (#1162)
