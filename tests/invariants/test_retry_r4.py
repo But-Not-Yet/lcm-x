@@ -46,9 +46,9 @@ def test_r4_1_replaced_user_behind_unchanged_scaffold(machine, anchor, fresh):
     # persist the complete host row, rather than stripping its generated prefix.
     expected = machine.occurrences + ([merged] if fresh else [])
     machine.engine.ingest(host)
-    assert_occurrences(expected, machine.rows())
+    assert_occurrences(expected, machine.rows(), engine=machine.engine)
     machine.engine.ingest(deepcopy(host))
-    assert_occurrences(expected, machine.rows())
+    assert_occurrences(expected, machine.rows(), engine=machine.engine)
 
 
 @pytest.mark.parametrize("anchor", [False, True])
@@ -71,4 +71,4 @@ def test_r4_2_uid_only_replacement_keeps_unchanged_suffix(machine, anchor, compa
     expected = [row for row in machine.occurrences if row["role"] == "assistant"]
     for batch in (host, deepcopy(host)):
         machine.engine.ingest(batch)
-        assert_occurrences(expected, [row for row in machine.rows() if row["role"] == "assistant"])
+        assert_occurrences(expected, [row for row in machine.rows() if row["role"] == "assistant"], engine=machine.engine)

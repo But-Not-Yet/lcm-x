@@ -41,9 +41,9 @@ def test_r3_1_retained_suffix(machine, anchor, compacted):
     host.append(appended)
     expected = machine.occurrences + [replacement, appended]
     machine.engine._ingest_messages(host)
-    assert_occurrences(expected, machine.rows())
+    assert_occurrences(expected, machine.rows(), engine=machine.engine)
     machine.engine._ingest_messages(deepcopy(host))
-    assert_occurrences(expected, machine.rows())
+    assert_occurrences(expected, machine.rows(), engine=machine.engine)
 
 
 @pytest.mark.parametrize("anchor", [False, True])
@@ -61,9 +61,9 @@ def test_r3_2_restart_metadata(machine, anchor, check):
     host[-1] = replacement
     expected = machine.occurrences + [replacement]
     machine.engine._ingest_messages(host)
-    assert_occurrences(expected, machine.rows())
+    assert_occurrences(expected, machine.rows(), engine=machine.engine)
     machine.engine._ingest_messages(deepcopy(host))
-    assert_occurrences(expected, machine.rows())
+    assert_occurrences(expected, machine.rows(), engine=machine.engine)
 
 
 @pytest.mark.parametrize("field", ["message_uid", "timestamp"])
@@ -80,7 +80,7 @@ def test_r3_3_raising_metadata(machine, field):
     appended = machine.stamp(dict(role="user", content="next"))
     host.append(appended)
     machine.engine._ingest_messages(host)
-    assert_occurrences(machine.occurrences + [appended], machine.rows())
+    assert_occurrences(machine.occurrences + [appended], machine.rows(), engine=machine.engine)
 
 
 @pytest.mark.parametrize("anchor", [False, True])
@@ -95,6 +95,6 @@ def test_r3_4_remapped_metadata(machine, anchor, fresh):
         host[-1] = machine.stamp(host[-1])
     expected = machine.occurrences + ([host[-1]] if fresh else [])
     machine.engine._ingest_messages(host)
-    assert_occurrences(expected, machine.rows())
+    assert_occurrences(expected, machine.rows(), engine=machine.engine)
     machine.engine._ingest_messages(deepcopy(host))
-    assert_occurrences(expected, machine.rows())
+    assert_occurrences(expected, machine.rows(), engine=machine.engine)
