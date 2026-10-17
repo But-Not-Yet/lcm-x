@@ -92,6 +92,17 @@ class _CompressionState:
     working_messages: List[Dict[str, Any]] = field(default_factory=list)
     ingest_cleanup_changed_active_context: bool = False
     fit_would_strand: bool = False
+    anchor_source_messages: List[Dict[str, Any]] = field(default_factory=list)
+    pressure_messages: List[Dict[str, Any]] = field(default_factory=list)
+    estimated_active_tokens: int = 0
+    threshold_full_sweep_active: bool = False
+    budget: Optional[ForegroundBudget] = None
+    sweep_deadline: float = 0.0
+    sweep_target_tokens: int = 0
+    sweep_summary_prefix_before: int = 0
+    critical_budget_pressure: bool = False
+    deferred_maintenance_active: bool = False
+    max_leaf_passes: int = 0
 
 
 def select_oldest_leaf_chunk(
@@ -1778,6 +1789,102 @@ class CompactionMixin:
             return "return", sanitized_messages
         return "next", None
 
+    def _prepare_compression_sweep(self, state: _CompressionState,
+                                   messages: List[Dict[str, Any]],
+                                   force: bool = False,
+                                   recovery_attempt: bool = False) -> tuple[Literal["next", "return"], Optional[List[Dict[str, Any]]]]:
+        """Prepare sweep views, budget and pass limits, or take the free exit."""
+        # #651: an automatic threshold pass that stores no leaf is a no-progress
+        # candidate; compress() arms the hold if neither rows nor tokens fell.
+        self._no_progress_candidate = bool(
+            not force
+            and not state.force_overflow
+            and self.threshold_tokens > 0
+            and state.observed_prompt_tokens >= self.threshold_tokens
+        )
+        state.anchor_source_messages = list(state.working_messages)
+        state.pressure_messages = messages if len(messages) == len(state.working_messages) else state.working_messages
+        state.estimated_active_tokens = (
+            state.observed_prompt_tokens
+            if state.observed_prompt_tokens is not None and state.observed_prompt_tokens > 0
+            else count_messages_tokens(messages)
+        )
+        state.threshold_full_sweep_active = bool(
+            self._config.threshold_full_sweep_enabled
+            and not state.force_overflow
+            and self.threshold_tokens > 0
+            and state.estimated_active_tokens >= self.threshold_tokens
+        )
+        # #605: one clock from compress() entry; the hard bound keeps today's step checks.
+        state.budget = self._foreground_budget or self._new_foreground_budget()
+        state.budget.sweep_active = state.threshold_full_sweep_active
+        if force or state.force_overflow:  # #605: the soft target is for automatic compactions; these keep the hard bound
+            state.budget.soft = 0.0
+        state.sweep_deadline = state.budget.t0 + state.budget.hard
+        configured_sweep_target = int(self._config.summary_prefix_target_tokens)
+        if configured_sweep_target > 0:
+            state.sweep_target_tokens = configured_sweep_target
+        else:
+            state.sweep_target_tokens = int(self._config.leaf_chunk_tokens)
+            if self.threshold_tokens > 0:
+                # Default to one leaf budget capped at a quarter of the threshold, so a small window's prefix cannot fill it (rc3 compacted on every 32K call).
+                state.sweep_target_tokens = min(state.sweep_target_tokens, int(self.threshold_tokens * _DEFAULT_SWEEP_TARGET_THRESHOLD_SHARE))
+        state.sweep_target_tokens = max(1, state.sweep_target_tokens)
+        state.sweep_summary_prefix_before = (
+            self._summary_frontier_tokens() if state.threshold_full_sweep_active else 0
+        )
+        if state.threshold_full_sweep_active:
+            self._last_threshold_full_sweep = {
+                "status": "running",
+                "leaf_passes": 0,
+                "condensation_passes": 0,
+                "total_passes": 0,
+                "duration_ms": 0.0,
+                "tokens_before": state.estimated_active_tokens,
+                "tokens_after": state.estimated_active_tokens,
+                "summary_prefix_tokens_before": state.sweep_summary_prefix_before,
+                "summary_prefix_tokens_after": state.sweep_summary_prefix_before,
+                "summary_prefix_target_tokens": state.sweep_target_tokens,
+                "stop_reason": "",
+                "budget_exhausted": False,
+            }
+        # #671: an automatic threshold pass (the #651 candidate; never a recovery attempt) first tries the free
+        # cuts: no leaf, no condensation, no model call when they reach the target.
+        if self._no_progress_candidate and not recovery_attempt:
+            exited = self._stub_first_exit(
+                messages, state.working_messages, state.anchor_source_messages, state.pressure_messages, state.observed_prompt_tokens
+            )
+            if exited is not None:
+                if state.threshold_full_sweep_active:
+                    self._last_threshold_full_sweep.update(
+                        status="partial",
+                        stop_reason="stub_first_exit",
+                        duration_ms=round((time.perf_counter() - state._compress_started) * 1000.0, 3),
+                        tokens_after=count_messages_tokens(exited),
+                    )
+                return "return", exited
+        state.critical_budget_pressure = self._critical_budget_pressure_reached(
+            observed_tokens=state.observed_prompt_tokens,
+            messages=state.working_messages,
+        )
+        state.deferred_maintenance_active = (
+            not state.force_overflow
+            and not state.threshold_full_sweep_active
+            and self._should_run_deferred_maintenance(
+                state.working_messages,
+                observed_tokens=state.observed_prompt_tokens,
+            )
+        )
+        if state.deferred_maintenance_active:
+            self._lifecycle.record_maintenance_attempt(self._conversation_id)
+        base_max_leaf_passes = 4 if self._config.dynamic_leaf_chunk_enabled else 1
+        state.max_leaf_passes = base_max_leaf_passes
+        if state.threshold_full_sweep_active:
+            state.max_leaf_passes = _THRESHOLD_FULL_SWEEP_MAX_PASSES
+        if state.deferred_maintenance_active:
+            state.max_leaf_passes = max(1, self._config.deferred_maintenance_max_passes)
+        return "next", None
+
     def _compress_impl(self, messages: List[Dict[str, Any]],
                        current_tokens: int = None,
                        focus_topic: Optional[str] = None,
@@ -1806,99 +1913,24 @@ class CompactionMixin:
         working_messages = state.working_messages
         ingest_cleanup_changed_active_context = state.ingest_cleanup_changed_active_context
         fit_would_strand = state.fit_would_strand
-        # #651: an automatic threshold pass that stores no leaf is a no-progress
-        # candidate; compress() arms the hold if neither rows nor tokens fell.
-        self._no_progress_candidate = bool(
-            not force
-            and not force_overflow
-            and self.threshold_tokens > 0
-            and observed_prompt_tokens >= self.threshold_tokens
-        )
-        anchor_source_messages = list(working_messages)
-        pressure_messages = messages if len(messages) == len(working_messages) else working_messages
+        action, result = self._prepare_compression_sweep(state, messages, force, recovery_attempt)
+        if action == "return":
+            return result
+        anchor_source_messages = state.anchor_source_messages
+        pressure_messages = state.pressure_messages
+        estimated_active_tokens = state.estimated_active_tokens
+        threshold_full_sweep_active = state.threshold_full_sweep_active
+        budget = state.budget
+        sweep_deadline = state.sweep_deadline
+        sweep_target_tokens = state.sweep_target_tokens
+        sweep_summary_prefix_before = state.sweep_summary_prefix_before
+        critical_budget_pressure = state.critical_budget_pressure
+        deferred_maintenance_active = state.deferred_maintenance_active
+        max_leaf_passes = state.max_leaf_passes
         leaf_compacted_this_turn = False
         dropped_replayed_scaffold_messages = False
         resumed_prefix, resumed_ahead = False, 0
         leaf_passes = 0
-        estimated_active_tokens = (
-            observed_prompt_tokens
-            if observed_prompt_tokens is not None and observed_prompt_tokens > 0
-            else count_messages_tokens(messages)
-        )
-        threshold_full_sweep_active = bool(
-            self._config.threshold_full_sweep_enabled
-            and not force_overflow
-            and self.threshold_tokens > 0
-            and estimated_active_tokens >= self.threshold_tokens
-        )
-        # #605: one clock from compress() entry; the hard bound keeps today's step checks.
-        budget = self._foreground_budget or self._new_foreground_budget()
-        budget.sweep_active = threshold_full_sweep_active
-        if force or force_overflow:  # #605: the soft target is for automatic compactions; these keep the hard bound
-            budget.soft = 0.0
-        sweep_deadline = budget.t0 + budget.hard
-        configured_sweep_target = int(self._config.summary_prefix_target_tokens)
-        if configured_sweep_target > 0:
-            sweep_target_tokens = configured_sweep_target
-        else:
-            sweep_target_tokens = int(self._config.leaf_chunk_tokens)
-            if self.threshold_tokens > 0:
-                # Default to one leaf budget capped at a quarter of the threshold, so a small window's prefix cannot fill it (rc3 compacted on every 32K call).
-                sweep_target_tokens = min(sweep_target_tokens, int(self.threshold_tokens * _DEFAULT_SWEEP_TARGET_THRESHOLD_SHARE))
-        sweep_target_tokens = max(1, sweep_target_tokens)
-        sweep_summary_prefix_before = (
-            self._summary_frontier_tokens() if threshold_full_sweep_active else 0
-        )
-        if threshold_full_sweep_active:
-            self._last_threshold_full_sweep = {
-                "status": "running",
-                "leaf_passes": 0,
-                "condensation_passes": 0,
-                "total_passes": 0,
-                "duration_ms": 0.0,
-                "tokens_before": estimated_active_tokens,
-                "tokens_after": estimated_active_tokens,
-                "summary_prefix_tokens_before": sweep_summary_prefix_before,
-                "summary_prefix_tokens_after": sweep_summary_prefix_before,
-                "summary_prefix_target_tokens": sweep_target_tokens,
-                "stop_reason": "",
-                "budget_exhausted": False,
-            }
-        # #671: an automatic threshold pass (the #651 candidate; never a recovery attempt) first tries the free
-        # cuts: no leaf, no condensation, no model call when they reach the target.
-        if self._no_progress_candidate and not recovery_attempt:
-            exited = self._stub_first_exit(
-                messages, working_messages, anchor_source_messages, pressure_messages, observed_prompt_tokens
-            )
-            if exited is not None:
-                if threshold_full_sweep_active:
-                    self._last_threshold_full_sweep.update(
-                        status="partial",
-                        stop_reason="stub_first_exit",
-                        duration_ms=round((time.perf_counter() - _compress_started) * 1000.0, 3),
-                        tokens_after=count_messages_tokens(exited),
-                    )
-                return exited
-        critical_budget_pressure = self._critical_budget_pressure_reached(
-            observed_tokens=observed_prompt_tokens,
-            messages=working_messages,
-        )
-        deferred_maintenance_active = (
-            not force_overflow
-            and not threshold_full_sweep_active
-            and self._should_run_deferred_maintenance(
-                working_messages,
-                observed_tokens=observed_prompt_tokens,
-            )
-        )
-        if deferred_maintenance_active:
-            self._lifecycle.record_maintenance_attempt(self._conversation_id)
-        base_max_leaf_passes = 4 if self._config.dynamic_leaf_chunk_enabled else 1
-        max_leaf_passes = base_max_leaf_passes
-        if threshold_full_sweep_active:
-            max_leaf_passes = _THRESHOLD_FULL_SWEEP_MAX_PASSES
-        if deferred_maintenance_active:
-            max_leaf_passes = max(1, self._config.deferred_maintenance_max_passes)
 
         explicit_focus_topic = focus_topic is not None
 
