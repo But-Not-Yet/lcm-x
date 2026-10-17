@@ -84,6 +84,7 @@ def test_carry_tolerance_requires_every_proof(tmp_path: Path, guard: str) -> Non
             assert plan["cursor"] == 2  # the tolerated second row cannot prove the third
         else:
             assert plan["cursor"] <= len(view) - 1
+            assert len(view) - 1 not in plan.get("matched", {})
         matched = [int(row["store_id"]) for rows in plan.get("matched", {}).values() for row in rows]
         assert len(matched) == len(set(matched))
 
@@ -95,3 +96,16 @@ def test_fresh_repeat_immediately_after_same_text(tmp_path: Path) -> None:
         engine.on_session_start("child", platform="cli", context_length=128000, conversation_id="conv")
         engine.ingest([message("same", 10.), message("same", 20.)])
         assert [r["observed_at"] for r in engine._store.get_session_messages("child")] == [20.]
+
+
+def test_null_predecessor_requires_canonical_binding(tmp_path: Path) -> None:
+    lineage(tmp_path)
+    previous = {**message("previous", None), "message_uid": "previous-occurrence"}
+    with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
+        engine.ingest([previous, message("current", 10.)])
+        engine.on_session_start("child", platform="cli", context_length=128000, conversation_id="conv")
+        view = [{**previous, "timestamp": 10.}, message("current", 20.)]
+        plan = engine._identity_anchor_prematch(view, view, 2, 0)
+        assert plan["cursor"] == 2
+        assert len(plan["backfill"]) == 1  # only the independently bound NULL predecessor
+        assert len({r["store_id"] for group in plan["matched"].values() for r in group}) == 2
