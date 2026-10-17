@@ -3507,16 +3507,7 @@ class LCMEngine(
         *,
         stored_row: bool = False,
     ) -> str:
-        identity = self._message_replay_identity(
-            message,
-            stored_row=stored_row,
-        )
-        serialized = json.dumps(
-            list(identity),
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        return self._replay_identity_sha256(message, stored_row=stored_row)
 
     def _write_retained_user_anchor(self, row: Optional[Dict[str, Any]]) -> bool:
         """Persist one exact retained-user occurrence, or an explicit empty marker."""
