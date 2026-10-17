@@ -22,7 +22,10 @@ REQUIRED = [
     {"context": "test (3.12)", "integration_id": 15368},
     {"context": "test (3.13)", "integration_id": 15368},
     {"context": "test (3.14)", "integration_id": 15368},
+    {"context": "differential", "integration_id": 15368},
 ]
+# Checked on the merge commit after landing; differential runs on PRs only.
+CI_REQUIRED = REQUIRED[:6]
 BOTH_LANES = ["acceptance", "adversarial"]
 TURN_PATH_PACKET = [
     "Consumer enumeration: rg call sites for every changed helper and effects on each consumer.",
@@ -150,7 +153,7 @@ def test_readiness_rejects_a_merge_authorization_envelope():
 def test_pr_authored_policy_cannot_weaken_protected_main_policy():
     payload = ready_payload()
     payload["pr_policy"] = {"required_checks": []}
-    payload["checks"] = payload["checks"][:-1]
+    payload["checks"] = [c for c in payload["checks"] if c["context"] != "test (3.14)"]
 
     receipt = evaluate(payload)
 
@@ -196,7 +199,7 @@ def test_human_approval_cannot_substitute_for_a_required_check():
             "codeowner": True,
         }
     ]
-    payload["checks"] = payload["checks"][:-1]
+    payload["checks"] = [c for c in payload["checks"] if c["context"] != "test (3.14)"]
 
     receipt = evaluate(payload)
 
@@ -425,7 +428,26 @@ def test_post_merge_verifies_exact_merge_commit():
     receipt = evaluate(post_merge_payload())
 
     assert receipt["decision"] == "POST_MERGE_VERIFIED"
-    assert len(receipt["matched_trusted_checks"]) == len(REQUIRED)
+    assert len(receipt["matched_trusted_checks"]) == len(CI_REQUIRED)
+
+
+def test_post_merge_does_not_require_differential_on_the_merge_commit():
+    payload = post_merge_payload()
+    payload["checks"] = [c for c in payload["checks"] if c["context"] != "differential"]
+
+    receipt = evaluate(payload)
+
+    assert receipt["decision"] == "POST_MERGE_VERIFIED"
+
+
+def test_readiness_requires_differential_on_the_pr_head():
+    payload = ready_payload()
+    payload["checks"] = [c for c in payload["checks"] if c["context"] != "differential"]
+
+    receipt = evaluate(payload)
+
+    assert receipt["decision"] != "READY_FOR_AUTHORIZED_LANDING"
+    assert "TRUSTED_CHECK_UNSATISFIED:differential:15368" in receipt["blocker_codes"]
 
 
 def test_post_merge_rejects_an_open_pr():
