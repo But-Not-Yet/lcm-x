@@ -198,7 +198,7 @@ def test_expired_turn_paced_hold_cannot_release_a_later_hang(episode, monkeypatc
         assert len(calls) == 3
         assert all(engine._dag.get_node(node_id) is not None for node_id in source_ids)
 
-    assert engine._sweep_budget_hold_turn_paced  # neither path re-armed the expired hold
+    assert not engine._sweep_budget_hold_turn_paced  # #1369: every repeat hang disarms turn-end release
     breaker = engine._summary_circuit_breaker
     assert breaker.route_status(["m1"])["last_error_class"] == "hung"
     assert not breaker.allows("m1")
