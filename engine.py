@@ -4635,8 +4635,7 @@ class LCMEngine(
         with self._exclusive_lifecycle("end"):
             if self._stable_use_closed:
                 return
-            self._session_end_flush_deadline = time.monotonic() + _SESSION_END_BUSY_TIMEOUT_MS / 1000
-            self._retry_session_end_tails(deadline=self._session_end_flush_deadline)
+            self._retry_session_end_tails()
             try:
                 self._on_session_end_unlocked(session_id, messages)
             finally:
@@ -4965,6 +4964,7 @@ class LCMEngine(
             )
             return
         unflushed = max(0, len(messages) - self._ingest_cursor)
+        pending_before = len(self._pending_session_tails)
         ingest_finished = False
         try:
             with _temporary_sqlite_busy_timeout(
@@ -4972,7 +4972,7 @@ class LCMEngine(
                     getattr(self._store, "_conn", None),
                     getattr(self._lifecycle, "_conn", None),
                 ],
-                max(0, int((self._session_end_flush_deadline - time.monotonic()) * 1000)),
+                _SESSION_END_BUSY_TIMEOUT_MS,
             ):
                 is_current_session_full_history_end = session_id == self._session_id
                 try:
@@ -4999,7 +4999,15 @@ class LCMEngine(
                     return
                 except Exception as exc:
                     if _is_sqlite_locked_error(exc):
-                        logger.debug("LCM session-end raw-message ingest pending after SQLite lock")
+                        logger.warning(
+                            "LCM session-end raw-message ingest skipped due to SQLite lock after short wait; "
+                            "%s: %s unflushed=%d",
+                            "retry pending at the next session start or shutdown"
+                            if len(self._pending_session_tails) > pending_before
+                            else "final messages may be absent from the plugin-local store",
+                            exc,
+                            unflushed,
+                        )
                         return
                     raise
 
@@ -9555,11 +9563,16 @@ class LCMEngine(
         thread_id = threading.get_ident()
         if self._stable_use_owner_thread == thread_id:
             raise RuntimeError(f"LCM lifecycle {action} attempted during stable engine use")
-        acquired = (
-            self._stable_use_lock.acquire() if deadline is None
-            else self._stable_use_lock.acquire(timeout=max(0.0, deadline - time.monotonic()))
-        )
-        if not acquired:
+        if deadline is None:
+            with self._stable_use_lock:
+                self._stable_use_owner_thread = thread_id
+                try:
+                    yield True
+                finally:
+                    self._stable_use_owner_thread = None
+            return
+        # Only the exit hook bounds its wait; shutdown still waits for active use.
+        if not self._stable_use_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
             yield False
             return
         self._stable_use_owner_thread = thread_id
@@ -9601,15 +9614,10 @@ class LCMEngine(
             self._stable_use_lock.release()
 
     def shutdown(self):
-        deadline = time.monotonic() + _SESSION_END_SHUTDOWN_TIMEOUT_MS / 1000
-        with self._exclusive_lifecycle("shutdown", deadline=deadline) as acquired:
-            if not acquired:
-                # A live operation owns these stores: do not close them on timeout.
-                self._warn_unflushed_session_tails("lifecycle lock")
-                return
+        with self._exclusive_lifecycle("shutdown"):
             if self._stable_use_closed:
                 return
-            self._shutdown_unlocked(deadline=deadline)
+            self._shutdown_unlocked(deadline=time.monotonic() + _SESSION_END_SHUTDOWN_TIMEOUT_MS / 1000)
             self._stable_use_closed = True
 
     def _shutdown_unlocked(self, *, deadline: float):

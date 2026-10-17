@@ -48,7 +48,8 @@ def _locked_flush(engine, caplog):
     finally:
         locker.execute("ROLLBACK")
         locker.close()
-    assert "raw-message ingest skipped due to SQLite lock" not in caplog.text
+    assert "retry pending at the next session start or shutdown" in caplog.text
+    assert "may be absent" not in caplog.text
     assert _contents(engine) == [message["content"] for message in messages[:2]]
     return messages
 
@@ -58,6 +59,7 @@ def test_locked_flush_reports_pending_count_without_content(engines, monkeypatch
     engine = engines()
     messages = _locked_flush(engine, caplog)
     monkeypatch.setattr(engine_module, "_SESSION_END_SHUTDOWN_TIMEOUT_MS", 20)
+    caplog.clear()  # Assert the shutdown diagnostic, not the end notice.
     locker = sqlite3.connect(str(engine._store.db_path), isolation_level=None)
     locker.execute("BEGIN IMMEDIATE")
     try:

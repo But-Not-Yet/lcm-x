@@ -168,8 +168,9 @@ def test_foreign_conversation_replay_does_not_cover_pending_tail(engine, foreign
     assert _rows(engine, "other") == []
 
 
-@pytest.mark.parametrize("exit_path", ["shutdown", "atexit"])
-def test_exit_lifecycle_lock_is_within_pending_retry_bound(engine, monkeypatch, caplog, exit_path):
+def test_exit_lifecycle_lock_is_within_pending_retry_bound(engine, monkeypatch, caplog):
+    """The exit hook never waits on a held lifecycle lock; shutdown() keeps its
+    existing contract of waiting for active use (test_lcm_engine.py)."""
     history = _history()
     _skip(engine, history)
     monkeypatch.setattr(engine_module, "_SESSION_END_SHUTDOWN_TIMEOUT_MS", 25, raising=False)
@@ -194,10 +195,7 @@ def test_exit_lifecycle_lock_is_within_pending_retry_bound(engine, monkeypatch, 
     try:
         started = time.monotonic()
         with caplog.at_level(logging.WARNING):
-            if exit_path == "shutdown":
-                engine.shutdown()
-            else:
-                engine_module._quiesce_embedding_maintenance()
+            engine_module._quiesce_embedding_maintenance()
         elapsed = time.monotonic() - started
         assert elapsed < 0.3
         assert not released.is_set(), "exit must return while the lifecycle lock remains held"
@@ -207,8 +205,7 @@ def test_exit_lifecycle_lock_is_within_pending_retry_bound(engine, monkeypatch, 
         assert "unflushed=2" in warnings[0]
         assert "lifecycle lock" in warnings[0]
         assert "repeat" not in warnings[0] and "answer" not in warnings[0]
-        if exit_path == "atexit":
-            assert embedding_waits == [engine_module._EMBEDDING_EXIT_TIMEOUT_S]
+        assert embedding_waits == [engine_module._EMBEDDING_EXIT_TIMEOUT_S]
     finally:
         release.set()
         holder.join(timeout=2.0)
