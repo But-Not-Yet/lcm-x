@@ -54,6 +54,7 @@ Use `docs/operator-guide.md` as the complete current source. Start with:
 - `LCM_LEAF_CHUNK_TOKENS` (default `24000`): maximum raw material per leaf compaction group;
 - `LCM_THRESHOLD_FULL_SWEEP_ENABLED` (default `true`): the threshold full sweep;
 - `LCM_SUMMARY_PREFIX_TARGET_TOKENS` (default `0`): the summary-frontier size a threshold sweep condenses toward; `0` means one leaf budget capped at a quarter of the compaction threshold, so a small window's summaries cannot fill it (#1139);
+- `LCM_BACKGROUND_LEAF_PREP_ENABLED` (default `false`, #787 slice 1): prepare leaf summaries off-turn above P = threshold − 0.15 × window and publish them at the threshold crossing with no model call, down to L = threshold − max(2 × chunk, 0.1 × window); `LCM_BACKGROUND_LEAF_PREP_MAX_CALLS` (default `8`) and `LCM_BACKGROUND_LEAF_PREP_WINDOW_S` (default `600`) bound its own spend guard;
 - `LCM_TEMPORAL_ROLLUPS_ENABLED` (default `true` from v0.27.0): background day/week rollup summaries; the first session bind creates the rollup tables and schedules maintenance; `false` opts out;
 - `LCM_LEAF_TARGET_RATIO` (default `0.20`), `LCM_LEAF_TARGET_MIN_TOKENS` (default `2000`) and `LCM_LEAF_TARGET_MAX_TOKENS` (default `2000`): leaf summary target `min(MAX, max(MIN, int(source_tokens * RATIO)))`; the first summary call gets twice the target as `max_tokens`. Defaults give a fixed 2,000-token target. Setting only RATIO has no effect while MIN equals MAX and warns; set `LCM_LEAF_TARGET_MAX_TOKENS` above MIN to enable the ratio. A MIN above the default cap also needs MAX, otherwise MIN resets with a warning naming that key (#614, #1138);
 - `LCM_DATABASE_PATH`: profile-local SQLite path when the default is unsuitable;
@@ -252,6 +253,9 @@ warns without changing its behavior until removal.
 | `LCM_ROLLUP_AGGREGATE_MAX_TOKENS` | `int` | `20000` | — | — |
 | `LCM_ROLLUP_BUILDS_PER_PASS` | `int` | `2` | — | — |
 | `LCM_ROLLUP_MAINTENANCE_BUDGET_MS` | `int` | `5000` | — | — |
+| `LCM_BACKGROUND_LEAF_PREP_ENABLED` | `bool` | `false` | — | — |
+| `LCM_BACKGROUND_LEAF_PREP_MAX_CALLS` | `int` | `8` | — | — |
+| `LCM_BACKGROUND_LEAF_PREP_WINDOW_S` | `float` | `600.0` | — | — |
 <!-- END GENERATED CONFIG REFERENCE -->
 
 ## Hand-written reference: explicit configuration readers
