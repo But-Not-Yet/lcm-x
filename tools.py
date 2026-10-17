@@ -6456,6 +6456,9 @@ def lcm_status(args: Dict[str, Any], **kwargs) -> str:
             "leaf_target_max_tokens": getattr(
                 engine._config, "leaf_target_max_tokens", LCMConfig.leaf_target_max_tokens
             ),
+            "stub_first_exit_target_ratio": getattr(
+                engine._config, "stub_first_exit_target_ratio", LCMConfig.stub_first_exit_target_ratio
+            ),
             "dynamic_leaf_chunk_enabled": engine._config.dynamic_leaf_chunk_enabled,
             "dynamic_leaf_chunk_max": engine._config.dynamic_leaf_chunk_max,
             "cache_friendly_condensation_enabled": engine._config.cache_friendly_condensation_enabled,

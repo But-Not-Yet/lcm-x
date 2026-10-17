@@ -114,6 +114,7 @@ A 400 or 404 saying the route cannot serve its model (unknown model, model not f
 - `LCM_LARGE_OUTPUT_EXTERNALIZATION_ENABLED` (default `true` from v0.27.0): a large tool result or inline media payload is stored as a payload file under the Hermes home and its row holds an `[Externalized payload: ...]` reference; `lcm_expand(externalized_ref=...)` returns the original bytes; `false` opts out;
 - `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUBBING_ENABLED` (default `true` from v0.27.0): replay carries the externalized-ref stub in place of a large tool result, per the two thresholds below; needs externalization on; `false` opts out;
 - `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUB_THRESHOLD_TOKENS` (default `10000`) and `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUB_AGED_THRESHOLD_TOKENS` (default `2000`; `0` = the first-sight value, never above it) (#671): with `LCM_LARGE_OUTPUT_EXTERNALIZATION_ENABLED` and `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUBBING_ENABLED` both on (the default from v0.27.0), a new tool result over the first value is replaced by its externalized-ref stub at ingest, and at a compaction a tool result outside the fresh tail is stubbed from the aged value. The stub keeps the call row; `lcm_expand(externalized_ref=...)` returns the original. An automatic compaction at or over the threshold first tries these free cuts without a model call and returns them when the host-measured list is at or under min(threshold - leaf chunk, 0.95 x threshold): stop reason `stub_first_exit` (partial; `lcm_status` `last_stub_first_exit`, the doctor, the `LCM compaction stop:` line); the rows no leaf summarised stay stored as backlog.
+- `LCM_STUB_FIRST_EXIT_TARGET_RATIO` (default `0`; env only): lowers the stub-first exit's target to min(threshold - leaf chunk, 0.95 x threshold, int(ratio x threshold)); cuts over it take the leaf path. `0` keeps the built-in target; a negative value, a value over `1` or a non-number keeps it with a config warning. The applied target is the one in `last_stub_first_exit` and on the stop line. Use it on a large window where an exit leaves a long live list (with a 750,000-token threshold, `0.2` exits only at 150,000 tokens or under); the share follows the active model's threshold.
 - `LCM_SUMMARY_PROMPT_VERSION` (default `1`; env only): `1` keeps the original summariser prompts and 2x output ceiling; `2` opts in to the v2 prompts (six fixed headings, focus directives in the trusted policy, topic label tagged in the transcript message) and a 3x ceiling. Other values fall back to `1` with a config warning. (#646)
 
 
@@ -189,6 +190,7 @@ warns without changing its behavior until removal.
 | `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUB_THRESHOLD_TOKENS` | `int` | `10000` | — | — |
 | `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUB_AGED_THRESHOLD_TOKENS` | `int` | `2000` | — | — |
 | `LCM_LARGE_OUTPUT_TRANSCRIPT_GC_ENABLED` | `bool` | `false` | — | Deprecated v0.28.0; removed v0.29.0 |
+| `LCM_STUB_FIRST_EXIT_TARGET_RATIO` | `float` | `0.0` | — | — |
 | `LCM_SUMMARY_MODEL` | `str` | `""` | — | — |
 | `LCM_NATIVE_RECOVERY` | `bool` | `false` | — | — |
 | `LCM_SURVIVAL_FIT` | `bool` | `true` | — | — |
