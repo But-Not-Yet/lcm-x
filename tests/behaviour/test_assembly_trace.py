@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from tests.behaviour.assembly_trace_harness import (
-    EXTERNAL_ATTRIBUTES, GOLDEN, OBSERVED_ATTRIBUTES, SCENARIOS, Scenario,
+    EXTERNAL_ATTRIBUTES, GOLDEN, OBSERVED_ATTRIBUTES, SCENARIOS, TRACE_GUIDANCE, Scenario,
     dag_module, engine_attributes, engine_module, first_difference, observe,
 )
 
@@ -20,7 +20,8 @@ def test_assembly_attribute_inventory() -> None:
     discovered = engine_attributes(inspect.getsource(engine_module))
     assert discovered == OBSERVED_ATTRIBUTES - EXTERNAL_ATTRIBUTES, (
         f'Assembly state inventory changed: added={sorted(discovered - OBSERVED_ATTRIBUTES)}, '
-        f'removed={sorted(OBSERVED_ATTRIBUTES - EXTERNAL_ATTRIBUTES - discovered)}')
+        f'removed={sorted(OBSERVED_ATTRIBUTES - EXTERNAL_ATTRIBUTES - discovered)}; '
+        'update OBSERVED_ATTRIBUTES/EXTERNAL_ATTRIBUTES.\n' + TRACE_GUIDANCE)
 
 
 @pytest.mark.parametrize('case', SCENARIOS, ids=lambda case: case.name)
@@ -28,7 +29,7 @@ def test_assembly_golden(case: Scenario, tmp_path: Path) -> None:
     expected = json.loads(GOLDEN.read_text())[case.name]
     actual = observe(case, tmp_path.resolve())
     difference = first_difference(expected, actual)
-    assert difference is None, f'{case.name}: first divergence: {difference}'
+    assert difference is None, f'{case.name}: first divergence: {difference}\n' + TRACE_GUIDANCE
 
 
 def test_assembly_defers_prior_cycle_cleanup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -58,4 +59,5 @@ def test_assembly_defers_prior_cycle_cleanup(tmp_path: Path, monkeypatch: pytest
     finally:
         gc.set_threshold(*threshold)
     assert gc.isenabled() == enabled
-    assert first_difference(json.loads(GOLDEN.read_text())[case.name], actual) is None
+    difference = first_difference(json.loads(GOLDEN.read_text())[case.name], actual)
+    assert difference is None, f'{case.name}: first divergence: {difference}\n' + TRACE_GUIDANCE
