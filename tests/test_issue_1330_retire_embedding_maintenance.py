@@ -1,6 +1,7 @@
 """#1330: session end and shutdown retire only this engine's embedding work."""
 
 import logging
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -11,9 +12,157 @@ from pathlib import Path
 import pytest
 
 import hermes_lcm.engine as engine_mod
+import hermes_lcm.command as command_mod
+import hermes_lcm.embedding_maintenance as maintenance_mod
+import hermes_lcm.embedding_provider as provider_mod
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.dag import SummaryNode
 from hermes_lcm.engine import LCMEngine
+from hermes_lcm.vector_store import VectorStore
+from hermes_lcm.chunking import chunk_message
+
+
+@pytest.fixture(autouse=True)
+def reset_exit_stop():
+    signal = getattr(maintenance_mod, "_STOP_EMBEDDING_MAINTENANCE", None)
+    if signal is not None:
+        signal.clear()
+    yield
+    if signal is not None:
+        signal.clear()
+
+
+def _seed_batches(path, corpus):
+    config = LCMConfig(
+        database_path=str(path), embeddings_enabled=True,
+        embedding_provider="fastembed", embedding_model="test-model",
+        embedding_max_batch_items=40, temporal_rollups_enabled=False,
+    )
+    engine = LCMEngine(config=config, hermes_home=str(path.parent / "home"))
+    store = VectorStore(path, config=config)
+    store.register_profile("test-model", "fastembed", 2)
+    store.register_profile("test-model", "fastembed", 2, task="chunk")
+    store.close()
+    for index in range(40):
+        if corpus == "summaries":
+            engine._dag.add_node(SummaryNode(
+                session_id="batch-test", depth=0, summary=f"summary {index}",
+                created_at=float(index), latest_at=float(index),
+            ))
+        elif corpus == "chunks":
+            engine._store.append("batch-test", {
+                "role": "user", "content": f"message {index} " + "detail " * 60,
+            })
+    engine._close_storage()
+    return config
+
+
+class _SlowBatches:
+    provider_id = "fastembed"
+    model_id = "test-model"
+    last_skipped_documents = []
+
+    def __init__(self, started, marker=None):
+        self.started = started
+        self.marker = marker
+        self.completed = 0
+        self.delay = 0.3
+
+    def embed_document_batches(self, texts, *, before_dispatch):
+        for offset in range(0, len(texts), 2):
+            indexes = tuple(range(offset, min(offset + 2, len(texts))))
+            before_dispatch(indexes)
+            self.started.set()
+            time.sleep(self.delay)
+            self.completed += 1
+            if self.marker is not None:
+                self.marker.write_text(str(self.completed))
+            yield provider_mod.EmbeddedDocumentBatch(indexes, tuple((1.0, 0.0) for _ in indexes))
+
+
+@pytest.mark.parametrize("corpus", ["summaries", "chunks"])
+def test_quiesce_stops_between_provider_batches_and_resumes(tmp_path, scheduler, monkeypatch, caplog, corpus):
+    monkeypatch.setenv("LCM_EMBEDDING_BACKFILL_BATCH_SIZE", "40")
+    config = _seed_batches(tmp_path / "batches.db", corpus)
+    started = threading.Event()
+    provider = _SlowBatches(started)
+    monkeypatch.setattr(command_mod, "resolve_provider", lambda *_a, **_k: provider)
+    monkeypatch.setattr(provider_mod, "probe_provider_availability", lambda _c: {"available": True})
+    key = (config.database_path, "embeddings")
+    outcomes = []
+
+    def run():
+        outcomes.append(maintenance_mod.run_incremental_embedding_pass(config.database_path, config))
+
+    try:
+        with caplog.at_level(logging.INFO):
+            assert scheduler.schedule(key, run)
+            assert started.wait(5)
+            before = time.monotonic()
+            assert scheduler.quiesce(timeout=1.5)
+            assert time.monotonic() - before < 1.2
+        assert provider.completed == 1
+        assert outcomes == ["stopped"]
+        stopped = [r for r in caplog.records if "embedding maintenance stopped" in r.getMessage()]
+        assert len(stopped) == 1
+        assert f"database={config.database_path}" in stopped[0].getMessage()
+        assert "scope=embeddings" in stopped[0].getMessage()
+        assert not any(r.levelno >= logging.WARNING for r in caplog.records)
+        table = "lcm_embedding_meta" if corpus == "summaries" else "lcm_chunk_meta"
+        with sqlite3.connect(config.database_path) as conn:
+            assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 2
+            assert conn.execute("SELECT COUNT(*) FROM lcm_embedding_backfill_inflight").fetchone()[0] == 0
+        maintenance_mod._STOP_EMBEDDING_MAINTENANCE.clear()
+        provider.delay = 0
+        run()
+        assert provider.completed == 20  # Already published rows are not embedded again.
+        with sqlite3.connect(config.database_path) as conn:
+            assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 40
+    finally:
+        provider.delay = 0
+        assert scheduler.drain({key}, timeout=5)
+
+
+def test_session_end_does_not_signal_process_exit(make_engine, monkeypatch):
+    monkeypatch.setattr(engine_mod, "run_incremental_embedding_pass", lambda *_a, **_k: None)
+    engine = make_engine()
+    _bind(engine)
+    assert engine.drain_embedding_maintenance(timeout=5)
+    engine.on_session_end("session", [])
+    signal = getattr(maintenance_mod, "_STOP_EMBEDDING_MAINTENANCE", None)
+    assert signal is None or not signal.is_set()
+
+
+def test_interrupted_multichunk_message_resumes(tmp_path, scheduler, monkeypatch):
+    config = _seed_batches(tmp_path / "multichunk.db", "empty")
+    config.embedding_max_batch_items = 2
+    engine = LCMEngine(config=config, hermes_home=str(tmp_path / "home"))
+    text = "A factual sentence with several details. " * 400
+    row = engine._store.append("batch-test", {"role": "user", "content": text})
+    expected = len(chunk_message(row, "user", text, policy="conversational"))
+    assert expected > 2
+    engine._close_storage()
+    started = threading.Event()
+    provider = _SlowBatches(started)
+    monkeypatch.setattr(command_mod, "resolve_provider", lambda *_a, **_k: provider)
+    monkeypatch.setattr(provider_mod, "probe_provider_availability", lambda _c: {"available": True})
+    key = (config.database_path, "embeddings")
+    def run():
+        return maintenance_mod.run_incremental_embedding_pass(config.database_path, config)
+    try:
+        assert scheduler.schedule(key, run)
+        assert started.wait(5)
+        assert scheduler.quiesce(timeout=1.5)
+        assert provider.completed == 1
+        maintenance_mod._STOP_EMBEDDING_MAINTENANCE.clear()
+        provider.delay = 0
+        run()
+        with sqlite3.connect(config.database_path) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM lcm_chunk_meta").fetchone()[0] == expected
+            assert conn.execute("SELECT COUNT(*) FROM lcm_embedding_backfill_inflight").fetchone()[0] == 0
+    finally:
+        provider.delay = 0
+        assert scheduler.drain({key}, timeout=5)
 
 
 @pytest.fixture
@@ -260,6 +409,7 @@ def test_process_exit_waits_for_active_embedding_pass(tmp_path):
     marker = tmp_path / "embedding-finished"
     script = """
 import importlib.util
+import os
 import sys
 import threading
 import time
@@ -272,23 +422,32 @@ spec = importlib.util.spec_from_file_location(
 )
 package = importlib.util.module_from_spec(spec)
 sys.modules["hermes_lcm"] = package
-from hermes_lcm import engine
+from hermes_lcm import engine, command, embedding_maintenance, embedding_provider
+from tests.test_issue_1330_retire_embedding_maintenance import _seed_batches, _SlowBatches
 
+os.environ["LCM_EMBEDDING_BACKFILL_BATCH_SIZE"] = "40"
 started = threading.Event()
+config = _seed_batches(Path(marker).parent / "exit.db", "chunks")
+provider = _SlowBatches(started, Path(marker))
+command.resolve_provider = lambda *_a, **_k: provider
+embedding_provider.probe_provider_availability = lambda _c: {"available": True}
 def job():
-    started.set()
-    time.sleep(0.5)
-    Path(marker).write_text("finished")
+    embedding_maintenance.run_incremental_embedding_pass(config.database_path, config)
+    Path(marker + ".pass").write_text(str(provider.completed))
 
 assert engine._EMBEDDING_MAINTENANCE_SCHEDULER.schedule(("exit-test", "embeddings"), job)
 assert started.wait(5)
+Path(marker + ".start").write_text(str(time.monotonic()))
 """
     result = subprocess.run(
         [sys.executable, "-c", script, str(Path(__file__).resolve().parents[1]), str(marker)],
         capture_output=True, text=True, timeout=9,
     )
+    exited = time.monotonic()
     assert result.returncode == 0, result.stdout + result.stderr
-    assert marker.read_text() == "finished"
+    assert 0.15 < exited - float(Path(str(marker) + ".start").read_text()) < 1.5
+    assert marker.read_text() == "1"  # Written by the completed batch, not pass cleanup.
+    assert Path(str(marker) + ".pass").read_text() == "1"
 
 
 def test_in_place_compression_rearms_embedding_maintenance(make_engine, monkeypatch):

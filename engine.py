@@ -108,7 +108,7 @@ from .runtime_identity import (
     _git_runtime_identity,
     _plugin_metadata,
 )
-from .embedding_maintenance import run_incremental_embedding_pass
+from .embedding_maintenance import _STOP_EMBEDDING_MAINTENANCE, run_incremental_embedding_pass
 from .rollup_builder import (
     initialize_rollup_invalidation_outbox,
     mark_stale_for_published_summary,
@@ -423,6 +423,8 @@ class _RollupMaintenanceScheduler:
     def quiesce(self, timeout: float) -> bool:
         """Stop accepting work, discard pending passes, and bound the active wait."""
         try:
+            if self is _EMBEDDING_MAINTENANCE_SCHEDULER:
+                _STOP_EMBEDDING_MAINTENANCE.set()
             deadline = time.monotonic() + max(0.0, timeout)
             with self._condition:
                 self._closed = True
@@ -497,11 +499,14 @@ _EMBEDDING_MAINTENANCE_SCHEDULER = _RollupMaintenanceScheduler(
     kind="incremental embedding", thread_name="lcm-embedding-maintenance"
 )
 _EMBEDDING_RETIRE_TIMEOUT_S = 2.0
+# One in-flight provider batch plus publication, with headroom for a 2-vCPU host.
+# Session retirement keeps its separate budget and never signals process exit.
+_EMBEDDING_EXIT_TIMEOUT_S = 10.0
 _EMBEDDING_EXIT_QUIESCE_REGISTERED = False
 
 
 def _quiesce_embedding_maintenance() -> bool:
-    return _EMBEDDING_MAINTENANCE_SCHEDULER.quiesce(_EMBEDDING_RETIRE_TIMEOUT_S)
+    return _EMBEDDING_MAINTENANCE_SCHEDULER.quiesce(_EMBEDDING_EXIT_TIMEOUT_S)
 
 
 _SESSION_END_BUSY_TIMEOUT_MS = 50
