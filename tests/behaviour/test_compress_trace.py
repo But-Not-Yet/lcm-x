@@ -17,6 +17,7 @@ from tests.behaviour.compress_trace_harness import (
     GOLDEN,
     OBSERVED_ATTRIBUTES,
     SCENARIOS,
+    TRACE_GUIDANCE,
     Canonical,
     Clock,
     Scenario,
@@ -79,11 +80,12 @@ def test_compress_observed_attributes_complete() -> None:
         and not isinstance(inspect.getattr_static(engine_class, name, None), (staticmethod, classmethod))
     }
     frozen = set(OBSERVED_ATTRIBUTES)
-    assert tuple(sorted(frozen)) == OBSERVED_ATTRIBUTES, "Keep OBSERVED_ATTRIBUTES sorted and unique"
+    assert tuple(sorted(frozen)) == OBSERVED_ATTRIBUTES, (
+        "Update OBSERVED_ATTRIBUTES to be sorted and unique.\n" + TRACE_GUIDANCE)
     missing = state_names - frozen
     assert not missing, (
-        f"Unobserved compaction state: {sorted(missing)}. "
-        "Add it to OBSERVED_ATTRIBUTES deliberately and regenerate the golden fixture."
+        f"Unobserved compaction state: {sorted(missing)}; update OBSERVED_ATTRIBUTES.\n"
+        + TRACE_GUIDANCE
     )
     # A name moved into another engine method/module is still valid. Only a
     # name absent from the whole engine class (including mixins) is stale.
@@ -97,7 +99,9 @@ def test_compress_observed_attributes_complete() -> None:
     # Reserved by the extraction contract; absent is itself a frozen observation
     # until the phase helpers introduce this state. All other names must exist.
     removed = frozen - engine_names - {"_frontier"}
-    assert not removed, f"Observed attributes removed from the whole engine class: {sorted(removed)}"
+    assert not removed, (
+        f"Observed attributes removed from the whole engine class: {sorted(removed)}; update OBSERVED_ATTRIBUTES.\n"
+        + TRACE_GUIDANCE)
 
 
 def test_transitive_attributes_follow_helpers_and_stop_at_module_boundary() -> None:
@@ -128,11 +132,14 @@ class OtherMixin:
 @pytest.mark.parametrize("case", SCENARIOS, ids=lambda case: case.name)
 def test_compress_golden(case: Scenario, tmp_path: Path) -> None:
     expected = json.loads(GOLDEN.read_text())[case.name]
-    assert len(json.dumps(expected, indent=0).encode()) <= 40000, case.name
-    assert GOLDEN.stat().st_size <= 1500000
+    assert len(json.dumps(expected, indent=0).encode()) <= 40000, (
+        f"{case.name}: trace exceeds 40000 bytes; review the trace size bound.\n" + TRACE_GUIDANCE)
+    assert GOLDEN.stat().st_size <= 1500000, (
+        "Fixture exceeds 1500000 bytes; review the fixture size bound.\n" + TRACE_GUIDANCE)
     actual = observe(case, tmp_path)
     difference = first_difference(expected, actual)
-    assert difference is None, f"{case.name}: first divergent event {difference}"
+    assert difference is None, (
+        f"{case.name}: first divergent event {difference}\n" + TRACE_GUIDANCE)
 
 
 @pytest.mark.parametrize(("module", "qualname"), sorted(CLOCK_CALLERS))
