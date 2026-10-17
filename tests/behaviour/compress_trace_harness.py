@@ -64,6 +64,7 @@ class Scenario:
     focus: str | None = None
     setup: str = ""
     expiry_checkpoint: int = 0
+    window: int = 200000
 
 
 SCENARIOS = (
@@ -181,6 +182,10 @@ SCENARIOS = (
     *[Scenario(f"deadline-checkpoint-{point}", sweep=True, force=False, expiry_checkpoint=point)
       for point in (4, 6, 8, 10)],
     Scenario("deadline-hidden-backlog-read", shape="hidden", sweep=True, force=False, expiry_checkpoint=6),
+    Scenario("unknown-window-default-target", window=0, sweep=True,
+             overrides=(("summary_prefix_target_tokens", 0),)),
+    Scenario("pre-leaf-frontier-read-error", mode="frontier-read-error", sweep=True, force=False,
+             seeded_depths=(0, 0, 0), overrides=(("summary_prefix_target_tokens", 100),)),
     Scenario("unthresholded-default-target", overrides=(("context_threshold", 0.0),
              ("summary_prefix_target_tokens", 0))),
     Scenario("sweep-stub-first-exit", shape="tools", sweep=True, force=False, current_tokens=12001, overrides=(
@@ -701,7 +706,7 @@ def observe(case: Scenario, root: Path) -> Trace:
                         summary_prefix_target_tokens=1000)
         settings.update(dict(case.overrides))
         context: Any = engine_context
-        with context(root, window=200000, conversation_id="trace-conversation", **settings) as engine:
+        with context(root, window=case.window, conversation_id="trace-conversation", **settings) as engine:
             view = transcript(case)
             if settings.get("ignore_message_patterns"):
                 engine._compiled_ignore_message_patterns = [LiteralPattern()]
@@ -771,7 +776,23 @@ def observe(case: Scenario, root: Path) -> Trace:
                 parent_binding = (engine._session_id, engine._conversation_id,
                                   engine._ingest_cursor, engine._last_compacted_store_id)
 
+            frontier_read_denied = False
+
+            def deny_frontier_read(action: int, table: str | None, column: str | None,
+                                   database: str | None, trigger: str | None) -> int:
+                nonlocal frontier_read_denied
+                if action == sqlite3.SQLITE_READ and table == "summary_nodes" and not frontier_read_denied:
+                    frontier_read_denied = True
+                    events.append("db deny post-publication frontier read")
+                    return sqlite3.SQLITE_DENY
+                return sqlite3.SQLITE_OK
+
             def trace_sql(connection: str, sql: str) -> None:
+                if (case.mode == "frontier-read-error" and connection == "_dag"
+                        and sql.strip() == "COMMIT" and provider.calls == 1 and not frontier_read_denied):
+                    # Publication errors are converted to condensation_error by
+                    # the sweep. Its post-publication frontier read propagates.
+                    engine._dag._conn.set_authorizer(deny_frontier_read)
                 # SQLite-internal FTS5 statements vary by SQLite build.
                 # Filter raw SQL before normalization can erase quoted schema names.
                 if sql.lstrip().startswith("--") or re.search(r"(['\"])(main|temp)\1\s*\.", sql):
@@ -803,6 +824,7 @@ def observe(case: Scenario, root: Path) -> Trace:
                         if case.mode == "open-after-first" and attempt:
                             for _ in range(3):
                                 engine._summary_circuit_breaker.record_failure("trace-model")
+                        propagated_frontier_error = False
                         try:
                             with engine._fresh_tail_pressure_yield_invocation():
                                 returned = engine._compress_impl(view, current_tokens=case.current_tokens,
@@ -812,6 +834,24 @@ def observe(case: Scenario, root: Path) -> Trace:
                             if not isinstance(exc, (Exception, HostInterrupted)):
                                 raise
                             events.append(f"raise {type(exc).__name__} message={compact(canonical.text(str(exc)))}")
+                            if case.mode == "frontier-read-error":
+                                assert isinstance(exc, sqlite3.DatabaseError)
+                                assert not compaction._is_sqlite_locked_error(exc)
+                                propagated_frontier_error = True
+                        finally:
+                            if case.mode == "frontier-read-error":
+                                engine._dag._conn.set_authorizer(None)
+                        if case.mode == "frontier-read-error":
+                            assert frontier_read_denied and propagated_frontier_error
+                            assert engine._foreground_budget.leaf_reserve == 0.0
+                            assert engine._foreground_budget.progress == "condensation"
+                            assert provider.calls == 1
+                            events.append("pre-leaf error propagated; leaf_reserve=0.0; committed condensation retained")
+                        if case.name == "unknown-window-default-target":
+                            assert engine.threshold_tokens == 0
+                            assert not engine._foreground_budget.sweep_active
+                            assert engine._last_threshold_full_sweep["status"] == "never_run"
+                            events.append("unknown window: threshold=0; sweep inactive; target has no gated consumer")
                         if case.setup == "bypass-no-aux":
                             assert not any(getattr(engine._compaction_request, name) for name in request_fields)
                             assert before_storage == [list(conn.iterdump()) for _, conn in conns]
