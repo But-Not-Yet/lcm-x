@@ -62,11 +62,11 @@ class _LateAuxiliaryAgent:
     _parent_session_id = "foreground-session"
     _memory_write_origin = ""
 
-    def compress(self, engine: Any, view: list[dict[str, Any]], current_tokens: int) -> Any:
+    def compress(self, engine: Any, view: list[dict[str, Any]], current_tokens: int | None) -> Any:
         return _phase_host_frames(engine, view, current_tokens, OUTSIDE_FRAMES)
 
 
-def _phase_host_frames(engine: Any, view: list[dict[str, Any]], current_tokens: int, remaining: int) -> Any:
+def _phase_host_frames(engine: Any, view: list[dict[str, Any]], current_tokens: int | None, remaining: int) -> Any:
     if remaining > 1:
         return _phase_host_frames(engine, view, current_tokens, remaining - 1)
     return engine._compress_impl(view, current_tokens=current_tokens, force=False)
@@ -104,6 +104,10 @@ def test_sweep_phase_host_callbacks_preserve_auxiliary_at_host_depth(
                     large_output_active_replay_stubbing_enabled=False,
                     large_output_externalization_path=str(tmp_path / "payloads"))
     settings.update(dict(case.overrides))
+    if phase == "prepare":
+        # No host usage observation or explicit prefix cap: seeded summaries
+        # reach the estimator through the deeper trial-assembly budget path.
+        settings.update(context_threshold=0.02, max_assembly_tokens=0, summary_prefix_target_tokens=0)
     agent = _LateAuxiliaryAgent()
     boundary_parent = "_stub_first_exit" if phase == "prepare" else "_run_threshold_sweep_condensation"
     distances: dict[str, int] = {}
@@ -161,7 +165,7 @@ def test_sweep_phase_host_callbacks_preserve_auxiliary_at_host_depth(
         auxiliary.call_llm = call_llm
         monkeypatch.setitem(sys.modules, metadata.__name__, metadata)
         monkeypatch.setitem(sys.modules, auxiliary.__name__, auxiliary)
-        for i, depth in enumerate(case.seeded_depths):
+        for i, depth in enumerate(case.seeded_depths or (0,)):
             engine._dag.add_node(dag.SummaryNode(
                 session_id="foreground-session", depth=depth, summary=f"Seed {i}. " + PAD,
                 token_count=500, source_token_count=1000, source_ids=[],
@@ -169,7 +173,7 @@ def test_sweep_phase_host_callbacks_preserve_auxiliary_at_host_depth(
         previous = sys.getprofile()
         sys.setprofile(profile)
         try:
-            agent.compress(engine, transcript(case), int(case.current_tokens or 0))
+            agent.compress(engine, transcript(case), None if phase == "prepare" else int(case.current_tokens or 0))
         finally:
             sys.setprofile(previous)
         assert answers and all(session == "review-session" and generation > 0 for session, generation in answers)
