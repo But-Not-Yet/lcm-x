@@ -51,6 +51,7 @@ CONFIG_ROWS = (
     ('large_output_externalization_enabled', 'LCM_LARGE_OUTPUT_EXTERNALIZATION_ENABLED', 'bool', True),
     ('large_output_active_replay_stubbing_enabled', 'LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUBBING_ENABLED', 'bool', True),
     ('large_output_transcript_gc_enabled', 'LCM_LARGE_OUTPUT_TRANSCRIPT_GC_ENABLED', 'bool', False),
+    ('stub_first_exit_target_ratio', 'LCM_STUB_FIRST_EXIT_TARGET_RATIO', 'float', 0.0),
     ('native_recovery', 'LCM_NATIVE_RECOVERY', 'bool', False),
     ('survival_fit', 'LCM_SURVIVAL_FIT', 'bool', True),
     ('embeddings_enabled', 'LCM_EMBEDDINGS_ENABLED', 'bool', False),
@@ -167,13 +168,14 @@ EXTRA_CONFIG_ROWS = (
     ("ignore_message_patterns", "LCM_IGNORE_MESSAGE_PATTERNS", "list", []),
 )
 
-# from_env has validation after the primitive reader for these five fields.
+# from_env has validation after the primitive reader for these six fields.
 SPECIAL = {
     "fresh_tail_max_tokens": (D, D, D, D, 1, 0, D, D, D, D, D, D, D, 0, D, HUGE),
     "leaf_target_ratio": (D, D, D, D, 1.0, D, D, D, D, D, D, D, D, D, 0.5, D),
     "leaf_target_min_tokens": (D, D, D, D, 1, D, D, D, D, D, D, D, D, D, D, D),
     "leaf_target_max_tokens": (D, D, D, D, D, D, D, D, D, D, D, D, D, D, D, HUGE),
     "summary_prompt_version": (1,) * 16,
+    "stub_first_exit_target_ratio": (D, D, D, D, 1.0, 0.0, D, D, D, D, D, D, D, D, 0.5, D),
 }
 
 

@@ -662,6 +662,7 @@ ENV_FIELD_SPECS: tuple[_EnvFieldSpec, ...] = (
         int,
     ),
     _EnvFieldSpec("large_output_transcript_gc_enabled", "LCM_LARGE_OUTPUT_TRANSCRIPT_GC_ENABLED", bool),
+    _EnvFieldSpec("stub_first_exit_target_ratio", "LCM_STUB_FIRST_EXIT_TARGET_RATIO", float),
     _EnvFieldSpec("summary_model", "LCM_SUMMARY_MODEL", str),
     _EnvFieldSpec("native_recovery", "LCM_NATIVE_RECOVERY", bool),
     _EnvFieldSpec("survival_fit", "LCM_SURVIVAL_FIT", bool),
@@ -754,6 +755,7 @@ _SOURCE_TRACKED_ENV_FIELDS = frozenset({
     "summary_spend_backoff_seconds",
     "summary_timeout_ms",
     "summary_prompt_version",
+    "stub_first_exit_target_ratio",
 })
 
 # Fields exposed as runtime preset overrides (consumed by presets.py).
@@ -1188,6 +1190,9 @@ class LCMConfig:
     # #787: the background preparation's own spend guard: at most this many summariser calls per window.
     background_leaf_prep_max_calls: int = 8
     background_leaf_prep_window_s: float = 600.0
+    # #671 stub-first exit: a share of the threshold that lowers the exit's target to
+    # min(threshold - leaf chunk, 0.95 x threshold, int(ratio x threshold)); 0 = the built-in target.
+    stub_first_exit_target_ratio: float = 0.0
 
     @classmethod
     def from_env(cls) -> "LCMConfig":
@@ -1318,6 +1323,15 @@ class LCMConfig:
             warning = f"unsupported env LCM_SUMMARY_PROMPT_VERSION={c.summary_prompt_version!r} ignored; using 1"
             c.summary_prompt_version, source = 1, "default"
         _record("summary_prompt_version", source, warning)
+        # #671 stub-first exit target; an out-of-range value falls back to the built-in target with a warning.
+        c.stub_first_exit_target_ratio, source, warning = _parse_float_env_with_source(
+            "LCM_STUB_FIRST_EXIT_TARGET_RATIO", c.stub_first_exit_target_ratio
+        )
+        if not 0 <= c.stub_first_exit_target_ratio <= 1:
+            warning = (f"invalid env LCM_STUB_FIRST_EXIT_TARGET_RATIO={c.stub_first_exit_target_ratio!r} ignored "
+                       "(must be >= 0 and <= 1)")
+            c.stub_first_exit_target_ratio, source = LCMConfig.stub_first_exit_target_ratio, "default"
+        _record("stub_first_exit_target_ratio", source, warning)
 
         # Every other scalar LCM_* override is applied uniformly from the spec.
         for spec in ENV_FIELD_SPECS:

@@ -149,7 +149,7 @@ Run `actionlint` when workflows change. Record exact commands and results in the
 - Pin the PR base SHA and `headRefOid`; CI and review must cover that exact head or an
   explicitly bounded delta.
 - Enforcement is strict exact-head CI (`workflow-lint`, `lint`, `test (3.11)` through
-  `test (3.14)`), required review-thread resolution, and merge commits only. Keep strict
+  `test (3.14)`, and `differential` on the PR head), required review-thread resolution, and merge commits only. Keep strict
   required-status enforcement enabled so a protected-base change blocks merging until CI passes
   on an up-to-date head.
 - Review obligation (`land-pr`): every PR needs at least one independent review of the exact
