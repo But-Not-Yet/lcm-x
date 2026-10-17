@@ -147,6 +147,7 @@ class ForegroundBudget:
         self.pre_leaf = None  # #1127: the PhaseSqlTrace of the pre-leaf phase while it runs
         self.host = 0.0  # D5: seconds inside the host's native compressor (a bypassed session), not LCM work
         self.selected = False  # #1162: this compaction selected a leaf chunk (its zero-leaf pass counts)
+        self.summary_failure = ""  # #1162: sticky across every summary call/route in this pass
 
     @property
     def usable_deadline(self) -> float:
@@ -992,6 +993,55 @@ def _invoke_summary_llm_chain(
     verbatim_small_source: bool = False,
     context_length_rescue: bool = False,
 ) -> Optional[str]:
+    """Record failures only when the whole route chain ends without a usable result."""
+    chain_error = None
+    context_length_handoff = False
+
+    def note_error(error):
+        nonlocal chain_error, context_length_handoff
+        if error is None:  # #751: the leaf caller will retry a smaller chunk.
+            context_length_handoff = True
+        else:
+            chain_error = type(error).__name__
+
+    try:
+        result = _invoke_summary_llm_routes(
+            prompt, max_tokens, model=model, fallback_models=fallback_models, timeout=timeout,
+            reasoning_effort=reasoning_effort, circuit_breaker=circuit_breaker, spend_guard=spend_guard,
+            accepts_result=accepts_result, source_tokens=source_tokens, provenance=provenance,
+            deadline=deadline, route_key_prefix=route_key_prefix, budget=budget,
+            verbatim_small_source=verbatim_small_source, context_length_rescue=context_length_rescue,
+            note_error=note_error,
+        )
+    except Exception:
+        if budget is not None and chain_error:
+            budget.summary_failure = f"summary call failed: {chain_error}"
+        raise
+    if result is None and budget is not None and chain_error and not context_length_handoff:
+        budget.summary_failure = f"summary call failed: {chain_error}"
+    return result
+
+
+def _invoke_summary_llm_routes(
+    prompt: str,
+    max_tokens: int,
+    *,
+    note_error: Callable[[BaseException | None], None],
+    model: str = "",
+    fallback_models: list[str] | tuple[str, ...] | None = None,
+    timeout: float | None = None,
+    reasoning_effort: str = "",
+    circuit_breaker: SummaryCircuitBreaker | None = None,
+    spend_guard: "SummarySpendGuard | None" = None,
+    accepts_result: Callable[[str], bool] | None = None,
+    source_tokens: int | None = None,
+    provenance: dict | None = None,
+    deadline: float | None = None,
+    route_key_prefix: str = "",
+    budget: ForegroundBudget | None = None,
+    verbatim_small_source: bool = False,
+    context_length_rescue: bool = False,
+) -> Optional[str]:
     """``deadline`` (absolute ``time.monotonic()``) bounds every route attempt (#666); a foreground ``budget``
     (#605) replaces it: it admits each attempt and caps its timeout at the usable time left.
     ``route_key_prefix`` gives a caller its own breaker keys (#669: rollups); empty keeps the live keys.
@@ -1036,6 +1086,8 @@ def _invoke_summary_llm_chain(
         )
         result, route, error = attempt.text, attempt.route, attempt.error
         started, ended = attempt.timing.started, attempt.timing.ended
+        if error is not None:
+            note_error(error)
         if budget is not None:
             budget.record_call(route_key, started, ended)
         # Non-empty results consult the acceptance callback after route bookkeeping.
@@ -1103,6 +1155,7 @@ def _invoke_summary_llm_chain(
             if provenance is not None:  # the filtered chunk must not open the route's circuit
                 provenance["content_filter_error"] = True
         elif outcome.kind is SummaryOutcomeKind.CONTEXT_LENGTH:
+            note_error(None)
             if provenance is not None:  # #751: the chunk is too large for this route; the caller shrinks it
                 provenance["context_length_error"] = True
         elif circuit_breaker is not None:
