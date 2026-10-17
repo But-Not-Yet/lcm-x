@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -91,7 +93,7 @@ def response_bytes(engine: Any) -> dict[str, str]:
 
 
 def test_inspect_response_bytes(inventory: Any) -> None:
-    expected = json.loads((Path(__file__).parent / "fixtures" / "inspect_contract.json").read_text())
+    expected = json.loads((Path(__file__).parent / "fixtures" / "inspect_contract.json").read_text(encoding="utf-8"))
     assert response_bytes(inventory) == expected
 
 
@@ -115,3 +117,23 @@ def test_inspect_rollup_failure_preserves_logger(
         ("hermes_lcm.tools", "DEBUG", "LCM temporal rollup status query failed"),
     ]
     assert caplog.records[0].exc_info is not None
+
+
+def test_inspect_tools_imports_before_tools() -> None:
+    # A command-only process can import inspect_tools first; the direct
+    # tools.lcm_inspect binding must still resolve in a fresh interpreter.
+    root = str(Path(__file__).resolve().parents[1])
+    code = (
+        "import importlib, importlib.util, sys\n"
+        f"root = {root!r}\n"
+        "spec = importlib.util.spec_from_file_location('hermes_lcm', root + '/__init__.py', "
+        "submodule_search_locations=[root])\n"
+        "package = importlib.util.module_from_spec(spec)\n"
+        "package.__path__ = [root]\n"
+        "sys.modules['hermes_lcm'] = package\n"
+        "inspect_module = importlib.import_module('hermes_lcm.inspect_tools')\n"
+        "tools_module = importlib.import_module('hermes_lcm.tools')\n"
+        "assert tools_module.lcm_inspect is inspect_module.lcm_inspect\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr[-2000:]
