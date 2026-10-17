@@ -469,6 +469,13 @@ class Canonical:
         return {"excluded_type": type(value).__name__}
 
 
+TRACE_GUIDANCE = (
+    "Regenerate from repo root: python -m tests.behaviour.compress_trace_harness --regenerate\n"
+    "Attribute every changed event in the PR description to its commit or behaviour change.\n"
+    "See docs/process/turn-path-probe-packet.md#golden-traces."
+)
+
+
 def encoded(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
