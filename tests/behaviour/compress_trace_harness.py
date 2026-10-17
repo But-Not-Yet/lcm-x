@@ -237,7 +237,8 @@ class LiteralPattern:
 
 # Deliberately frozen: extracting compaction phases must not change observation.
 # The original 123 names include callable fingerprints. Four existing helper
-# state fields complete the transitive inventory; update the golden deliberately
+# state fields complete the original transitive inventory. The two hung-route
+# fields added on the R3 train are also read/written by compaction. Update deliberately
 # when changing this list, never derive the runtime observer from source.
 OBSERVED_ATTRIBUTES = (
     "_active_replay_placeholder_digest",
@@ -278,6 +279,7 @@ OBSERVED_ATTRIBUTES = (
     "_hidden_backlog_label",
     "_hidden_backlog_status",
     "_hung_summary_route_has_fallback",
+    "_hung_summary_strike",
     "_identity_anchor_extend_chunk",
     "_identity_anchor_summary_input",
     "_ingest_cursor",
@@ -358,6 +360,7 @@ OBSERVED_ATTRIBUTES = (
     "_survival_host_overhead",
     "_survival_pass_observed",
     "_sweep_budget_hold_applies",
+    "_sweep_budget_hold_turn_paced",
     "_sweep_budget_hold_until",
     "_take_leaf_summary_model",
     "_thread_context_session_id",
