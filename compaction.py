@@ -21,7 +21,8 @@ import logging
 import sys
 import time
 from collections import Counter
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, List, Literal, Optional
 
 from .dag import SummaryNode
 from .escalation import (
@@ -71,6 +72,20 @@ _THRESHOLD_FULL_SWEEP_PARTIAL_STOP_REASONS = frozenset({
     "condensation_no_progress",
     "no_same_depth_condensation_group",
 })
+
+
+@dataclass
+class _CompressionState:
+    """Per-invocation phase results; engine-owned state stays on the engine."""
+
+    boundary_cleanup_only_requested: bool = False
+    below_threshold_cleanup_only_requested: bool = False
+    automatic_preflight_requested: bool = False
+    hold_fit_only_requested: bool = False
+    _compress_started: float = 0.0
+    observed_prompt_tokens: Optional[int] = None
+    force_overflow: bool = False
+    recovery_assembly_cap: Optional[int] = None
 
 
 class CompactionMixin:
@@ -1342,33 +1357,26 @@ class CompactionMixin:
         covering = {node: tokens for node, tokens, store_id in leaf_sources if store_id in dropped_ids}
         return [*range(scaffold, start), *sorted(dropped)], ids, sum(covering.values()), len(rows) - len(dropped)
 
-    def _compress_impl(self, messages: List[Dict[str, Any]],
-                       current_tokens: int = None,
-                       focus_topic: Optional[str] = None,
-                       force: bool = False,
-                       recovery_attempt: bool = False) -> List[Dict[str, Any]]:
-        """Main compaction entry point.
-
-        1. Ingest any new messages into the store
-        2. Identify messages outside the fresh tail
-        3. Summarize them into DAG leaf nodes
-        4. Check if condensation is needed
-        5. Assemble new active context: summaries + fresh tail
-        """
+    def _begin_compression(self, state: _CompressionState,
+                           messages: List[Dict[str, Any]],
+                           current_tokens: int = None,
+                           focus_topic: Optional[str] = None,
+                           force: bool = False) -> tuple[Literal["next", "return"], Optional[List[Dict[str, Any]]]]:
+        """Consume the invocation request and handle empty or bypassed inputs."""
         self._objective_only_noop = False
         self._compress_dropped_ignored_rows = False
         self._compress_host_rows_consumed = self._compress_hidden_rows_consumed = 0
         # Preflight handoffs are one-shot instructions for this invocation.
         # Consume them before every early return so a later unrelated turn can
         # never inherit stale cleanup-only state.
-        boundary_cleanup_only_requested = bool(
+        state.boundary_cleanup_only_requested = bool(
             self._compaction_request.cleanup_only_due_to_boundary_cooldown
         )
-        below_threshold_cleanup_only_requested = bool(
+        state.below_threshold_cleanup_only_requested = bool(
             self._compaction_request.below_threshold_cleanup_only
         )
-        automatic_preflight_requested = bool(self._compaction_request.automatic_request)
-        hold_fit_only_requested = bool(self._compaction_request.hold_fit_only_requested)
+        state.automatic_preflight_requested = bool(self._compaction_request.automatic_request)
+        state.hold_fit_only_requested = bool(self._compaction_request.hold_fit_only_requested)
         self._compaction_request.cleanup_only_due_to_boundary_cooldown = False
         self._compaction_request.below_threshold_cleanup_only = False
         self._compaction_request.automatic_request = False
@@ -1377,11 +1385,11 @@ class CompactionMixin:
         if not messages:
             self._last_compression_status = "noop"
             self._last_compression_noop_reason = "empty message list"
-            return messages
+            return "return", messages
 
         self._last_compression_status = "running"
         self._last_compression_noop_reason = ""
-        _compress_started = time.perf_counter()
+        state._compress_started = time.perf_counter()
 
         self._maybe_reclassify_late_auxiliary_before_compaction_write()
         if self._bypasses_lcm_context_management():
@@ -1397,7 +1405,7 @@ class CompactionMixin:
                     )
                     if auxiliary_prompt_tokens > 0:
                         bypass_current_tokens = auxiliary_prompt_tokens
-            return self._compress_lcm_bypassed_session(
+            return "return", self._compress_lcm_bypassed_session(
                 messages,
                 current_tokens=bypass_current_tokens,
                 focus_topic=focus_topic,
@@ -1414,30 +1422,58 @@ class CompactionMixin:
         # yield-aware preflight, use the current active messages as the
         # pressure observation when the host calls ``compress(messages)`` so
         # the follow-up invocation can re-arm the advertised bounded yield.
-        observed_prompt_tokens = (
+        state.observed_prompt_tokens = (
             current_tokens
             if current_tokens is not None
             else count_messages_tokens(messages)
         )
-        force_overflow = self._should_force_overflow_recovery(
-            observed_tokens=observed_prompt_tokens,
+        state.force_overflow = self._should_force_overflow_recovery(
+            observed_tokens=state.observed_prompt_tokens,
             messages=messages,
         )
-        self._compress_forced_overflow = force_overflow
+        self._compress_forced_overflow = state.force_overflow
         # NOTE: deliberately do NOT clear the spend guard on force_overflow.
         # force_overflow is automatic (set every turn the prompt exceeds the
         # assembly cap), which is exactly the sustained-over-cap state a runaway
         # compaction loop produces - clearing it per turn would defeat the guard
         # in the case it exists for. A tripped guard still converges the
         # emergency via deterministic L3 truncation (no LLM spend).
-        recovery_assembly_cap = (
+        state.recovery_assembly_cap = (
             self._overflow_recovery_assembly_cap(
-                observed_tokens=observed_prompt_tokens,
+                observed_tokens=state.observed_prompt_tokens,
                 messages=messages,
             )
-            if force_overflow
+            if state.force_overflow
             else None
         )
+
+        return "next", None
+
+    def _compress_impl(self, messages: List[Dict[str, Any]],
+                       current_tokens: int = None,
+                       focus_topic: Optional[str] = None,
+                       force: bool = False,
+                       recovery_attempt: bool = False) -> List[Dict[str, Any]]:
+        """Main compaction entry point.
+
+        1. Ingest any new messages into the store
+        2. Identify messages outside the fresh tail
+        3. Summarize them into DAG leaf nodes
+        4. Check if condensation is needed
+        5. Assemble new active context: summaries + fresh tail
+        """
+        state = _CompressionState()
+        action, result = self._begin_compression(state, messages, current_tokens, focus_topic, force)
+        if action == "return":
+            return result
+        boundary_cleanup_only_requested = state.boundary_cleanup_only_requested
+        below_threshold_cleanup_only_requested = state.below_threshold_cleanup_only_requested
+        automatic_preflight_requested = state.automatic_preflight_requested
+        hold_fit_only_requested = state.hold_fit_only_requested
+        _compress_started = state._compress_started
+        observed_prompt_tokens = state.observed_prompt_tokens
+        force_overflow = state.force_overflow
+        recovery_assembly_cap = state.recovery_assembly_cap
 
         # Step 1: Ingest new messages into the immutable store. Work from a
         # replay-safe view so quarantined assistant loops do not enter summaries
