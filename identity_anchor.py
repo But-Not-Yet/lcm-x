@@ -362,7 +362,7 @@ class IdentityAnchorMixin:
         """Rows in ``[start, cursor)`` of a list the host changed before the cursor: a stamped host row,
         or an unstamped user row the host inserted there (#633: a /steer row; by content alone), that
         no stored occurrence explains (key, witness, alias, or a stored copy of its content -- up to
-        edge whitespace, under another stamp or none -- in the tail of this session or a verified
+        edge whitespace, with the same stamp or none -- in the tail of this session or a verified
         ancestor, each copy used once) and no ignore pattern drops was never stored. The cursor moves back
         to the first such row; every other row of that range stays a replay (today's positional proof)."""
         from .reconcile import _proof_user_identity
@@ -401,6 +401,9 @@ class IdentityAnchorMixin:
                 plan.setdefault("matched", {})[idx] = [ws]  # host-uid shadow only
                 plan.setdefault("ws", []).append((ws, identity_messages[idx]))
                 continue
+            # #1328: equal content at a different known stamp is a different occurrence.
+            # Keep legacy unstamped copies eligible for the existing unique backfill.
+            copies = [row for row in copies if row.get("observed_at") in (None, stamps[idx])]
             if copies:
                 consumed.add(int(copies[0]["store_id"]))
                 plan.setdefault("matched", {})[idx] = [copies[0]]  # host-uid shadow only
