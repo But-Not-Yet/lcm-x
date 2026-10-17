@@ -16,6 +16,7 @@ class ResetStateMixin:
 
         Safe to call on boundary skip because it does not affect compaction progress.
         """
+        self._hung_summary_strike = None  # #1096: conversation changes also reset counters only
         self.compression_count = 0
         self.last_prompt_tokens = 0
         self._last_gate_tokens = 0  # #954: a rebind never inherits the previous binding's gate observation
@@ -74,5 +75,6 @@ class ResetStateMixin:
         self._zero_leaf_streaks = {}  # #1162: nor does its zero-leaf streak (a kept conversation id included)
         self._objective_only_noop = False
         self._sweep_budget_hold_until, self._sweep_budget_hold_conversation = 0.0, ""
+        self._hung_summary_strike, self._sweep_budget_hold_turn_paced = None, False
         # #677: a preflight request of the previous binding never shapes the next one's compress().
         self._compaction_request.below_threshold_cleanup_only = self._compaction_request.automatic_request = False

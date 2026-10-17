@@ -1616,6 +1616,9 @@ def _lcm_grep_full_text(args: Dict[str, Any], **kwargs) -> str:
     if content_scope not in _LCM_GREP_VALID_CONTENT_SCOPES:
         return json.dumps({"error": "content_scope must be one of: history, externalized, both"})
     raw_externalized_refs = args.get("externalized_refs")
+    if raw_externalized_refs == []:
+        # An empty optional array means "not provided" (#1194).
+        raw_externalized_refs = None
     if raw_externalized_refs is not None and content_scope == "history":
         return json.dumps({"error": "externalized_refs requires content_scope=externalized or both"})
     externalized_refs: list[str] | None = None
@@ -4402,8 +4405,12 @@ def lcm_recall(args: Dict[str, Any], **kwargs) -> str:
         getattr(engine._config, "recall_reference_strict", True)
     )
 
-    delta_requested = "seen_refs" in args
     raw_seen_refs = args.get("seen_refs")
+    # An empty cursor starts an answer_ready delta; with any other detail it
+    # means "not provided" (#1194).
+    delta_requested = "seen_refs" in args and not (
+        raw_seen_refs == [] and detail != "answer_ready"
+    )
     if delta_requested and detail != "answer_ready":
         return json.dumps({"error": "seen_refs requires detail='answer_ready'"})
     if delta_requested and not isinstance(raw_seen_refs, list):
@@ -5190,8 +5197,9 @@ def lcm_expand_query(args: Dict[str, Any], **kwargs) -> str:
     if output not in {"answer", "evidence"}:
         return json.dumps({"error": "output must be one of: answer, evidence"})
 
-    session_ids_explicit = "session_ids" in args
     raw_session_ids = args.get("session_ids")
+    # An empty optional array means "not provided" (#1194).
+    session_ids_explicit = "session_ids" in args and raw_session_ids != []
     if not session_ids_explicit:
         session_ids = [engine.current_session_id]
     elif not isinstance(raw_session_ids, list) or not raw_session_ids:
@@ -6889,7 +6897,8 @@ def lcm_doctor(args: Dict[str, Any], **kwargs) -> str:
 
     # 7. Context pressure
     if engine.context_length > 0:
-        usage_pct = round(engine.last_prompt_tokens / engine.context_length * 100, 1) if engine.context_length else 0
+        used_tokens = max(int(engine.last_prompt_tokens or 0), int(getattr(engine, "_last_gate_tokens", 0) or 0))
+        usage_pct = round(used_tokens / engine.context_length * 100, 1) if engine.context_length else 0
         runtime_threshold = float(getattr(engine, "context_threshold", c.context_threshold))
         threshold_pct = round(runtime_threshold * 100, 1)
         checks.append({
