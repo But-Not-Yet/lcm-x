@@ -41,6 +41,7 @@ if __name__ == "__main__":
     sys.modules["hermes_lcm"] = package
 
 import tests.conftest  # noqa: E402, F401
+from tests.behaviour.frontier_observer import observed_attribute  # noqa: E402
 from tests.phase0_hygiene import product_env_keys
 from tests.harness import engine_context, pin_char_counter  # noqa: E402
 
@@ -334,7 +335,7 @@ class LiteralPattern:
 def snapshot(engine: Any, canonical: Canonical) -> dict[str, Any]:
     state: dict[str, Any] = {}
     for name in sorted(OBSERVED_ATTRIBUTES):
-        value = getattr(engine, name, {"absent": True})
+        value = observed_attribute(engine, name)
         if name == "_store":
             value = {table: [tuple(row) for row in engine._store._conn.execute(f"SELECT * FROM {table} ORDER BY 1")]
                      for table in ("messages", "metadata")}
