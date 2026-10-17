@@ -50,6 +50,20 @@ def test_engine_policy_writes_denial_to_durable_audit(tmp_path: Path) -> None:
         assert events[0]["allowed"] is False
 
 
+def test_public_ingest_does_not_consult_teams_policy_or_audit(tmp_path: Path) -> None:
+    with harness.engine_context(tmp_path, window=32000) as engine:
+        catalog.ensure_teams_catalog(engine._store.connection)
+        engine.lcm_teams_enabled = True
+        engine.get_lcm_access_context = lambda: None
+        policy = resolution.policy_for_engine(engine)
+        assert not policy.authorize_operation(None, "write", {}).allowed
+        assert catalog.read_audit_events(engine._store.connection) == []
+        # observed behaviour; see REPORT: the public write never reaches the policy/audit seam.
+        engine.ingest([harness.user("Synthetic audit fixture.")])
+        assert [row["content"] for row in harness.stored_rows(engine)] == ["Synthetic audit fixture."]
+        assert catalog.read_audit_events(engine._store.connection) == []
+
+
 def test_abandon_retrieval_removes_handle_without_changing_history(tmp_path: Path) -> None:
     with harness.engine_context(tmp_path, window=32000, adaptive_retrieval_enabled=True) as engine:
         engine.ingest([harness.user("Keep the visit record.")])

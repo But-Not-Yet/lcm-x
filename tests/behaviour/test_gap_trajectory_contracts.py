@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
+import struct
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +42,10 @@ class RecordingProvider:
         return [1.0, 0.0]
 
 
-def make_store(tmp_path: Path, provider: RecordingProvider) -> Any:
+def make_store(
+    tmp_path: Path, provider: RecordingProvider,
+    texts: tuple[str, ...] = ("visible 🐑 café 🐑 boundary",),
+) -> Any:
     asset = tmp_path / "state.png"
     asset.write_bytes(b"fixture")
     identity = trajectory.CorpusIdentity(
@@ -48,13 +53,13 @@ def make_store(tmp_path: Path, provider: RecordingProvider) -> Any:
         tier="small", domain="web", ingest_config_digest="fixture-v1",
     )
     store = trajectory.TrajectoryStore(tmp_path / "lcm.db", identity, asset_root=tmp_path, embedding_provider=provider)
-    state = trajectory.TrajectoryState(
-        state_index=0, step=0, url="https://example.test/", incoming_action=None,
-        thoughts="Inspect", text="visible 🐑 café 🐑 boundary", screenshot_path=asset,
-    )
+    states = tuple(trajectory.TrajectoryState(
+        state_index=index, step=index, url="https://example.test/", incoming_action=None,
+        thoughts="Inspect", text=text, screenshot_path=asset,
+    ) for index, text in enumerate(texts))
     store.insert(trajectory.TrajectorySource(
-        trajectory_id="fixture", ordinal=0, goal="Inspect", start_url=state.url,
-        outcome="done", states=(state,), source_payload={"id": "fixture"},
+        trajectory_id="fixture", ordinal=0, goal="Inspect", start_url=states[0].url,
+        outcome="done", states=states, source_payload={"id": "fixture"},
     ))
     store.finalize(["fixture"])
     return store
@@ -73,23 +78,94 @@ def test_public_state_backfill_preserves_unicode_and_resumes(
             with pytest.raises(ValueError, match="Unicode character boundary"):
                 store.build_state_semantic_index(document_token_budget=budget)
             assert store.active_state_semantic_profile() is None
-        else:
-            stats = store.build_state_semantic_index(document_token_budget=budget)
-            assert stats["states_embedded"] == stats["chunked_states"] == 1
-            assert all(len(text.encode("utf-8")) <= budget for text in provider.documents)
-            # First request probes dimension; subsequent requests cover the exact document once.
-            reconstructed = "".join(provider.documents[1:])
-            assert "visible 🐑 café 🐑 boundary" in reconstructed
-            assert "�" not in reconstructed
-            calls = len(provider.documents)
-            resumed = store.build_state_semantic_index(document_token_budget=budget)
-            assert resumed["already_embedded"] == 1
-            # observed behaviour; see REPORT row 1
-            assert len(provider.documents) == calls + 1
-            assert resumed["states_embedded"] == 0
-            assert resumed["provider_calls"] == 1
+            # State chunks are pooled in memory, not stored in a separate chunk table.
+            for table in ("lcm_trajectory_state_embeddings", "lcm_trajectory_state_embedding_profiles"):
+                assert store.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        stats = store.build_state_semantic_index(document_token_budget=7)
+        assert stats["states_embedded"] == stats["chunked_states"] == 1
+        assert all(len(text.encode("utf-8")) <= 7 for text in provider.documents)
+        # First request probes dimension; subsequent requests cover the exact document once.
+        assert "".join(provider.documents[1:]) == "visible 🐑 café 🐑 boundary"
+        profiles = store.connection.execute(
+            "SELECT profile_digest, active FROM lcm_trajectory_state_embedding_profiles"
+        ).fetchall()
+        assert [tuple(row) for row in profiles] == [(stats["profile_digest"], 1)]
+        calls = len(provider.documents)
+        resumed = store.build_state_semantic_index(document_token_budget=7)
+        assert resumed["already_embedded"] == 1
+        # observed behaviour; see REPORT: a complete backfill still probes dimension.
+        assert len(provider.documents) == calls + 1
+        assert resumed["states_embedded"] == 0
+        assert resumed["provider_calls"] == 1
         rows = store.connection.execute("SELECT text FROM lcm_trajectory_states").fetchall()
         assert [row[0] for row in rows] == ["visible 🐑 café 🐑 boundary"]
+    finally:
+        store.close()
+
+
+def test_interrupted_state_backfill_resumes_after_reopen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness.pin_char_counter(monkeypatch)
+    texts = ("first state", "second state", "third state")
+    provider = RecordingProvider()
+    store = make_store(tmp_path, provider, texts)
+    identity = store.identity
+    requests: list[list[str]] = []
+    embed_documents = provider.embed_documents
+
+    def fail_second_request(documents: list[str]) -> list[list[float]]:
+        requests.append(list(documents))
+        if len(requests) == 2:
+            raise RuntimeError("fixture interrupted backfill")
+        return embed_documents(documents)
+
+    monkeypatch.setattr(provider, "embed_documents", fail_second_request)
+    try:
+        state_ids = [row[0] for row in store.connection.execute(
+            "SELECT state_id FROM lcm_trajectory_states ORDER BY state_id"
+        )]
+        with pytest.raises(RuntimeError, match="fixture interrupted backfill"):
+            store.build_state_semantic_index(batch_max_items=1)
+        partial = [tuple(row) for row in store.connection.execute(
+            "SELECT state_id, profile_digest, document_sha256, vector "
+            "FROM lcm_trajectory_state_embeddings ORDER BY state_id"
+        )]
+        assert [row[0] for row in partial] == state_ids[:1]
+        assert requests == [[texts[0]], [texts[1]]]
+        assert store.active_state_semantic_profile() is None
+    finally:
+        store.close()
+
+    provider = RecordingProvider()
+    store = trajectory.TrajectoryStore(
+        tmp_path / "lcm.db", identity, asset_root=tmp_path, embedding_provider=provider,
+    )
+    try:
+        assert store.active_state_semantic_profile() is None
+        activations: list[Any] = []
+        stats = store.build_state_semantic_index(
+            batch_max_items=1,
+            progress_callback=lambda _stats: activations.append(store.active_state_semantic_profile()),
+        )
+        assert activations and all(profile is None for profile in activations)
+        assert stats["already_embedded"] == 1
+        assert stats["states_embedded"] == 2
+        # The query probe repeats the first state; document requests must only embed the remainder.
+        assert provider.documents == [texts[0], texts[1], texts[2]]
+        rows = [tuple(row) for row in store.connection.execute(
+            "SELECT state_id, profile_digest, document_sha256, vector "
+            "FROM lcm_trajectory_state_embeddings ORDER BY state_id"
+        )]
+        assert rows[:1] == partial
+        assert rows == [
+            (state_id, stats["profile_digest"], hashlib.sha256(text.encode()).hexdigest(), struct.pack("<ff", 1.0, 0.0))
+            for state_id, text in zip(state_ids, texts)
+        ]
+        profiles = store.connection.execute(
+            "SELECT profile_digest, state_count, active FROM lcm_trajectory_state_embedding_profiles"
+        ).fetchall()
+        assert [tuple(row) for row in profiles] == [(stats["profile_digest"], 3, 1)]
     finally:
         store.close()
 
