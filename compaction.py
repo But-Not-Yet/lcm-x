@@ -29,6 +29,7 @@ from .escalation import (
     ForegroundBudget,
     ForegroundEstimates,
     SweepBudgetExhausted,
+    UnattributedRescueRefused,
 )
 from .externalize import ingest_payload_writes, payload_lookup_scope
 from .fresh_tail import tool_group_safe_end
@@ -74,6 +75,19 @@ _THRESHOLD_FULL_SWEEP_PARTIAL_STOP_REASONS = frozenset({
 
 
 class CompactionMixin:
+    def _warn_unattributed_leaf(self, rows) -> None:
+        # #1147 r1: share the warn-once refusal across admission, rescue and publication.
+        frontier = self._store_complete_frontier()
+        warning_key = (self._conversation_id, frontier)
+        if warning_key not in self._unattributed_leaf_warned:
+            self._unattributed_leaf_warned.add(warning_key)
+            leaf_map = self._compress_run.store_ids_by_message_id or {}
+            first_mapped = min((sid for sid in leaf_map.values() if sid > frontier), default="none")
+            logger.warning(
+                "LCM leaf chunk has no durable source above the frontier: frontier=%d rows=%d "
+                "first_mapped_store_id=%s", frontier, len(rows), first_mapped,
+            )
+
     def _maybe_reclassify_late_auxiliary_before_compaction_write(self) -> None:
         maybe_reclassify = getattr(
             self,
@@ -1700,7 +1714,7 @@ class CompactionMixin:
                 pre_leaf_condensation_stop_reason=pre_leaf_condensation_reason,
             )
 
-        no_call_only, refused_input = False, None
+        no_call_only, refused_input, unattributed_leaf_refused = False, None, False
         self._pre_leaf_span("pre_loop", budget.t0)
         if budget.pre_leaf is not None:
             budget.pre_leaf.steps = sweep_step_seconds
@@ -2083,6 +2097,13 @@ class CompactionMixin:
                     " (store_id=%d role=%s kind=%s)" % blocked[:3] if blocked else "")
                 break
             publication_excluded_store_ids.extend(self._store_complete_excluded)
+            leaf_map = self._compress_run.store_ids_by_message_id or {}
+            if not any(claims for _message, claims in anchored_input or ()) and not any(
+                id(message) in leaf_map for message in selected_raw_chunk
+            ) and not self._get_store_ids_for_messages(selected_raw_chunk, leaf_map):
+                self._warn_unattributed_leaf(selected_raw_chunk)  # #1147 r1: refuse before the first call.
+                noop_reason, unattributed_leaf_refused = "selected leaf chunk lacks raw store lineage", True
+                break
             for message, claims in anchored_input or [(message, []) for message in selected_input]:
                 remainder = self._generated_context_carrier_remainder(message)
                 if remainder is not None:
@@ -2142,6 +2163,9 @@ class CompactionMixin:
                 self._last_leaf_level_3_verbatim = False
                 self._last_leaf_content_filter_error = False
                 try:
+                    full_map = self._compress_run.store_ids_by_message_id  # #1147 r1: use the full pass lineage.
+                    self._leaf_rescue_admit = lambda chunk: any(anchor_claims.get(id(m)) for m in chunk) or bool(
+                        self._get_store_ids_for_messages([sources.get(id(m), m) for m in chunk], full_map))
                     summary_kwargs: dict[str, Any] = {"focus_topic": focus_topic}
                     if threshold_full_sweep_active:
                         summary_kwargs["deadline"] = sweep_deadline
@@ -2159,6 +2183,10 @@ class CompactionMixin:
                     if isinstance(exc, SweepBudgetExhausted):
                         sweep_stop_reason = exc.reason  # #608: a stop, with or without a leaf (#605: or soft; any path)
                         break
+                    if isinstance(exc, UnattributedRescueRefused):  # #1147 r1: a safe no-op, before another call.
+                        self._warn_unattributed_leaf(summary_input_chunk)
+                        noop_reason, unattributed_leaf_refused = "selected leaf chunk lacks raw store lineage", True
+                        break
                     if threshold_full_sweep_active and leaf_compacted_this_turn:
                         sweep_stop_reason = "leaf_summary_error"
                         logger.warning(
@@ -2169,6 +2197,7 @@ class CompactionMixin:
                         break
                     raise
                 finally:
+                    self._leaf_rescue_admit = None  # #1147 r1: the rescue hook lives for this call only
                     if threshold_full_sweep_active:
                         sweep_step_done("summariser", step_started)
                 # #652: no truncated level 3 leaf while the fit can rescue; the backlog stays. A level 3 that
@@ -2211,6 +2240,10 @@ class CompactionMixin:
             source_store_ids = sorted(dict.fromkeys(source_store_ids + anchor_claimed_ids))
             consumed_store_ids = self._get_store_ids_for_messages(source_lookup_chunk, full_map)
             consumed_store_ids = sorted(dict.fromkeys(consumed_store_ids + anchor_claimed_ids))
+            if not consumed_store_ids:  # #1141: oldest-prefix rescue can discard the last durable source.
+                self._warn_unattributed_leaf(compacted_chunk)  # #1147 r1: keep the publication backstop.
+                noop_reason, unattributed_leaf_refused = "selected leaf chunk lacks raw store lineage", True
+                break
             earliest_at, latest_at = self._store.get_time_bounds(source_store_ids)
             summary_tokens = count_tokens(summary_text)
 
@@ -2512,7 +2545,10 @@ class CompactionMixin:
                 self._ingest_cursor = len(sanitized_messages)
                 # A resumed committed prefix returns that compaction's output.
                 self._last_compression_status = "compacted" if resumed_prefix else "sanitized"
-                if noop_reason.startswith(_RETAINED_NOOP_REASON):  # #1162: no leaf; the reason stays visible
+                if unattributed_leaf_refused:  # #1147: the refusal reason stays visible
+                    self._last_compression_noop_reason = noop_reason
+                    self._note_fresh_tail_pressure_relieved()
+                elif noop_reason.startswith(_RETAINED_NOOP_REASON):  # #1162: no leaf; the reason stays visible
                     self._last_compression_noop_reason = noop_reason
                     logger.info("LCM compression no-op: %s", noop_reason)
                 else:

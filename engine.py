@@ -53,6 +53,7 @@ from .escalation import (
     SummaryCircuitBreaker,
     SummarySpendGuard,
     SweepBudgetExhausted,  # re-exported: compaction and tests import it from .engine
+    UnattributedRescueRefused,
     _summary_model_chain,
     closed_summary_route_status,
     summarize_with_escalation,
@@ -895,6 +896,8 @@ class LCMEngine(
         self._last_compress_leaves: Optional[tuple[str, int]] = None  # #597: latest call, bound conversation
         self._last_hidden_backlog: Optional[HiddenBacklog] = None  # #597: latest check in this compress()
         self._hidden_backlog_unknown_warned: set[str] = set()
+        self._unattributed_leaf_warned: set[tuple[str, int]] = set()
+        self._leaf_rescue_admit: Callable[[list], bool] | None = None  # #1147 r1: per-call rescue lineage check
         self._compaction_request = CompactionRequest()
         self._no_progress_candidate = False  # set by _compress_impl for compress()
         self._objective_only_noop = False
@@ -2356,6 +2359,7 @@ class LCMEngine(
         focus_topic: Optional[str] = None,
         deadline: Optional[float] = None,
     ) -> tuple[List[Dict[str, Any]], int, str, int, int]:
+        admit_rescue = getattr(self, "_leaf_rescue_admit", None)  # #1147 r1: set by the leaf loop for one call
         attempt_chunk = list(initial_chunk)
         budget = self._foreground_call_budget()
         max_attempts = 3
@@ -2426,6 +2430,8 @@ class LCMEngine(
                     context_length_rescue=can_rescue,
                 )
                 if level == 3 and provenance.get("context_length_error") and summary_text != serialized and can_rescue:
+                    if admit_rescue is not None and not admit_rescue(rescue_chunk):  # #1147 r1: refuse before retry.
+                        raise UnattributedRescueRefused()
                     logger.warning(
                         "LCM leaf summarization retrying with smaller oldest chunk after a context-length "
                         "refusal (attempt %d/%d, %d→%d messages, clip budget %d→%d tokens)",
@@ -2440,12 +2446,14 @@ class LCMEngine(
                 self._last_leaf_level_3_verbatim = level == 3 and not clipped and summary_text == serialized
                 return attempt_chunk, source_tokens, summary_text, level, attempt_number
             except Exception as exc:
-                if isinstance(exc, SweepBudgetExhausted):
-                    raise  # a smaller chunk cannot get the time back
+                if isinstance(exc, (SweepBudgetExhausted, UnattributedRescueRefused)):
+                    raise  # #1147 r1: budget and lineage refusals cannot be retried.
                 if attempt_number >= max_attempts or not self._is_retry_worthy_leaf_summary_error(exc):
                     raise
                 if not can_rescue:
                     raise
+                if admit_rescue is not None and not admit_rescue(rescue_chunk):  # #1147 r1: refuse before retry.
+                    raise UnattributedRescueRefused()
                 logger.warning(
                     "LCM leaf summarization retrying with smaller oldest chunk after retry-worthy failure: %s (attempt %d/%d, %d→%d messages)",
                     exc,
