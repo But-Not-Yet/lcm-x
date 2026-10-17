@@ -151,6 +151,9 @@ def load_tree(tree):
 
 def run_case(case, modules, directory, initial_missing, baseline_config="bare", side="candidate"):
     with module_patches() as patch:
+        tokens = modules["tokens"]
+        if hasattr(tokens, "_encoder_generation"):
+            patch(tokens, "_encoder_generation", tokens._encoder_generation + 1)
         for name, value in (("_encoder_ready", True), ("_encoder", None)):
             if hasattr(modules["tokens"], name):
                 patch(modules["tokens"], name, value)
@@ -217,7 +220,7 @@ def _run_case(case, modules, directory, initial_missing, baseline_config, side, 
         def fake_leaf(chunk, focus_topic=None, deadline=None):
             return chunk, tokens.count_messages_tokens(chunk), provider(), 1, 0
 
-        engine._summarize_leaf_chunk_with_rescue = fake_leaf
+        patch(engine, "_summarize_leaf_chunk_with_rescue", fake_leaf)
         for module in modules.values():
             if hasattr(module, "summarize_with_escalation"):
                 patch(module, "summarize_with_escalation", fake_summary)
