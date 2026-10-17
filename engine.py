@@ -145,7 +145,7 @@ from .compaction import CompactionMixin
 from .compaction_request import CompactionRequest
 from .compress_run import CompressRun
 from .identity_anchor import IdentityAnchorMixin, _raw_remainder, identity_anchor_enabled
-from .host_uid import HostUidShadowMixin
+from .host_uid import HostUidShadowMixin, _valid_uid
 from .host_uid_emit import carry_identity, identity_emit_enabled, record_absorbed_message, sync_cached_host_metadata
 from .store_complete import HiddenBacklog, StoreCompleteMixin
 from .survival_fit import SurvivalFitMixin, _carries_survival_notice, _host_estimate, survival_reserve_fraction
@@ -163,7 +163,7 @@ from .sqlite_util import (
     _is_sqlite_locked_error,
     _temporary_sqlite_busy_timeout,
 )
-from .store import MessageStore
+from .store import MessageStore, _normalize_observed_at
 from .tokens import count_message_tokens, count_messages_tokens, count_tokens
 from .assembly_plan import PrefixBudgetFacts, default_prefix_budget, select_prefix, select_tail
 from . import tools as lcm_tools
@@ -5902,6 +5902,24 @@ class LCMEngine(
             redacted_replay_messages.append(redacted_message)
         return redacted_replay_messages
 
+    def _record_compress_commit_proof(self, messages, result) -> None:
+        super()._record_compress_commit_proof(messages, result)
+        if self._compress_commit_proof is not None:
+            # Process-local, like the steady-state replay cache; snapshot before
+            # the host can replace or mutate the returned rows (#1179).
+            self._compress_commit_proof["output_metadata"] = [
+                {key: message.get(key) for key in ("timestamp", "message_uid")}
+                for message in result
+            ]
+
+    @staticmethod
+    def _host_occurrence_changed(message, previous) -> bool:
+        stamp = _normalize_observed_at(message.get("timestamp"))
+        old_stamp = _normalize_observed_at(previous.get("timestamp"))
+        uid, old_uid = message.get("message_uid"), previous.get("message_uid")
+        return ((stamp is not None and old_stamp is not None and stamp != old_stamp)
+                or (_valid_uid(uid) and _valid_uid(old_uid) and uid != old_uid))
+
     def _ingest_messages(
         self,
         messages: List[Dict[str, Any]],
@@ -5935,6 +5953,7 @@ class LCMEngine(
         self._capture_host_rewrites(messages)
         n = len(messages)
         cursor = min(max(self._ingest_cursor, 0), n)
+        new_prefix_occurrences = set()
         proof = getattr(self, "_compress_commit_proof", None)
         if (
             not self._ingest_cursor_needs_reconcile
@@ -5964,6 +5983,14 @@ class LCMEngine(
             elif n >= self._ingest_cursor and [
                 self._proof_replay_identity(m, strip_carrier=False) for m in messages[: self._ingest_cursor]
             ] == proof["output"]:
+                # Content proves position, but a known metadata conflict proves
+                # a new occurrence. Use the output snapshot, not the input cache.
+                new_prefix_occurrences = {
+                    idx for idx, previous in enumerate(proof.get("output_metadata", ()))
+                    if self._host_occurrence_changed(messages[idx], previous)
+                }
+                if new_prefix_occurrences:
+                    cursor = self._ingest_cursor = min(new_prefix_occurrences)
                 self._compress_commit_proof = None
             elif (proof.get("end_consumed") or proof.get("native")) and host_input is not None and n >= len(host_input) and [
                 self._proof_replay_identity(m, strip_carrier=False) for m in messages[: len(host_input)]
@@ -5981,6 +6008,29 @@ class LCMEngine(
                     self._compress_commit_proof = None
                 else:
                     self._ingest_cursor_needs_reconcile = True
+        cached_source_identities = getattr(self, "_last_active_replay_source_identities", None)
+        current_prefix_identities = (
+            [self._message_replay_identity(message, strip_carrier=False) for message in messages[:cursor]]
+            if cursor > 0 and cached_source_identities is not None and len(cached_source_identities) >= cursor
+            else None
+        )
+        # #1179: equal bytes do not prove the same occurrence when the host
+        # replaces a prefix row with a known different stamp or uid. Rewind
+        # BEFORE filtering and pre-match so every exposed row is handled.
+        # Missing metadata on either side retains the legacy positional proof.
+        cached_active_replay_messages = getattr(self, "_last_active_replay_messages", ())
+        if (not self._ingest_cursor_needs_reconcile and current_prefix_identities is not None
+                # After compaction the cursor indexes its output, not this cache
+                # of the last ingested list; the commit proof owns that boundary.
+                and self._ingest_cursor == len(cached_source_identities)):
+            for idx, previous in enumerate(cached_active_replay_messages[:cursor]):
+                if current_prefix_identities[idx] != cached_source_identities[idx]:
+                    break  # content changes retain the existing anchor audit
+                if self._host_occurrence_changed(messages[idx], previous):
+                    new_prefix_occurrences.add(idx)
+            if new_prefix_occurrences:
+                cursor = self._ingest_cursor = min(new_prefix_occurrences)
+                current_prefix_identities = current_prefix_identities[:cursor]
         scan_start = 0 if self._ingest_cursor_needs_reconcile else cursor
         ignored_original_messages = [False] * n
         if self._compiled_ignore_message_patterns:
@@ -6071,12 +6121,12 @@ class LCMEngine(
             )
         # #436: recognise host replays per occurrence (host stamp + full payload identity) in front of
         # the ordered-prefix result above. Fail-open: an error keeps today's path.
-        cached_source_identities = getattr(self, "_last_active_replay_source_identities", None)
-        current_prefix_identities = (
-            [self._message_replay_identity(message, strip_carrier=False) for message in messages[:cursor]]
-            if cursor > 0 and cached_source_identities is not None and len(cached_source_identities) >= cursor
-            else None
-        )
+        if reconciled_existing_session:
+            current_prefix_identities = (
+                [self._message_replay_identity(message, strip_carrier=False) for message in messages[:cursor]]
+                if cursor > 0 and cached_source_identities is not None and len(cached_source_identities) >= cursor
+                else None
+            )
         anchor_plan = None
         if identity_anchor_enabled():
             # A steady-state cursor proves the prefix only while the host keeps that prefix; where it
@@ -6091,6 +6141,10 @@ class LCMEngine(
                         self._identity_anchor_backfill_prefix(messages, reconcile_messages, cursor))
                 anchor_plan = self._identity_anchor_prematch(messages, reconcile_messages, cursor, audit_from)
                 anchor_plan["replayed"] -= replayed_tool_segment_indexes
+                # A reused stamp cannot override positive evidence of a new uid.
+                anchor_plan["replayed"] -= new_prefix_occurrences
+                for idx in new_prefix_occurrences:
+                    anchor_plan.get("matched", {}).pop(idx, None)
                 self._identity_anchor_version_rewind(messages, anchor_plan)
                 self._identity_anchor_commit(anchor_plan)
             except Exception as exc:
