@@ -1500,6 +1500,7 @@ class OllamaProvider(_ResilientProvider):
         # sleeps beyond the configured budget.
         return self._embed(texts, deadline_budget_s=self.timeout)
 
+    # Shared: OpenAICompatibleProvider reuses this method object; keep it provider-neutral.
     def embed_document_batches(
         self,
         texts: Sequence[str],
