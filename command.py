@@ -41,6 +41,7 @@ from .diagnostics import (
     _state_db_path_for_engine,
     doctor_guidance_for_check,
     doctor_guidance_for_checks,
+    survival_fit_count,
     survival_fit_projection_floor_applies,
 )
 from .ingest_protection import (
@@ -1689,14 +1690,7 @@ def _doctor_text(engine) -> str:
     except Exception:
         survival_fit = None
     survival_fit = survival_fit if isinstance(survival_fit, dict) else {}
-    try:
-        fit_count = int(survival_fit.get("count") or 0)
-    except (TypeError, ValueError, OverflowError):  # a damaged record: a fit with an unknown count
-        fit_count = None
-    recorded_projection = survival_fit.get("projected_count", 0)
-    if fit_count == 0 and (survival_fit.get("count_lost")
-                           or not (type(recorded_projection) is int and recorded_projection == 0)):
-        fit_count = None  # #966: a zero or unreadable count beside projection evidence is an unknown count
+    fit_count = survival_fit_count(survival_fit)
     if fit_count != 0:
         projected = survival_fit.get("projected_count")  # absent on a record from before the key: unknown
         if type(projected) is not int or projected < 0 or survival_fit.get("count_lost"):
@@ -1722,8 +1716,9 @@ def _doctor_text(engine) -> str:
                          "a short projected row (head + mark) and stores it again on a cold resume (#601 duplicates); "
                          "to roll back further, stop Hermes and move the configured database file (by default lcm.db, "
                          "with its -wal and -shm companions) aside and keep it")
+        last_cause = f"; last cause {survival_fit['last_cause']}" if survival_fit.get("last_cause") else ""
         observations.append(f"survival_fit: {applied}; last reason "
-                            f"{survival_fit.get('last_reason') or '(unknown)'}; projected_count "
+                            f"{survival_fit.get('last_reason') or '(unknown)'}{last_cause}; projected_count "
                             f"{'unknown' if projected is None else projected}; unreached_budget_count "
                             f"{survival_fit.get('unreached_budget_count', 0)}; last_reached_budget "
                             f"{survival_fit.get('last_reached_budget', 'unknown')}; last_uncovered_rows "
