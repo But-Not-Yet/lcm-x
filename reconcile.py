@@ -539,6 +539,7 @@ class _TailReplayRun:
     stored_tail: list[tuple[str, str, str, str, str]]
     stored_tail_rows: list[Dict[str, Any]] | None
     allow_session_end_replay_proof: bool
+    raw_session_count: int
     active_lineage_identities: dict[int, tuple[str, str, str, str, str]] = field(init=False)
     occurrence_by_id: dict[int, tuple[EmissionProjectionEntry, tuple[str, str, str, str, str] | None]] = field(init=False)
     v4: bool = field(init=False)
@@ -584,6 +585,14 @@ class _TailReplayCandidate:
     candidate_has_unrecoverable_persisted_marker: bool = field(init=False)
     matches_inline_generation_cleanup_tail: bool = field(init=False)
     raw_suffix_needs_cleanup_equivalence: bool = field(init=False)
+    candidate_has_system: bool = field(init=False)
+    has_quarantined_singleton_replay: bool = field(init=False)
+    has_externalized_singleton_replay: bool = field(init=False)
+    has_persisted_marker_singleton_replay: bool = field(init=False)
+    has_durable_persisted_marker_suffix_replay: bool = field(init=False)
+    has_filtered_full_replay: bool = field(init=False)
+    has_inline_generation_cleanup_replay: bool = field(init=False)
+    has_inline_persisted_generation_suffix_replay: bool = field(init=False)
 
 
 class ReconcileMixin:
@@ -2176,6 +2185,119 @@ class ReconcileMixin:
         candidate.matches_inline_generation_cleanup_tail = matches_inline_generation_cleanup_tail
         candidate.raw_suffix_needs_cleanup_equivalence = raw_suffix_needs_cleanup_equivalence
 
+    def _collect_singleton_replay_evidence(
+        self, run: _TailReplayRun, candidate: _TailReplayCandidate,
+    ) -> None:
+        stored_tail = run.stored_tail
+        raw_session_count = run.raw_session_count
+        active_identity = run.active_identity
+        sanitized_replay_tail = run.sanitized_replay_tail
+        effective_session_count = run.effective_session_count
+        candidate_messages = candidate.candidate_messages
+        candidate_identity_messages = candidate.candidate_identity_messages
+        candidate_prefix = candidate.candidate_prefix
+        matches_sanitized_tail = candidate.matches_sanitized_tail
+        matches_raw_tail = candidate.matches_raw_tail
+        candidate_has_unrecoverable_persisted_marker = candidate.candidate_has_unrecoverable_persisted_marker
+        matches_inline_generation_cleanup_tail = candidate.matches_inline_generation_cleanup_tail
+
+        # Matching a stored suffix is not enough evidence by itself.  A
+        # gateway restart may provide only newly arrived delta messages; if
+        # the first delta happens to repeat the durable tail, treating that
+        # row as replay silently loses it.  Only advance the cursor when the
+        # incoming prefix proves replay by covering the full durable session.
+        # A system prompt is a strong anchor. Older/minimal transcripts can
+        # start directly with user/assistant turns, so multi-row full replay
+        # is accepted only when active cleanup did not collapse the durable
+        # tail; otherwise a fresh delta can repeat the remaining visible
+        # suffix and must be preserved.
+        candidate_has_system = any(identity[0] == "system" for identity in candidate_prefix)
+        candidate_dropped_quarantine_replay_placeholder = any(
+            self._is_volatile_ignored_quarantine_placeholder(
+                msg,
+                text_content_for_pattern_matching(msg.get("content")) or "",
+            )
+            or self._is_ignored_active_replay_placeholder(
+                msg,
+                text_content_for_pattern_matching(msg.get("content")) or "",
+            )
+            or (
+                self._compiled_ignore_message_patterns
+                and self._is_quarantined_assistant_replay_identity(
+                    active_identity(msg)
+                )
+                and self._matches_ignore_message_patterns(msg, stored_row=True)
+            )
+            for msg in candidate_messages
+        )
+        has_quarantined_singleton_replay = (
+            matches_sanitized_tail
+            and len(candidate_prefix) == 1
+            and effective_session_count == 1
+            and self._is_quarantined_assistant_replay_identity(candidate_prefix[0])
+            and self._is_quarantined_assistant_replay_identity(sanitized_replay_tail[0])
+        )
+        candidate_singleton_original_content = (
+            normalize_content_value(candidate_identity_messages[0].get("content")) or ""
+            if len(candidate_identity_messages) == 1
+            else ""
+        )
+        has_externalized_singleton_replay = (
+            matches_raw_tail
+            and len(candidate_prefix) == 1
+            and raw_session_count == 1
+            and bool(extract_externalized_ref(candidate_singleton_original_content))
+            and candidate_prefix == stored_tail
+        )
+        has_persisted_marker_singleton_replay = (
+            matches_raw_tail
+            and not candidate_has_unrecoverable_persisted_marker
+            and len(candidate_prefix) == 1
+            and raw_session_count == 1
+            and candidate_prefix == stored_tail
+            and candidate_prefix[0][0] == "tool"
+            and _is_hermes_persisted_output_marker(candidate_singleton_original_content)
+        )
+        has_durable_persisted_marker_suffix_replay = (
+            (matches_sanitized_tail or matches_raw_tail)
+            and any(
+                str(msg.get("role") or "") == "tool"
+                and _is_hermes_persisted_output_marker(normalize_content_value(msg.get("content")) or "")
+                and self._has_durable_persisted_output_replay_identity(msg)
+                for msg in candidate_messages
+            )
+        )
+        has_filtered_full_replay = (
+            matches_sanitized_tail
+            and candidate_dropped_quarantine_replay_placeholder
+            and len(candidate_prefix) >= effective_session_count
+            and effective_session_count > 0
+        )
+        has_inline_generation_cleanup_replay = (
+            matches_inline_generation_cleanup_tail
+            and candidate_has_unrecoverable_persisted_marker
+            and len(candidate_prefix) >= effective_session_count
+            and effective_session_count > 0
+        )
+        has_inline_persisted_generation_suffix_replay = (
+            matches_sanitized_tail
+            and any(
+                str(msg.get("role") or "") == "tool"
+                and _is_hermes_persisted_output_marker(normalize_content_value(msg.get("content")) or "")
+                and _has_inline_persisted_output_generation_metadata(normalize_content_value(msg.get("content")) or "")
+                for msg in candidate_identity_messages
+            )
+        )
+
+        candidate.candidate_has_system = candidate_has_system
+        candidate.has_quarantined_singleton_replay = has_quarantined_singleton_replay
+        candidate.has_externalized_singleton_replay = has_externalized_singleton_replay
+        candidate.has_persisted_marker_singleton_replay = has_persisted_marker_singleton_replay
+        candidate.has_durable_persisted_marker_suffix_replay = has_durable_persisted_marker_suffix_replay
+        candidate.has_filtered_full_replay = has_filtered_full_replay
+        candidate.has_inline_generation_cleanup_replay = has_inline_generation_cleanup_replay
+        candidate.has_inline_persisted_generation_suffix_replay = has_inline_persisted_generation_suffix_replay
+
     def _find_reconciled_cursor_for_store_tail(
         self,
         messages: List[Dict[str, Any]],
@@ -2192,12 +2314,12 @@ class ReconcileMixin:
             stored_tail=stored_tail,
             stored_tail_rows=stored_tail_rows,
             allow_session_end_replay_proof=allow_session_end_replay_proof,
+            raw_session_count=raw_session_count,
         )
         self._prepare_tail_replay_run(run)
         messages = run.messages
         scaffold_ids = run.scaffold_ids
         objective_ids = run.objective_ids
-        active_identity = run.active_identity
         sanitized_replay_tail = run.sanitized_replay_tail
         effective_session_count = run.effective_session_count
         sanitized_tail_collapsed = run.sanitized_tail_collapsed
@@ -2279,93 +2401,15 @@ class ReconcileMixin:
             ):
                 continue
 
-            # Matching a stored suffix is not enough evidence by itself.  A
-            # gateway restart may provide only newly arrived delta messages; if
-            # the first delta happens to repeat the durable tail, treating that
-            # row as replay silently loses it.  Only advance the cursor when the
-            # incoming prefix proves replay by covering the full durable session.
-            # A system prompt is a strong anchor. Older/minimal transcripts can
-            # start directly with user/assistant turns, so multi-row full replay
-            # is accepted only when active cleanup did not collapse the durable
-            # tail; otherwise a fresh delta can repeat the remaining visible
-            # suffix and must be preserved.
-            candidate_has_system = any(identity[0] == "system" for identity in candidate_prefix)
-            candidate_dropped_quarantine_replay_placeholder = any(
-                self._is_volatile_ignored_quarantine_placeholder(
-                    msg,
-                    text_content_for_pattern_matching(msg.get("content")) or "",
-                )
-                or self._is_ignored_active_replay_placeholder(
-                    msg,
-                    text_content_for_pattern_matching(msg.get("content")) or "",
-                )
-                or (
-                    self._compiled_ignore_message_patterns
-                    and self._is_quarantined_assistant_replay_identity(
-                        active_identity(msg)
-                    )
-                    and self._matches_ignore_message_patterns(msg, stored_row=True)
-                )
-                for msg in candidate_messages
-            )
-            has_quarantined_singleton_replay = (
-                matches_sanitized_tail
-                and len(candidate_prefix) == 1
-                and effective_session_count == 1
-                and self._is_quarantined_assistant_replay_identity(candidate_prefix[0])
-                and self._is_quarantined_assistant_replay_identity(sanitized_replay_tail[0])
-            )
-            candidate_singleton_original_content = (
-                normalize_content_value(candidate_identity_messages[0].get("content")) or ""
-                if len(candidate_identity_messages) == 1
-                else ""
-            )
-            has_externalized_singleton_replay = (
-                matches_raw_tail
-                and len(candidate_prefix) == 1
-                and raw_session_count == 1
-                and bool(extract_externalized_ref(candidate_singleton_original_content))
-                and candidate_prefix == stored_tail
-            )
-            has_persisted_marker_singleton_replay = (
-                matches_raw_tail
-                and not candidate_has_unrecoverable_persisted_marker
-                and len(candidate_prefix) == 1
-                and raw_session_count == 1
-                and candidate_prefix == stored_tail
-                and candidate_prefix[0][0] == "tool"
-                and _is_hermes_persisted_output_marker(candidate_singleton_original_content)
-            )
-            has_durable_persisted_marker_suffix_replay = (
-                (matches_sanitized_tail or matches_raw_tail)
-                and any(
-                    str(msg.get("role") or "") == "tool"
-                    and _is_hermes_persisted_output_marker(normalize_content_value(msg.get("content")) or "")
-                    and self._has_durable_persisted_output_replay_identity(msg)
-                    for msg in candidate_messages
-                )
-            )
-            has_filtered_full_replay = (
-                matches_sanitized_tail
-                and candidate_dropped_quarantine_replay_placeholder
-                and len(candidate_prefix) >= effective_session_count
-                and effective_session_count > 0
-            )
-            has_inline_generation_cleanup_replay = (
-                matches_inline_generation_cleanup_tail
-                and candidate_has_unrecoverable_persisted_marker
-                and len(candidate_prefix) >= effective_session_count
-                and effective_session_count > 0
-            )
-            has_inline_persisted_generation_suffix_replay = (
-                matches_sanitized_tail
-                and any(
-                    str(msg.get("role") or "") == "tool"
-                    and _is_hermes_persisted_output_marker(normalize_content_value(msg.get("content")) or "")
-                    and _has_inline_persisted_output_generation_metadata(normalize_content_value(msg.get("content")) or "")
-                    for msg in candidate_identity_messages
-                )
-            )
+            self._collect_singleton_replay_evidence(run, candidate)
+            candidate_has_system = candidate.candidate_has_system
+            has_quarantined_singleton_replay = candidate.has_quarantined_singleton_replay
+            has_externalized_singleton_replay = candidate.has_externalized_singleton_replay
+            has_persisted_marker_singleton_replay = candidate.has_persisted_marker_singleton_replay
+            has_durable_persisted_marker_suffix_replay = candidate.has_durable_persisted_marker_suffix_replay
+            has_filtered_full_replay = candidate.has_filtered_full_replay
+            has_inline_generation_cleanup_replay = candidate.has_inline_generation_cleanup_replay
+            has_inline_persisted_generation_suffix_replay = candidate.has_inline_persisted_generation_suffix_replay
             if candidate_has_unrecoverable_persisted_marker:
                 continue
             has_raw_persisted_marker_exact_replay = (
