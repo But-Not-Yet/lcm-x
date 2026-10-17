@@ -51,26 +51,48 @@ def test_http_documents_report_discovered_dimension(
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("name", ["openai-compatible", "voyage"])
 @pytest.mark.parametrize("dispatch", [False, True])
-def test_openai_compatible_batches_keep_input_indexes_and_dispatch_order(
-    monkeypatch: pytest.MonkeyPatch, dispatch: bool,
+def test_provider_batches_keep_input_indexes_and_dispatch_order(
+    monkeypatch: pytest.MonkeyPatch, dispatch: bool, name: str,
 ) -> None:
     events: list[Any] = []
+    documents = ["first", "second", "third", "fourth"]
+    expected_vectors = [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)]
+    vectors_by_document = dict(zip(documents, expected_vectors))
 
     def transport(**kwargs: Any) -> Any:
-        events.append(kwargs["payload"]["input"])
-        return providers.HttpResponse(status=200, headers={}, body=json.dumps({"data": [
-            {"index": 1, "embedding": [0.0, 1.0]}, {"index": 0, "embedding": [1.0, 0.0]},
-        ]}).encode())
+        payload = kwargs["payload"]["input"]
+        events.append(payload)
+        # Response indexes are request-local, deliberately returned out of order.
+        data = [{"index": index, "embedding": vectors_by_document[text]}
+                for index, text in reversed(list(enumerate(payload)))]
+        return providers.HttpResponse(status=200, headers={}, body=json.dumps({"data": data}).encode())
 
     monkeypatch.setenv("LCM_EMBEDDING_API_KEY", "synthetic-fixture")
-    provider = providers.OpenAICompatibleProvider("fixture", base_url="https://example.test/v1", transport=transport)
-    batches = list(provider.embed_document_batches(["first", "second"], before_dispatch=events.append if dispatch else None))
-    assert [batch.indexes for batch in batches] == [(0, 1)]
-    assert batches[0].vectors == ((1.0, 0.0), (0.0, 1.0))
-    assert events == ([(0, 1), ["first", "second"]] if dispatch else [["first", "second"]])
+    monkeypatch.setenv("VOYAGE_API_KEY", "synthetic-fixture")
+    monkeypatch.setattr(providers, "count_tokens", lambda _text: 1)
+    if name == "voyage":
+        provider = providers.VoyageProvider("fixture", transport=transport, max_batch_items=2)
+        expected_indexes = [(0, 1), (2, 3)]
+        expected_payloads = [["first", "second"], ["third", "fourth"]]
+    else:
+        # observed behaviour; see REPORT: OpenAI-compatible has no batching knob.
+        provider = providers.OpenAICompatibleProvider("fixture", base_url="https://example.test/v1", transport=transport)
+        expected_indexes = [(0, 1, 2, 3)]
+        expected_payloads = [["first", "second", "third", "fourth"]]
+    batches = list(provider.embed_document_batches(documents, before_dispatch=events.append if dispatch else None))
+    assert [batch.indexes for batch in batches] == expected_indexes
+    assert [vector for batch in batches for vector in batch.vectors] == expected_vectors
+    assert [event for event in events if isinstance(event, list)] == expected_payloads
+    expected_events: list[Any] = []
+    for indexes, payload in zip(expected_indexes, expected_payloads):
+        if dispatch:
+            expected_events.append(indexes)
+        expected_events.append(payload)
+    assert events == expected_events
     assert list(provider.embed_document_batches([])) == []
-    assert len(events) == (2 if dispatch else 1)
+    assert events == expected_events
 
 
 def test_fastembed_import_constructs_local_only_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
