@@ -5,6 +5,7 @@ with a DAG-based summarization system that preserves every message.
 """
 
 import asyncio
+import atexit
 import contextlib
 import copy
 import hashlib
@@ -108,7 +109,7 @@ from .runtime_identity import (
     _git_runtime_identity,
     _plugin_metadata,
 )
-from .embedding_maintenance import run_incremental_embedding_pass
+from .embedding_maintenance import _STOP_EMBEDDING_MAINTENANCE, run_incremental_embedding_pass
 from .rollup_builder import (
     initialize_rollup_invalidation_outbox,
     mark_stale_for_published_summary,
@@ -226,7 +227,10 @@ class _RollupMaintenanceScheduler:
         self._exclusive_keys: set[tuple[str, str]] = set()
         self._owned_keys: dict[object, set[tuple[str, str]]] = {}
         self._key_owners: dict[tuple[str, str], set[object]] = {}
+        self._retired_active_keys: dict[object, set[tuple[str, str]]] = {}
         self._worker: threading.Thread | None = None
+        self._closed = False
+        self._closed_logged = False
 
     def _track_owner_locked(
         self,
@@ -261,7 +265,13 @@ class _RollupMaintenanceScheduler:
         *,
         owner: object | None = None,
     ) -> bool:
+        global _EMBEDDING_EXIT_QUIESCE_REGISTERED
         with self._condition:
+            if self._closed:
+                if not self._closed_logged:
+                    logger.info("LCM %s maintenance scheduler is closed", self._kind)
+                    self._closed_logged = True
+                return False
             if key in self._exclusive_keys:
                 logger.info(
                     "LCM temporal rollup maintenance deferred while an operator "
@@ -289,6 +299,9 @@ class _RollupMaintenanceScheduler:
                 )
                 return False
             if self._worker is None or not self._worker.is_alive():
+                if self is _EMBEDDING_MAINTENANCE_SCHEDULER and not _EMBEDDING_EXIT_QUIESCE_REGISTERED:
+                    atexit.register(_quiesce_embedding_maintenance)
+                    _EMBEDDING_EXIT_QUIESCE_REGISTERED = True
                 worker = threading.Thread(
                     target=self._run,
                     name=self._thread_name,
@@ -365,6 +378,82 @@ class _RollupMaintenanceScheduler:
                 self._condition.wait(remaining)
             return True
 
+    def retire_owner(self, owner: object, timeout: float) -> bool:
+        """Drop an owner's unshared pending work and wait for its active keys."""
+        try:
+            deadline = time.monotonic() + max(0.0, timeout)
+            with self._condition:
+                keys = self._owned_keys.pop(owner, set())
+                for key in keys:
+                    owners = self._key_owners.get(key, set())
+                    owners.discard(owner)
+                    if owners:
+                        continue
+                    self._key_owners.pop(key, None)
+                    if key in self._queued_keys:
+                        self._jobs = deque(
+                            (queued_key, job) for queued_key, job in self._jobs
+                            if queued_key != key
+                        )
+                        self._queued_keys.discard(key)
+                    if self._follow_up_key == key:
+                        self._follow_up_key = None
+                        self._follow_up_job = None
+                keys |= self._retired_active_keys.pop(owner, set()) & self._active_keys
+                self._condition.notify_all()
+                if timeout <= 0:
+                    active = keys & self._active_keys
+                    if active:
+                        self._retired_active_keys[owner] = active
+                    return not bool(active)
+                while keys & self._active_keys:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        for key in sorted(keys & self._active_keys):
+                            logger.warning(
+                                "LCM %s maintenance retirement timeout for database=%s scope=%s",
+                                self._kind, key[0], key[1],
+                            )
+                        return False
+                    self._condition.wait(remaining)
+                return True
+        except Exception:
+            logger.warning("LCM could not retire %s maintenance owner", self._kind, exc_info=True)
+            return False
+
+    def quiesce(self, timeout: float) -> bool:
+        """Stop accepting work, discard pending passes, and bound the active wait."""
+        try:
+            if self is _EMBEDDING_MAINTENANCE_SCHEDULER:
+                _STOP_EMBEDDING_MAINTENANCE.set()
+            deadline = time.monotonic() + max(0.0, timeout)
+            with self._condition:
+                self._closed = True
+                pending_keys = self._queued_keys.copy()
+                if self._follow_up_key is not None:
+                    pending_keys.add(self._follow_up_key)
+                self._jobs.clear()
+                self._queued_keys.clear()
+                self._follow_up_key = None
+                self._follow_up_job = None
+                for key in pending_keys:
+                    self._release_key_owners_if_idle_locked(key)
+                self._condition.notify_all()
+                while self._active_keys:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        for key in sorted(self._active_keys):
+                            logger.warning(
+                                "LCM %s maintenance quiesce timeout for database=%s scope=%s",
+                                self._kind, key[0], key[1],
+                            )
+                        return False
+                    self._condition.wait(remaining)
+                return True
+        except Exception:
+            logger.warning("LCM could not quiesce %s maintenance", self._kind, exc_info=True)
+            return False
+
     def _run(self) -> None:
         while True:
             with self._condition:
@@ -394,6 +483,10 @@ class _RollupMaintenanceScheduler:
                         self._condition.notify_all()
                         continue
                     self._active_keys.discard(key)
+                    for owner, keys in list(self._retired_active_keys.items()):
+                        keys.discard(key)
+                        if not keys:
+                            self._retired_active_keys.pop(owner, None)
                     self._running_follow_up = False
                     self._release_key_owners_if_idle_locked(key)
                     self._condition.notify_all()
@@ -406,6 +499,16 @@ _ROLLUP_MAINTENANCE_SCHEDULER = _RollupMaintenanceScheduler()
 _EMBEDDING_MAINTENANCE_SCHEDULER = _RollupMaintenanceScheduler(
     kind="incremental embedding", thread_name="lcm-embedding-maintenance"
 )
+_EMBEDDING_RETIRE_TIMEOUT_S = 2.0
+# One in-flight provider batch plus publication, with headroom for a 2-vCPU host.
+# Session retirement keeps its separate budget and never signals process exit.
+_EMBEDDING_EXIT_TIMEOUT_S = 10.0
+_EMBEDDING_EXIT_QUIESCE_REGISTERED = False
+
+
+def _quiesce_embedding_maintenance() -> bool:
+    return _EMBEDDING_MAINTENANCE_SCHEDULER.quiesce(_EMBEDDING_EXIT_TIMEOUT_S)
+
 
 _SESSION_END_BUSY_TIMEOUT_MS = 50
 # #909/#977: a condensation group of at most this many source tokens is about as long as its summary (Track S
@@ -851,6 +954,7 @@ class LCMEngine(
         # diagnostic drains do not retain every historical session key forever.
         self._rollup_maintenance_owner = object()
         self._embedding_maintenance_owner = object()
+        self._embedding_maintenance_retired = False
         # Host-facing engine name: ENGINE_NAME, or the legacy alias when the
         # active Hermes config still selects ``context.engine: lcm`` (#471).
         self._engine_name = ENGINE_NAME
@@ -2435,7 +2539,7 @@ class LCMEngine(
         one pass queued per database, and the pass runs the backfill core under
         its lease on a private connection.
         """
-        if not getattr(self._config, "embeddings_enabled", False):
+        if self._embedding_maintenance_retired or not getattr(self._config, "embeddings_enabled", False):
             return
         try:
             raw_database_path = str(self._dag.db_path)
@@ -2482,6 +2586,19 @@ class LCMEngine(
                 exc_info=True,
             )
 
+    def _rearm_embedding_maintenance(self) -> None:
+        self._embedding_maintenance_retired = False
+
+    def _retire_embedding_maintenance(self, wait: bool) -> None:
+        self._embedding_maintenance_retired = True
+        try:
+            _EMBEDDING_MAINTENANCE_SCHEDULER.retire_owner(
+                self._embedding_maintenance_owner,
+                timeout=_EMBEDDING_RETIRE_TIMEOUT_S if wait else 0,
+            )
+        except Exception:
+            logger.warning("LCM could not retire background incremental embedding", exc_info=True)
+
     def drain_embedding_maintenance(self, timeout: float | None = None) -> bool:
         """Wait for embedding passes scheduled by this engine (tests and diagnostics)."""
         return _EMBEDDING_MAINTENANCE_SCHEDULER.drain_owner(
@@ -2503,6 +2620,7 @@ class LCMEngine(
         conversation_id: str | None = None,
     ) -> None:
         state = self._lifecycle.bind_session(session_id, conversation_id=conversation_id)
+        self._rearm_embedding_maintenance()
         if getattr(self, "_survival_overhead_observation", None) is not None and \
                 self._survival_overhead_observation[0] != state.conversation_id:
             self._survival_overhead_observation = None
@@ -3526,6 +3644,9 @@ class LCMEngine(
                 frontier,
             )
         self._last_compacted_store_id = frontier
+        if self._embedding_maintenance_retired:
+            self._rearm_embedding_maintenance()
+            self._schedule_embedding_maintenance()
         logger.info(
             "LCM re-bound %s after an unadopted compaction commit or another engine's end (frontier=%d)",
             self._session_id, frontier,
@@ -3601,6 +3722,9 @@ class LCMEngine(
             self._last_compacted_store_id,
             self._ingest_cursor if cursor_proven else "reconcile",
         )
+        if self._embedding_maintenance_retired:
+            self._rearm_embedding_maintenance()
+            self._schedule_embedding_maintenance()
         return True
 
     def _continue_compression_boundary(
@@ -4563,6 +4687,18 @@ class LCMEngine(
                 self._session_id,
             )
             return
+        # Only this path ends the foreground binding. Same-id bypass callbacks
+        # above can leave it serving, so session-id equality alone is insufficient.
+        try:
+            self._finalize_foreground_session_end_unlocked(session_id, messages)
+        finally:
+            self._retire_embedding_maintenance(wait=False)
+
+    def _finalize_foreground_session_end_unlocked(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+    ) -> None:
         proof = getattr(self, "_compress_commit_proof", None)
         if (
             proof
@@ -9194,6 +9330,7 @@ class LCMEngine(
             self._stable_use_closed = True
 
     def _shutdown_unlocked(self):
+        self._retire_embedding_maintenance(wait=True)
         cleanup = [
             self._unregister_active_engine_binding,
             *(
