@@ -560,6 +560,20 @@ class _TailReplayRun:
     session_end_prefix_digests: dict[int, str] = field(init=False)
 
 
+@dataclass(eq=False, repr=False)
+class _TailReplayCandidate:
+    """One cursor projection; computed fields stay unset until projection."""
+
+    cursor: int
+    candidate_messages: List[Dict[str, Any]]
+    filtered_candidate_placeholders: bool = field(init=False)
+    candidate_has_scaffold_evidence: bool = field(init=False)
+    candidate_has_quarantined_replay_evidence: bool = field(init=False)
+    candidate_identity_messages: List[Dict[str, Any]] = field(init=False)
+    candidate_visible_prefix: list[tuple[str, str, str, str, str]] = field(init=False)
+    candidate_prefix: list[tuple[str, str, str, str, str]] = field(init=False)
+
+
 class ReconcileMixin:
     @staticmethod
     def _canonicalize_tool_call_identity_value(value: Any) -> Any:
@@ -1894,6 +1908,67 @@ class ReconcileMixin:
         run.session_end_prefix_digests = session_end_prefix_digests
 
 
+    def _project_replay_candidate(
+        self, run: _TailReplayRun, candidate: _TailReplayCandidate,
+    ) -> None:
+        candidate_messages = candidate.candidate_messages
+        scaffold_ids = run.scaffold_ids
+        active_identity = run.active_identity
+
+        candidate_visible_messages = [
+            msg
+            for msg in candidate_messages
+            if id(msg) not in scaffold_ids
+            and not self._matches_ignore_message_patterns(msg)
+        ]
+        candidate_non_placeholder_messages = [
+            msg
+            for msg in candidate_visible_messages
+            if not self._is_volatile_ignored_quarantine_placeholder(
+                msg,
+                text_content_for_pattern_matching(msg.get("content")) or "",
+            )
+            and not self._is_ignored_active_replay_placeholder(
+                msg,
+                text_content_for_pattern_matching(msg.get("content")) or "",
+            )
+            and not (
+                self._compiled_ignore_message_patterns
+                and self._is_quarantined_assistant_replay_identity(
+                    active_identity(msg)
+                )
+                and self._matches_ignore_message_patterns(msg, stored_row=True)
+            )
+        ]
+        filtered_candidate_placeholders = len(candidate_non_placeholder_messages) < len(candidate_visible_messages)
+        candidate_has_scaffold_evidence = any(
+            id(msg) in scaffold_ids for msg in candidate_messages
+        )
+        candidate_has_quarantined_replay_evidence = any(
+            self._is_quarantined_assistant_replay_identity(active_identity(msg))
+            for msg in candidate_messages
+        )
+        candidate_identity_messages = (
+            candidate_non_placeholder_messages
+            if candidate_non_placeholder_messages or filtered_candidate_placeholders
+            else candidate_visible_messages
+        )
+        candidate_visible_prefix = [
+            active_identity(msg)
+            for msg in candidate_visible_messages
+        ]
+        candidate_prefix = [
+            active_identity(msg)
+            for msg in candidate_identity_messages
+        ]
+
+        candidate.filtered_candidate_placeholders = filtered_candidate_placeholders
+        candidate.candidate_has_scaffold_evidence = candidate_has_scaffold_evidence
+        candidate.candidate_has_quarantined_replay_evidence = candidate_has_quarantined_replay_evidence
+        candidate.candidate_identity_messages = candidate_identity_messages
+        candidate.candidate_visible_prefix = candidate_visible_prefix
+        candidate.candidate_prefix = candidate_prefix
+
     def _find_reconciled_cursor_for_store_tail(
         self,
         messages: List[Dict[str, Any]],
@@ -1942,52 +2017,14 @@ class ReconcileMixin:
                 in native_recovery_snapshot_digests
             ):
                 return cursor
-            candidate_visible_messages = [
-                msg
-                for msg in candidate_messages
-                if id(msg) not in scaffold_ids
-                and not self._matches_ignore_message_patterns(msg)
-            ]
-            candidate_non_placeholder_messages = [
-                msg
-                for msg in candidate_visible_messages
-                if not self._is_volatile_ignored_quarantine_placeholder(
-                    msg,
-                    text_content_for_pattern_matching(msg.get("content")) or "",
-                )
-                and not self._is_ignored_active_replay_placeholder(
-                    msg,
-                    text_content_for_pattern_matching(msg.get("content")) or "",
-                )
-                and not (
-                    self._compiled_ignore_message_patterns
-                    and self._is_quarantined_assistant_replay_identity(
-                        active_identity(msg)
-                    )
-                    and self._matches_ignore_message_patterns(msg, stored_row=True)
-                )
-            ]
-            filtered_candidate_placeholders = len(candidate_non_placeholder_messages) < len(candidate_visible_messages)
-            candidate_has_scaffold_evidence = any(
-                id(msg) in scaffold_ids for msg in candidate_messages
-            )
-            candidate_has_quarantined_replay_evidence = any(
-                self._is_quarantined_assistant_replay_identity(active_identity(msg))
-                for msg in candidate_messages
-            )
-            candidate_identity_messages = (
-                candidate_non_placeholder_messages
-                if candidate_non_placeholder_messages or filtered_candidate_placeholders
-                else candidate_visible_messages
-            )
-            candidate_visible_prefix = [
-                active_identity(msg)
-                for msg in candidate_visible_messages
-            ]
-            candidate_prefix = [
-                active_identity(msg)
-                for msg in candidate_identity_messages
-            ]
+            candidate = _TailReplayCandidate(cursor=cursor, candidate_messages=candidate_messages)
+            self._project_replay_candidate(run, candidate)
+            filtered_candidate_placeholders = candidate.filtered_candidate_placeholders
+            candidate_has_scaffold_evidence = candidate.candidate_has_scaffold_evidence
+            candidate_has_quarantined_replay_evidence = candidate.candidate_has_quarantined_replay_evidence
+            candidate_identity_messages = candidate.candidate_identity_messages
+            candidate_visible_prefix = candidate.candidate_visible_prefix
+            candidate_prefix = candidate.candidate_prefix
             if not candidate_prefix:
                 empty_prefix_cursor = cursor
                 if allow_empty_prefix and (
