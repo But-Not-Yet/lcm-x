@@ -11,6 +11,9 @@ and the candidate did not. Four of those were side effects of an earlier fix. Th
 - **Absolute regression cases are kept across GA rotations.** When the GA baseline moves, archive the deltas that were accepted
   against the old GA. Keep absolute cases such as the #1225 residual, so a known gap never becomes "parity with the GA" by rotation.
 - The tool is `tests/differential` (`LCM_DIFFERENTIAL=1`). A fix PR on the turn path cites its differential row.
+- `differential` is a required status check on `main`. It reports on every PR. When a PR touches a turn-path file
+  (`scripts/maintainer_gate.py` `TURN_PATH_FILES`), `tests/differential/` or `.github/workflows/differential.yml`, the full
+  differential runs and any unexplained red fails the check. Otherwise the job passes after the relevance step.
 
 ## Sibling sweep
 After any Phase B finding, sweep the whole sibling shape family before the next rc, not only the reported shape: role × tool
