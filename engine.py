@@ -189,6 +189,72 @@ def _model_only_display_metadata_keys() -> frozenset:
     """Every key that can hide a row: the literal key and the host-advertised one."""
     return frozenset(k for k in ("model_only", _model_only_display_metadata_key()) if k)
 
+
+def _host_will_merge_user_rows(previous: Dict[str, Any], following: Any) -> bool:
+    """Conservatively mirror pinned Hermes before stamping a row model-only."""
+    if (previous.get("role") != "user" or not isinstance(following, dict)
+            or following.get("role") != "user"):
+        return False
+    try:
+        from agent.context_compressor import split_user_originated_turn
+    except (ImportError, AttributeError):
+        # Older hosts lack the carrier exemption; retain their plain-user behavior.
+        split_user_originated_turn = None
+    try:
+        from agent.prompt_builder import STEER_DISPLAY_KIND
+    except (ImportError, AttributeError):
+        STEER_DISPLAY_KIND = "steer"
+    return (
+        (split_user_originated_turn is None or split_user_originated_turn(previous)[0] is None)
+        and previous.get("display_kind") != STEER_DISPLAY_KIND
+        # Hermes 0.21.5 merges JSON-sentinel strings too. Predicting a merge on
+        # newer hosts only leaves generated context visible; it cannot hide users.
+        and all(isinstance(row.get("content", ""), str) for row in (previous, following))
+    )
+
+
+def _stamp_generated_model_only(messages, generated_rows, *, copy_rows: bool = False) -> None:
+    """Decide display visibility per final Hermes merge group, using occurrence provenance.
+
+    Hermes keeps the first row's metadata. A group containing human text must
+    remain visible; a group made entirely by LCM can stay model-only.
+    """
+    key = _model_only_display_metadata_key() if generated_rows else None
+    if key is None:
+        return
+    generated_ids = {id(row) for row in generated_rows}
+    hide_keys = _model_only_display_metadata_keys()
+    start = 0
+    while start < len(messages):
+        previous = messages[start].copy()
+        end = start + 1
+        while end < len(messages) and _host_will_merge_user_rows(previous, messages[end]):
+            following = messages[end]
+            before, after = previous.get("content", ""), following.get("content", "")
+            previous["content"] = before + "\n\n" + after if before and after else before or after
+            if previous.get("display_kind") and not following.get("display_kind"):
+                previous.pop("display_kind", None)
+            end += 1
+        generated_only = all(id(row) in generated_ids for row in messages[start:end])
+        for index in range(start, end):
+            row = messages[index]
+            if id(row) not in generated_ids:
+                continue
+            original = row.get("display_metadata") or {}
+            if generated_only:
+                metadata = {**original, key: True}
+            else:
+                metadata = {k: v for k, v in original.items() if k not in hide_keys}
+            if metadata == original:
+                continue
+            if copy_rows:
+                messages[index] = row = row.copy()
+            if metadata:
+                row["display_metadata"] = metadata
+            else:
+                row.pop("display_metadata", None)
+        start = end
+
 _ASSERTION_EXTRACTION_PROCESS_SLOT = threading.BoundedSemaphore(1)
 _EMBEDDING_SCHEMA_READY: set[tuple[Path, bool]] = set()
 _EMBEDDING_SCHEMA_LOCK = threading.Lock()
@@ -8625,16 +8691,8 @@ class LCMEngine(
                 system_msg, tail_messages, assembly_cap_override, include_lcm_note, retained_user_message,
                 stub_over_cap_tool_results, persist, (*kept_reply["rejected"], f"step{kept_reply['step']}={why}"))
 
-        # Stamp only final standalone generated occurrences, never a same-text host row.
-        # Explicit carriers and assistant merges with human text are not generated rows.
-        # Measurement candidates above never receive display metadata.
-        key = _model_only_display_metadata_key() if generated_rows else None
-        if key is not None:
-            generated_ids = {id(row) for row in generated_rows}
-            for row in result:
-                if id(row) in generated_ids:
-                    row["display_metadata"] = {**(row.get("display_metadata") or {}), key: True}
         if not persist:
+            _stamp_generated_model_only(result, generated_rows)
             return result
 
         existing_folded_lineage = self._load_folded_tail_lineage(result)
@@ -8648,11 +8706,14 @@ class LCMEngine(
                 folded_source_store_id,
             ):
                 result[folded_result_index] = folded_original_tail
-                result = self._sanitize_active_context_messages(result)
+                result = self._sanitize_active_context_messages(result, generated_rows=generated_rows)
                 self._clear_folded_tail_lineage()
         elif existing_folded_lineage is None:
             self._clear_folded_tail_lineage()
 
+        # Decide only after the final cleanup, including fold recovery. Trial
+        # assemblies above use the same decision without publishing proof.
+        _stamp_generated_model_only(result, generated_rows)
         # Persist proof only for the exact provider-visible compacted snapshot
         # assembled by this engine. Ingested input is not trusted replay proof.
         self._remember_compacted_active_replay_snapshot(result)
