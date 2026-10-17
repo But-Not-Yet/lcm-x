@@ -483,6 +483,10 @@ def observe(case: Scenario, root: Path) -> Trace:
             shapes: dict[str, int] = {}
 
             def sql_trace(name: str, sql: str) -> None:
+                # SQLite-internal FTS5 statements vary by SQLite build.
+                # Filter raw SQL before normalization can erase quoted schema names.
+                if sql.lstrip().startswith("--") or re.search(r"(['\"])(main|temp)\1\s*\.", sql):
+                    return
                 normalized = canonical.text(sql.strip())
                 # Keep literal whitespace; normalize only SQL layout.
                 parts = re.split(r"('(?:''|[^'])*')", normalized)
