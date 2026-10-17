@@ -33,6 +33,7 @@ import pytest
 # The plugin is directory-loaded by Hermes, not installed as a Python package.
 # Reuse the suite's registration when invoked with python -m outside pytest.
 import tests.conftest  # noqa: F401
+from tests.behaviour.frontier_observer import observed_attribute
 from tests.phase0_hygiene import product_env_keys
 from tests.harness import engine_context, pin_char_counter
 
@@ -659,7 +660,7 @@ def prepared_state(engine: Any, canonical: Canonical) -> Any:
 def state(engine: Any, canonical: Canonical) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for name in OBSERVED_ATTRIBUTES:
-        value = getattr(engine, name, {"absent": True})
+        value = observed_attribute(engine, name)
         if name == "_store":
             value = engine._store.get_session_messages(engine._session_id, limit=10000)
         elif name == "_dag":
