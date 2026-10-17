@@ -67,6 +67,13 @@ EXTERNAL_ATTRIBUTES = frozenset({'_host_rewrite_overrides', '_host_rewrite_store
                                  '_engine_uids_pending', '_host_uid_lineage_cache'})
 
 
+TRACE_GUIDANCE = (
+    "Regenerate from repo root: python -m tests.behaviour.assembly_trace_harness --repo . --out tests/fixtures/assembly_trace.json\n"
+    "Attribute every changed event in the PR description to its commit or behaviour change.\n"
+    "See docs/process/turn-path-probe-packet.md#golden-traces."
+)
+
+
 def engine_attributes(source: str) -> set[str]:
     """Follow in-file self methods (including passed callables) to a fixed point."""
     cls = next(n for n in ast.parse(source).body if isinstance(n, ast.ClassDef) and n.name == 'LCMEngine')
@@ -86,7 +93,9 @@ def engine_attributes(source: str) -> set[str]:
                     and isinstance(node.args[0], ast.Name) and node.args[0].id == 'self'):
                 key = node.args[1]
                 if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
-                    raise AssertionError('Dynamic self lookup needs an inventory rule')
+                    raise AssertionError(
+                        "Dynamic self lookup: update engine_attributes and OBSERVED_ATTRIBUTES/EXTERNAL_ATTRIBUTES.\n"
+                        + TRACE_GUIDANCE)
                 attr = key.value
             if attr in methods:
                 pending.append(attr)
