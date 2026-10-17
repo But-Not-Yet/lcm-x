@@ -59,6 +59,7 @@ class ResetStateMixin:
         # session that produced it (#483); any other reset drops it.
         self._compress_commit_proof = None
         self._last_emission_descriptors = None
+        self._retired_durable_proof = None  # #671: a stale durable proof retired by reconcile, by created_at
         self._clear_fresh_tail_pressure_yield_state()
         self._generated_ignored_active_replay_placeholder_hashes = set()
         self._generated_ignored_active_replay_placeholder_message_ids = set()
@@ -73,4 +74,4 @@ class ResetStateMixin:
         self._objective_only_noop = False
         self._sweep_budget_hold_until, self._sweep_budget_hold_conversation = 0.0, ""
         # #677: a preflight request of the previous binding never shapes the next one's compress().
-        self._preflight_below_threshold_cleanup_only = self._preflight_automatic_request = False
+        self._compaction_request.below_threshold_cleanup_only = self._compaction_request.automatic_request = False

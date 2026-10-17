@@ -7,6 +7,7 @@ from copy import deepcopy
 import pytest
 
 import hermes_lcm.survival_fit as survival_fit
+import hermes_lcm.survival_codec as survival_codec
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.engine import LCMEngine
 from hermes_lcm.message_content import normalize_content_value
@@ -217,7 +218,7 @@ def test_marked_form_is_not_accepted_for_a_row_without_calls(tmp_path, role):
 def test_large_marker_shaped_arguments_are_not_decoded(tmp_path, monkeypatch):
     engine = _engine(tmp_path)
     decoded, loads = [], json.loads
-    monkeypatch.setattr(survival_fit.json, "loads", lambda text, *a, **k: decoded.append(len(text)) or loads(text, *a, **k))
+    monkeypatch.setattr(survival_codec.json, "loads", lambda text, *a, **k: decoded.append(len(text)) or loads(text, *a, **k))
     huge = '{"lcm_survival_fit": "x", "pad": "' + "y" * 200000 + '"}'
     try:
         message = {"role": "assistant", "content": "", "tool_calls": [_call(f"c{i}", huge) for i in range(20)]}

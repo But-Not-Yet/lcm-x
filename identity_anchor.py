@@ -25,12 +25,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sqlite3
 from collections import Counter, defaultdict, deque
 from difflib import SequenceMatcher
 from typing import Any, Dict, Optional
 
+from .config import _parse_bool_env
 from .fresh_tail import tool_group_safe_end
 from .message_content import normalize_content_value, text_content_for_pattern_matching
 from .store import _normalize_observed_at
@@ -50,7 +50,7 @@ _MATCH_WORK_PER_ITEM, _MATCH_WORK_FLOOR = 32, 4096  # matching search budget per
 
 
 def identity_anchor_enabled() -> bool:
-    return (os.environ.get("LCM_IDENTITY_ANCHOR") or "").strip().lower() not in {"0", "false", "no", "off"}
+    return _parse_bool_env("LCM_IDENTITY_ANCHOR", True, unknown=True, true_values=())
 
 
 def _decompositions(content: str, texts: set, *, partial: bool) -> Optional[list]:
@@ -884,7 +884,7 @@ class IdentityAnchorMixin:
     # -- R4: coverage bound to the summarizer input ----------------------------
 
     def _identity_anchor_summary_input(self, chunk, full_map, view=(), raw_chunk=(), budget=None,
-                                       accounted_ids=()) -> Optional[list]:
+                                       accounted_ids=(), copy_lookup=None) -> Optional[list]:
         """The summarizer input for ``chunk`` built TOGETHER with what each input row may claim:
         ``[(input_row, [store_id, ...]), ...]``, ``[]`` (no leaf can start), or None (today's input).
         - A live composite LCM recorded (R2 witness) claims its constituents: their text is in it.
@@ -972,7 +972,8 @@ class IdentityAnchorMixin:
         if budget is None:
             budget = count_messages_tokens(chunk)
         return self._store_complete_input(chunk, claims, full_map, view, raw_chunk, frontier, carry,
-                                          max(budget, count_messages_tokens(chunk)), accounted_ids)
+                                          max(budget, count_messages_tokens(chunk)), accounted_ids,
+                                          copy_lookup=copy_lookup)
 
     def _identity_anchor_view_key(self, message) -> Optional[tuple]:
         """A view row's occurrence key ``(stamp, form)`` as the ingest site keys it; None for LCM's own scaffold
@@ -1035,7 +1036,7 @@ class IdentityAnchorMixin:
           row it re-flushed later before it): coverage would skip that occurrence. The chunk takes it."""
         if not chunk or len(chunk) >= len(candidates) or not identity_anchor_enabled():
             return chunk
-        full_map, self._identity_anchor_text_memo = self._current_compress_store_ids_by_message_id or {}, {}
+        full_map, self._identity_anchor_text_memo = self._compress_run.store_ids_by_message_id or {}, {}
         end = len(chunk)
         if all(self._identity_anchor_covered_view(message, full_map) for message in chunk):
             while end < len(candidates) and self._identity_anchor_covered_view(candidates[end], full_map):

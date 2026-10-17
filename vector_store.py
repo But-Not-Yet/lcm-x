@@ -35,6 +35,7 @@ from .db_bootstrap import (
     verify_chunk_schema,
     verify_embedding_schema,
 )
+from .sqlite_session import ConnectionPolicy, open_connection
 from .sqlite_util import _is_sqlite_locked_error
 
 logger = logging.getLogger(__name__)
@@ -373,15 +374,16 @@ class VectorStore:
         # data_version), defeating the cross-process cache invalidation. Write
         # atomicity is preserved via the explicit BEGIN IMMEDIATE in
         # _write_transaction.
-        self._conn = sqlite3.connect(
-            str(self.db_path),
-            timeout=5.0,
-            check_same_thread=False,
-            isolation_level=None,
-        )
-        refuse_schema_version_too_new(self._conn)
-        configure_connection(self._conn)
-        self._conn.row_factory = sqlite3.Row
+        open_connection(ConnectionPolicy(
+            database=str(self.db_path),
+            connect_kwargs=(
+                ("timeout", 5.0), ("check_same_thread", False), ("isolation_level", None),
+            ),
+            before_row_factory=(refuse_schema_version_too_new, configure_connection),
+            row_factory=sqlite3.Row,
+            on_open=lambda conn: setattr(self, "_conn", conn),
+            on_setup_error=None,
+        ))
         run_versioned_migrations(self._conn)
         self._ensure_embedding_schema()
         self._conn.commit()
@@ -1939,6 +1941,7 @@ class VectorStore:
         if remaining <= 0:
             raise _PrescreenDeadlineExpired()
         conn: sqlite3.Connection | None = None
+        reader: VectorStore | None = None
         expired = [False]
 
         def interrupt_if_expired() -> int:
@@ -1980,6 +1983,7 @@ class VectorStore:
             conn.row_factory = sqlite3.Row
             conn.set_progress_handler(interrupt_if_expired, 1000)
             reader = copy.copy(self)
+            reader._borrowed_view = True
             reader._conn = conn
             reader._write_lock = threading.RLock()
             reader._cache_lock = threading.RLock()
@@ -1994,6 +1998,8 @@ class VectorStore:
         finally:
             if conn is not None:
                 conn.close()
+            if reader is not None:
+                reader._conn = None
 
     def _read_with_deadline(self, loader, deadline: float | None):
         """Run a candidate read through the shared interruptible read path."""
@@ -2995,6 +3001,10 @@ class VectorStore:
         ).fetchone()
 
     def close(self) -> None:
+        if getattr(self, "_borrowed_view", False):
+            # The deadline loader owns its connection; the pooled store owns
+            # the shared caches, including any fills made through this view.
+            return
         conn = getattr(self, "_conn", None)
         if conn is not None:
             try:
