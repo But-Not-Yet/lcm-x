@@ -7,6 +7,7 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 ## Unreleased
 
 - Fix: a repeat hung summary retry, including forced overflow, keeps its circuit open at turn end; a first hang after a stored leaf or condensation in the same sweep still gets the one turn-end retry. (#1369, #1096)
+- Fix: Hermes salvage-placeholder identities no longer prove tool-segment replay, borrow canonical non-string outputs, or hide newest-two results during full replay; fresh same-id calls and literal placeholder results are preserved, with duplicates preferred when salvage is ambiguous. (#1385)
 - Config: `LCM_STUB_FIRST_EXIT_TARGET_RATIO` (default `0`, env only) lowers the stub-first exit's target to min(threshold - `LCM_LEAF_CHUNK_TOKENS`, 0.95 x threshold, int(ratio x threshold)); stub cuts that stay over it take the leaf path as before. With a large window the built-in target leaves a long live list (712,500 tokens at a 750,000-token threshold); `0.2` exits only at 150,000 or under. `0` keeps today's target; a negative value, a value over `1` or a non-number keeps it with a config warning. `lcm_status` `last_stub_first_exit` and the `LCM compaction stop:` line show the applied target, and `lcm_status` `config` shows the ratio. Unset, compaction is unchanged. (#1193, #671)
 - Fix: E2 canonical uid copy evidence never excludes user rows; sync the shadow-mode copy-exclusion docs. (#1124, #1146)
 - Fix: repeated tool groups are excluded whole or kept whole; E1 preserves occurrences with their own uid binding. (#1146, #1154)
