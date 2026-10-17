@@ -134,7 +134,8 @@ def test_anchor_is_cleared_after_assembly_exception_and_retry(
         patch.setattr(tokens, "_count_tokens_cached", fail_anchored_count)
         with pytest.raises(RuntimeError, match="tokenizer rejected anchored assembly"):
             assemble()
-    assert observed and observed[0]
+    # Exactly one anchored assembly, anchored on exactly the caller's rows in order.
+    assert observed == [compacted]
     assert engine._pending_context_anchor_messages is None
     assert engine._store.get_session_messages(engine.current_session_id) == before
 
