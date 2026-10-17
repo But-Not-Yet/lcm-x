@@ -11,17 +11,19 @@ def coverage(probe):
     ids = Counter(r["store_id"] for r in rows)
     leaf_ids = [i for leaf in probe["leaf_sources"] for i in leaf]
     covered = Counter(leaf_ids)
-    tail_identities = [r.get("active_identity", r["identity"])
-                       for r in sorted(rows, key=lambda r: r["store_id"])
-                       if r["store_id"] > probe["frontier"]]
+    tail_rows = [r for r in sorted(rows, key=lambda r: r["store_id"])
+                 if r["store_id"] > probe["frontier"] and not covered[r["store_id"]]]
+    tail_identities = [r.get("active_identity", r["identity"]) for r in tail_rows]
+    non_tail_identities = {r.get("active_identity", r["identity"]) for r in rows
+                           if r["store_id"] <= probe["frontier"] or covered[r["store_id"]]}
     tail_counts = Counter(tail_identities)
     live_tail = [identity for identity in probe["active_view"] if identity in tail_counts]
     live = Counter(probe["active_view"])
     tail = []
-    for row in rows:
+    for row in tail_rows:
         # Active projections/carrier remainders may omit timestamps; storage identity may not.
         active_identity = row.get("active_identity", row["identity"])
-        if row["store_id"] > probe["frontier"] and live[active_identity]:
+        if live[active_identity]:
             tail.append(row["store_id"])
             live[active_identity] -= 1
     lost = [r["store_id"] for r in rows if r["store_id"] not in tail and not covered[r["store_id"]]]
@@ -32,6 +34,7 @@ def coverage(probe):
         "duplicate_ids": sum(n - 1 for n in ids.values() if n > 1),
         "duplicate_coverage": sum(n - 1 for n in covered.values() if n > 1),
         "duplicate_tail": sum((Counter(live_tail) - tail_counts).values()),
+        "covered_in_active": sum(live[identity] for identity in non_tail_identities),
         "tail_order_preserved": live_tail == tail_identities,
         "leaf_order_preserved": all(a < b for a, b in zip(leaf_ids, leaf_ids[1:])),
         "dangling_sources": sorted(set(covered) - set(ids)),
@@ -43,7 +46,7 @@ def intact(score):
     return all(score[k] for k in (
         "ordered_identity_preserved", "tail_order_preserved", "leaf_order_preserved")) and not any(score[k] for k in (
         "lost", "missing_rows", "duplicate_stored", "duplicate_ids", "duplicate_coverage", "duplicate_tail",
-        "dangling_sources"))
+        "covered_in_active", "dangling_sources"))
 
 
 def promotion(events):

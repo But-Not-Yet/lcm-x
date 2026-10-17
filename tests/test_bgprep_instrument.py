@@ -27,6 +27,37 @@ def test_active_unsummarized_tail_is_covered(probe):
     assert intact(score) and score["active_tail_ids"] == [3] and score["lost"] == 0
 
 
+@pytest.mark.parametrize("frontier", [0, 1])
+@pytest.mark.parametrize("live,excess", [(["old", "tail"], 1), (["tail"], 0)])
+def test_covered_rows_in_active_view_fail(frontier, live, excess):
+    probe = dict(expected=["old", "tail"],
+                 rows=[dict(store_id=1, identity="old"), dict(store_id=2, identity="tail")],
+                 leaf_sources=[[1]], frontier=frontier, active_view=["system", *live, "summary"])
+    score = coverage(probe)
+    assert intact(score) is (excess == 0)
+    assert score["covered_in_active"] == excess
+    assert score["active_tail_ids"] == [2]
+
+
+@pytest.mark.parametrize("copies", [1, 2])
+def test_covered_and_tail_shared_active_identity(copies):
+    probe = dict(expected=["old stored", "tail stored"],
+                 rows=[dict(store_id=i, identity=v, active_identity="same content")
+                       for i, v in enumerate(["old stored", "tail stored"], 1)],
+                 leaf_sources=[[1]], frontier=1, active_view=["same content"] * copies)
+    score = coverage(probe)
+    assert intact(score) is (copies == 1)
+    assert score["covered_in_active"] == copies - 1
+    assert score["active_tail_ids"] == [2]
+
+
+def test_frontier_row_in_active_view_is_reported_without_leaf():
+    probe = dict(expected=["old"], rows=[dict(store_id=1, identity="old")],
+                 leaf_sources=[], frontier=1, active_view=["old"])
+    score = coverage(probe)
+    assert not intact(score) and score["covered_in_active"] == 1
+
+
 @pytest.mark.parametrize("live,ordered,duplicates", [
     (["b", "a"], False, 0), (["a", "b", "b"], False, 1),
     (["a", "b"], True, 0), (["summary", "a", "b"], True, 0),
