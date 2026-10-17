@@ -186,6 +186,34 @@ def _model_only_display_metadata_keys() -> frozenset:
     """Every key that can hide a row: the literal key and the host-advertised one."""
     return frozenset(k for k in ("model_only", _model_only_display_metadata_key()) if k)
 
+
+def _host_will_merge_user_rows(previous: Dict[str, Any], following: Any) -> bool:
+    """Mirror Hermes' merge predicate before stamping a generated row model-only."""
+    if (previous.get("role") != "user" or not isinstance(following, dict)
+            or following.get("role") != "user"):
+        return False
+    try:
+        from agent.context_compressor import split_user_originated_turn
+    except (ImportError, AttributeError):
+        # Older hosts lack the carrier exemption; retain their plain-user behavior.
+        split_user_originated_turn = None
+    try:
+        from agent.prompt_builder import STEER_DISPLAY_KIND
+    except (ImportError, AttributeError):
+        STEER_DISPLAY_KIND = "steer"
+    try:
+        from hermes_state import SessionDB
+        json_prefix = SessionDB._CONTENT_JSON_PREFIX
+    except (ImportError, AttributeError):
+        json_prefix = "\x00json:"
+    return (
+        (split_user_originated_turn is None or split_user_originated_turn(previous)[0] is None)
+        and previous.get("display_kind") != STEER_DISPLAY_KIND
+        and all(isinstance(row.get("content", ""), str)
+                and not row.get("content", "").startswith(json_prefix)
+                for row in (previous, following))
+    )
+
 _ASSERTION_EXTRACTION_PROCESS_SLOT = threading.BoundedSemaphore(1)
 _EMBEDDING_SCHEMA_READY: set[tuple[Path, bool]] = set()
 _EMBEDDING_SCHEMA_LOCK = threading.Lock()
@@ -8354,8 +8382,13 @@ class LCMEngine(
         key = _model_only_display_metadata_key() if generated_rows else None
         if key is not None:
             generated_ids = {id(row) for row in generated_rows}
-            for row in result:
+            for index, row in enumerate(result):
                 if id(row) in generated_ids:
+                    # Hermes retains the first row's metadata on merge. Its native
+                    # carrier, /steer and non-plain-text exemptions must stay hidden.
+                    following = result[index + 1] if index + 1 < len(result) else None
+                    if _host_will_merge_user_rows(row, following):
+                        continue
                     row["display_metadata"] = {**(row.get("display_metadata") or {}), key: True}
         if not persist:
             return result
