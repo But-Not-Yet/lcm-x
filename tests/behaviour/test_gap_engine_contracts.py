@@ -155,7 +155,7 @@ def test_externalization_removes_partial_file_on_fsync_failure(
     result = externalize.externalize_ingest_payload("durable candidate", config=cfg, hermes_home=str(tmp_path))
     assert result is None
     storage = externalize.get_large_output_storage_dir(cfg, hermes_home=str(tmp_path), create=False)
-    assert not list(storage.glob("*.json"))
+    assert not list(storage.iterdir())
 
 
 @pytest.mark.parametrize("question, operation, kind", [
