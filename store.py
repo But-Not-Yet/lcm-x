@@ -15,6 +15,7 @@ import math
 import sqlite3
 import threading
 import time
+from contextlib import AbstractContextManager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Collection, Dict, Iterable, List, Optional
@@ -52,6 +53,7 @@ from .search_query import (
     should_apply_directness_rank_adjustment,
 )
 from .message_content import normalize_content_value as _normalize_content_value
+from .sqlite_session import ConnectionPolicy, TransactionOwner, open_connection
 from .sqlite_util import (
     _run_sqlite_write_with_snapshot_retry,
     _temporary_sqlite_busy_timeout,
@@ -336,16 +338,21 @@ class MessageStore:
         # change semantics for single-threaded callers and adds only a single
         # uncontended ``RLock.acquire``/``release`` pair per operation.
         self._write_lock = threading.RLock()
+        self._transaction_owner = TransactionOwner(self._write_lock)
         self._init_db()
 
     def _init_db(self):
         # #1159: reserve the write lock before FTS5 can read during re-prepare.
-        self._conn = sqlite3.connect(
-            str(self.db_path), timeout=5.0, check_same_thread=False,
-            isolation_level="IMMEDIATE",
-        )
-        refuse_schema_version_too_new(self._conn)
-        configure_connection(self._conn)
+        open_connection(ConnectionPolicy(
+            database=str(self.db_path),
+            connect_kwargs=(
+                ("timeout", 5.0), ("check_same_thread", False), ("isolation_level", "IMMEDIATE"),
+            ),
+            before_row_factory=(refuse_schema_version_too_new, configure_connection),
+            row_factory=None,
+            on_open=lambda conn: setattr(self, "_conn", conn),
+            on_setup_error=None,
+        ))
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS messages (
                 store_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -378,9 +385,9 @@ class MessageStore:
             self._conn,
             build_message_fts_spec(),
         )
+        # Also ensures conversation_id and its index on current-schema opens.
         run_versioned_migrations(self._conn)
         self._ensure_source_column()
-        self._ensure_conversation_id_column()
         self._ensure_time_contract_columns()
         self._conn.commit()
         # False: a busy writer deferred stem init, so this handle reads only the plain index.
@@ -396,18 +403,6 @@ class MessageStore:
         )
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_msg_source_session ON messages(source, session_id, store_id)"
-        )
-
-    def _ensure_conversation_id_column(self) -> None:
-        columns = {
-            row[1] for row in self._conn.execute("PRAGMA table_info(messages)").fetchall()
-        }
-        add_column_if_missing(
-            self._conn, columns, "conversation_id",
-            "ALTER TABLE messages ADD COLUMN conversation_id TEXT DEFAULT ''",
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_msg_conversation_session ON messages(conversation_id, session_id, store_id)"
         )
 
     def _ensure_time_contract_columns(self) -> None:
@@ -507,7 +502,7 @@ class MessageStore:
                     "host_message_timestamp" if observed_at is not None else None,
                 ),
             )
-            self._conn.commit()
+            self._commit()
             return cur.lastrowid
 
     def append_batch(self, session_id: str,
@@ -630,7 +625,7 @@ class MessageStore:
                 "UPDATE messages SET session_id = ? WHERE session_id = ?",
                 (new_session_id, old_session_id),
             )
-            self._conn.commit()
+            self._commit()
             return cur.rowcount if cur.rowcount is not None else 0
 
     def delete_session_messages(self, session_id: str) -> int:
@@ -642,7 +637,7 @@ class MessageStore:
                 "DELETE FROM messages WHERE session_id = ?",
                 (session_id,),
             )
-            self._conn.commit()
+            self._commit()
             deleted = cur.rowcount if cur.rowcount is not None else 0
             return deleted
 
@@ -685,7 +680,7 @@ class MessageStore:
             )
             if before_commit is not None:
                 before_commit(self._conn, store_id)
-            self._conn.commit()
+            self._commit()
             return True
 
     def pin(self, store_id: int) -> None:
@@ -695,14 +690,14 @@ class MessageStore:
             self._conn.execute(
                 "UPDATE messages SET pinned = 1 WHERE store_id = ?", (store_id,)
             )
-            self._conn.commit()
+            self._commit()
 
     def unpin(self, store_id: int) -> None:
         with self._write_lock:
             self._conn.execute(
                 "UPDATE messages SET pinned = 0 WHERE store_id = ?", (store_id,)
             )
-            self._conn.commit()
+            self._commit()
 
     # -- Read operations ----------------------------------------------------
 
@@ -1007,7 +1002,7 @@ class MessageStore:
             """)
         self._identity_anchor_schema_ready = True
 
-    # -- v0.26.0 host uid shadow bindings: a droppable side table, never read for a decision ----------
+    # -- Host uid shadow bindings: droppable; #1124 reads canonical evidence only for copy exclusion --
 
     def _host_uid_table_exists(self) -> bool:
         with self._write_lock:
@@ -1055,15 +1050,17 @@ class MessageStore:
                 out.setdefault(str(uid), []).append((int(store_id), str(kind)))
         return out
 
-    def host_uid_uids_of_stores(self, lineage_key: str, store_ids) -> dict[int, set[str]]:
-        """``{store_id: {uid, ...}}``: the canonical and version bindings of ``store_ids`` in a lineage."""
+    def host_uid_uids_of_stores(self, lineage_key: str, store_ids, kinds=("canonical", "version"),
+                                *, require_disagree: bool = False) -> dict[int, set[str]]:
+        """``{store_id: {uid, ...}}`` in a lineage; #1124 requests canonical twins, all bindings for copies."""
         ids, out = sorted({int(sid) for sid in store_ids}), {}
         for start in range(0, len(ids) if self._host_uid_table_exists() else 0, 500):
             chunk = ids[start:start + 500]
             for store_id, uid in self._conn.execute(
                 f"SELECT store_id, uid FROM host_uid_bindings INDEXED BY idx_host_uid_store "
                 f"WHERE store_id IN ({','.join('?' * len(chunk))}) "
-                "AND lineage_key = ? AND kind IN ('canonical', 'version')", [*chunk, lineage_key]):
+                f"AND lineage_key = ? AND kind IN ({','.join('?' * len(kinds))}) "
+                "AND (? = 0 OR disagree_seen = 1)", [*chunk, lineage_key, *kinds, int(require_disagree)]):
                 out.setdefault(int(store_id), set()).add(str(uid))
         return out
 
@@ -1105,13 +1102,8 @@ class MessageStore:
         with self._write_lock:
             if conn.in_transaction:
                 raise sqlite3.OperationalError("host-uid shadow write skipped: the connection is in a transaction")
-            conn.execute("BEGIN IMMEDIATE")
-            try:
+            with self.atomic(immediate=True):
                 write(conn)
-                conn.commit()
-            except BaseException:
-                conn.rollback()
-                raise
 
     def count_host_uid_bindings(self, kinds=("canonical", "version", "alias_candidate")) -> Optional[int]:
         kinds = tuple(kinds)
@@ -1181,7 +1173,7 @@ class MessageStore:
                     [(int(s), k, r, o, ob, created_at) for s, k, r, o, ob in group],
                 )
                 added += len(group)
-            self._conn.commit()
+            self._commit()
         return added
 
     def get_message_relations(self, store_ids: List[int], kind: str, *, related: bool = False) -> List[Dict[str, Any]]:
@@ -1208,7 +1200,7 @@ class MessageStore:
                 "WHERE store_id = ? AND observed_at IS NULL",
                 (float(observed_at), int(store_id)),
             )
-            self._conn.commit()
+            self._commit()
             return cur.rowcount > 0
 
     def backfill_observed_at_many(self, pairs) -> int:
@@ -1384,7 +1376,7 @@ class MessageStore:
         """Normalize legacy NULL/blank source rows to the explicit unknown bucket."""
         stats_before = self.get_source_stats()
         blank_clause = _legacy_blank_source_clause("source")
-        with self._write_lock, self._conn:
+        with self.atomic():
             cur = self._conn.execute(
                 f"UPDATE messages SET source = ? WHERE {blank_clause}",
                 (_UNKNOWN_SOURCE,),
@@ -1484,8 +1476,26 @@ class MessageStore:
                 )
                 wrote = True
             if wrote:
-                conn.commit()
+                self._commit()
         return wrote
+
+    def _commit(self) -> None:
+        """Commit a standalone helper; an enclosing atomic block owns its commit."""
+        self._transaction_owner.commit(self._conn)
+
+    def atomic(self, *, immediate: bool = False) -> AbstractContextManager[None]:
+        """Own a transaction under the existing write lock, joining nested entries.
+
+        By default the first write opens the transaction. Explicit owners use
+        ``immediate=True`` to begin before reading. Simple write helpers defer
+        their commits here. Schema scripts, retry-owning writes, telemetry,
+        ``update_metadata_json`` and explicit commit/rollback operations retain
+        their own boundaries and must not be grouped through this primitive.
+        """
+        conn = self._conn
+        if conn is None:
+            raise RuntimeError("MessageStore connection is closed")
+        return self._transaction_owner.atomic(conn, immediate=immediate)
 
     def update_metadata_json(self, key: str, update: Any) -> Any:
         """Atomic read-modify-write of one metadata JSON value: ``update(current)`` (None when absent) runs

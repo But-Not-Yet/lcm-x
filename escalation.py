@@ -546,12 +546,22 @@ def _summary_contract_shape(content: str) -> str:
     return "other" if "expand for details about" in last.lower() else "missing"
 
 
+_UNCLOSED_BODY_TAG_RE = re.compile(
+    r"<[/|]?[A-Za-z][\w:.-]*(?:\s[^<>]*)?\|?>|\[\s*(?:think|thinking|reasoning|thought)\s*\]"
+    # Spaced spellings that _REASONING_START_RE accepts only at a line start, found anywhere in the body.
+    r"|<\s*(?:/\s*)?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b[^<>]*>"
+    r"|<\|\s*(?:start_of_)?(?:think|thinking|reasoning|thought)\s*\|>", re.IGNORECASE)
+
+
 def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[str, str, tuple[str, ...]]:
     """Return ``(body, failed_check, tolerated)`` for a reply under the nonce contract.
 
     ``failed_check`` is "" when accepted, else ``envelope``, ``nonce_count``, ``short_body`` or ``closing_hint``.
     ``tolerated`` names the known formatting mistakes that were accepted (#612): the ``</summary>`` closer, one
-    ``<summary>`` wrapper around the whole body, and one layer of quotes or emphasis on the closing hint. The
+    ``<summary>`` wrapper around the whole body, one layer of quotes or emphasis on the closing hint, and
+    ``unclosed_envelope`` (#1163). A missing closer is safe because it carries no nonce and the closing-hint check
+    still anchors the body; it is not accepted when a closer appears anywhere after the opener (text written past
+    a closed envelope) or when the body holds any tag-like token or a reasoning header line (an unclosed reasoning block). The
     nonce opening tag, its uniqueness, the body minimum and a recognised closing hint are still required.
     """
     if not nonce:
@@ -571,18 +581,35 @@ def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[
     # envelope contract could never be summarized again. The opening-tag count
     # is kept because it is nonce-bearing, so a second occurrence is genuinely
     # anomalous rather than ordinary transcript content.
-    if not stripped.startswith(opening_tag) or not stripped.endswith(closing_tag):
+    if not stripped.startswith(opening_tag):
         return "", "envelope", ()
+    unclosed_envelope = not stripped.endswith(closing_tag)
+    if unclosed_envelope:
+        # #1163: tolerate a missing closer only if every remaining check passes. A closer anywhere after the
+        # opener means the envelope was closed and text followed it, which is not a missing closer; an unmatched
+        # <summary> opener is not a tolerated shape and would hide a reasoning marker from the check below.
+        if "</lcm-summary>" in stripped or "</summary>" in stripped or "<summary>" in stripped:
+            return "", "envelope", ()
+        tolerated.append("unclosed_envelope")
     if stripped.count(opening_tag) != 1:
-        return "", "nonce_count", ()
-    body = stripped[len(opening_tag) : -len(closing_tag)].strip()
+        return "", "envelope" if unclosed_envelope else "nonce_count", ()
+    body = stripped[len(opening_tag) :].strip() if unclosed_envelope else (
+        stripped[len(opening_tag) : -len(closing_tag)].strip())
     wrapper = _SUMMARY_WRAPPER_RE.match(body)
     if wrapper and "<summary>" not in wrapper.group("inner") and "</summary>" not in wrapper.group("inner"):
         body = wrapper.group("inner").strip()
         tolerated.append("summary_wrapper")
+    if unclosed_envelope and (_UNCLOSED_BODY_TAG_RE.search(body) or any(
+        _REASONING_START_RE.match(re.sub(r"^(?:\s*(?:[>*_`]+|[-•]|\d+\.)\s*)+", "", line)) for line in body.splitlines()
+    )):
+        # The opener hides an unclosed reasoning block from _sanitize_reasoning_summary. The missing-closer tolerance
+        # therefore applies only to a body with no tag-like token (any <name>, </name>, <|name|> or [think]: reasoning
+        # tags of any provider, a second envelope opener) and no reasoning header line, also behind Markdown emphasis,
+        # quote or list prefixes. Any other reply keeps the base result, envelope.
+        return "", "envelope", ()
     minimum_body_tokens = max(4, min(16, max(1, int(max_tokens) // 16)))
     if count_tokens(body) < minimum_body_tokens:
-        return "", "short_body", ()
+        return "", "envelope" if unclosed_envelope else "short_body", ()
     lines = body.splitlines()
     nonempty = [i for i, line in enumerate(lines) if line.strip()]
     controls = 0
@@ -600,14 +627,14 @@ def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[
         if not plain:
             plain, hint_tags = _normalize_expand_hint(raw_last_line.strip())
         if not plain:
-            return "", "closing_hint", ()
+            return "", "envelope" if unclosed_envelope else "closing_hint", ()
         body = body[: len(body) - len(raw_last_line)] + plain
         if count_tokens(body) < minimum_body_tokens:
             # Accept a decorated reply only if its plain form would be accepted.
-            return "", "short_body", ()
+            return "", "envelope" if unclosed_envelope else "short_body", ()
         tolerated.extend(hint_tags)
     if count_tokens(body) < minimum_body_tokens:
-        return "", "short_body", ()
+        return "", "envelope" if unclosed_envelope else "short_body", ()
     return body, "", tuple(tolerated)
 
 

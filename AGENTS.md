@@ -19,6 +19,8 @@ an authority for writes or automatic merges.
   local authentication state.
 - Do not change customer runtimes, publish a release, write upstream, or announce LCM-X as
   canonical unless the user explicitly authorizes that separate gate.
+- The invariant catalogue, `docs/invariants.md` (I1-I14), names each invariant with its code,
+  tests and proof status; specs and review packets cite invariant IDs.
 
 ## Canonical Work Graph
 
@@ -31,12 +33,31 @@ an authority for writes or automatic merges.
 - Give every verified review finding one terminal disposition: fixed now, accepted follow-up
   linked to an issue, accepted tradeoff/won't-fix, false/not-applicable, or escalated.
 
+## Filing issues
+
+Search open and closed issues and pull requests before filing. Use the bug form's
+headings: What happened, What you expected, Steps to reproduce, Plugin version,
+Hermes version, Where it happened, Operating system, Diagnostics, and Impact,
+regression range, and data symptoms. Put short log excerpts, the relevant config,
+and what you already ran under Diagnostics. Maintainers filing through the CLI pass
+`--label bug,triage-pending` or `--label bug,triaged` after triage, plus
+`--label agent-drafted` when an agent wrote the report. These labels do not grant
+filing authority; show the draft and obtain the reporter's approval first.
+
 ## Bugs And Regressions
 
 - Reproduce a bug on the exact current `main` SHA or identify the mandatory invariant it
   violates before implementation.
 - Record the supported path, impact, failing proof, expected behavior, and affected SHA.
 - Add the smallest regression that fails on the base and passes on the candidate.
+- Judge a fix against the previous GA and its sibling input shapes, per `docs/process/fix-scope.md`.
+  A change on the turn path (assembly, compaction, survival fit, ingest, the summary route,
+  the host `compress` contract) carries the probe packet in
+  `docs/process/turn-path-probe-packet.md`.
+- Structural refactors follow `docs/process/refactor-window.md`: one move per `refactor-only`
+  PR, characterization first, no behaviour change mixed with moves.
+- Schema changes follow `docs/process/schema-changes.md`: no new DDL owners, the migration's
+  format and oldest reader recorded, forward and rollback tests.
 - Do not implement a `needs-repro` report merely because an upstream PR or issue claims a fix.
 - Prioritize verified supported-path impact:
   - `P0`: active catastrophic data loss, disclosure, or unusable core path.
@@ -90,6 +111,18 @@ git diff --check
 ```
 
 Run `actionlint` when workflows change. Record exact commands and results in the PR.
+
+## Results and PR evidence
+
+- A run that yields a citable number ends with a result card (`RESULT-MANIFEST.json`
+  and `RESULT.md`), published to a durable store (a release asset or a private evidence
+  store) before raw data is packed.
+- Never cite machine-local paths (home directories, mounted volumes or session-note
+  folders) in this repo, PRs, issues or releases.
+- Every PR body has an `## Evidence` block sized to its class; screenshots only
+  for visual changes; video is never required.
+- Do not name private repositories in this repo, PRs, issues or releases.
+- Closeouts state a claim class and what the result does not prove.
 
 ## Automation Boundary
 
