@@ -22,7 +22,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -280,7 +280,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -521,7 +521,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -762,7 +762,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -1029,7 +1029,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -1352,7 +1352,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -1633,7 +1633,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -1891,7 +1891,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -2149,7 +2149,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -2407,7 +2407,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -2665,7 +2665,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -2899,7 +2899,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -3133,7 +3133,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -3379,7 +3379,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -3678,7 +3678,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -3978,7 +3978,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -4278,7 +4278,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -4556,7 +4556,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -4814,7 +4814,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -5074,7 +5074,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -5306,7 +5306,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -5575,7 +5575,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -5839,7 +5839,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -6097,7 +6097,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -6361,7 +6361,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -6626,7 +6626,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -6890,7 +6890,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -7155,7 +7155,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -7420,7 +7420,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -7683,7 +7683,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -7941,7 +7941,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -8199,7 +8199,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -8466,7 +8466,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -8733,7 +8733,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -9000,7 +9000,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -9265,7 +9265,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -9523,7 +9523,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -9750,7 +9750,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -10025,7 +10025,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -10286,7 +10286,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -10553,7 +10553,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {
@@ -10820,7 +10820,7 @@
         "plugin_git_commit": "<plugin_git_commit>",
         "plugin_git_branch": "<plugin_git_branch>",
         "plugin_git_dirty": "<plugin_git_dirty>",
-        "plugin_git_remote": "https://github.com/electricsheephq/lcm-x.git"
+        "plugin_git_remote": "<plugin_git_remote>"
       },
       "checks": [
         {

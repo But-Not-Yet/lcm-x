@@ -3,7 +3,7 @@
 Normalized output fields: temporary paths everywhere; database_size/wal_size
 (text) and database_size_bytes/wal_size_bytes (JSON), which depend on SQLite
 page allocation. Runtime identity is a template: plugin_version, plugin_path,
-module_path, plugin_git_commit/branch/dirty and sqlite_library are substituted
+module_path, plugin_git_commit/branch/dirty/remote and sqlite_library are substituted
 from this checkout/interpreter into the expected golden, not hard-coded to the
 capture host. The inactive-process PID is likewise an expected template value.
 No diagnostic status, counter, timestamp, list order or SQL order is discarded.
@@ -352,6 +352,7 @@ def bind_template(value: Any, identity: dict[str, Any]) -> Any:
             "plugin_git_commit",
             "plugin_git_branch",
             "plugin_git_dirty",
+            "plugin_git_remote",
         ):
             marker = "<" + key + ">"
             if value == marker:
