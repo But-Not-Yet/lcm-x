@@ -34,13 +34,15 @@ mapping to `docs/invariants.md` is:
 | I1 | Exactly-once wire-message occurrences | I1 |
 | I2 | Window, newest user, objective, pairs, verbatim fresh tail | I3, I4, I8, I9 |
 | I3 | Grep, recall and verbatim expansion of aged facts and payloads | I2 |
-| I4 | Nonempty summaries, valid sources, bounded uncovered rows | I14 |
+| I4 | Nonempty summaries, valid sources, coverage exactly through the published frontier, uncovered rows still live | I14 |
 | I5 | Stable stored IDs and no replay or skipped rows after restart | I1 |
 
-Checkpoints run every 25 turns. `tests/fixtures/long_session_baseline.json`
-pins the production SHA and its measured uncovered-row ceilings. Rebaseline
-only after examining the changed checkpoints on that production tree; do not
-increase ceilings to conceal a regression. Row digests include store IDs and
+Checkpoints run every 25 turns. Summary-source coverage must match the
+published frontier exactly: every stored row at or before the frontier is a
+summary source, and every later row is still present in live history. Hosts
+compact at different turns, so no per-host row counts are pinned; compaction
+progress is enforced by the per-turn window check and the minimum compaction
+count. Row digests include store IDs and
 wire payloads, expand externalized data, and omit host stamps and clocks.
 Only the isolated home prefix is normalized; user and result bytes are checked
 against their independently recorded originals within each run.
