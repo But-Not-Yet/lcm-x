@@ -655,6 +655,22 @@ def test_lcm_doctor_context_pressure_uses_runtime_threshold(tmp_path):
         engine.shutdown()
 
 
+def test_issue_1175_lcm_doctor_context_pressure_uses_gate_tokens(tmp_path):
+    engine = LCMEngine(config=LCMConfig(database_path=str(tmp_path / "doctor-gate-pressure.db")))
+    try:
+        engine.context_length = 400_000
+        engine.last_prompt_tokens = 100_000
+        engine._last_gate_tokens = 380_000
+
+        doctor = json.loads(lcm_tools.lcm_doctor({}, engine=engine))
+        pressure = next(check for check in doctor["checks"] if check["check"] == "context_pressure")
+
+        assert pressure["status"] == "warn"
+        assert pressure["detail"].startswith("95.0% used")
+    finally:
+        engine.shutdown()
+
+
 def test_lcm_doctor_config_validation_uses_runtime_threshold_for_autoraised_context(tmp_path):
     config = LCMConfig(
         context_threshold=0.20,
