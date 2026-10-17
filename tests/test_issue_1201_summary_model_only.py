@@ -2,10 +2,13 @@
 
 import hashlib
 import json
+import os
 import sqlite3
+import subprocess
 import sys
 from collections import Counter
 from copy import deepcopy
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -80,6 +83,98 @@ def _compress(engine, messages):
 def _summary_rows(output):
     return [row for row in output if " Summary (d" in str(row.get("content"))
             and "System instructions." not in str(row.get("content"))]
+
+
+_REAL_MERGE_PROBE = """
+import importlib.util, json, os, sys
+sys.path.insert(0, os.environ["LCM_REAL_HERMES_SRC"])
+from agent.agent_runtime_helpers import _merge_consecutive_users
+from agent.context_compressor import is_compaction_summary_message, split_user_originated_turn
+root = sys.argv[1]
+spec = importlib.util.spec_from_file_location("lcm_merge_probe", root + "/__init__.py",
+                                            submodule_search_locations=[root])
+sys.modules["lcm_merge_probe"] = importlib.util.module_from_spec(spec)
+from lcm_merge_probe.engine import _host_will_merge_user_rows
+results = []
+for rows in json.load(sys.stdin):
+    previous = rows[0]
+    summary = is_compaction_summary_message(previous)
+    carrier = split_user_originated_turn(previous)[0] is not None
+    predicted = _host_will_merge_user_rows(*rows)
+    merged, repairs = _merge_consecutive_users(rows)
+    results.append(dict(summary=summary, carrier=carrier, predicted=predicted,
+                        merged=merged, repairs=repairs))
+print(json.dumps(results))
+"""
+
+
+@pytest.mark.skipif(not os.environ.get("LCM_REAL_HERMES_SRC"), reason="no real Hermes source supplied")
+@pytest.mark.parametrize("key", [None, "model_only", "host_model_only"])
+def test_issue_1370_real_host_merge_keeps_current_user_prompt_visible(engine, monkeypatch, tmp_path, key):
+    _host(monkeypatch, key)
+    _seed(engine)
+    tail = [{"role": "user", "content": "The current human request."}]
+    before = deepcopy(tail)
+    output = engine._assemble_context(None, tail, persist=False)
+    assert len(output) == 2 and all(row["role"] == "user" for row in output)
+    assert _summary_rows(output) == [output[0]]
+    assert output[1] == tail[0] and tail == before
+    marked = deepcopy(output[0])
+    marked["display_metadata"] = {"model_only": True}
+    # Native carriers are not LCM's [Recent Summary ...] shape. Exercise both
+    # recognition routes and every other exemption with the real host predicate.
+    exempt = [
+        {**marked, "_compressed_summary": True},
+        {**marked, "content": "[CONTEXT SUMMARY]: Earlier work."},
+        {**marked, "display_kind": "steer"},
+        {**marked, "content": "\x00json:undecodable"},
+        {**marked, "content": [{"type": "text", "text": "Earlier work."}]},
+    ]
+    cases = [output, [marked, tail[0]], *[[row, tail[0]] for row in exempt],
+             [marked, {"role": "user", "content": "\x00json:undecodable"}],
+             [marked, {"role": "user", "content": [{"type": "text", "text": "Human request."}]}],
+             [marked, {"role": "assistant", "content": "Reply."}],
+             [{"role": "user"}, tail[0]]]
+    home = tmp_path / "real-hermes-home"
+    home.mkdir()
+    completed = subprocess.run(
+        [sys.executable, "-c", _REAL_MERGE_PROBE, str(Path(__file__).resolve().parents[1])],
+        input=json.dumps(cases), capture_output=True, text=True, timeout=60, check=False,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "HERMES_HOME": str(home),
+             "LCM_REAL_HERMES_SRC": os.environ["LCM_REAL_HERMES_SRC"],
+             "PYTHONDONTWRITEBYTECODE": "1", "HERMES_DISABLE_LAZY_INSTALLS": "1"},
+    )
+    assert completed.returncode == 0, completed.stderr[-4000:]
+    results = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert all(row["predicted"] == bool(row["repairs"]) for row in results), results
+    assert all(not row["summary"] and not row["carrier"] for row in results[:2])
+    assert [row["summary"] for row in results[2:7]] == [True, True, False, False, False]
+    assert [row["repairs"] for row in results] == [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+    merged = results[0]["merged"]
+    assert len(merged) == 1 and results[0]["repairs"] == 1
+    assert merged[0]["content"] == output[0]["content"] + "\n\n" + tail[0]["content"]
+    visible = [row for row in merged if not row.get("display_metadata", {}).get(key)]
+    assert visible == merged, "the host merge must not hide the current user request"
+    assert results[1]["merged"][0]["display_metadata"]["model_only"] is True
+    assert all(row["merged"][0]["display_metadata"]["model_only"] is True for row in results[2:7])
+
+
+@pytest.mark.parametrize("key", ["model_only", "host_model_only"])
+@pytest.mark.parametrize("following", [
+    {"role": "assistant", "content": "A human-visible reply."},
+    {"role": "user", "content": [{"type": "text", "text": "A structured request."}]},
+    {"role": "user", "content": {"type": "text", "text": "A structured request."}},
+    {"role": "user", "content": "\x00json:undecodable content"},
+], ids=["assistant", "user-list", "user-dict", "user-json-sentinel"])
+def test_issue_1370_nonmergeable_follower_keeps_summary_stamp(engine, monkeypatch, key, following):
+    _host(monkeypatch, key)
+    _seed(engine)
+    output = engine._assemble_context(None, [deepcopy(following)], persist=False)
+    assert len(output) == 2 and output[0]["role"] == "user"
+    assert _summary_rows(output) == [output[0]]
+    assert output[1] == following
+    assert output[0].get("display_metadata") == {key: True}
+    assert key not in output[1].get("display_metadata", {})
 
 
 @pytest.mark.parametrize("key", ["model_only", "host_model_only"])
@@ -168,13 +263,13 @@ def test_r2_over_cap_trim_tracks_generated_summary(engine, monkeypatch, caplog):
     assert summaries and all(row.get("display_metadata") == {"model_only": True} for row in summaries)
 
 
-def test_t1_compaction_marks_only_standalone_summary(engine):
+def test_t1_compaction_leaves_mergeable_summary_visible(engine):
     messages = _history()
     before = deepcopy(messages)
     output = _compress(engine, messages)
     summaries = _summary_rows(output)
     assert summaries
-    assert all(row.get("display_metadata") == {"model_only": True} for row in summaries)
+    assert all("display_metadata" not in row for row in summaries)
     assert all("display_metadata" not in row for row in output if row not in summaries)
     assert messages == before
 
@@ -247,7 +342,9 @@ def test_t1_other_standalone_consumers(engine, monkeypatch, site, cap):
     generated = [row for row in output if not any(
         text in str(row["content"]) for text in ("A real", "Another real", "sole user"))]
     assert generated
-    assert all(row.get("display_metadata", {}).get("model_only") is True for row in generated)
+    # Recall/anchor user rows will absorb the plain user tail in the host.
+    expected_stamp = site not in {"recall", "anchor"}
+    assert all(bool(row.get("display_metadata", {}).get("model_only")) == expected_stamp for row in generated)
     assert all(not row.get("display_metadata", {}).get("model_only")
                for row in output if "A real" in str(row["content"]))
     assert all(not row.get("display_metadata", {}).get("model_only") for row in measured)
@@ -291,12 +388,15 @@ def test_t4_host_display_projection_keeps_each_human_turn_once(engine):
             "AND COALESCE(json_extract(display_metadata, '$.model_only'),0)=0")]
     humans = [row["content"] for row in originals if row["role"] != "system"]
     assert all(Counter(visible)[content] == 1 for content in humans)
-    assert not any(" Summary (d" in content for content in visible)
+    # A summary that will absorb the real user row must remain display-visible.
+    assert all(row["content"] in visible for row in _summary_rows(output))
 
 
 def test_t5_metadata_does_not_change_identity_or_reconciliation(engine, tmp_path, monkeypatch):
     originals = _history()
     marked = _compress(engine, originals)
+    # Exercise both metadata variants even when #1370 leaves this summary visible.
+    _summary_rows(marked)[0]["display_metadata"] = {"model_only": True}
     assert _summary_rows(marked)[0].get("display_metadata") == {"model_only": True}
     unmarked = deepcopy(marked)
     for row in unmarked:
@@ -328,7 +428,8 @@ def test_t6_existing_metadata_and_host_constant(engine, monkeypatch):
     metadata = {"origin": "recall", "host_model_only": False}
     recall = {"role": "user", "content": "Retrieved context.", "display_metadata": metadata}
     monkeypatch.setattr(engine, "_build_proactive_recall_message", lambda *a: recall.copy())
-    tail = [{"role": "user", "content": "A real request.", "display_metadata": {"origin": "human"}}]
+    tail = [{"role": "user", "content": [{"type": "text", "text": "A real request."}],
+             "display_metadata": {"origin": "human"}}]
     output = engine._assemble_context(None, tail)
     assert next(row for row in output if row["content"] == recall["content"])["display_metadata"] == {
         "origin": "recall", "host_model_only": True}
@@ -382,7 +483,7 @@ def test_t7_auxiliary_prompt_builders_never_forward_live_rows(engine, monkeypatc
 
 def test_t8_second_compress_uses_public_row_noop_shortcut(engine, monkeypatch):
     output = _compress(engine, _history())
-    assert _summary_rows(output)[0].get("display_metadata") == {"model_only": True}
+    assert "display_metadata" not in _summary_rows(output)[0]
     compared = []
     candidates = []
     compress_impl = engine._compress_impl
@@ -401,4 +502,4 @@ def test_t8_second_compress_uses_public_row_noop_shortcut(engine, monkeypatch):
     assert len(candidates) == 1 and candidates[0] is not output
     assert len(compared) == 2 * len(output)
     assert all(public_row(left) == public_row(right) for left, right in zip(compared[::2], compared[1::2]))
-    assert _summary_rows(second)[0]["display_metadata"] == {"model_only": True}
+    assert "display_metadata" not in _summary_rows(second)[0]
