@@ -297,23 +297,6 @@ def _ignored_lcm_config_yaml_keys(cfg: dict[str, Any] | None = None) -> list[str
     )
 
 
-def _hermes_compression_threshold(default: float) -> float:
-    """Read lcm.context_threshold or Hermes compression.threshold from config.yaml.
-
-    Priority when no ``LCM_CONTEXT_THRESHOLD`` env var is set:
-      1. ``lcm.context_threshold`` (LCM-specific override in config.yaml)
-      2. ``compression.threshold`` (Hermes global setting, unless compression disabled),
-         raised to at least ``default`` (#1013)
-
-    Hermes gateways may load ``~/.hermes/config.yaml`` without exporting every
-    setting into the process environment. The ``lcm.context_threshold`` key lets
-    operators tune LCM compaction independently of the Hermes compression setting.
-    Disabled Hermes compression should not leak its threshold into LCM.
-    """
-    value, _source = _hermes_compression_threshold_with_source(default)
-    return value
-
-
 def _load_model_thresholds_from_yaml() -> dict[str, float]:
     """Read ``lcm.model_thresholds`` from config.yaml.
 
