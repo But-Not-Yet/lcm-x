@@ -10,6 +10,8 @@ import sys
 
 import pytest
 
+from tests.real_long_session_probe import assert_ordered_tail, canonical
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -28,9 +30,9 @@ def _hermes_python() -> tuple[str, str] | None:
 
 
 HERMES = _hermes_python()
-pytestmark = pytest.mark.skipif(HERMES is None, reason="no real Hermes runtime available")
 
 
+@pytest.mark.skipif(HERMES is None, reason="no real Hermes runtime available")
 def test_real_long_session(tmp_path: Path) -> None:
     assert HERMES is not None
     python, src = HERMES
@@ -72,3 +74,31 @@ def test_real_long_session(tmp_path: Path) -> None:
     assert len(combined["turns"]) == 300, "I1 exactly-once: incomplete scenario"
     assert sum(c["status"] == "compacted" for c in combined["compactions"]) >= 5, "I4 DAG: fewer than five compactions"
     assert all(c["recalled"] > 0 for c in combined["checkpoints"]), "I3 recall: no aged facts exercised"
+
+
+def test_ordered_tail_rejects_reordering_and_substrings() -> None:
+    tail = [{"role": "user", "content": "inventory"}, {"role": "assistant", "content": "noted"}]
+    protected = [canonical(m) for m in tail]
+    assert_ordered_tail(tail, protected)
+    with pytest.raises(AssertionError, match="ordered fresh tail changed"):
+        assert_ordered_tail(list(reversed(tail)), protected)
+    with pytest.raises(AssertionError, match="ordered fresh tail changed"):
+        assert_ordered_tail([tail[0], {**tail[1], "content": "noted extra"}], protected)
+    carrier = [{**tail[0], "content": "summary\n\ninventory"}, tail[1]]
+    assert_ordered_tail(carrier, protected, carrier_remainder="inventory")
+    with pytest.raises(AssertionError, match="ordered fresh tail changed"):
+        assert_ordered_tail(carrier, protected)
+    with pytest.raises(AssertionError, match="ordered fresh tail changed"):
+        assert_ordered_tail([tail[0], {**tail[1], "content": "summary\n\nnoted"}], protected,
+                            carrier_remainder="inventory")
+
+
+def test_ordered_tail_canonicalizes_tool_argument_json() -> None:
+    def call(arguments: str) -> dict:
+        return {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "read_20_0", "type": "function", "function": {"name": "read_file", "arguments": arguments}}]}
+
+    protected = [canonical(call('{"path": "record.txt"}'))]
+    assert_ordered_tail([call('{"path":"record.txt"}')], protected)
+    with pytest.raises(AssertionError, match="ordered fresh tail changed"):
+        assert_ordered_tail([call('{"path":"other.txt"}')], protected)
