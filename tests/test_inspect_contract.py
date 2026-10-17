@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from hermes_lcm import command, tools
+from hermes_lcm import command, inspect_tools, tools
 
 
 @pytest.fixture
@@ -101,7 +101,7 @@ def test_inspect_shared_patch_points_reach_callers(inventory: Any) -> None:
     assert refs["scanned_messages"] == 1
     assert refs["scan_truncated"] is True
     assert refs["items"][0]["marker"] == "call-time-metadata"
-    assert tools.lcm_inspect.__module__ == "hermes_lcm.tools"
+    assert tools.lcm_inspect is inspect_tools.lcm_inspect
 
 
 def test_inspect_rollup_failure_preserves_logger(
