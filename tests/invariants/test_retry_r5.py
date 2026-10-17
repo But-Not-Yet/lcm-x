@@ -5,16 +5,15 @@ import pytest
 pytest.importorskip("hypothesis")
 from copy import deepcopy
 
-from tests.invariants.test_exactly_once_machine import (
-    RETRY_MERGED_SCAFFOLD, RestartMachine, identity, retry_beside_merged_scaffold,
-)
+from tests.invariants.test_exactly_once_machine import RestartMachine, identity
 
 
 class RetryScaffoldDuplicate(AssertionError):
     """Only the replay's extra merged scaffold row, with every delivery retained."""
 
 
-@pytest.mark.xfail(strict=True, raises=RetryScaffoldDuplicate, reason=RETRY_MERGED_SCAFFOLD)
+@pytest.mark.xfail(strict=True, raises=RetryScaffoldDuplicate,
+                   reason="#1179: retry beside a host-merged scaffold after compaction")
 
 
 def test_retry_host_merged_scaffold_after_compaction():
@@ -32,15 +31,36 @@ def test_retry_host_merged_scaffold_after_compaction():
         state.new_turn("alpha", False, 0, True, "lookup")
         state.exactly_once()
         state.cold_resume()
-        wanted, actual = list(map(identity, state.occurrences)), list(map(identity, state.rows()))
+        rows = state.rows()
+        wanted, actual = list(map(identity, state.occurrences)), list(map(identity, rows))
         if actual == wanted[:8] + [identity(state.host[0])] + wanted[8:]:
+            retained = rows[:8] + rows[9:]
+            assert [row["session_id"] for row in retained] == [
+                row["session_id"] for row in state.occurrences
+            ], "session ownership"
             raise RetryScaffoldDuplicate("cold resume re-stores the earlier merged summary + next prompt")
         state.exactly_once()  # Other losses, duplicates or ownership errors must fail normally.
     finally:
         state.teardown()
 
 
+def test_wrong_session_delivery_is_not_the_known_scaffold_duplicate(monkeypatch):
+    rows = RestartMachine.rows
+
+    def wrong_owner_on_duplicate(state):
+        retained = rows(state)
+        if len(retained) == len(state.occurrences) + 1:
+            retained[-1]["session_id"] = "wrong-session"
+        return retained
+
+    monkeypatch.setattr(RestartMachine, "rows", wrong_owner_on_duplicate)
+    with pytest.raises(AssertionError, match="session ownership"):
+        test_retry_host_merged_scaffold_after_compaction()
+
+
 def test_guard_only_retry_beside_verified_merged_scaffold():
+    from tests.invariants.test_exactly_once_machine import retry_beside_merged_scaffold
+
     state = RestartMachine()
     try:
         state.new_turn("alpha", False, 0, False, "lookup")

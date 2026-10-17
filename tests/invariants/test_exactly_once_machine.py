@@ -772,7 +772,7 @@ class RestartMachine(RotationMachine):
         is_retry = retry and retry_resend_1179(self.host, user)
         if (is_retry and not self.include_known_open
                 and KNOWN_OPEN[RETRY_MERGED_SCAFFOLD](self.engine, self.host, user)):
-            # #1179 sibling: retry of a host-merged scaffold row after compaction (tracker TBD by the release manager)
+            # #1179 sibling S1 (#1446): retry beside a host-merged scaffold after compaction.
             # This replay retries its plain suffix; the earlier merged row fails on the next cold resume.
             return
         self.proof_lost_view = None
