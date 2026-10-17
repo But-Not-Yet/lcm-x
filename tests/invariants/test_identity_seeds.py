@@ -761,9 +761,7 @@ def test_cli_reset_classifier_rejects_other_mismatches(corruption, monkeypatch):
 
 
 @pytest.mark.parametrize("start", [
-    pytest.param(False, id="bare-new", marks=pytest.mark.xfail(
-        strict=True, reason="#1306: CLI /new keeps LCM bound to the ended session",
-        raises=CliResetReplayStored)),
+    pytest.param(False, id="bare-new"),
     pytest.param(True, id="explicit-start-control"),
 ])
 def test_cli_new_post_llm_compress_replay(start, caplog, monkeypatch):
@@ -824,33 +822,28 @@ def test_cli_new_post_llm_compress_replay(start, caplog, monkeypatch):
             connection.execute("INSERT INTO sessions VALUES (?, NULL, NULL)", (new,))
         machine.host = []
         machine.engine.on_session_reset()
+        # Hermes reset_session_state also offers the new id through this
+        # optional callback, even when its bare reset omits on_session_start.
+        bind = getattr(machine.engine, "bind_session_state", None)
+        if not start and callable(bind):
+            bind(None, new)
         if start:
             machine.engine.on_session_start(new, platform="cli", context_length=8192)
         caplog.clear()
         for text in ("alpha", "beta"):
             turn(new, text)
-        if not start:
-            assert "resident_engine_conflict" in caplog.text
-            assert machine.engine._store.connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 4
+        assert "resident_engine_conflict" not in caplog.text
         previous = deepcopy(machine.host)
         compressed = machine.engine.compress(machine.host, current_tokens=machine.engine.threshold_tokens + 1,
                                              force=True)
-        if start:
-            assert machine.engine._last_compression_status == "compacted"
-            assert compressed != previous
-            machine.engine.on_session_end(new, previous)
-            machine.engine.on_session_start(new, platform="cli", boundary_reason="compression", old_session_id=new)
-            machine.host = compressed
-        else:
-            assert machine.engine._last_compression_status == "error"
-            assert machine.engine._survival_fit_reason == "lifecycle_binding_changed"
-            assert compressed == previous
-            assert machine.host == previous
-            # Real CLI sees unchanged output and skips both boundary hooks.
+        assert machine.engine._last_compression_status == "compacted"
+        assert compressed != previous
+        machine.engine.on_session_end(new, previous)
+        machine.engine.on_session_start(new, platform="cli", boundary_reason="compression", old_session_id=new)
+        machine.host = compressed
         caplog.clear()
         turn(new, "gamma")
-        if not start:
-            assert "resident_engine_conflict" in caplog.text
+        assert "resident_engine_conflict" not in caplog.text
         stored = {}
         for conversation in ledgers:
             cursor = machine.engine._store.connection.execute(
