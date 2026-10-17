@@ -360,10 +360,10 @@ class IdentityAnchorMixin:
 
     def _identity_anchor_audit(self, messages, identity_messages, cursor, start, stamps, identity_at, consumed, plan) -> None:
         """Rows in ``[start, cursor)`` of a list the host changed before the cursor: a stamped host row,
-        or an unstamped user row the host inserted there (#633: a /steer row; by content alone), that
+        or an unstamped user row the host inserted there (#633: a /steer row), that
         no stored occurrence explains (key, witness, alias, or a stored copy of its content -- up to
-        edge whitespace, with the same stamp or none -- in the tail of this session or a verified
-        ancestor, each copy used once) and no ignore pattern drops was never stored. The cursor moves back
+        edge whitespace, with the same stamp or a canonical host-uid binding for a NULL stamp --
+        in the tail of this session or a verified ancestor, each copy used once) and no ignore pattern drops was never stored. The cursor moves back
         to the first such row; every other row of that range stays a replay (today's positional proof)."""
         from .reconcile import _proof_user_identity
 
@@ -373,6 +373,30 @@ class IdentityAnchorMixin:
             for row in self._store.get_session_tail(session, limit=span):
                 if int(row["store_id"]) not in consumed:
                     held[_proof_user_identity(self._message_replay_identity(row, stored_row=True))].append(row)
+        bindings = None
+
+        def bound_null(idx, row):
+            # #1403: content (even unique content) cannot identify a NULL-stamp occurrence.
+            # Read only existing canonical host bindings in this verified home/lineage.
+            from .host_uid import _valid_uid
+
+            nonlocal bindings
+            uid = messages[idx].get("message_uid")
+            if not _valid_uid(uid):
+                return False
+            if bindings is None:
+                bindings = {}
+                try:
+                    lineage, _problem = self._host_uid_lineage_key()
+                    if lineage is not None:
+                        uids = {m.get("message_uid") for m in messages[start:cursor]
+                                if _valid_uid(m.get("message_uid"))}
+                        bindings = self._store.host_uid_bindings_for(lineage, uids, ("canonical",))
+                except Exception as exc:
+                    # Do not let the outer pre-match fallback restore an unproven cursor.
+                    logger.warning("LCM audit uid proof unavailable (%s); retaining unproven rows", type(exc).__name__)
+            return (int(row["store_id"]), "canonical") in bindings.get(uid, ())
+
         missed, deferred, audited = [], [], set()
         inserted = None
         for idx in range(start, cursor):
@@ -402,8 +426,9 @@ class IdentityAnchorMixin:
                 plan.setdefault("ws", []).append((ws, identity_messages[idx]))
                 continue
             # #1328: equal content at a different known stamp is a different occurrence.
-            # Keep legacy unstamped copies eligible for the existing unique backfill.
-            copies = [row for row in copies if row.get("observed_at") in (None, stamps[idx])]
+            # A NULL copy needs independent occurrence proof before consumption or unique backfill.
+            copies = [row for row in copies if row.get("observed_at") == stamps[idx]
+                      or row.get("observed_at") is None and bound_null(idx, row)]
             if copies:
                 consumed.add(int(copies[0]["store_id"]))
                 plan.setdefault("matched", {})[idx] = [copies[0]]  # host-uid shadow only
@@ -423,7 +448,8 @@ class IdentityAnchorMixin:
                         or self._matches_ignore_message_patterns(messages[idx])):
                     continue
                 key = _proof_user_identity(identity)
-                copies = [row for row in held.get(key, ()) if int(row["store_id"]) not in consumed]
+                copies = [row for row in held.get(key, ()) if int(row["store_id"]) not in consumed
+                          and (row.get("observed_at") is not None or bound_null(idx, row))]
                 if len(copies) > reserved[key]:
                     consumed.add(int(copies[-1]["store_id"]))
                     plan.setdefault("matched", {})[idx] = [copies[-1]]  # host-uid shadow only
