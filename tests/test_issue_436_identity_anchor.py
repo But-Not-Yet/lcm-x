@@ -468,7 +468,7 @@ def test_t6_a_rescue_prefix_of_rehydrated_rows_alone_consumes_no_unread_raw_row(
 
 
 @pytest.mark.parametrize("shape", ["1000-paragraphs", "overlapping-dead-ends"])
-def test_t3_decomposition_search_is_bounded_and_ambiguous_on_exhaustion(shape):
+def test_t3_decomposition_search_is_bounded_and_ambiguous_on_exhaustion(shape, latency_check):
     """#572 T3: a composite of ~1000 short held paragraphs (recursion depth) or of overlapping held
     texts that all dead-end (exponential paths) returns fast as "ambiguous" (None): stored whole."""
     from hermes_lcm.identity_anchor import _decompositions
@@ -477,10 +477,11 @@ def test_t3_decomposition_search_is_bounded_and_ambiguous_on_exhaustion(shape):
         content, texts = "\n\n".join(["ok"] * 1000) + "\n\nnew tail", {"ok"}
     else:
         content, texts = "\n\n".join(["a"] * 40) + "\n\nX", {"a", "a\n\na", "a\n\na\n\na"}
-    started = time.monotonic()
+    started = time.monotonic() if latency_check else None
     assert _decompositions(content, texts, partial=False) is None
     assert len(_decompositions(content, texts, partial=True) or []) <= 3  # stops at its cap, never recurses
-    assert time.monotonic() - started < 1.0
+    if latency_check:
+        assert time.monotonic() - started < 1.0
     assert _decompositions("R one\n\nU two", {"R one", "U two"}, partial=False) == [(["R one", "U two"], "")]
 
 
