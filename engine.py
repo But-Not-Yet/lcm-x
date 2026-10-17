@@ -140,7 +140,7 @@ from .message_patterns import compile_message_patterns, matches_message_pattern
 from .aux_session import AuxiliarySessionMixin
 from .placeholder_ledger import PlaceholderLedgerMixin
 from .reconcile import _COMPACTION_COMMIT_PROOF_METADATA_PREFIX, ReconcileMixin, _PRESERVED_OBJECTIVE_CONTEXT_PREFIX
-from .reconcile import _emission_identity
+from .reconcile import _HERMES_PRUNED_TOOL_PLACEHOLDER, _emission_identity
 from .reconcile import _has_lossy_redacted_identity, _merge_append_cut, _proof_user_identity
 from .compaction import CompactionMixin
 from .compaction_request import CompactionRequest
@@ -5629,9 +5629,11 @@ class LCMEngine(
         cached: List[Dict[str, Any]],
         fresh: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        """#772: a stub and its payload share an identity, so the cache would resurrect a host-held stub."""
+        """#772: a stub and its payload share an identity, so the cache would resurrect a host-held stub.
+        #773: the host's pruned-tool placeholder shares its stored row's identity too, so the host keeps it."""
         def is_stub(message: Dict[str, Any]) -> bool:
-            return is_externalized_placeholder(text_content_for_pattern_matching(message.get("content")) or "")
+            text = text_content_for_pattern_matching(message.get("content")) or ""
+            return is_externalized_placeholder(text) or text == _HERMES_PRUNED_TOOL_PLACEHOLDER
 
         current = [
             fresh[idx]
