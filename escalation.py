@@ -97,6 +97,10 @@ class SweepBudgetExhausted(TimeoutError):
         self.reason = reason
 
 
+class UnattributedRescueRefused(Exception):
+    """#1147 r1: the smaller leaf has no durable source and cannot be retried."""
+
+
 def _p90(samples: list[float], cold: float) -> float:
     return sorted(samples)[math.ceil(0.9 * len(samples)) - 1] if samples else cold
 
@@ -143,6 +147,7 @@ class ForegroundBudget:
         self.pre_leaf = None  # #1127: the PhaseSqlTrace of the pre-leaf phase while it runs
         self.host = 0.0  # D5: seconds inside the host's native compressor (a bypassed session), not LCM work
         self.selected = False  # #1162: this compaction selected a leaf chunk (its zero-leaf pass counts)
+        self.summary_failure = ""  # #1162: sticky across every summary call/route in this pass
 
     @property
     def usable_deadline(self) -> float:
@@ -207,13 +212,14 @@ class SummaryCircuitBreaker:
     def _key(self, model: str | None) -> str:
         return (model or "").strip() or _DEFAULT_ROUTE_KEY
 
-    def allows(self, model: str | None, *, now: float | None = None) -> bool:
+    def allows(self, model: str | None, *, now: float | None = None, prune: bool = True) -> bool:
+        """True when the route is closed; ``prune=False`` (#787 worker) reads without dropping an expired entry."""
         key = self._key(model)
         current_time = time.monotonic() if now is None else now
         with self._lock:
             opened_until = self._open_until.get(key, 0.0)
             if opened_until <= current_time:
-                if key in self._open_until:
+                if prune and key in self._open_until:
                     self._open_until.pop(key, None)
                 return True
             return False
@@ -418,6 +424,17 @@ class SummarySpendGuard:
         with self._lock:
             self._prune(current_time)
             self._record_call_locked(current_time)
+
+    def remaining(self, *, now: float | None = None) -> float:
+        """#787: calls the window still allows, recording nothing (0 during a backoff; unlimited when disabled)."""
+        if self.max_calls <= 0:
+            return math.inf
+        current_time = time.monotonic() if now is None else now
+        with self._lock:
+            if current_time < self._backoff_until:
+                return 0
+            cutoff = current_time - self.window_seconds
+            return max(0, self.max_calls - sum(1 for t in self._calls if t >= cutoff))
 
     def clear(self) -> None:
         with self._lock:
@@ -933,11 +950,13 @@ def summary_route_available(
     circuit_breaker: SummaryCircuitBreaker | None,
     *,
     route_key_prefix: str = "",
+    prune: bool = True,
 ) -> bool:
-    """True when no breaker is in use or it allows one route of the summary chain (#628)."""
+    """True when no breaker is in use or it allows one route of the summary chain (#628); ``prune=False`` reads
+    the breaker without changing it."""
     if circuit_breaker is None:
         return True
-    return any(circuit_breaker.allows(route_key_prefix + candidate)
+    return any(circuit_breaker.allows(route_key_prefix + candidate, **({} if prune else {"prune": False}))
                for candidate in _summary_model_chain(model, fallback_models))
 
 
@@ -973,6 +992,55 @@ def _invoke_summary_llm_chain(
     prompt: str,
     max_tokens: int,
     *,
+    model: str = "",
+    fallback_models: list[str] | tuple[str, ...] | None = None,
+    timeout: float | None = None,
+    reasoning_effort: str = "",
+    circuit_breaker: SummaryCircuitBreaker | None = None,
+    spend_guard: "SummarySpendGuard | None" = None,
+    accepts_result: Callable[[str], bool] | None = None,
+    source_tokens: int | None = None,
+    provenance: dict | None = None,
+    deadline: float | None = None,
+    route_key_prefix: str = "",
+    budget: ForegroundBudget | None = None,
+    verbatim_small_source: bool = False,
+    context_length_rescue: bool = False,
+) -> Optional[str]:
+    """Record failures only when the whole route chain ends without a usable result."""
+    chain_error = None
+    context_length_handoff = False
+
+    def note_error(error):
+        nonlocal chain_error, context_length_handoff
+        if error is None:  # #751: the leaf caller will retry a smaller chunk.
+            context_length_handoff = True
+        else:
+            chain_error = type(error).__name__
+
+    try:
+        result = _invoke_summary_llm_routes(
+            prompt, max_tokens, model=model, fallback_models=fallback_models, timeout=timeout,
+            reasoning_effort=reasoning_effort, circuit_breaker=circuit_breaker, spend_guard=spend_guard,
+            accepts_result=accepts_result, source_tokens=source_tokens, provenance=provenance,
+            deadline=deadline, route_key_prefix=route_key_prefix, budget=budget,
+            verbatim_small_source=verbatim_small_source, context_length_rescue=context_length_rescue,
+            note_error=note_error,
+        )
+    except Exception:
+        if budget is not None and chain_error:
+            budget.summary_failure = f"summary call failed: {chain_error}"
+        raise
+    if result is None and budget is not None and chain_error and not context_length_handoff:
+        budget.summary_failure = f"summary call failed: {chain_error}"
+    return result
+
+
+def _invoke_summary_llm_routes(
+    prompt: str,
+    max_tokens: int,
+    *,
+    note_error: Callable[[BaseException | None], None],
     model: str = "",
     fallback_models: list[str] | tuple[str, ...] | None = None,
     timeout: float | None = None,
@@ -1032,6 +1100,8 @@ def _invoke_summary_llm_chain(
         )
         result, route, error = attempt.text, attempt.route, attempt.error
         started, ended = attempt.timing.started, attempt.timing.ended
+        if error is not None:
+            note_error(error)
         if budget is not None:
             budget.record_call(route_key, started, ended)
         # Non-empty results consult the acceptance callback after route bookkeeping.
@@ -1099,6 +1169,7 @@ def _invoke_summary_llm_chain(
             if provenance is not None:  # the filtered chunk must not open the route's circuit
                 provenance["content_filter_error"] = True
         elif outcome.kind is SummaryOutcomeKind.CONTEXT_LENGTH:
+            note_error(None)
             if provenance is not None:  # #751: the chunk is too large for this route; the caller shrinks it
                 provenance["context_length_error"] = True
         elif circuit_breaker is not None:
