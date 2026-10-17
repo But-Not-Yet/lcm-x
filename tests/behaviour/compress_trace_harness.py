@@ -10,7 +10,6 @@ the full canonical bound statement.
 from __future__ import annotations
 
 import argparse
-import ast
 import dataclasses
 import hashlib
 import importlib
@@ -19,7 +18,6 @@ import json
 import re
 import sqlite3
 import tempfile
-import textwrap
 import time
 from functools import partial
 from pathlib import Path
@@ -237,19 +235,139 @@ class LiteralPattern:
         return self.pattern in text
 
 
-def self_attributes() -> list[str]:
-    """Derive the inventory, including getattr(self, ...) and nested closures."""
-    tree = ast.parse(textwrap.dedent(inspect.getsource(compaction.CompactionMixin._compress_impl)))
-    names = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self":
-            names.add(node.attr)
-        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                and node.func.id in {"getattr", "setattr", "hasattr"} and len(node.args) >= 2
-                and isinstance(node.args[0], ast.Name) and node.args[0].id == "self"
-                and isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str)):
-            names.add(node.args[1].value)
-    return sorted(names)
+# Deliberately frozen: extracting compaction phases must not change observation.
+# The original 123 names include callable fingerprints. Four existing helper
+# state fields complete the transitive inventory; update the golden deliberately
+# when changing this list, never derive the runtime observer from source.
+OBSERVED_ATTRIBUTES = (
+    "_active_replay_placeholder_digest",
+    "_assemble_committed_compaction_context",
+    "_assemble_context",
+    "_assemble_overflow_recovery_context",
+    "_build_preserved_objective_summary_part",
+    "_bypasses_lcm_context_management",
+    "_committed_replay_drops",
+    "_compaction_request",
+    "_compress_dropped_ignored_rows",
+    "_compress_forced_overflow",
+    "_compress_hidden_rows_consumed",
+    "_compress_host_rows_consumed",
+    "_compress_lcm_bypassed_session",
+    "_compress_occurrences",
+    "_compress_run",
+    "_config",
+    "_context_aware_leaf_cap",
+    "_conversation_id",
+    "_critical_budget_pressure_reached",
+    "_current_auxiliary_prompt_tokens",
+    "_dag",
+    "_derive_auto_focus_topic",
+    "_drop_preexisting_generated_ignored_dependent_eof_replies",
+    "_effective_assembly_token_cap",
+    "_extract_expand_hint",
+    "_fail_open_after_publication_failure",
+    "_finalize_forced_overflow_result",
+    "_fit_can_rescue",
+    "_foreground_budget",
+    "_fresh_tail_start",
+    "_generated_context_carrier_remainder",
+    "_generated_placeholder_digest_budget_for_active_replay",
+    "_generated_placeholder_digest_ordinals_for_active_replay",
+    "_get_store_id_map_for_messages",
+    "_get_store_ids_for_messages",
+    "_hidden_backlog_label",
+    "_hidden_backlog_status",
+    "_hung_summary_route_has_fallback",
+    "_identity_anchor_extend_chunk",
+    "_identity_anchor_summary_input",
+    "_ingest_cursor",
+    "_ingest_cursor_needs_reconcile",
+    "_ingest_messages",
+    "_invalidate_rollups_for_published_node",
+    "_is_generated_ignored_dependent_reply",
+    "_is_ignored_active_replay_placeholder",
+    "_is_replayed_context_scaffold_message",
+    "_is_volatile_ignored_quarantine_placeholder",
+    "_kept_reply_tokens",
+    "_last_compacted_store_id",
+    "_last_compaction_duration_ms",
+    "_last_compression_noop_reason",
+    "_last_compression_status",
+    "_last_condensation_suppressed_reason",
+    "_last_hidden_backlog",
+    "_last_leaf_content_filter_error",
+    "_last_leaf_level_3_verbatim",
+    "_last_overflow_recovery_failed",
+    "_last_stub_first_exit",
+    "_last_threshold_full_sweep",
+    "_latest_user_context_anchor",
+    "_leading_anchor_count",
+    "_lifecycle",
+    "_load_compression_carry_ranges",
+    "_load_generated_ignored_dependent_reply_records",
+    "_load_generated_ignored_placeholder_hashes",
+    "_mapped_stored_row_matches_ignore_message_patterns",
+    "_matches_ignore_message_patterns",
+    "_maybe_condense",
+    "_maybe_engage_fresh_tail_pressure_yield",
+    "_maybe_gc_compacted_tool_results",
+    "_maybe_reclassify_late_auxiliary_before_compaction_write",
+    "_new_foreground_budget",
+    "_no_progress_candidate",
+    "_no_progress_hold",
+    "_no_progress_hold_blocks",
+    "_note_fresh_tail_pressure_relieved",
+    "_objective_only_noop",
+    "_overflow_recovery_assembly_cap",
+    "_pending_context_anchor_messages",
+    "_pending_emission_candidates",
+    "_prepare_retained_user_anchor",
+    "_pressure_yield_invocation_verdict",
+    "_pressure_yield_tail_token_limit",
+    "_primary_summary_route",
+    "_rebind_after_unadopted_compaction_commit",
+    "_record_successful_compaction_telemetry",
+    "_refresh_raw_backlog_debt",
+    "_remember_generated_ignored_dependent_reply",
+    "_replay_occurrences",
+    "_run_pre_compaction_extraction",
+    "_run_threshold_sweep_condensation",
+    "_sanitize_active_context_messages",
+    "_schedule_pre_compaction_assertions",
+    "_select_oldest_leaf_chunk",
+    "_serialize_messages_with_clip",
+    "_session_id",
+    "_should_force_overflow_recovery",
+    "_should_run_deferred_maintenance",
+    "_start_sweep_budget_hold",
+    "_store",
+    "_store_complete_backlog",
+    "_store_complete_blocked",
+    "_store_complete_copy_exclusion_proofs",
+    "_store_complete_cut",
+    "_store_complete_excluded",
+    "_stored_publication_filter_exclusions",
+    "_stub_first_exit",
+    "_stub_first_exit_now",
+    "_summarize_leaf_chunk_with_rescue",
+    "_summary_frontier_tokens",
+    "_summary_route_available",
+    "_summary_route_seconds_left",
+    "_summary_route_stop_applies",
+    "_survival_fit_reason",
+    "_survival_host_overhead",
+    "_survival_pass_observed",
+    "_sweep_budget_hold_applies",
+    "_sweep_budget_hold_until",
+    "_take_leaf_summary_model",
+    "_thread_context_session_id",
+    "_working_leaf_chunk_tokens",
+    "_write_generated_ignored_placeholder_hash_counts",
+    "_write_generated_ignored_placeholder_hash_ordinals",
+    "compression_count",
+    "context_length",
+    "threshold_tokens",
+)
 
 
 class Canonical:
@@ -438,7 +556,7 @@ def connections(engine: Any) -> list[tuple[str, sqlite3.Connection]]:
 
 def state(engine: Any, canonical: Canonical) -> dict[str, Any]:
     result: dict[str, Any] = {}
-    for name in self_attributes():
+    for name in OBSERVED_ATTRIBUTES:
         value = getattr(engine, name, {"absent": True})
         if name == "_store":
             value = engine._store.get_session_messages(engine._session_id, limit=10000)
