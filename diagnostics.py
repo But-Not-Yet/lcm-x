@@ -72,6 +72,19 @@ def survival_fit_projection_floor_applies(record: Any) -> bool:
     return bool(record.get("count_lost")) or not (type(projected) is int and projected == 0)
 
 
+def survival_fit_count(record: Any) -> int | None:
+    """Shared doctor predicate: zero means no fit; None means an unreadable/unknown count."""
+    record = record if isinstance(record, dict) else {}
+    try:
+        count = int(record.get("count") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    projected = record.get("projected_count", 0)
+    if count == 0 and (record.get("count_lost") or not (type(projected) is int and projected == 0)):
+        return None
+    return count
+
+
 def doctor_guidance_for_check(check: dict[str, Any]) -> dict[str, Any] | None:
     """Return operator triage guidance for one lcm_doctor check.
 
@@ -244,12 +257,15 @@ def doctor_guidance_for_check(check: dict[str, Any]) -> dict[str, Any] | None:
                      if detail.get("last_shortened") is False else
                      "an exit fit tried to leave threshold headroom; uncovered_rows names unsummarised stored rows"
                      if str(detail.get("last_reason") or "").startswith("exit_fit:") else
-                     "a survival fit kept an over-window session alive; it points at a compaction that could not publish")
+                     "a survival fit kept an over-window session alive; last compaction reason "
+                     f"{detail.get('last_reason') or '(unknown)'}")
         rationale += ("; uncovered rows are counted for every survival fit; last_uncovered_rows reports the last "
                       "count (unknown if it could not be read); uncovered_fit_count counts shortened fits with "
                       "unsummarised stored rows removed from live context; unknown_coverage_fit_count counts "
                       "shortened fits whose coverage could not be read, so while it is above 0 uncovered_fit_count "
                       "is a lower bound")
+        if detail.get("last_cause"):
+            rationale += f"; last cause {detail['last_cause']}"
     elif name == "cleanup_candidates":
         action = DOCTOR_ACTION_BACKUP_FIRST_CLEANUP
         command = "run `/lcm doctor clean` first; if candidates are expected junk/noise, run `/lcm backup` before `/lcm doctor clean apply`"
