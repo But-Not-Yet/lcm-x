@@ -143,6 +143,7 @@ class ForegroundBudget:
         self.stop_reason = ""  # the reason of the last stop(), for the stop line with the sweep off
         self.hung_route: str | None = None  # a circuit opened by this pass, not a previous hang
         self.leaves, self.first_call_started, self.last_call_ended = 0, None, None
+        self.pre_leaf = None  # #1127: the PhaseSqlTrace of the pre-leaf phase while it runs
         self.host = 0.0  # D5: seconds inside the host's native compressor (a bypassed session), not LCM work
         self.selected = False  # #1162: this compaction selected a leaf chunk (its zero-leaf pass counts)
         self.summary_failure = ""  # #1162: sticky across every summary call/route in this pass
