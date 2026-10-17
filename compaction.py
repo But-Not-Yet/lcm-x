@@ -103,6 +103,8 @@ class _CompressionState:
     critical_budget_pressure: bool = False
     deferred_maintenance_active: bool = False
     max_leaf_passes: int = 0
+    pre_leaf_condensation_passes: int = 0
+    pre_leaf_condensation_reason: str = ""
 
 
 def select_oldest_leaf_chunk(
@@ -1885,6 +1887,51 @@ class CompactionMixin:
             state.max_leaf_passes = max(1, self._config.deferred_maintenance_max_passes)
         return "next", None
 
+    def _condense_before_leaves(self, state: _CompressionState,
+                               focus_topic: Optional[str] = None) -> tuple[Literal["next", "return"], Optional[List[Dict[str, Any]]]]:
+        """Condense the oversized prefix while preserving the leaf reservation scope."""
+        state.pre_leaf_condensation_passes, state.pre_leaf_condensation_reason = 0, ""
+        if (
+            state.threshold_full_sweep_active
+            and state.sweep_summary_prefix_before > state.sweep_target_tokens
+            and self._summary_route_available()
+        ):
+            state.budget.leaf_reserve = state.budget.estimate(self._primary_summary_route())
+            span_started = time.monotonic()
+            try:
+                state.pre_leaf_condensation_passes, state.pre_leaf_condensation_reason = (
+                    self._run_threshold_sweep_condensation(
+                        target_tokens=state.sweep_target_tokens,
+                        pass_budget=_THRESHOLD_FULL_SWEEP_MAX_PASSES - 1,
+                        deadline=state.sweep_deadline,
+                        focus_topic=focus_topic,
+                    )
+                )
+            except Exception as exc:
+                if not _is_sqlite_locked_error(exc):
+                    raise
+                return "return", self._fail_open_after_publication_failure(
+                    state.working_messages,
+                    exc,
+                    compress_started=state._compress_started,
+                    threshold_full_sweep_active=state.threshold_full_sweep_active,
+                    recovery_assembly_cap=state.recovery_assembly_cap,
+                    leaf_passes=0,
+                    condensation_passes=int(getattr(exc, "lcm_completed_condensation_passes", 0)),
+                )
+            finally:
+                state.budget.leaf_reserve = 0.0
+                self._pre_leaf_span("condensation", span_started)
+            state.max_leaf_passes -= state.pre_leaf_condensation_passes
+        if state.threshold_full_sweep_active:
+            self._last_threshold_full_sweep.update(
+                condensation_passes=state.pre_leaf_condensation_passes,
+                total_passes=state.pre_leaf_condensation_passes,
+                pre_leaf_condensation_passes=state.pre_leaf_condensation_passes,
+                pre_leaf_condensation_stop_reason=state.pre_leaf_condensation_reason,
+            )
+        return "next", None
+
     def _compress_impl(self, messages: List[Dict[str, Any]],
                        current_tokens: int = None,
                        focus_topic: Optional[str] = None,
@@ -1963,46 +2010,12 @@ class CompactionMixin:
         # #653: a sweep stopped by its budget never reaches the post-drain condensation, so an oversized
         # summary prefix is condensed first. #605: its first pass is the compaction's progress call (admitted while
         # usable time is left); later passes and the leaves need the soft target; the leaves use the passes left.
-        pre_leaf_condensation_passes, pre_leaf_condensation_reason = 0, ""
-        if (
-            threshold_full_sweep_active
-            and sweep_summary_prefix_before > sweep_target_tokens
-            and self._summary_route_available()
-        ):
-            budget.leaf_reserve = budget.estimate(self._primary_summary_route())
-            span_started = time.monotonic()
-            try:
-                pre_leaf_condensation_passes, pre_leaf_condensation_reason = (
-                    self._run_threshold_sweep_condensation(
-                        target_tokens=sweep_target_tokens,
-                        pass_budget=_THRESHOLD_FULL_SWEEP_MAX_PASSES - 1,
-                        deadline=sweep_deadline,
-                        focus_topic=focus_topic,
-                    )
-                )
-            except Exception as exc:
-                if not _is_sqlite_locked_error(exc):
-                    raise
-                return self._fail_open_after_publication_failure(
-                    working_messages,
-                    exc,
-                    compress_started=_compress_started,
-                    threshold_full_sweep_active=threshold_full_sweep_active,
-                    recovery_assembly_cap=recovery_assembly_cap,
-                    leaf_passes=0,
-                    condensation_passes=int(getattr(exc, "lcm_completed_condensation_passes", 0)),
-                )
-            finally:
-                budget.leaf_reserve = 0.0
-                self._pre_leaf_span("condensation", span_started)
-            max_leaf_passes -= pre_leaf_condensation_passes
-        if threshold_full_sweep_active:
-            self._last_threshold_full_sweep.update(
-                condensation_passes=pre_leaf_condensation_passes,
-                total_passes=pre_leaf_condensation_passes,
-                pre_leaf_condensation_passes=pre_leaf_condensation_passes,
-                pre_leaf_condensation_stop_reason=pre_leaf_condensation_reason,
-            )
+        action, result = self._condense_before_leaves(state, focus_topic)
+        if action == "return":
+            return result
+        pre_leaf_condensation_passes = state.pre_leaf_condensation_passes
+        pre_leaf_condensation_reason = state.pre_leaf_condensation_reason
+        max_leaf_passes = state.max_leaf_passes
 
         # #787 (amendment M-1): a leaf pass whose chunk matches a prepared leaf publishes it without the call
         prep_enabled = bool(getattr(self._config, "background_leaf_prep_enabled", False))
