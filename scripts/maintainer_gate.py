@@ -41,12 +41,75 @@ MEMORY_MIGRATION_FILES = {
 # alone does not qualify: storage, commands, config, tools and opt-in pre-answer
 # modules keep only lcm-memory-preservation.
 TURN_PATH_FILES = {
-    "__init__.py", "aux_session.py", "bypass.py", "codex_routing.py", "compaction.py",
+    "__init__.py", "assembly_plan.py", "aux_session.py", "bypass.py", "codex_routing.py", "compaction.py",
+    "compaction_policy.py", "compaction_request.py", "compress_run.py",
     "dag.py", "engine.py", "escalation.py", "externalize.py", "extraction.py", "fresh_tail.py",
     "host_uid.py", "host_uid_emit.py", "identity_anchor.py", "ingest_protection.py",
-    "lifecycle_state.py", "message_analysis.py", "message_content.py", "placeholder_ledger.py",
+    "leaf_prep.py", "lifecycle_state.py", "message_analysis.py", "message_content.py", "placeholder_ledger.py",
     "prefix_matching.py", "reconcile.py", "sanitize.py", "store_complete.py",
-    "summary_input_clip.py", "survival_fit.py", "tokens.py",
+    "summary_attempt.py", "summary_input_clip.py", "summary_outcome.py", "survival_codec.py",
+    "survival_fit.py", "tokens.py", "tool_pairs.py",
+}
+# Explicit exclusions: classify every top-level Python module, not just reachable dependencies.
+NON_TURN_PATH_FILES = {
+    "adaptive_retrieval.py",  # Bounded retrieval state for an answer turn.
+    "answer_contract.py",  # Answer-shape and evidence requirements.
+    "assertion_extraction.py",  # Opt-in exact-row assertion extraction.
+    "assertion_rebuild.py",  # Rebuild orchestration for derived assertions.
+    "assertion_state.py",  # Conflict-preserving assertion reads.
+    "assertion_store.py",  # Provenance-linked derived assertion storage.
+    "chunking.py",  # Content-aware chunking for retrieval tools.
+    "command.py",  # Slash-command handlers.
+    "command_auth.py",  # Slash-command ownership checks.
+    "command_router.py",  # Slash-command grammar.
+    "command_status.py",  # Slash-command status rendering.
+    "config.py",  # Configuration loading and defaults.
+    "db_bootstrap.py",  # Shared SQLite bootstrap helpers.
+    "diagnostics.py",  # Read-only diagnostic helpers.
+    "embedding_maintenance.py",  # Incremental embedding maintenance.
+    "embedding_provider.py",  # Optional semantic-retrieval embedding providers.
+    "engine_registry.py",  # Process-wide active-engine registry.
+    "evidence_compiler.py",  # Bounded source-grounded evidence compilation.
+    "evidence_pack.py",  # Exact-evidence assembly for retrieval tools.
+    "evidence_tools.py",  # Evidence and assertion-state tool handlers.
+    "expansion_evidence.py",  # Expansion provenance and continuation payloads.
+    "guidance.py",  # Model guidance for recall tools.
+    "host_evidence.py",  # Host-supplied evidence-selector envelopes.
+    "inactive_record.py",  # Inactive-plugin diagnostic records.
+    "level3_repair.py",  # Doctor scans for fragment-node repair.
+    "maintenance.py",  # Store backup and rotation operations.
+    "message_patterns.py",  # Message-filter pattern helpers.
+    "model_routing.py",  # Model override routing helpers.
+    "occurrence_time.py",  # Occurrence-time extraction for evidence tools.
+    "plugin_identity.py",  # Plugin names and legacy migration notice.
+    "preanswer_evidence.py",  # Opt-in pre-answer evidence augmentation.
+    "presets.py",  # Model-family preset metadata.
+    "query_view_store.py",  # Query-derived evidence-view storage.
+    "reasoning.py",  # Planning, computation and answer verification tools.
+    "recall_delivery.py",  # Recall-tool selection and serialization.
+    "recent.py",  # Recent temporal retrieval tools.
+    "requirements_compiler.py",  # Pre-answer evidence requirements compilation.
+    "reset_state.py",  # Session runtime-state reset helpers.
+    "retrieval_context.py",  # Retrieval-reader connection ownership.
+    "retrieval_core.py",  # Shared search-tool plumbing.
+    "rollup_builder.py",  # Opt-in temporal rollup construction.
+    "rollup_periods.py",  # Temporal retrieval period parsing.
+    "rollup_store.py",  # Derived temporal rollup storage.
+    "runtime_identity.py",  # Runtime identity for status and doctor tools.
+    "schema_families.py",  # Schema verifier findings and compatibility metadata.
+    "schemas.py",  # Tool schema definitions.
+    "scope_storage.py",  # Per-item scope storage and backfill.
+    "search_query.py",  # FTS and LIKE search-query helpers.
+    "selective_compiler.py",  # Selective pre-answer evidence compilation.
+    "selective_recall.py",  # Selective exact-evidence retrieval.
+    "session_patterns.py",  # Session-filter pattern helpers.
+    "sqlite_session.py",  # SQLite connection-open recipes.
+    "sqlite_util.py",  # SQLite lock-contention helpers.
+    "store.py",  # Durable message storage.
+    "tool_registry.py",  # Tool exposure and dispatch metadata.
+    "tools.py",  # Public tool handlers.
+    "trajectory_store.py",  # Immutable trajectory storage and retrieval.
+    "vector_store.py",  # Summary-embedding storage and KNN retrieval.
 }
 FINDING_GATE_CLASSES = {"MERGE_BLOCKING", "RELEASE_BLOCKING", "NON_BLOCKING"}
 TERMINAL_FINDING_DISPOSITIONS = {
