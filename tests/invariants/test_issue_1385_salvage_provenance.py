@@ -1,5 +1,6 @@
 """I1/I2/I8: a placeholder must not borrow an impossible salvage source (#1385)."""
 
+import copy
 import json
 
 import pytest
@@ -15,6 +16,50 @@ from tests.test_issue_773_hermes_pruned_tool_replay import (
     plain_engine,
     stored,
 )
+
+
+@pytest.mark.parametrize("matcher", ["host-rewrite", "commit-proof"])
+def test_legacy_placeholder_copy_with_host_rewrite_replays_once(make_engine, matcher):  # noqa: F811
+    """I1/I2/I8: an older literal copy also admits its salvage alias on replay.
+
+    Two newer results let the host borrow X's full identity; the rewritten final
+    user row prevents an ordinary literal-tail match from hiding the mismatch.
+    """
+    first = plain_engine(make_engine, fresh_tail_count=64)
+    original = [SYSTEM, {"role": "user", "content": "original turn"},
+                _call("X"), _result("X", "X" * 300)]
+    first._ingest_messages(original)
+    if matcher == "commit-proof":
+        identities = [first._proof_replay_identity(row) for row in original]
+        first._persist_compress_commit_proof({
+            **first._emission_binding(), "session_id": first._session_id,
+            "conversation_id": first._conversation_id,
+            "output": identities, "output_effective": identities, "emissions": [],
+        })
+        assert first._durable_commit_proof_payload() is not None
+    legacy = [_call("X"), _result("X", CLEARED),
+              _call("Y"), _result("Y", "result Y"),
+              _call("Z"), _result("Z", "result Z"),
+              {"role": "user", "content": "later turn \n"}]
+    for row in legacy:  # persisted by a legacy writer, bypassing current reconciliation
+        first._store.append(first._session_id, row, conversation_id=first._conversation_id)
+    engine = _rebind(make_engine, first, fresh_tail_count=64)
+    before = stored(engine)
+    host = copy.deepcopy(original + legacy)
+    host[-1]["content"] = "later turn"
+    host.append({"role": "user", "content": "next turn"})
+    cursor = (engine._cursor_from_host_rewrite_head(host, len(before)) if matcher == "host-rewrite"
+              else engine._cursor_from_durable_commit_proof(host))
+
+    engine._ingest_messages(host)
+
+    rows = stored(engine)
+    assert rows[:-1] == before  # no duplicate group, no chronology or durable-row changes
+    assert rows[-1]["content"] == "next turn"
+    assert cursor == len(before)
+    assert _grouped(rows)
+    engine._ingest_messages(copy.deepcopy(host))
+    assert stored(engine) == rows
 
 
 @pytest.mark.parametrize("content", [
