@@ -132,8 +132,49 @@ print(json.dumps(dict(merged=merged, repairs=repairs)))
     return json.loads(completed.stdout.strip().splitlines()[-1])
 
 
-@pytest.mark.parametrize("human", [False, True], ids=["generated-only", "absorbs-human"])
-def test_r3_generated_merge_group_display(engine, monkeypatch, tmp_path, human):
+@pytest.mark.parametrize("key", ["model_only", "host_model_only"])
+@pytest.mark.parametrize("sentinel_row", ["generated", "human"])
+def test_r5_pinned_host_sentinel_merge_keeps_human_visible(monkeypatch, key, sentinel_row):
+    _host(monkeypatch, key)
+
+    def split_user_originated_turn(row):
+        return None, None
+
+    monkeypatch.setattr(sys.modules["agent.context_compressor"], "split_user_originated_turn",
+                        split_user_originated_turn, raising=False)
+    STEER_DISPLAY_KIND = "steer"
+
+    def pinned_merge(rows):
+        # Hermes f97608f: no JSON-sentinel exemption; the first row keeps its metadata.
+        merged = []
+        for msg in deepcopy(rows):
+            prev = merged[-1] if merged and isinstance(merged[-1], dict) else None
+            if (
+                prev is not None and prev.get("role") == "user"
+                and isinstance(msg, dict) and msg.get("role") == "user"
+                and split_user_originated_turn(prev)[0] is None
+                and prev.get("display_kind") != STEER_DISPLAY_KIND
+                and isinstance(prev.get("content", ""), str)
+                and isinstance(msg.get("content", ""), str)
+            ):
+                before, after = prev.get("content", ""), msg.get("content", "")
+                prev["content"] = before + "\n\n" + after if before and after else before or after
+            else:
+                merged.append(msg)
+        return merged
+
+    generated = {"role": "user", "content": "Generated context."}
+    human = {"role": "user", "content": "Human request must stay visible."}
+    sentinel = generated if sentinel_row == "generated" else human
+    sentinel["content"] = "\x00json:" + sentinel["content"]
+    rows = [generated, human]
+    engine_module._stamp_generated_model_only(rows, [generated])
+    merged = pinned_merge(rows)
+    assert len(merged) == 1 and human["content"] in merged[0]["content"]
+    assert not merged[0].get("display_metadata", {}).get(key), "merged human text was hidden"
+
+
+def _r3_generated_merge_group_display(engine, monkeypatch, human):
     _seed(engine)
     monkeypatch.setattr(engine, "_build_proactive_recall_message", lambda *a: {
         "role": "user", "content": "<relevant-memories>Retrieved context.</relevant-memories>",
@@ -150,6 +191,18 @@ def test_r3_generated_merge_group_display(engine, monkeypatch, tmp_path, human):
     assert all(bool(row.get("display_metadata", {}).get("model_only")) is not human
                for row in output[:2])
     assert tail == before
+    return output
+
+
+@pytest.mark.parametrize("human", [False, True], ids=["generated-only", "absorbs-human"])
+def test_r3_generated_merge_group_display(engine, monkeypatch, human):
+    _r3_generated_merge_group_display(engine, monkeypatch, human)
+
+
+@pytest.mark.skipif(not os.environ.get("LCM_REAL_HERMES_SRC"), reason="no real Hermes source supplied")
+@pytest.mark.parametrize("human", [False, True], ids=["generated-only", "absorbs-human"])
+def test_r3_generated_merge_group_display_real_host(engine, monkeypatch, tmp_path, human):
+    output = _r3_generated_merge_group_display(engine, monkeypatch, human)
     result = _real_merge(output, tmp_path)
     merged = result["merged"]
     assert result["repairs"] == (2 if human else 1)
@@ -196,10 +249,18 @@ def test_issue_1370_real_host_merge_keeps_current_user_prompt_visible(engine, mo
     )
     assert completed.returncode == 0, completed.stderr[-4000:]
     results = json.loads(completed.stdout.strip().splitlines()[-1])
-    assert all(row["predicted"] == bool(row["repairs"]) for row in results), results
+    assert all(row["predicted"] or not row["repairs"] for row in results), results
+    # Newer hosts may exempt sentinel strings; conservatively predict their merge.
+    assert [row["predicted"] for row in results] == [
+        True, True, False, False, False, True, False, True, False, False, True,
+    ]
     assert all(not row["summary"] and not row["carrier"] for row in results[:2])
     assert [row["summary"] for row in results[2:7]] == [True, True, False, False, False]
-    assert [row["repairs"] for row in results] == [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+    sentinel_repairs = results[5]["repairs"]  # pinned host merges; newer hosts may exempt
+    assert sentinel_repairs in (0, 1)
+    assert [row["repairs"] for row in results] == [
+        1, 1, 0, 0, 0, sentinel_repairs, 0, sentinel_repairs, 0, 0, 1,
+    ]
     merged = results[0]["merged"]
     assert len(merged) == 1 and results[0]["repairs"] == 1
     assert merged[0]["content"] == output[0]["content"] + "\n\n" + tail[0]["content"]
@@ -216,20 +277,19 @@ def test_issue_1370_real_host_merge_keeps_current_user_prompt_visible(engine, mo
     {"role": "user", "content": {"type": "text", "text": "A structured request."}},
     {"role": "user", "content": "\x00json:undecodable content"},
 ], ids=["assistant", "user-list", "user-dict", "user-json-sentinel"])
-def test_issue_1370_nonmergeable_follower_keeps_summary_stamp(engine, monkeypatch, key, following):
+def test_issue_1370_follower_controls_summary_stamp(engine, monkeypatch, key, following):
     _host(monkeypatch, key)
     _seed(engine)
     output = engine._assemble_context(None, [deepcopy(following)], persist=False)
     assert len(output) == 2 and output[0]["role"] == "user"
     assert _summary_rows(output) == [output[0]]
     assert output[1] == following
-    assert output[0].get("display_metadata") == {key: True}
+    sentinel = isinstance(following["content"], str) and following["content"].startswith("\x00json:")
+    assert output[0].get("display_metadata") == (None if sentinel else {key: True})
     assert key not in output[1].get("display_metadata", {})
 
 
-@pytest.mark.parametrize("key", ["model_only", "host_model_only"])
-@pytest.mark.parametrize("path", ["direct", "normal-compress", "exception-compress"])
-def test_r2_survival_fit_stamps_standalone_summary(engine, monkeypatch, tmp_path, key, path):
+def _r2_survival_fit_standalone_summary(engine, monkeypatch, key, path):
     _host(monkeypatch, key)
     _seed(engine)
     tail = [{"role": "user", "content": "Older request. " + "detail " * 200},
@@ -273,6 +333,20 @@ def test_r2_survival_fit_stamps_standalone_summary(engine, monkeypatch, tmp_path
     unsupported = {"role": "user", "content": summary}
     engine._survival_summary_identity(unsupported, summary, None, "survival_summary")
     assert "display_metadata" not in unsupported
+    return fitted
+
+
+@pytest.mark.parametrize("key", ["model_only", "host_model_only"])
+@pytest.mark.parametrize("path", ["direct", "normal-compress", "exception-compress"])
+def test_r2_survival_fit_stamps_standalone_summary(engine, monkeypatch, key, path):
+    _r2_survival_fit_standalone_summary(engine, monkeypatch, key, path)
+
+
+@pytest.mark.skipif(not os.environ.get("LCM_REAL_HERMES_SRC"), reason="no real Hermes source supplied")
+@pytest.mark.parametrize("key", ["model_only", "host_model_only"])
+@pytest.mark.parametrize("path", ["direct", "normal-compress", "exception-compress"])
+def test_r2_survival_fit_standalone_summary_real_host(engine, monkeypatch, tmp_path, key, path):
+    fitted = _r2_survival_fit_standalone_summary(engine, monkeypatch, key, path)
     merged = _real_merge(fitted, tmp_path)
     assert merged["repairs"] == 1
     visible = [row for row in merged["merged"] if not row.get("display_metadata", {}).get(key)]
