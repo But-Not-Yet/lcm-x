@@ -27110,7 +27110,7 @@ class TestEngineTools:
         assert preset["suggested_preset"]["name"] == "codex_gpt_long_context"
         assert preset["suggested_preset"]["family"] == "GPT/Codex long-context"
         assert preset["match_confidence"] == "context-only"
-        assert preset["provenance"]["benchmark_version"] == "2"
+        assert preset["provenance"]["benchmark_version"] == "pmw-1"
         assert preset["invalid_overrides"]["fresh_tail_count"] == {
             "env": "LCM_FRESH_TAIL_COUNT",
             "value": "abc",

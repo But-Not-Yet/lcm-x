@@ -24,7 +24,13 @@ from collections import Counter
 from typing import Any, Dict, List, Optional
 
 from .dag import SummaryNode
-from .escalation import ForegroundBudget, ForegroundEstimates, SweepBudgetExhausted, UnattributedRescueRefused
+from .escalation import (
+    _THRESHOLD_FULL_SWEEP_MIN_CALL_SECONDS,
+    ForegroundBudget,
+    ForegroundEstimates,
+    SweepBudgetExhausted,
+    UnattributedRescueRefused,
+)
 from .externalize import ingest_payload_writes, payload_lookup_scope
 from .fresh_tail import tool_group_safe_end
 from .lifecycle_state import LifecycleBindingChangedError, LifecyclePublicationConflictError
@@ -53,6 +59,7 @@ logger = logging.getLogger(__name__)
 
 _THRESHOLD_FULL_SWEEP_MAX_PASSES = 12
 _THRESHOLD_FULL_SWEEP_MAX_SECONDS = 120.0
+_EXTRACTION_HEADROOM_SECONDS = 2.0  # overhead between the extraction timeout and the next admit
 _DEFAULT_SWEEP_TARGET_THRESHOLD_SHARE = 0.25
 _THRESHOLD_FULL_SWEEP_PARTIAL_STOP_REASONS = frozenset({
     "pass_budget_exhausted",
@@ -588,6 +595,7 @@ class CompactionMixin:
             self._survival_fit_reason = None
             self._no_progress_candidate = False
             self._stub_first_exit_now = self._last_stub_first_exit = None  # #671: the latest compaction only
+            self._compress_calls += 1  # #1116: a stub-first proof becomes durable only for the latest call
             if bypass_cooldown:  # #651: a host recovery attempt is never cleanup-only maintenance
                 self._compaction_request.below_threshold_cleanup_only = self._compaction_request.automatic_request = False
                 # #684: nor held by a boundary cooldown.
@@ -864,6 +872,9 @@ class CompactionMixin:
             proof["native"] = False
             proof["published"] = self._last_compression_status == "compacted"
             proof["recovery"] = self._last_compression_status == "overflow_recovery"
+            # #671: a stub-first exit hands the host a rewritten list (summary prefix re-emitted from the DAG, stubs);
+            # once the host commits it, the durable proof must describe that list, or a cold rebind reads a stale one.
+            proof["stub_first"] = bool(getattr(self, "_stub_first_exit_now", None))
             # #1013: an output that dropped ignored rows with no leaf is still a rewrite the host
             # adopts; a cold rebind needs this proof to tell its replay from a new turn. Same text is
             # not identity (a gateway may send only a new turn), so the proof binds each row's host key
@@ -883,6 +894,11 @@ class CompactionMixin:
             self._compress_commit_proof = proof
             if proof["published"] or proof["native"] or proof["recovery"] or proof["filtered"]:
                 self._persist_compress_commit_proof(proof)
+            elif proof["stub_first"]:
+                # #1116: the host can still refuse or roll back the list, so the proof becomes durable only on its
+                # commit signal (the compression boundary), with the store tail of this compress().
+                proof["stub_first_last_store_id"] = self._commit_proof_last_store_id()
+                proof["stub_first_compress_call"] = self._compress_calls
         except Exception:
             self._compress_commit_proof = None
 
@@ -947,16 +963,20 @@ class CompactionMixin:
         except Exception:  # the carrier stays unbound: a replay of it is stored again, never lost
             logger.debug("LCM survival-fit carrier binding failed", exc_info=True)
 
-    def _persist_compress_commit_proof(self, proof) -> None:
+    def _commit_proof_last_store_id(self) -> int:
+        tail = self._store.get_session_tail(self._session_id, limit=1)
+        return int(tail[-1]["store_id"]) if tail else 0
+
+    def _persist_compress_commit_proof(self, proof, last_store_id: Optional[int] = None) -> None:
         """Durable twin of the process-local proof: lets a restarted/resumed
         process re-index the host's post-compaction list without guessing.
 
-        Written for a published LCM compaction, adopted native recovery, or an
-        output that dropped ignored rows (#1013);
-        ``last_store_id`` marks where later rows begin.
+        Written for a published LCM compaction, adopted native recovery, an
+        output that dropped ignored rows (#1013), or a stub-first list the host
+        committed (#1116: from the compression boundary, never from compress());
+        ``last_store_id`` marks where later rows begin (default: the store tail now).
         """
         try:
-            tail = self._store.get_session_tail(self._session_id, limit=1)
             effective = [_commit_proof_identity_digest(identity) for identity in proof["output_effective"]]
             full = [_commit_proof_identity_digest(identity) for identity in proof["output"]]
             payload = {
@@ -974,7 +994,7 @@ class CompactionMixin:
                 # this reader's projection digests, swapped in for a bound record (#517).
                 "effective_sha256": proof.get("effective_sha256_v3", effective),
                 "effective_sha256_v4": effective,
-                "last_store_id": int(tail[-1]["store_id"]) if tail else 0,
+                "last_store_id": self._commit_proof_last_store_id() if last_store_id is None else int(last_store_id),
                 "native": bool(proof.get("native")),
                 "droppable": list(proof.get("droppable") or []),
                 "skip_landing": list(proof.get("skip_landing") or []),
@@ -1136,8 +1156,12 @@ class CompactionMixin:
             else self._compress_occurrences.get(id(working_messages[start]), (None, ()))[1] is None
         ):
             start += 1
+        kept = working_messages[start:]
+        remainder = self._generated_context_carrier_remainder(kept[0]) if kept else None
+        if remainder is not None:  # a carrier's summary prefix is assembly's to emit once: keep only its user row
+            kept = [{**kept[0], "content": remainder}, *kept[1:]]  # (the #650 survival-fit split)
         rows = self._drop_preexisting_generated_ignored_dependent_eof_replies(
-            working_messages[:leading] + working_messages[start:],
+            working_messages[:leading] + kept,
             self._load_generated_ignored_dependent_reply_records(),
         )
         cap = self._effective_assembly_token_cap()
@@ -1687,6 +1711,7 @@ class CompactionMixin:
                 break
             filter_exclusion_proofs: Dict[int, Any] = {}
             hidden_backlog = False
+            copy_lookup = []  # per-leaf only: backlog and input share one bounded twin read
             # #695: adoption checks committed lineage even when the retry's normal tail covers the whole list.
             if fresh_tail_start <= leading_anchor_count and not adopt_before_stop:
                 # Also reached with threshold_full_sweep_active: a sweep whose
@@ -1700,7 +1725,7 @@ class CompactionMixin:
                 ):
                     continue
                 step_started = time.monotonic() if threshold_full_sweep_active else 0.0
-                hidden_backlog = self._store_complete_backlog(working_messages, leading_anchor_count)
+                hidden_backlog = self._store_complete_backlog(working_messages, leading_anchor_count, copy_lookup)
                 if threshold_full_sweep_active and sweep_step_done("store_complete", step_started) >= sweep_deadline:
                     sweep_stop_reason = "time_budget_exhausted"
                     break
@@ -1915,7 +1940,7 @@ class CompactionMixin:
                     sweep_stop_reason = "raw_prefix_drained"
                 break
             if not candidate_raw and not hidden_backlog:  # #581: owned hidden backlog is scheduled, not a no-op
-                hidden_backlog = self._store_complete_backlog(working_messages, leading_anchor_count)
+                hidden_backlog = self._store_complete_backlog(working_messages, leading_anchor_count, copy_lookup)
             if not candidate_raw and not hidden_backlog:
                 if self._maybe_engage_fresh_tail_pressure_yield(
                     pressure_messages,
@@ -1969,7 +1994,7 @@ class CompactionMixin:
                     to_compact = self._select_oldest_leaf_chunk(candidate_raw, working_leaf_chunk_tokens)
             else:
                 if (
-                    raw_tokens_outside_tail < self._config.leaf_chunk_tokens
+                    raw_tokens_outside_tail < self._working_leaf_chunk_tokens(raw_tokens_outside_tail)
                     and not force_overflow
                     and self._pressure_yield_tail_token_limit <= 0
                     and not fit_would_strand
@@ -2010,10 +2035,12 @@ class CompactionMixin:
             anchor_claims: dict[int, list[int]] = {}  # #436 R4: id(input row) -> the store ids its text covers
             selected_input = [message for message in selected_raw_chunk if id(message) not in dependent_reply_message_ids]
             self._store_complete_excluded, self._store_complete_cut, self._store_complete_blocked = [], False, None
+            self._store_complete_copy_exclusion_proofs = {}
             step_started = time.monotonic() if threshold_full_sweep_active else 0.0
             anchored_input = self._identity_anchor_summary_input(
                 selected_input, self._compress_run.store_ids_by_message_id, working_messages, selected_raw_chunk,
                 budget=max(1, int(self._config.leaf_chunk_tokens)), accounted_ids=publication_excluded_store_ids,
+                copy_lookup=copy_lookup[0] if copy_lookup else None,
             )
             if threshold_full_sweep_active and sweep_step_done("identity_anchor", step_started) >= sweep_deadline:
                 sweep_stop_reason = "time_budget_exhausted"
@@ -2059,12 +2086,19 @@ class CompactionMixin:
                 # Use the same dependency-filtered view as summarization so ignored
                 # turns cannot leak through derived assistant/tool replies.
                 if self._config.extraction_enabled:
-                    # #605: every foreground path, sweep on or off: extraction never outlasts the hard bound.
-                    self._run_pre_compaction_extraction(
-                        summary_input_chunk,
-                        timeout_seconds=max(0.001, min(self._config.summary_timeout_ms / 1000,
-                                                       sweep_deadline - time.monotonic())),
+                    # #1122: reserve the next admit's floor/estimate and timeout-handling overhead.
+                    est = budget.estimate(self._primary_summary_route())
+                    extraction_deadline = (
+                        budget.usable_deadline
+                        - max(est, _THRESHOLD_FULL_SWEEP_MIN_CALL_SECONDS)
+                        - _EXTRACTION_HEADROOM_SECONDS
                     )
+                    if budget.progress and budget.soft > 0:
+                        extraction_deadline = min(
+                            extraction_deadline, budget.t0 + budget.soft - est - _EXTRACTION_HEADROOM_SECONDS
+                        )
+                    extraction_deadline = min(extraction_deadline, sweep_deadline)
+                    self._run_pre_compaction_extraction(summary_input_chunk, deadline=extraction_deadline)
                 if bool(
                     getattr(
                         self._config,
@@ -2212,6 +2246,7 @@ class CompactionMixin:
                             publication_excluded_store_ids,
                             filter_exclusion_proofs,
                             carried_ranges,
+                            copy_exclusion_proofs=self._store_complete_copy_exclusion_proofs,
                         )
                     before_commit = stage_frontier
                 self._dag.add_node(
@@ -2370,7 +2405,14 @@ class CompactionMixin:
                     ", ".join(f"{step}={seconds:.1f}s" for step, seconds in sweep_step_seconds.items()),
                 )
                 if not force_overflow and pre_leaf_condensation_passes == 0:  # #909: stored condensation is progress
-                    self._start_sweep_budget_hold()
+                    if self._hung_summary_route_has_fallback(budget):
+                        self._no_progress_candidate = False  # let the next automatic pass try the fallback
+                        logger.info(
+                            "LCM skipping sweep budget hold: hung summary route %s opened its circuit; "
+                            "fallback route available", budget.hung_route,
+                        )
+                    else:
+                        self._start_sweep_budget_hold()
             self._refresh_raw_backlog_debt(
                 working_messages,
                 observed_tokens=observed_prompt_tokens,

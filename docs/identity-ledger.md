@@ -24,6 +24,9 @@ This ledger records two things:
 - which rules are dead code today.
 
 The per-rule table is in [identity-ledger-inventory.md](identity-ledger-inventory.md).
+The behavior-neutral legacy snapshot digest optimization (#1090) is documented in
+[replay-prefix-hashing.md](replay-prefix-hashing.md); it preserves the version-1
+proof bytes and does not remove or demote any identity rule.
 
 ## Decisions
 
