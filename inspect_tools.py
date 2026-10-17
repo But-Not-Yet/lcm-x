@@ -8,8 +8,6 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, TYPE_CHECKING
 
-# Resolve shared helpers/constants at call time: tools also imports this family.
-from . import tools as _tools
 from .externalize import extract_externalized_refs
 from .session_patterns import build_session_match_keys, compile_session_pattern
 
@@ -552,3 +550,8 @@ def lcm_inspect(args: Dict[str, Any], **kwargs: Any) -> str:
     if requested_limit > _tools._LCM_INSPECT_HARD_LIMIT_CAP:
         response["limit_clamped_from"] = requested_limit
     return _bounded_inspect_json(response)
+
+
+# Imported last, and used only at call time: tools binds lcm_inspect from this module
+# while it loads, so every name above must exist before tools is imported (cycle).
+from . import tools as _tools
