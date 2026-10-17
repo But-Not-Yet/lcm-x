@@ -72,7 +72,7 @@ def test_retry_1179_with_tool_call():
         ExactlyOnceMachine.new_turn(machine, "same text", False, 1, True, "lookup")
         expected, actual = list(map(identity, machine.occurrences)), list(map(identity, machine.rows()))
         try:
-            assert_occurrences(machine.occurrences, machine.rows())
+            assert_occurrences(machine.occurrences, machine.rows(), engine=machine.engine)
         except AssertionError as error:
             index = machine.retry_occurrence_index
             if actual == expected[:index] + expected[index + 2:]:
@@ -114,10 +114,10 @@ def test_retry_prefix_occurrence_metadata_1179(anchor, tool, entry, metadata, fr
             machine.engine.compress(host, current_tokens=1)
         else:
             machine.engine.ingest(host)
-        assert_occurrences(original + ([retry] if fresh else []), machine.rows())
+        assert_occurrences(original + ([retry] if fresh else []), machine.rows(), engine=machine.engine)
         if not fresh:
             machine.engine.ingest(deepcopy(host))
-            assert_occurrences(original, machine.rows())
+            assert_occurrences(original, machine.rows(), engine=machine.engine)
             return
         suffix = []
         if tool:
@@ -128,15 +128,15 @@ def test_retry_prefix_occurrence_metadata_1179(anchor, tool, entry, metadata, fr
         host.extend(suffix)
         expected = original + ([retry] if fresh else []) + suffix
         machine.engine.ingest(host)
-        assert_occurrences(expected, machine.rows())
+        assert_occurrences(expected, machine.rows(), engine=machine.engine)
         machine.engine.ingest(deepcopy(host))
-        assert_occurrences(expected, machine.rows())
+        assert_occurrences(expected, machine.rows(), engine=machine.engine)
         # A fully stamped retry also replays after a cold start without repair.
         if metadata == "new-both" and anchor:
             machine.engine.shutdown()
             machine.engine = machine.start_engine()
             machine.engine.ingest(deepcopy(host))
-            assert_occurrences(expected, machine.rows())
+            assert_occurrences(expected, machine.rows(), engine=machine.engine)
     finally:
         machine.teardown()
 
@@ -174,9 +174,9 @@ def test_compacted_prefix_occurrence_metadata_1179(anchor, metadata, fresh):
                 row.pop("message_uid", None)
         expected = machine.occurrences + (host[-2:] if fresh else [])
         machine.engine.ingest(host)
-        assert_occurrences(expected, machine.rows())
+        assert_occurrences(expected, machine.rows(), engine=machine.engine)
         machine.engine.ingest(deepcopy(host))
-        assert_occurrences(expected, machine.rows())
+        assert_occurrences(expected, machine.rows(), engine=machine.engine)
     finally:
         machine.teardown()
 
@@ -570,7 +570,7 @@ def test_survival_carrier_1000_is_already_fixed(tmp_path, monkeypatch):
         reply = {"role": "assistant", "content": "reply CUR", "timestamp": 30_001.0}
         fitted[0]["timestamp"] = 40_000.0
         engine.ingest([*fitted, reply])
-        assert_occurrences([*expected, reply], engine._store.get_session_messages("S"))
+        assert_occurrences([*expected, reply], engine._store.get_session_messages("S"), engine=engine)
     finally:
         engine.shutdown()
         tokens._count_tokens_cached.cache_clear()
