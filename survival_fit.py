@@ -56,7 +56,7 @@ _WARNING_SUMMARY_FAILED = ("LCM could not summarise part of this conversation in
                            "/lcm doctor reports it.")
 _WARNING = _WARNING_SUMMARY_FAILED
 _WARNING_FITTED = ("To keep this conversation within the model's context window, {n} older messages left live context "
-                   "before LCM could summarise them; they stay stored verbatim and searchable (lcm_grep, lcm_load_session). "
+                   "during LCM context fitting; they stay stored verbatim and searchable (lcm_grep, lcm_load_session). "
                    "/lcm doctor reports why.")
 _NOTICE_RE = re.compile(r"(?:\n\n)?\[LCM survival fit: \d+ earlier messages \(store ids [^()\]]*\) are stored verbatim "
                         r"but not in live context; lcm_grep / lcm_load_session reach them\.\]")

@@ -11,9 +11,10 @@ from hermes_lcm.lifecycle_state import LifecyclePublicationConflictError
 from hermes_lcm.tools import lcm_doctor, lcm_grep, lcm_load_session, lcm_status
 from tests import test_issue_581_582_store_complete_survival as fit
 from tests import test_issue_1162_retained_escape as retained
+from tests.harness import make_engine
 
 FITTED = ("To keep this conversation within the model's context window, {n} older messages left live context "
-          "before LCM could summarise them; they stay stored verbatim and searchable (lcm_grep, lcm_load_session). "
+          "during LCM context fitting; they stay stored verbatim and searchable (lcm_grep, lcm_load_session). "
           "/lcm doctor reports why.")
 FAILED = ("LCM could not summarise part of this conversation in time. To keep the session alive, {n} older "
           "messages left live context; they stay stored verbatim and searchable (lcm_grep, lcm_load_session). "
@@ -137,7 +138,9 @@ def test_control_summary_timeout_keeps_warning(tmp_path, monkeypatch, host_estim
 
 @pytest.fixture
 def publication(tmp_path, monkeypatch, summaries, host_estimator):
-    engine = fit._engine(tmp_path, context_length=fit.WINDOW)
+    engine = make_engine(tmp_path, window=fit.WINDOW, conversation_id="conv", platform="telegram",
+                         fresh_tail_count=2, leaf_chunk_tokens=400, context_threshold=0.001,
+                         threshold_full_sweep_enabled=False)
 
     def conflict(*args, **kwargs):
         raise LifecyclePublicationConflictError("synthetic publication conflict")
