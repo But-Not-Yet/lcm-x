@@ -1026,7 +1026,7 @@ class MessageStore:
             """)
         self._identity_anchor_schema_ready = True
 
-    # -- Host uid shadow bindings: droppable; #1124 reads canonical evidence only for copy exclusion --
+    # -- Host uid shadow bindings: droppable; canonical evidence for #1124 exclusions / #1403 audits --
 
     def _host_uid_table_exists(self) -> bool:
         with self._write_lock:
