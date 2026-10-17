@@ -1228,8 +1228,14 @@ class LCMConfig:
             # Only the minimum was set, above the default maximum: the minimum is the offending key.
             _record("leaf_target_min_tokens", "default",
                     f"invalid env LCM_LEAF_TARGET_MIN_TOKENS={c.leaf_target_min_tokens!r} ignored "
-                    f"(must be <= leaf_target_max_tokens={c.leaf_target_max_tokens})")
+                    f"(must be <= leaf_target_max_tokens={c.leaf_target_max_tokens}; "
+                    "set LCM_LEAF_TARGET_MAX_TOKENS to raise the maximum)")
             c.leaf_target_min_tokens = LCMConfig.leaf_target_min_tokens
+        if (config_sources.get("leaf_target_ratio") == "env:LCM_LEAF_TARGET_RATIO"
+                and c.leaf_target_min_tokens == c.leaf_target_max_tokens):
+            config_source_warnings.append(
+                "LCM_LEAF_TARGET_RATIO has no effect while the minimum equals the maximum; "
+                "set LCM_LEAF_TARGET_MAX_TOKENS")
         context_default, context_source, floor_warning = _hermes_compression_threshold_with_source_and_warning(
             c.context_threshold
         )
