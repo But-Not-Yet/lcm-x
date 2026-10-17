@@ -2620,8 +2620,10 @@ class ReconcileMixin:
                     identity = proof_identity(
                         messages[index], stored_row=index + 1 == composite,
                         allow_pruned_tool_alias=index not in recent_tools)
-                    if _has_lossy_redacted_identity(identity) or identity != proof_identity(
-                        row, stored_row=True, with_host_rewrite=True, allow_pruned_tool_alias=False
+                    if _has_lossy_redacted_identity(identity) or not any(
+                        identity == proof_identity(row, stored_row=True, with_host_rewrite=True,
+                                                   allow_pruned_tool_alias=alias)
+                        for alias in (False, True)
                     ):
                         return None
                     index += 1
@@ -2673,11 +2675,14 @@ class ReconcileMixin:
         for i, (row, message) in enumerate(zip(rows, messages)):
             identity = self._message_replay_identity(
                 message, strip_carrier=False, allow_pruned_tool_alias=i not in recent_tools)
-            stored = self._message_replay_identity(
-                row, stored_row=True, with_host_rewrite=True, allow_pruned_tool_alias=False)
-            if _has_lossy_redacted_identity(identity) or _proof_user_identity(identity) != _proof_user_identity(stored):
+            stored = {self._message_replay_identity(
+                row, stored_row=True, with_host_rewrite=True, allow_pruned_tool_alias=alias)
+                for alias in (False, True)}
+            if _has_lossy_redacted_identity(identity) or not any(
+                _proof_user_identity(identity) == _proof_user_identity(form) for form in stored
+            ):
                 return None
-            rewritten = rewritten or identity != stored
+            rewritten = rewritten or identity not in stored
         return session_count if rewritten else None
 
     def _is_lcm_emitted_head_row(self, message, frontier: int) -> bool:
