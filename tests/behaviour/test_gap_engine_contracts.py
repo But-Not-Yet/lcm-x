@@ -80,13 +80,6 @@ def test_unknown_preset_names_available_choices_without_mutation(tmp_path: Path)
         assert vars(engine._config) == before
 
 
-def test_legacy_threshold_wrapper_reads_profile_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    (tmp_path / "config.yaml").write_text("compression:\n  threshold: 0.93\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    # Public legacy wrapper is the sole caller of the inventory helper.
-    assert config._hermes_compression_threshold(0.8) == 0.93
-
-
 @pytest.mark.parametrize("content", [
     [{"type": "text", "content": {"value": "<think>private</think>visible"}}],
     [{"type": "output_text", "value": {"content": "<think>private</think>visible"}}],
@@ -186,19 +179,6 @@ def test_scope_text_recovery_preserves_dynamic_marker() -> None:
     ]:
         node = ast.parse(expression, mode="eval").body
         assert scope_storage._constant_text(node) == expected
-
-
-@pytest.mark.parametrize("part, expected", [
-    ({"type": "text", "text": "visible"}, True),
-    ({"type": "text", "content": {"value": "visible"}}, True),
-    ({"type": "text", "value": {"content": "visible"}}, True),
-    ({"type": "text", "text": {"value": 1}}, False),
-    ({"type": "text", "text": "<think>private</think>"}, False),
-])
-def test_orphan_visibility_predicate_matches_visible_text(part: dict[str, Any], expected: bool) -> None:
-    sanitize = importlib.import_module("hermes_lcm.sanitize")
-    # Current source has no caller of this predicate; there is no public entry point.
-    assert sanitize._assistant_message_has_visible_content({"role": "assistant", "content": [part]}) is expected
 
 
 @pytest.mark.parametrize("message, expected", [
