@@ -16,6 +16,17 @@ If optional slash commands are enabled, `/lcm status` and `/lcm doctor` expose t
 
 When `/lcm` runs with session context, it compares the task-local session profile with the serving engine's captured home through the host profile helper. Different known profiles refuse every command, reads included: run it from a process launched for that profile. Equal known profiles keep normal output, including cold starts with no resident engine. If either profile is unknown, read commands (`status`, `help`, `doctor clean`, `doctor clean lifecycle`, `doctor source`, `doctor retention`, `rotate`, `rollups`, `preset show`, `preset suggest`) run, and when no session engine resolved they append `store: …` naming the opened store; inspect it before relying on the result. Write commands, including plain `doctor`, fail closed unless a resolved session engine is bound to the invoking session. Without session context (a local CLI), commands run against the process engine and append the store line.
 
+## Survival-fit history
+
+`lcm_doctor` returns durable survival-fit history in the top-level `survival_fit` field,
+or null when no fit is recorded. This is history, not an entry in `checks`, and does
+not affect `overall`; the slash command `/lcm doctor` likewise leaves its status
+unchanged. The record includes `last_reason` and `last_cause` when recorded.
+`lcm_status.last_survival_fit` describes the latest fit in the current session, or
+null after a session boundary, with `reason` and an optional `cause`. Durable doctor
+history can outlive that session. Rows removed from live context remain stored
+verbatim and searchable through `lcm_grep` and `lcm_load_session`.
+
 ## Safe mutation order
 
 For cleanup, repair, source normalization, or rotate:

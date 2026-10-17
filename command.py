@@ -41,6 +41,7 @@ from .diagnostics import (
     _state_db_path_for_engine,
     doctor_guidance_for_check,
     doctor_guidance_for_checks,
+    survival_fit_count,
     survival_fit_projection_floor_applies,
 )
 from .ingest_protection import (
@@ -1689,14 +1690,7 @@ def _doctor_text(engine) -> str:
     except Exception:
         survival_fit = None
     survival_fit = survival_fit if isinstance(survival_fit, dict) else {}
-    try:
-        fit_count = int(survival_fit.get("count") or 0)
-    except (TypeError, ValueError, OverflowError):  # a damaged record: a fit with an unknown count
-        fit_count = None
-    recorded_projection = survival_fit.get("projected_count", 0)
-    if fit_count == 0 and (survival_fit.get("count_lost")
-                           or not (type(recorded_projection) is int and recorded_projection == 0)):
-        fit_count = None  # #966: a zero or unreadable count beside projection evidence is an unknown count
+    fit_count = survival_fit_count(survival_fit)
     if fit_count != 0:
         projected = survival_fit.get("projected_count")  # absent on a record from before the key: unknown
         if type(projected) is not int or projected < 0 or survival_fit.get("count_lost"):
@@ -1722,8 +1716,9 @@ def _doctor_text(engine) -> str:
                          "a short projected row (head + mark) and stores it again on a cold resume (#601 duplicates); "
                          "to roll back further, stop Hermes and move the configured database file (by default lcm.db, "
                          "with its -wal and -shm companions) aside and keep it")
+        last_cause = f"; last cause {survival_fit['last_cause']}" if survival_fit.get("last_cause") else ""
         observations.append(f"survival_fit: {applied}; last reason "
-                            f"{survival_fit.get('last_reason') or '(unknown)'}; projected_count "
+                            f"{survival_fit.get('last_reason') or '(unknown)'}{last_cause}; projected_count "
                             f"{'unknown' if projected is None else projected}; unreached_budget_count "
                             f"{survival_fit.get('unreached_budget_count', 0)}; last_reached_budget "
                             f"{survival_fit.get('last_reached_budget', 'unknown')}; last_uncovered_rows "
@@ -3915,11 +3910,26 @@ def _embedding_backfill_report(
     return "\n".join(lines)
 
 
-def _provider_document_batches(provider, texts: list[str], *, before_dispatch):
+def _embedding_batches_until_stopped(batches, stop_event):
+    """Check before advancing a provider generator, never during publication."""
+    batches = iter(batches)
+    while stop_event is None or not stop_event.is_set():
+        try:
+            batch = next(batches)
+        except StopIteration:
+            return
+        yield batch
+
+
+def _provider_document_batches(provider, texts: list[str], *, before_dispatch, stop_event=None):
     """Yield accepted provider requests, adapting legacy deterministic fakes."""
     method = getattr(provider, "embed_document_batches", None)
     if callable(method):
-        yield from method(texts, before_dispatch=before_dispatch)
+        yield from _embedding_batches_until_stopped(
+            method(texts, before_dispatch=before_dispatch), stop_event,
+        )
+        return
+    if stop_event is not None and stop_event.is_set():
         return
     before_dispatch(tuple(range(len(texts))))
     vectors = provider.embed_documents(texts)
@@ -3990,7 +4000,7 @@ def _prepare_embedding_provider_documents(
 
 
 def _provider_chunk_document_batches(
-    provider, batch, chunk_meta, *, before_dispatch
+    provider, batch, chunk_meta, *, before_dispatch, stop_event=None
 ):
     """Yield accepted provider requests for a chunk backfill batch.
 
@@ -4006,12 +4016,12 @@ def _provider_chunk_document_batches(
             [(index, batch[index][1]) for index in group_indexes]
             for group_indexes in group_by_store_id(store_ids)
         ]
-        yield from provider.embed_chunk_group_batches(
-            groups, before_dispatch=before_dispatch
+        yield from _embedding_batches_until_stopped(
+            provider.embed_chunk_group_batches(groups, before_dispatch=before_dispatch), stop_event,
         )
         return
     yield from _provider_document_batches(
-        provider, [item[1] for item in batch], before_dispatch=before_dispatch
+        provider, [item[1] for item in batch], before_dispatch=before_dispatch, stop_event=stop_event,
     )
 
 
@@ -4067,7 +4077,7 @@ def _embedding_backfill_summary_text(
 
 def _embedding_backfill_summary_run(
     config, db_path, *, apply: bool, limit: int, retry_uncertain: bool,
-    include_next_hint: bool = True, expected_dtype: str | None = None,
+    include_next_hint: bool = True, expected_dtype: str | None = None, stop_event=None,
 ) -> str | dict[str, Any]:
     """Summary backfill core: refusal text, or the report fields (#1014).
 
@@ -4302,6 +4312,9 @@ def _embedding_backfill_summary_run(
                 getattr(config, "embedding_max_batch_items", None)
             )
             for offset in range(0, len(documents), batch_size):
+                if stop_event is not None and stop_event.is_set():
+                    stop_reason = "process_exit"
+                    break
                 # Renew the heartbeat lease; if it was stolen (TTL lapsed and a
                 # second owner took over), stop rather than write under a lease
                 # we no longer hold.
@@ -4380,7 +4393,7 @@ def _embedding_backfill_summary_run(
                     for accepted_batch in _provider_document_batches(
                         provider,
                         [item[1] for item in batch],
-                        before_dispatch=before_dispatch,
+                        before_dispatch=before_dispatch, stop_event=stop_event,
                     ):
                         if len(accepted_batch.indexes) != len(accepted_batch.vectors):
                             raise EmbeddingProviderError(
@@ -4482,6 +4495,19 @@ def _embedding_backfill_summary_run(
                         if lease_lost or identity_superseded:
                             break
                     if lease_lost or identity_superseded:
+                        break
+                    if stop_event is not None and stop_event.is_set():
+                        stop_reason = "process_exit"
+                        # The accepted batch is committed. Only un-dispatched
+                        # claims may be cleared; ordinary discovery resumes them.
+                        for index, item in enumerate(batch):
+                            if index not in request_by_index and not _owned_inflight_transition(
+                                conn, identity, lease, None, embedded_id=item[0],
+                                authorized_uncertain_ids=batch_authorized_ids,
+                            ):
+                                lease_lost = True
+                                stop_reason = "lease_lost"
+                                break
                         break
                     skipped_indexes = {
                         int(index)
@@ -4735,6 +4761,7 @@ def _chunk_pending_rows(
     limit: int,
     *,
     incremental: bool = False,
+    include_boundaries: bool = True,
 ) -> tuple[int, list[tuple[str, str, int]], dict[str, tuple[int, int, int, int]]]:
     """Discover policy-chunked messages whose chunks are not yet embedded.
 
@@ -4752,7 +4779,10 @@ def _chunk_pending_rows(
     """
     if incremental:
         already = inflight = set()
-        rows = _chunk_frontier_rows(conn, identity_hash, policy=policy)
+        boundary_ids = set(_chunk_cursor(conn, identity_hash) or ()) if include_boundaries else set()
+        rows = _chunk_frontier_rows(
+            conn, identity_hash, policy=policy, include_boundaries=include_boundaries,
+        )
     else:
         already = _chunk_embedded_ids(conn, identity_hash)
         inflight = _chunk_inflight_ids(conn, identity_hash)
@@ -4765,6 +4795,20 @@ def _chunk_pending_rows(
     for row in rows:
         if incremental and len(documents) >= limit:
             break
+        if incremental:
+            already = inflight = set()
+            if row[0] in boundary_ids:
+                # Exit may have published only the first batch of this message.
+                # Revisit its remaining chunks without re-embedding committed ones.
+                already = {str(item[0]) for item in conn.execute(
+                    "SELECT chunk_id FROM lcm_chunk_meta WHERE store_id=? AND identity_hash=?",
+                    (row[0], identity_hash),
+                )}
+                inflight = {str(item[0]) for item in conn.execute(
+                    "SELECT embedded_id FROM lcm_embedding_backfill_inflight "
+                    "WHERE embedded_id GLOB ? AND identity_hash=?",
+                    (f"{row[0]}:*", identity_hash),
+                )}
         for chunk in chunk_message(row[0], row[1], row[2], policy=policy):
             chunk_id = chunk.chunk_id
             if chunk_id in already or chunk_id in inflight:
@@ -4813,7 +4857,8 @@ _CHUNK_HISTORY_SCAN_MESSAGES = 2_000  # history rows one discovery reads; rows t
 
 
 def _chunk_frontier_rows(
-    conn: sqlite3.Connection, identity_hash: str | None, history_limit: int | None = None, policy: str = ""
+    conn: sqlite3.Connection, identity_hash: str | None, history_limit: int | None = None, policy: str = "",
+    *, include_boundaries: bool = False,
 ):
     """Messages the automatic chunk pass has not reached. New messages come first, oldest first; then up to
     ``_CHUNK_HISTORY_SCAN_MESSAGES`` of the history below the oldest embedded message, newest first. A store with no
@@ -4834,9 +4879,19 @@ def _chunk_frontier_rows(
         )
         return
     low, high = bounds
+    # A stop at a provider boundary can leave either frontier message partial.
+    # The caller filters its already-published/in-flight chunks by exact id.
+    if include_boundaries:
+        yield from conn.execute(
+            f"SELECT store_id, role, content FROM messages WHERE store_id = ?{eligible}", (high,)
+        )
     yield from conn.execute(
         f"SELECT store_id, role, content FROM messages WHERE store_id > ?{eligible} ORDER BY store_id", (high,)
     )
+    if include_boundaries and low != high:
+        yield from conn.execute(
+            f"SELECT store_id, role, content FROM messages WHERE store_id = ?{eligible}", (low,)
+        )
     yield from conn.execute(
         f"SELECT store_id, role, content FROM messages WHERE store_id < ?{eligible} ORDER BY store_id DESC LIMIT ?",
         (low, history_limit),
@@ -4942,13 +4997,16 @@ def _chunk_authorized_uncertain_rows(
 
 def _chunk_backfill_remaining(
     db_path, identity_hash: str | None, policy: str, pending: int, embedded: int,
-    incremental: bool = False,
+    incremental: bool = False, *, include_boundaries: bool = False,
 ) -> tuple[int, int, int]:
     try:
         check_conn = _embedding_read_connection(db_path)
         try:
             remaining, _, _ = _chunk_pending_rows(
-                check_conn, identity_hash, policy, 1, incremental=incremental
+                check_conn, identity_hash, policy, 1, incremental=incremental,
+                # Selection already revisited the boundaries. Only an exit
+                # interrupt can leave part of this pass's message unfinished.
+                include_boundaries=include_boundaries,
             )
             if identity_hash:
                 try:
@@ -5003,7 +5061,7 @@ def _chunk_backfill_text(
 def _chunk_backfill_run(
     config, db_path, *, apply: bool, limit: int, retry_uncertain: bool, policy: str,
     confirm_raw_text: bool = False, include_next_hint: bool = True,
-    expected_dtype: str | None = None, incremental: bool = False,
+    expected_dtype: str | None = None, incremental: bool = False, stop_event=None,
 ) -> str | dict[str, Any]:
     """Chunk backfill core: refusal text, or the report fields (#1014).
 
@@ -5291,6 +5349,9 @@ def _chunk_backfill_run(
                 getattr(config, "embedding_max_batch_items", None)
             )
             for offset in range(0, len(documents), batch_size):
+                if stop_event is not None and stop_event.is_set():
+                    stop_reason = "process_exit"
+                    break
                 if not lease.renew():
                     lease_lost = True
                     stop_reason = "lease_lost"
@@ -5352,7 +5413,7 @@ def _chunk_backfill_run(
                     accepted_indexes: set[int] = set()
                     for accepted_batch in _provider_chunk_document_batches(
                         provider, batch, chunk_meta,
-                        before_dispatch=before_dispatch,
+                        before_dispatch=before_dispatch, stop_event=stop_event,
                     ):
                         if len(accepted_batch.indexes) != len(accepted_batch.vectors):
                             raise EmbeddingProviderError(
@@ -5444,6 +5505,19 @@ def _chunk_backfill_run(
                         if lease_lost or identity_superseded:
                             break
                     if lease_lost or identity_superseded:
+                        break
+                    if stop_event is not None and stop_event.is_set():
+                        stop_reason = "process_exit"
+                        # The accepted batch is committed. Only un-dispatched
+                        # claims may be cleared; ordinary discovery resumes them.
+                        for index, item in enumerate(batch):
+                            if index not in request_by_index and not _owned_inflight_transition(
+                                conn, identity, lease, None, embedded_id=item[0],
+                                authorized_uncertain_ids=batch_authorized_ids,
+                            ):
+                                lease_lost = True
+                                stop_reason = "lease_lost"
+                                break
                         break
                     skipped_indexes = {
                         int(index)
@@ -5537,7 +5611,8 @@ def _chunk_backfill_run(
             store.close()
 
     remaining, in_flight_count, uncertain_count = _chunk_backfill_remaining(
-        db_path, identity, policy, pending, embedded, incremental
+        db_path, identity, policy, pending, embedded, incremental,
+        include_boundaries=stop_reason == "process_exit",
     )
     selected_embeddable = len(documents) - len(skipped)
     status = _embedding_backfill_status(
