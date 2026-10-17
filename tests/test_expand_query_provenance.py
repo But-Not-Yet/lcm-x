@@ -5,6 +5,7 @@ import json
 import pytest
 
 import hermes_lcm.tools as lcm_tools
+from hermes_lcm import expansion_evidence
 from hermes_lcm.config import LCMConfig
 from hermes_lcm.dag import SummaryNode
 from hermes_lcm.engine import LCMEngine
@@ -187,7 +188,7 @@ def test_expand_query_evidence_reports_partial_context_separately_from_entailmen
 
 
 def test_expand_query_evidence_represents_distinct_transcript_content():
-    evidence = lcm_tools._build_expand_query_evidence(
+    evidence = expansion_evidence._build_expand_query_evidence(
         [
             {
                 "type": "messages",
@@ -404,7 +405,7 @@ def test_expand_query_evidence_bounds_dedupes_and_preserves_conflicts():
         )
     messages.append(dict(messages[0]))
 
-    evidence = lcm_tools._build_expand_query_evidence(
+    evidence = expansion_evidence._build_expand_query_evidence(
         [{"type": "raw_messages", "messages": messages}],
         session_id="test-session",
         context_truncated=False,
@@ -462,7 +463,7 @@ def test_expand_query_evidence_cap_uses_final_ascii_escaping():
         for index in range(1, 25)
     ]
 
-    evidence = lcm_tools._build_expand_query_evidence(
+    evidence = expansion_evidence._build_expand_query_evidence(
         [{"type": "raw_messages", "messages": messages}],
         session_id="unicode-session",
         context_truncated=False,
@@ -481,7 +482,7 @@ def test_expand_query_evidence_cap_uses_final_ascii_escaping():
 def test_expand_query_evidence_bounds_oversized_scope_and_item_metadata():
     long_session = "session-" + ("x" * 20_000)
     long_ref = "ref-" + ("界" * 10_000)
-    evidence = lcm_tools._build_expand_query_evidence(
+    evidence = expansion_evidence._build_expand_query_evidence(
         [
             {
                 "type": "raw_messages",
@@ -518,7 +519,7 @@ def test_expand_query_evidence_bounds_oversized_scope_and_item_metadata():
 
 
 def test_expand_query_locator_presence_does_not_claim_verified_replay():
-    evidence = lcm_tools._build_expand_query_evidence(
+    evidence = expansion_evidence._build_expand_query_evidence(
         [
             {
                 "type": "raw_messages",
@@ -578,7 +579,7 @@ def test_expand_query_dedupe_preserves_production_paths_and_occurrences():
         },
     ]
 
-    evidence = lcm_tools._build_expand_query_evidence(
+    evidence = expansion_evidence._build_expand_query_evidence(
         blocks,
         session_id="test-session",
         context_truncated=False,
@@ -607,7 +608,7 @@ def test_expand_query_dedupe_preserves_production_paths_and_occurrences():
 
 
 def test_expand_query_child_message_paths_include_final_dag_edge():
-    evidence = lcm_tools._build_expand_query_evidence(
+    evidence = expansion_evidence._build_expand_query_evidence(
         [
             {
                 "type": "child_messages",

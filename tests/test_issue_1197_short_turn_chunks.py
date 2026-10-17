@@ -222,3 +222,35 @@ def test_t3_uncertain_gap_is_not_automatically_replayed(store):
         run(store)  # first advances past the empty row; then the query is empty
     assert revision(store) == 2
     assert provider.texts.count("I work Fridays") == 1
+
+
+def test_revision_gapfill_and_partial_boundaries_both_finish(store):
+    _, vectors, identity, provider = store
+    rows = [
+        (1, "user", "Low boundary factual sentence. " * 400),
+        (2, "user", FACT),
+        (3, "assistant", "High boundary factual sentence. " * 400),
+        (4, "user", "new fact"),
+    ]
+    vectors.connection.executemany("INSERT INTO messages(store_id, role, content) VALUES(?, ?, ?)", rows)
+    expected = [chunk for row in rows for chunk in chunking.chunk_message(*row, policy="conversational")]
+    # Revision 1 plus a provider-boundary stop: each frontier has only chunk 0.
+    for row in (rows[0], rows[2]):
+        chunks = chunking.chunk_message(*row, policy="conversational")
+        assert len(chunks) > 1
+        chunk = chunks[0]
+        vectors.record_chunk_embedding(
+            chunk.chunk_id, "model-a", [1.0, 0.0], store_id=chunk.store_id,
+            chunk_index=chunk.chunk_index, char_start=chunk.char_start,
+            char_end=chunk.char_end, token_estimate=chunk.token_estimate, identity=identity,
+        )
+    for _ in range(len(expected) + 2):
+        run(store, limit=1)
+        if revision(store) == 2:
+            break
+    assert revision(store) == 2  # Requires record_progress to reach the frontier.
+    actual = {row[0] for row in vectors.connection.execute(
+        "SELECT chunk_id FROM lcm_chunk_meta WHERE identity_hash = ?", (identity.identity_hash,),
+    )}
+    assert actual == {chunk.chunk_id for chunk in expected}  # Requires both boundary rows.
+    assert len(provider.texts) == len(expected) - 2  # Never replay committed boundary chunks.
