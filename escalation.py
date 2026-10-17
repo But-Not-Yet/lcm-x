@@ -143,6 +143,7 @@ class ForegroundBudget:
         self.stop_reason = ""  # the reason of the last stop(), for the stop line with the sweep off
         self.hung_route: str | None = None  # a circuit opened by this pass, not a previous hang
         self.leaves, self.first_call_started, self.last_call_ended = 0, None, None
+        self.pre_leaf = None  # #1127: the PhaseSqlTrace of the pre-leaf phase while it runs
         self.host = 0.0  # D5: seconds inside the host's native compressor (a bypassed session), not LCM work
         self.selected = False  # #1162: this compaction selected a leaf chunk (its zero-leaf pass counts)
 
@@ -244,6 +245,13 @@ class SummaryCircuitBreaker:
             self._open_until.pop(key, None)
             self._config_episodes.discard(key)  # #682: a success ends the episode
             self._note(key, None, None)
+
+    def release_hang(self, model: str | None) -> None:
+        """#1096: allow a turn-end probe only for a circuit still classified as hung."""
+        key = self._key(model)
+        with self._lock:
+            if self._route_state.get(key, {}).get("last_error_class") == "hung":
+                self._open_until.pop(key, None)
 
     def record_hang(self, model: str | None, *, now: float | None = None) -> None:
         """#1137: a route that used the whole foreground window opens immediately."""

@@ -2,7 +2,7 @@
 
 Every number ships with its full run config, variance, fail-close accounting, and known dataset defects — rows that cannot meet the standard do not render.
 
-Generated from `results.jsonl` (sha256: `77bbaf19f38d1a6c5724306b45ade82faba1f65b063992b8fe503da6eec7bb1c`, rows: 53)
+Generated from `results.jsonl` (sha256: `3fcd8effa816546b5884ffcd538a09f539e6c36fa6e77d2c58afc7d817cdc7ac`, rows: 53)
 
 ## Summary
 
@@ -1227,10 +1227,10 @@ P
 fork train through 93a3ade; upstream PR #436 @ ccc76ee
 
 **judge:**
-LongMemEval official protocol judge; config in bench/release-kit (fork docs branch)
+gpt-5.6-sol @ low (F37 pins), not the official gpt-4o judge; official-judge (gpt-4o-2024-08-06) re-score 90.4% (#898 comment 6060571973)
 
 **reader:**
-per official V1 protocol (fixed reader); full config in F37/release kit
+gpt-5.6-sol @ medium via codex-cli 0.144.6 (F37 pins), not the official fixed reader
 
 **retrieval_config:**
 wave-1 delivery (answer_ready, evidence_cards_v1); pins per F32 (transport version pinned, 6e.13)
