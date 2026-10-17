@@ -22,6 +22,13 @@ from typing import Callable, Optional
 
 from . import tokens as _token_module
 from .model_routing import apply_lcm_model_route, apply_lcm_reasoning_effort
+from .summary_attempt import (
+    SummaryAttempt,
+    SummaryTiming,
+    is_summary_content_filter_error,
+    is_summary_context_length_error,
+    is_summary_route_config_error,
+)
 from .tokens import count_tokens
 
 logger = logging.getLogger(__name__)
@@ -63,19 +70,6 @@ _DEFAULT_ROUTE_KEY = "<task-default>"
 # #608: a threshold sweep does not start a summariser call with less time than this left.
 _THRESHOLD_FULL_SWEEP_MIN_CALL_SECONDS = 15.0
 
-# #682: a summary route that cannot serve its model is host/profile config, not a transient failure.
-_STATUS_IN_MESSAGE_RE = re.compile(r"(?:error code|status(?: code)?)\s*[:=]?\s*(\d{3})\b")
-_ROUTE_CONFIG_ERROR_TOKENS = (
-    "model not found", "model_not_found", "unknown model", "no such model", "is not a valid model",
-    "model not supported", "model is not supported", "model_not_supported", "unsupported model",
-)
-# Generic tokens count only when the message also names a model (a bare 404 or a missing file is not one).
-_ROUTE_CONFIG_ERROR_GENERIC_TOKENS = ("not_found_error", "does not exist", "not supported when using")
-_NOT_ROUTE_CONFIG_TOKENS = (
-    "context length", "context_length", "context window", "maximum context", "too many tokens", "rate limit",
-    "rate_limit", "too many requests", "billing", "credits", "insufficient", "quota", "payment", "free tier",
-    "timed out", "timeout",
-)
 _summary_call = threading.local()  # #682: the last summary call's error and host route, per thread
 _route_info_support: dict[int, tuple[object, bool]] = {}
 
@@ -83,64 +77,6 @@ _route_info_support: dict[int, tuple[object, bool]] = {}
 def closed_summary_route_status() -> dict:
     """#682: ``summary_route`` with no breaker in use, or no route to describe."""
     return {"state": "closed", "seconds_left": 0, "last_error_class": None, "provider": None, "model": None}
-
-
-def is_summary_route_config_error(exc: BaseException | None) -> bool:
-    """#682: a 400/404 saying the route cannot serve its model. Context-length, rate-limit, billing (402),
-    timeout and 5xx failures are not. The status is read as the host reads it (``status_code``, else
-    ``response.status_code``); an error without one is judged by its text."""
-    if exc is None or isinstance(exc, TimeoutError):
-        return False
-    status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
-    message = str(exc).lower()
-    if status is None and (match := _STATUS_IN_MESSAGE_RE.search(message)):
-        status = int(match.group(1))
-    if status not in (400, 404, None) or any(token in message for token in _NOT_ROUTE_CONFIG_TOKENS):
-        return False
-    return any(token in message for token in _ROUTE_CONFIG_ERROR_TOKENS) or (
-        "model" in message and any(token in message for token in _ROUTE_CONFIG_ERROR_GENERIC_TOKENS))
-
-
-# #751: the provider refused the request for its size; a property of the chunk, not of the route.
-_CONTEXT_LENGTH_ERROR_TOKENS = (
-    "context length", "context_length", "context window", "maximum context", "max context", "too many tokens",
-    "token limit", "prompt is too long", "input too long", "request too large", "context limit",
-    "maximum number of tokens",
-)
-_NOT_CONTEXT_LENGTH_TOKENS = ("rate limit", "rate_limit", "too many requests", "quota")
-
-
-def is_summary_context_length_error(exc: BaseException | None) -> bool:
-    """#751: a summary call refused because the request does not fit the route's window. A timeout, a
-    rate limit or a quota error is not one; the status is read as ``is_summary_route_config_error`` reads it."""
-    if exc is None or isinstance(exc, TimeoutError):
-        return False
-    status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
-    message = str(exc).lower()
-    if status is None and (match := _STATUS_IN_MESSAGE_RE.search(message)):
-        status = int(match.group(1))
-    if status == 429 or getattr(exc, "status", None) == 429:
-        return False
-    if any(token in message for token in _NOT_CONTEXT_LENGTH_TOKENS):
-        return False
-    return any(token in message for token in _CONTEXT_LENGTH_ERROR_TOKENS)
-
-
-def is_summary_content_filter_error(exc: BaseException | None) -> bool:
-    """#1012 F4: an HTTP 400 refusing this chunk's content, not a route failure."""
-    if exc is None or isinstance(exc, TimeoutError):
-        return False
-    response = getattr(exc, "response", None)
-    status = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
-    message = " ".join(str(value) for value in (
-        exc, getattr(exc, "body", ""), getattr(response, "text", ""),
-    )).lower()
-    if status is None and (match := _STATUS_IN_MESSAGE_RE.search(message)):
-        status = int(match.group(1))
-    return status == 400 and (
-        any(token in message for token in ("contentfilter", "content_filter", "content_policy_violation"))
-        or (re.search(r"\b1301\b", message) is not None and "sensitive" in message)
-    )
 
 
 def _accepts_route_info(call_llm) -> bool:
@@ -205,8 +141,10 @@ class ForegroundBudget:
         self.slot_taken = self.sweep_active = False
         self.progress = ""
         self.stop_reason = ""  # the reason of the last stop(), for the stop line with the sweep off
+        self.hung_route: str | None = None  # a circuit opened by this pass, not a previous hang
         self.leaves, self.first_call_started, self.last_call_ended = 0, None, None
         self.host = 0.0  # D5: seconds inside the host's native compressor (a bypassed session), not LCM work
+        self.selected = False  # #1162: this compaction selected a leaf chunk (its zero-leaf pass counts)
 
     @property
     def usable_deadline(self) -> float:
@@ -306,6 +244,21 @@ class SummaryCircuitBreaker:
             self._open_until.pop(key, None)
             self._config_episodes.discard(key)  # #682: a success ends the episode
             self._note(key, None, None)
+
+    def record_hang(self, model: str | None, *, now: float | None = None) -> None:
+        """#1137: a route that used the whole foreground window opens immediately."""
+        key = self._key(model)
+        current_time = time.monotonic() if now is None else now
+        with self._lock:
+            first = self._open_until.get(key, 0.0) <= current_time
+            cooldown = max(0, int(self.cooldown_seconds or 0))
+            self._open_until[key] = current_time + cooldown
+            self._note(key, "hung", None)
+        if first:
+            logger.warning(
+                "LCM summary route circuit opened for %s: route used the whole window; cooldown=%ss",
+                key, cooldown,
+            )
 
     def record_config_error(self, model: str | None, *, route: dict | None = None, error: BaseException | None = None,
                             now: float | None = None, sent_model: str | None = None) -> None:
@@ -596,12 +549,22 @@ def _summary_contract_shape(content: str) -> str:
     return "other" if "expand for details about" in last.lower() else "missing"
 
 
+_UNCLOSED_BODY_TAG_RE = re.compile(
+    r"<[/|]?[A-Za-z][\w:.-]*(?:\s[^<>]*)?\|?>|\[\s*(?:think|thinking|reasoning|thought)\s*\]"
+    # Spaced spellings that _REASONING_START_RE accepts only at a line start, found anywhere in the body.
+    r"|<\s*(?:/\s*)?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b[^<>]*>"
+    r"|<\|\s*(?:start_of_)?(?:think|thinking|reasoning|thought)\s*\|>", re.IGNORECASE)
+
+
 def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[str, str, tuple[str, ...]]:
     """Return ``(body, failed_check, tolerated)`` for a reply under the nonce contract.
 
     ``failed_check`` is "" when accepted, else ``envelope``, ``nonce_count``, ``short_body`` or ``closing_hint``.
     ``tolerated`` names the known formatting mistakes that were accepted (#612): the ``</summary>`` closer, one
-    ``<summary>`` wrapper around the whole body, and one layer of quotes or emphasis on the closing hint. The
+    ``<summary>`` wrapper around the whole body, one layer of quotes or emphasis on the closing hint, and
+    ``unclosed_envelope`` (#1163). A missing closer is safe because it carries no nonce and the closing-hint check
+    still anchors the body; it is not accepted when a closer appears anywhere after the opener (text written past
+    a closed envelope) or when the body holds any tag-like token or a reasoning header line (an unclosed reasoning block). The
     nonce opening tag, its uniqueness, the body minimum and a recognised closing hint are still required.
     """
     if not nonce:
@@ -621,18 +584,35 @@ def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[
     # envelope contract could never be summarized again. The opening-tag count
     # is kept because it is nonce-bearing, so a second occurrence is genuinely
     # anomalous rather than ordinary transcript content.
-    if not stripped.startswith(opening_tag) or not stripped.endswith(closing_tag):
+    if not stripped.startswith(opening_tag):
         return "", "envelope", ()
+    unclosed_envelope = not stripped.endswith(closing_tag)
+    if unclosed_envelope:
+        # #1163: tolerate a missing closer only if every remaining check passes. A closer anywhere after the
+        # opener means the envelope was closed and text followed it, which is not a missing closer; an unmatched
+        # <summary> opener is not a tolerated shape and would hide a reasoning marker from the check below.
+        if "</lcm-summary>" in stripped or "</summary>" in stripped or "<summary>" in stripped:
+            return "", "envelope", ()
+        tolerated.append("unclosed_envelope")
     if stripped.count(opening_tag) != 1:
-        return "", "nonce_count", ()
-    body = stripped[len(opening_tag) : -len(closing_tag)].strip()
+        return "", "envelope" if unclosed_envelope else "nonce_count", ()
+    body = stripped[len(opening_tag) :].strip() if unclosed_envelope else (
+        stripped[len(opening_tag) : -len(closing_tag)].strip())
     wrapper = _SUMMARY_WRAPPER_RE.match(body)
     if wrapper and "<summary>" not in wrapper.group("inner") and "</summary>" not in wrapper.group("inner"):
         body = wrapper.group("inner").strip()
         tolerated.append("summary_wrapper")
+    if unclosed_envelope and (_UNCLOSED_BODY_TAG_RE.search(body) or any(
+        _REASONING_START_RE.match(re.sub(r"^(?:\s*(?:[>*_`]+|[-•]|\d+\.)\s*)+", "", line)) for line in body.splitlines()
+    )):
+        # The opener hides an unclosed reasoning block from _sanitize_reasoning_summary. The missing-closer tolerance
+        # therefore applies only to a body with no tag-like token (any <name>, </name>, <|name|> or [think]: reasoning
+        # tags of any provider, a second envelope opener) and no reasoning header line, also behind Markdown emphasis,
+        # quote or list prefixes. Any other reply keeps the base result, envelope.
+        return "", "envelope", ()
     minimum_body_tokens = max(4, min(16, max(1, int(max_tokens) // 16)))
     if count_tokens(body) < minimum_body_tokens:
-        return "", "short_body", ()
+        return "", "envelope" if unclosed_envelope else "short_body", ()
     lines = body.splitlines()
     nonempty = [i for i, line in enumerate(lines) if line.strip()]
     controls = 0
@@ -650,14 +630,14 @@ def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[
         if not plain:
             plain, hint_tags = _normalize_expand_hint(raw_last_line.strip())
         if not plain:
-            return "", "closing_hint", ()
+            return "", "envelope" if unclosed_envelope else "closing_hint", ()
         body = body[: len(body) - len(raw_last_line)] + plain
         if count_tokens(body) < minimum_body_tokens:
             # Accept a decorated reply only if its plain form would be accepted.
-            return "", "short_body", ()
+            return "", "envelope" if unclosed_envelope else "short_body", ()
         tolerated.extend(hint_tags)
     if count_tokens(body) < minimum_body_tokens:
-        return "", "short_body", ()
+        return "", "envelope" if unclosed_envelope else "short_body", ()
     return body, "", tuple(tolerated)
 
 
@@ -733,6 +713,39 @@ def _invoke_summary_llm(prompt: str, max_tokens: int, model: str = "", timeout: 
         except Exception:
             pass
     return _call_llm_for_summary(prompt, max_tokens, **kwargs)
+
+
+def _invoke_summary_attempt(
+    prompt: str, max_tokens: int, model: str = "", timeout: float | None = None,
+    reasoning_effort: str = "", *, budget: ForegroundBudget | None = None,
+) -> SummaryAttempt:
+    """Collect one invocation without changing the provider or invocation seams."""
+    _summary_call.route, _summary_call.error = {}, None  # #682: filled by _call_llm_for_summary
+    _summary_call.contract = ""
+    _summary_call.stream_deadline = budget.usable_deadline if budget is not None else None
+    deadline_installed = budget is not None and _host_stream_deadline_seam()
+    started = time.monotonic()
+    try:
+        result = _invoke_summary_llm(
+            prompt,
+            max_tokens,
+            model=model,
+            timeout=timeout,
+            reasoning_effort=reasoning_effort,
+        )
+    except Exception as exc:
+        _summary_call.error = exc
+        (logger.debug if is_summary_route_config_error(exc) else logger.warning)(
+            "LLM summarization failed: %s", exc)
+        result = None
+    finally:
+        _summary_call.stream_deadline = None
+    route, error = dict(_summary_call.route or {}), _summary_call.error
+    ended = time.monotonic() if budget is not None else None
+    return SummaryAttempt(
+        text=result, error=error, route=route, contract=_summary_call.contract,
+        timing=SummaryTiming(started, ended, deadline_installed),
+    )
 
 
 def _normalized_focus_topic(focus_topic: str, max_chars: int = 160) -> str:
@@ -1032,33 +1045,31 @@ def _invoke_summary_llm_chain(
                 break
             if budget is not None:
                 budget.slot_taken = True
-        _summary_call.route, _summary_call.error = {}, None  # #682: filled by _call_llm_for_summary
-        _summary_call.contract = ""
-        _summary_call.stream_deadline = budget.usable_deadline if budget is not None else None
-        deadline_installed = budget is not None and _host_stream_deadline_seam()
-        started = time.monotonic()
-        try:
-            result = _invoke_summary_llm(
-                prompt,
-                max_tokens,
-                model=candidate_model,
-                timeout=call_timeout,
-                reasoning_effort=reasoning_effort,
-            )
-        except Exception as exc:
-            _summary_call.error = exc
-            (logger.debug if is_summary_route_config_error(exc) else logger.warning)(
-                "LLM summarization failed: %s", exc)
-            result = None
-        finally:
-            _summary_call.stream_deadline = None
-        route, error = dict(_summary_call.route or {}), _summary_call.error
+        attempt = _invoke_summary_attempt(
+            prompt, max_tokens, model=candidate_model, timeout=call_timeout,
+            reasoning_effort=reasoning_effort, budget=budget,
+        )
+        result, route, error = attempt.text, attempt.route, attempt.error
+        started, ended = attempt.timing.started, attempt.timing.ended
+        deadline_installed = attempt.timing.deadline_installed
         if budget is not None:
-            ended = time.monotonic()
             budget.record_call(route_key, started, ended)
             if result is None and _is_budget_cut(error, budget, budget_bound, ended - started, call_timeout,
                                                  deadline_installed):
-                # #605 F4: the budget, not the route, ended the call: no circuit failure, no fallback.
+                # #1137: a full-window hang opens this route for the NEXT compaction.
+                full_window = min(budget.configured_timeout, budget.hard - budget.reserve - budget.leaf_reserve)
+                if not budget_bound:  # the host timeout can be a no-progress window, shorter than the call
+                    full_window = budget.hard - budget.reserve - budget.leaf_reserve
+                used_window = (
+                    (budget_bound and call_timeout >= 0.9 * full_window)
+                    or (deadline_installed and ended >= budget.usable_deadline - 1.0)
+                )
+                if (circuit_breaker is not None and used_window
+                        and ended - started >= 0.9 * full_window):  # an early host fence is not a hang
+                    circuit_breaker.record_hang(route_key)
+                    if not circuit_breaker.allows(route_key):
+                        budget.hung_route = route_key
+                # #605 F4: still stop this compaction, with no time left for a fallback.
                 raise budget.stop("summariser call cut by the foreground budget")
         if circuit_breaker is not None and route:
             circuit_breaker.note_route(route_key, route)
@@ -1081,7 +1092,7 @@ def _invoke_summary_llm_chain(
             logger.warning(
                 "LCM summary result rejected (reason=%s, source_tokens=%s, result_tokens=%d, model=%s)",
                 "not_shorter" if result else "no_content" + (
-                    f" contract={_summary_call.contract}" if _summary_call.contract else ""),
+                    f" contract={attempt.contract}" if attempt.contract else ""),
                 "unknown" if source_tokens is None else source_tokens,
                 count_tokens(result) if result else 0,
                 candidate_model or _DEFAULT_ROUTE_KEY,
