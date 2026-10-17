@@ -1298,3 +1298,90 @@ def test_r2_b_a_full_table_of_live_guards_skips_the_new_profile(_isolated):
     assert _isolated._guard(_guard_job("new")) is None
     assert _isolated.counters["prep_guard_full"] == 1
     assert len(_isolated._spend_guards) == leaf_prep._PER_PROCESS
+
+
+# Review round 5: preserve the stop-bar evidence without changing opt-in policy.
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="Accepted opt-in follow-up: D-4 permits preparation-time focus at promotion",
+)
+def test_r5_changed_focus_would_require_a_new_foreground_summary(
+    engine, provider, _isolated, tmp_path
+):
+    old_focus, new_focus = "orchard-budget", "marina-layout"
+    old_summary = f"Earlier {old_focus}.\nExpand for details about: turns"
+    new_summary = f"Earlier {new_focus}.\nExpand for details about: turns"
+    provider.result = lambda prompt: (
+        new_summary if f"Primary focus: {new_focus}" in prompt else old_summary
+    )
+    view = _crossing_view(engine)
+    view[-2]["content"] = old_focus + PAD
+    _turn_end(engine, view, tokens_now=engine.threshold_tokens + CHUNK)
+    chain = leaf_prep.ready_chain(engine._store.db_path, "conv", 0)
+    assert chain and chain[0].summary == old_summary
+
+    foreground = _engine(tmp_path / "foreground", background_leaf_prep_enabled=False)
+    try:
+        foreground.compress(
+            view, current_tokens=foreground.threshold_tokens + CHUNK,
+            focus_topic=new_focus,
+        )
+        assert any(
+            node.summary == new_summary
+            for node in foreground._dag.get_session_nodes("S", limit=100_000)
+        )
+    finally:
+        foreground.shutdown()
+
+    engine.compress(
+        view, current_tokens=engine.threshold_tokens + CHUNK, focus_topic=new_focus
+    )
+    assert _isolated.counters["promoted"] > 0
+    published = [
+        node for node in engine._dag.get_session_nodes("S", limit=100_000)
+        if node.source_ids == list(chain[0].covered_store_ids)
+    ]
+    assert len(published) == 1
+    # Expected RED: the current policy publishes old_summary despite the new focus.
+    assert published[0].summary == new_summary
+
+
+@pytest.mark.parametrize("field", ["role", "tool_call_id", "tool_calls", "tool_name"])
+def test_r5_reconcile_metadata_change_does_not_rewrite_prepared_rows(
+    engine, provider, _isolated, field
+):
+    from copy import deepcopy
+
+    view = _emission_crossing(engine)
+    _turn_end(engine, view)
+    chain = leaf_prep.ready_chain(engine._store.db_path, "conv", 0)
+    assert chain
+    before = engine._store.get_session_messages("S", limit=100_000)
+    original_ids = [row["store_id"] for row in before]
+    before_map = engine._get_store_id_map_for_messages(view)
+    changed = deepcopy(view)
+    index = 3 if field == "tool_calls" else 4
+    original_id = before_map[id(view[index])]
+    assert original_id in chain[0].covered_store_ids
+    if field == "role":
+        changed[index]["role"] = "assistant"
+    elif field == "tool_call_id":
+        changed[index]["tool_call_id"] = "corrected-call"
+    elif field == "tool_calls":
+        changed[index][field][0]["function"]["name"] = "corrected-tool"
+    else:
+        changed[index]["tool_name"] = "corrected-tool"
+
+    engine.ingest(changed)
+
+    after = engine._store.get_session_messages("S", limit=100_000)
+    # Reconciliation retains every original row, including all four metadata fields.
+    assert [row for row in after if row["store_id"] in original_ids] == before
+    mapping = engine._get_store_id_map_for_messages(changed)
+    assert mapping.get(id(changed[index])) != original_id
+    # A changed host occurrence cannot consume the old prepared row under its identity.
+    assert engine._message_replay_identity(changed[index]) != (
+        engine._message_replay_identity(before[index], stored_row=True)
+    )
