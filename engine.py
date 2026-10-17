@@ -169,6 +169,7 @@ from .sqlite_util import (
 from .store import MessageStore, _normalize_conversation_id_value, _normalize_observed_at
 from .tokens import count_message_tokens, count_messages_tokens, count_tokens
 from .assembly_plan import PrefixBudgetFacts, default_prefix_budget, select_prefix, select_tail
+from .frontier_state import FrontierState
 from . import tools as lcm_tools
 
 logger = logging.getLogger(__name__)
@@ -1103,6 +1104,7 @@ class LCMEngine(
         self._ignore_pattern_dropped_count: int = 0
 
         # Track which store_ids have been ingested into the DAG
+        self._frontier = FrontierState()
         self._last_compacted_store_id: int = 0
 
         # Cursor: index in the current messages list up to which all
@@ -1363,6 +1365,69 @@ class LCMEngine(
         # active Hermes config still selects ``context.engine: lcm`` (#471).
         self._engine_name = ENGINE_NAME
         self._identity_migration: Dict[str, Any] | None = None
+
+    def _frontier_holder(self) -> FrontierState:
+        if not hasattr(self, "_frontier"):
+            self._frontier = FrontierState()
+        return self._frontier
+
+    @property
+    def _ingest_cursor(self) -> int:
+        return self._frontier.cursor
+
+    @_ingest_cursor.setter
+    def _ingest_cursor(self, value: int) -> None:
+        if not hasattr(self, "_frontier"):
+            self._frontier = FrontierState()
+        self._frontier.cursor = value
+
+    @property
+    def _ingest_cursor_needs_reconcile(self) -> bool:
+        return self._frontier.needs_reconcile
+
+    @_ingest_cursor_needs_reconcile.setter
+    def _ingest_cursor_needs_reconcile(self, value: bool) -> None:
+        if not hasattr(self, "_frontier"):
+            self._frontier = FrontierState()
+        self._frontier.needs_reconcile = value
+
+    @property
+    def _last_compacted_store_id(self) -> int:
+        return self._frontier.compacted_store_id
+
+    @_last_compacted_store_id.setter
+    def _last_compacted_store_id(self, value: int) -> None:
+        if not hasattr(self, "_frontier"):
+            self._frontier = FrontierState()
+        self._frontier.compacted_store_id = value
+
+    @property
+    def _compress_commit_proof(self) -> dict[str, Any] | None:
+        return self._frontier.commit_proof
+
+    @_compress_commit_proof.setter
+    def _compress_commit_proof(self, value: dict[str, Any] | None) -> None:
+        if not hasattr(self, "_frontier"):
+            self._frontier = FrontierState()
+        self._frontier.commit_proof = value
+
+    @property
+    def _last_emission_descriptors(self) -> dict[str, Any] | None:
+        return self._frontier.emission_descriptors
+
+    @_last_emission_descriptors.setter
+    def _last_emission_descriptors(self, value: dict[str, Any] | None) -> None:
+        if not hasattr(self, "_frontier"):
+            self._frontier = FrontierState()
+        self._frontier.emission_descriptors = value
+
+    def __copy__(self) -> "LCMEngine":
+        """Copy scalar frontier values while retaining the shared proof dicts."""
+        clone = type(self).__new__(type(self))
+        clone.__dict__.update(self.__dict__)
+        if hasattr(self, "_frontier"):
+            clone._frontier = copy.copy(self._frontier)
+        return clone
 
     def apply_identity_migration(self, notice: Dict[str, Any] | None) -> None:
         """Answer to the legacy engine name while the config still uses it."""
@@ -2918,7 +2983,7 @@ class LCMEngine(
             self._survival_overhead_observation = None
         self._conversation_id = state.conversation_id
         self._lcm_session_last_conversation_id[session_id] = state.conversation_id
-        self._last_compacted_store_id = state.current_frontier_store_id
+        self._frontier_holder().bind_frontier(state.current_frontier_store_id)
         self._register_active_engine_binding()
         if not self._session_ignored and not self._session_stateless:
             self._remember_foreground_rebind_candidate(session_id)
@@ -3919,7 +3984,7 @@ class LCMEngine(
                 int(self._last_compacted_store_id or 0),
                 frontier,
             )
-        self._last_compacted_store_id = frontier
+        self._frontier_holder().bind_frontier(frontier)
         if self._embedding_maintenance_retired:
             self._rearm_embedding_maintenance()
             self._schedule_embedding_maintenance()
@@ -3962,7 +4027,7 @@ class LCMEngine(
         if frontier > int(state.current_frontier_store_id or 0):
             state = self._lifecycle.advance_frontier(self._conversation_id, session_id, frontier) or state
         self._apply_session_start_metadata(session_id, kwargs)
-        self._last_compacted_store_id = int(state.current_frontier_store_id or 0)
+        self._frontier_holder().publish_frontier(int(state.current_frontier_store_id or 0))
         proof = self._compress_commit_proof
         if (
             proof
@@ -3987,9 +4052,7 @@ class LCMEngine(
             # No consumed commit proof (native recovery, proof failure, an end
             # that ingested and finalized): the cursor does not index the list
             # the host adopts. Reconcile it against the store (#259).
-            self._compress_commit_proof = None
-            self._ingest_cursor = 0
-            self._ingest_cursor_needs_reconcile = True
+            self._frontier_holder().invalidate(drop_proof=True)
         self._clear_pending_reset_boundary()
         self._log_session_filter_diagnostics()
         logger.info(
@@ -4295,8 +4358,7 @@ class LCMEngine(
             # A compression boundary is the host's positive archive-adoption
             # signal. Reconcile the exact emitted snapshot in the new, empty
             # segment and ingest only turns appended after it.
-            self._ingest_cursor = 0
-            self._ingest_cursor_needs_reconcile = True
+            self._frontier_holder().invalidate()
         self._clear_foreground_rebind_candidate_if_bound_session_confirmed()
         if frontier > 0:
             state = self._lifecycle.advance_frontier(
@@ -4305,7 +4367,7 @@ class LCMEngine(
                 frontier,
             )
             if state is not None:
-                self._last_compacted_store_id = state.current_frontier_store_id
+                self._frontier_holder().bind_frontier(state.current_frontier_store_id)
         self._clear_pending_reset_boundary()
         self._compression_boundary_ingest_pending = can_reassign
         self._compression_boundary_active_placeholder_digest_budget = boundary_placeholder_budget
@@ -4325,7 +4387,7 @@ class LCMEngine(
                 in (commit_proof.get("carry_ranges") or ())
                 if range_end > frontier
             )
-            commit_proof["carry_ranges"] = inherited_ranges
+            self._frontier_holder().transfer_to_child(commit_proof, "carry_ranges", inherited_ranges)
             # The child segment starts from compress()'s output: re-key the proof
             # so its first ingest re-indexes a host-merged prefix instead of
             # trusting a positional cursor, and persist it for a resumed child.
@@ -4338,14 +4400,16 @@ class LCMEngine(
             if not self._emission_proof_matches_binding(
                 self._last_emission_descriptors, source_binding
             ):
-                self._last_emission_descriptors = None
+                self._frontier_holder().filter_by_binding(proof=False, descriptors=True)
             for scoped_proof in (commit_proof, self._last_emission_descriptors):
                 if scoped_proof is None:
                     continue
-                scoped_proof["session_id"] = session_id
+                self._frontier_holder().transfer_to_child(scoped_proof, "session_id", session_id)
                 for emission in scoped_proof.get("emissions") or ():
-                    emission["scope"] = {**(emission.get("scope") or {}), "session_id": session_id}
-            commit_proof["input"] = None
+                    self._frontier_holder().transfer_to_child(
+                        emission, "scope", {**(emission.get("scope") or {}), "session_id": session_id},
+                    )
+            self._frontier_holder().transfer_to_child(commit_proof, "input", None)
             if (commit_proof.get("published") or commit_proof.get("native") or commit_proof.get("recovery")
                     or commit_proof.get("filtered") or commit_proof.get("stub_first")):
                 self._persist_compress_commit_proof(commit_proof)
@@ -4353,9 +4417,7 @@ class LCMEngine(
             # No transferred commit proof (proof creation failed, an end that
             # ingested, native recovery): the cursor does not index the child's
             # list. Reconcile it against the store (#484 round 2).
-            self._compress_commit_proof = None
-            self._ingest_cursor = 0
-            self._ingest_cursor_needs_reconcile = True
+            self._frontier_holder().invalidate(drop_proof=True)
         self._log_session_filter_diagnostics()
 
     @staticmethod
@@ -4460,7 +4522,9 @@ class LCMEngine(
             binding = self._emission_binding()
             for name in ("_compress_commit_proof", "_last_emission_descriptors"):
                 if not self._emission_proof_matches_binding(getattr(self, name), binding):
-                    setattr(self, name, None)
+                    self._frontier_holder().filter_by_binding(
+                        proof=name == "_compress_commit_proof", descriptors=name == "_last_emission_descriptors",
+                    )
 
     def _on_session_start_unlocked(self, session_id: str, **kwargs) -> None:
         # The post-LLM hook also binds here under stable engine use, without
@@ -4675,8 +4739,7 @@ class LCMEngine(
                     self._reset_session_scoped_runtime_state()
                 else:
                     self._clear_pending_reset_boundary()
-                    self._ingest_cursor = 0
-                    self._last_compacted_store_id = 0
+                    self._frontier_holder().restart_cursor()
                     self._last_overflow_recovery_failed = False
                     self._last_condensation_suppressed_reason = ""
                 self._lcm_current_start_allows_bypass_lineage = True
@@ -4742,8 +4805,7 @@ class LCMEngine(
             ):
                 self._reset_session_counters()
             self._clear_pending_reset_boundary()
-            self._ingest_cursor = 0
-            self._last_compacted_store_id = 0
+            self._frontier_holder().restart_cursor()
             self._last_overflow_recovery_failed = False
             self._last_condensation_suppressed_reason = ""
         self._apply_session_start_metadata(session_id, kwargs)
@@ -5070,7 +5132,7 @@ class LCMEngine(
             # cursor indexes compress()'s output, so skip the re-ingest. Still
             # finalize: the end may be a real exit after a cancelled commit, and
             # the compression start rebinds this session's own frontier (C3).
-            proof["end_consumed"] = True  # one-shot; a second identical end re-ingests
+            self._frontier_holder().mark_end_consumed(proof)  # one-shot; a second identical end re-ingests
             try:
                 with _temporary_sqlite_busy_timeout(
                     [getattr(self._lifecycle, "_conn", None)], _SESSION_END_BUSY_TIMEOUT_MS
@@ -9218,8 +9280,7 @@ class LCMEngine(
         if compressed != original_messages or ingest_cleanup_changed_active_context:
             self._last_compression_status = "overflow_recovery"
             self._last_compression_noop_reason = ""
-            self._ingest_cursor = len(compressed)
-            self._ingest_cursor_needs_reconcile = False
+            self._frontier_holder().adopt_trusted(len(compressed))
             logger.info(
                 "LCM assembly guardrail recovery: %d messages → %d (no new summary node)",
                 len(original_messages),
