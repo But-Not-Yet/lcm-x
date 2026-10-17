@@ -182,6 +182,8 @@ SCENARIOS = (
     Scenario("tool-duplicate-result", shape="tools", variant="duplicate-result"),
     Scenario("host-rewrite-head", shape="whitespace", variant="rewrite"),
     Scenario("commit-proof-extends-tail", proof="v3", variant="proof-extends"),
+    *[Scenario(f"folded-engine-{variant}", mode="matcher", proof="engine", variant=variant)
+      for variant in ("folded-ordered", "folded-reversed", "folded-duplicate", "folded-missing")],
 )
 
 
@@ -402,6 +404,17 @@ def observe(case: Scenario, root: Path) -> Trace:
                 incoming = [dict(NOTE)]
             elif case.variant == "objective":
                 incoming = [{"role": "user", "content": "[Current user objective preserved from compacted history]\ninspect"}]
+            if case.variant.startswith("folded-"):
+                incoming[0]["content"] += "\n[Recent Summary (d1, node 1)]\n[Expand for details: node 1]"
+                assert engine._write_folded_tail_lineage(incoming[0], 1)
+                if case.variant == "folded-reversed":
+                    incoming.reverse()
+                elif case.variant == "folded-duplicate":
+                    incoming.insert(2, dict(incoming[1]))
+                elif case.variant == "folded-missing":
+                    incoming[1]["content"] = "unmapped row"
+                incoming.insert(0, dict(NOTE))
+                assert engine._compacted_active_replay_snapshot_digest(incoming)
             seed_proof(engine, case, incoming)
             if case.variant == "empty-child":
                 engine._store._conn.execute("DELETE FROM messages WHERE session_id='S'")
