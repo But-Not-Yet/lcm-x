@@ -1741,30 +1741,8 @@ class OpenAICompatibleProvider(_ResilientProvider):
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
         return self._embed(texts, deadline_budget_s=self.timeout)
 
-    def embed_document_batches(
-        self,
-        texts: Sequence[str],
-        *,
-        before_dispatch: BeforeDispatch | None = None,
-    ) -> Iterator[EmbeddedDocumentBatch]:
-        normalized = tuple(str(text) for text in texts)
-        if not normalized:
-            return
-        indexes = tuple(range(len(normalized)))
-        vectors = self._embed(
-            normalized,
-            max_attempts=1 if before_dispatch is not None else _MAX_ATTEMPTS,
-            deadline_budget_s=self.timeout,
-            before_transport=(
-                (lambda: before_dispatch(indexes))
-                if before_dispatch is not None
-                else None
-            ),
-        )
-        yield EmbeddedDocumentBatch(
-            indexes,
-            tuple(tuple(vector) for vector in vectors),
-        )
+    # Both HTTP providers use the same lazy batch adapter around self._embed.
+    embed_document_batches = OllamaProvider.embed_document_batches
 
     def embed_query(self, text: str) -> list[float]:
         return self._embed((text,), deadline_budget_s=self.timeout)[0]
