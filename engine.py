@@ -6584,6 +6584,7 @@ class LCMEngine(
         cursor = min(max(self._ingest_cursor, 0), n)
         new_prefix_occurrences = set()
         unchanged_prefix_occurrences = set()
+        accepted_compaction_prefix = 0
         proof = getattr(self, "_compress_commit_proof", None)
         if (
             not self._ingest_cursor_needs_reconcile
@@ -6625,12 +6626,14 @@ class LCMEngine(
                         if self._host_occurrence_metadata(messages[idx]) == self._host_occurrence_metadata(previous)
                     }
                     cursor = self._ingest_cursor = min(new_prefix_occurrences)
+                accepted_compaction_prefix = cursor
                 self._compress_commit_proof = None
             elif (proof.get("end_consumed") or proof.get("native")) and host_input is not None and n >= len(host_input) and [
                 self._proof_replay_identity(m, strip_carrier=False) for m in messages[: len(host_input)]
             ] == host_input:
                 self._ingest_cursor = len(host_input)
                 cursor = self._ingest_cursor
+                accepted_compaction_prefix = cursor
                 self._compress_commit_proof = None
             else:
                 remapped = self._remap_cursor_through_host_merge(messages, proof)
@@ -6647,6 +6650,7 @@ class LCMEngine(
                         if self._host_occurrence_metadata(messages[idx]) == self._host_occurrence_metadata(previous)
                     }
                     cursor = self._ingest_cursor = min(new_prefix_occurrences, default=remapped)
+                    accepted_compaction_prefix = cursor
                     self._compress_commit_proof = None
                 else:
                     self._ingest_cursor_needs_reconcile = True
@@ -6801,10 +6805,13 @@ class LCMEngine(
                 audit_from = next((idx for idx, identity in enumerate(current_prefix_identities)
                                    if identity != cached_source_identities[idx]), None)
             try:
-                if reconciled_existing_session and cursor > 0:
+                if (reconciled_existing_session or accepted_compaction_prefix) and cursor > 0:
                     self._store.backfill_observed_at_many(
                         self._identity_anchor_backfill_prefix(messages, reconcile_messages, cursor))
-                anchor_plan = self._identity_anchor_prematch(messages, reconcile_messages, cursor, audit_from)
+                # #1403: the accepted output supersedes the stale pre-compaction cache for
+                # this ingest only. The one-shot commit proof has already retired above.
+                accepted = {"accepted_prefix": accepted_compaction_prefix} if accepted_compaction_prefix else {}
+                anchor_plan = self._identity_anchor_prematch(messages, reconcile_messages, cursor, audit_from, **accepted)
                 anchor_plan["replayed"] -= replayed_tool_segment_indexes
                 # A reused stamp cannot override positive evidence of a new uid.
                 anchor_plan["replayed"] -= new_prefix_occurrences
