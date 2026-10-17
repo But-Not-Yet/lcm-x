@@ -22,11 +22,20 @@ import hashlib
 import json
 import re
 from collections import Counter
-from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional
 
+# Keep this facade: runtime callers and patch seams resolve projection here.
+from .emission_projection import (
+    EmissionProjectionEntry as EmissionProjectionEntry,
+    EmissionProjection as EmissionProjection,
+    _emission_identity as _emission_identity,
+    _emission_candidate_rows as _emission_candidate_rows,
+    _finalize_emission_descriptors as _finalize_emission_descriptors,
+    _carrier_emission_key as _carrier_emission_key,
+    _descriptor_shape_is_well_formed as _descriptor_shape_is_well_formed,
+    _project_emitted_occurrences as _project_emitted_occurrences,
+)
 from .externalize import (
     extract_externalized_ref,
     externalized_tool_result_has_persisted_output_marker,
@@ -65,6 +74,40 @@ _PRESERVED_TODO_CONTEXT_PREFIX = "[Your active task list was preserved across co
 _TODO_ITEM_LINE_RE = re.compile(r"(?:  )*- \[[ x>~?]\] ")
 _TODO_ITEM_END_RE = re.compile(r" \((?:pending|in_progress|completed|cancelled)\)$")
 _PRUNED_SKILL_RELOAD_NOTICE_HEADER = "[Skills pruned during compression — reload before acting on these tasks]"
+# #773: the host's anti-growth salvage (hermes-agent agent/context_compressor.py _PRUNED_TOOL_PLACEHOLDER,
+# salvage_grown_transcript) rewrites an old tool output in its list to exactly this text and keeps the
+# tool_call_id. The rewritten row is the stored occurrence, not a new one; the store keeps the full output.
+_HERMES_PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
+# hermes-agent agent/context_compressor.py ``_SALVAGE_KEEP_RECENT_TOOLS``: the salvage never clears the newest two
+# tool outputs of its list (the only writer of the placeholder), and the host only appends after it.
+_HERMES_SALVAGE_KEEP_RECENT_TOOLS = 2
+# The salvage clears only string outputs longer than this (context_compressor.py _PRUNE_MIN_CHARS), so a
+# placeholder stands only for a stored row longer than this.
+_HERMES_PRUNE_MIN_CHARS = 200
+
+
+def _hermes_salvage_protected_positions(messages) -> set[int]:
+    """Positions salvage cannot clear, always measured in the complete host list."""
+    return set([i for i, message in enumerate(messages) if message.get("role") == "tool"]
+               [-_HERMES_SALVAGE_KEEP_RECENT_TOOLS:])
+
+
+def _is_stored_nonstring_content(text: str) -> bool:
+    """#1385: canonical non-string storage cannot prove a salvage-clearable string.
+
+    normalize_content_value loses the original kind. Any canonical JSON non-string
+    (including untyped lists, plain dicts and scalars) may have been non-string content.
+    A byte-identical string therefore fails closed too: duplicate rather than lose a row.
+    """
+    if not text:
+        return False
+    try:
+        value = json.loads(text)
+        return not isinstance(value, str) and json.dumps(value, ensure_ascii=False, sort_keys=True) == text
+    except (TypeError, ValueError, RecursionError):
+        return False
+
+
 _MODEL_SWITCH_NOTIFICATION_PREFIX = "[Note: model was just switched from "
 # When the user sends a message mid-turn (/steer), the host wraps it in this
 # block (hermes-agent agent/prompt_builder.py format_steer_marker).  Hermes
@@ -138,254 +181,6 @@ _COMPACTION_COMMIT_PROOF_VERSION = 4
 # reads versions 2 and 3 only), so a rollback still compacts (#517); version-4
 # descriptors ride along under "descriptor_version".
 _COMPACTION_COMMIT_PROOF_WIRE_VERSION = 3
-
-
-@dataclass(frozen=True)
-class EmissionProjectionEntry:
-    full_identity: tuple[str, str, str, str, str]
-    effective_identity: tuple[str, str, str, str, str]
-    generated_span: Optional[str] = None
-    retained_source: Any = None
-    kind: Optional[str] = None
-    suffix_sha256: Optional[str] = None
-    suffix_length: Optional[int] = None
-    output_index: Optional[int] = None
-
-
-@dataclass(frozen=True)
-class EmissionProjection:
-    entries: tuple[EmissionProjectionEntry, ...]
-    offset: int = 0
-    complete_length: int = 0
-
-    def slice(self, offset: int, length: Optional[int] = None) -> "EmissionProjection":
-        stop = None if length is None else offset + length
-        return EmissionProjection(self.entries[offset:stop], self.offset + offset, self.complete_length)
-
-
-def _emission_identity(message: Mapping[str, Any], content: Optional[str] = None):
-    role = str(message.get("role") or "unknown")
-    normalized = normalize_content_value(message.get("content")) or "" if content is None else content
-    tool_calls = json.dumps(
-        message.get("tool_calls") or [], ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
-    tool_name = str(message.get("tool_name") or message.get("name") or "") if role == "tool" else ""
-    return role, normalized, str(message.get("tool_call_id") or ""), tool_calls, tool_name
-
-
-def _emission_candidate_rows(messages, role, span, digest=None):
-    for index, message in enumerate(messages):
-        if not isinstance(message, dict) or message.get("tool_calls") or message.get("tool_call_id"):
-            continue
-        content = message.get("content")
-        if str(message.get("role") or "unknown") != role or not isinstance(content, str):
-            continue
-        raw = content.encode("utf-8")
-        if (content.startswith(span) if isinstance(span, str)
-                else len(raw) >= span and hashlib.sha256(raw[:span]).hexdigest() == digest):
-            yield index, message
-
-
-def _finalize_emission_descriptors(messages, candidates, scope):
-    """Bind assembly candidates to the exact returned occurrences."""
-    descriptors = []
-    search_from = 0
-    for candidate in candidates:
-        kind, span = candidate.get("kind"), candidate.get("span")
-        if kind not in {"summary", "carrier", "objective", "recovery"} or not isinstance(span, str) or not span:
-            continue
-        expected_identity = candidate.get("full_identity")
-        candidate_rows = list(_emission_candidate_rows(messages, expected_identity[0] if isinstance(expected_identity, tuple) else None, span))
-        remaining = [(index, message) for index, message in candidate_rows if index >= search_from]
-        bound = [(index, message) for index, message in remaining if message is candidate.get("row")]
-        if not bound:
-            bound = [(index, message) for index, message in remaining
-                     if _emission_identity(message) == expected_identity]
-        if len(bound) != 1:
-            continue
-        for index in range(search_from, len(messages)):
-            if index != bound[0][0]:
-                continue
-            message = messages[index]
-            content = message.get("content") if isinstance(message, dict) else None
-            identity = _emission_identity(message) if isinstance(message, dict) else None
-            if not isinstance(content, str) or not content.startswith(span) or (
-                expected_identity is not None and identity != expected_identity
-                and message is not candidate.get("row")
-            ) or message.get("tool_calls") or message.get("tool_call_id"):
-                continue
-            span_bytes = span.encode("utf-8")
-            suffix_bytes = content.encode("utf-8")[len(span_bytes):]
-            normalized_suffix = b"" if kind in {"summary", "objective"} and candidate.get("retained_source") is None else suffix_bytes.decode("utf-8").strip().encode("utf-8")
-            suffix_sha256 = hashlib.sha256(normalized_suffix).hexdigest()  # the bound row's current suffix
-            suffix_length = len(normalized_suffix)
-            role = str(message.get("role") or "unknown")
-            ordinal = sum(
-                _emission_identity(previous) == identity
-                for previous in messages[: index + 1]
-                if isinstance(previous, dict)
-            ) - 1
-            same_prefix_ordinal = [row_index for row_index, _ in candidate_rows].index(index)
-            descriptors.append({
-                "kind": kind,
-                "role": role,
-                "same_prefix_ordinal": same_prefix_ordinal,
-                "output_occurrence": {"index": index, "same_identity_ordinal": ordinal, "of": len(messages)},
-                "generated_span_sha256": hashlib.sha256(span_bytes).hexdigest(),
-                "generated_span_bytes": len(span_bytes),
-                "suffix_sha256": suffix_sha256,
-                "suffix_length": suffix_length,
-                "retained_source": candidate.get("retained_source"),
-                "scope": dict(scope),
-                # B2 (additive, optional): the engine uid the bound row carries; readers never require it.
-                **({"engine_uid": message["message_uid"]} if candidate.get("engine_uid") is not None
-                   and message.get("message_uid") == candidate["engine_uid"] else {}),
-            })
-            if kind == "recovery" and index > 0:
-                previous = messages[index - 1]
-                if previous.get("role") == "user" and isinstance(previous.get("content"), str) and not (
-                    previous.get("tool_calls") or previous.get("tool_call_id")
-                ):
-                    base = previous["content"].strip().encode("utf-8")
-                    descriptors[-1]["merge_base"] = {"sha256": hashlib.sha256(base).hexdigest(), "bytes": len(base)}
-            search_from = index + 1
-            break
-    return descriptors
-
-
-def _carrier_emission_key(descriptor_or_entry) -> tuple:
-    """#1000: one carrier emission, from its descriptor or its projected entry: the generated span, the suffix
-    and the stored row it was formed around (the process-local retirement key; no output index, so a
-    carried-forward copy of a retired carrier is retired too)."""
-    if isinstance(descriptor_or_entry, EmissionProjectionEntry):
-        span = descriptor_or_entry.generated_span
-        span_sha256 = hashlib.sha256(span.encode("utf-8")).hexdigest() if isinstance(span, str) else None
-        suffix_sha256, source = descriptor_or_entry.suffix_sha256, descriptor_or_entry.retained_source
-    else:
-        span_sha256 = descriptor_or_entry.get("generated_span_sha256")
-        suffix_sha256, source = descriptor_or_entry.get("suffix_sha256"), descriptor_or_entry.get("retained_source")
-    return span_sha256, suffix_sha256, source.get("store_id") if isinstance(source, Mapping) else None
-
-
-def _descriptor_shape_is_well_formed(descriptor: Any) -> bool:
-    """The nested shapes proof consumers index into (#514); projection still declines the rest."""
-    occurrence = descriptor.get("output_occurrence") if isinstance(descriptor, Mapping) else None
-    if not isinstance(occurrence, Mapping) or not isinstance(descriptor.get("scope"), Mapping):
-        return False
-    index = occurrence.get("index")
-    if type(index) is not int or index < 0:
-        return False
-    return "of" not in occurrence or (type(occurrence["of"]) is int and occurrence["of"] > index)
-
-
-def _project_emitted_occurrences(
-    messages: Sequence[dict], *, proof: Mapping[str, Any] | None
-) -> EmissionProjection:
-    """Project proof-bound generated prefixes without changing stored identity."""
-    entries = [
-        EmissionProjectionEntry(_emission_identity(message), _emission_identity(message))
-        for message in messages
-    ]
-    if not isinstance(proof, Mapping) or proof.get("version") != 4:
-        return EmissionProjection(tuple(entries), complete_length=len(entries))
-    expected_binding = {key: proof.get(key) for key in ("hermes_home", "session_id", "conversation_id", "reset_epoch")}
-    search_from = 0
-    for descriptor in proof.get("emissions") or ():
-        if not isinstance(descriptor, Mapping) or descriptor.get("kind") not in {
-            "summary", "carrier", "objective", "recovery"
-        } or descriptor.get("scope") != expected_binding:
-            continue
-        length = descriptor.get("generated_span_bytes")
-        digest = descriptor.get("generated_span_sha256")
-        suffix_length = descriptor.get("suffix_length")
-        suffix_digest = descriptor.get("suffix_sha256")
-        role = descriptor.get("role")
-        ordinal = descriptor.get("same_prefix_ordinal")
-        occurrence = descriptor.get("output_occurrence")
-        output_index = occurrence.get("index") if isinstance(occurrence, Mapping) else None
-        has_length = isinstance(occurrence, Mapping) and "of" in occurrence  # recorded by the finalizer
-        output_length = occurrence.get("of") if has_length else None
-        output = proof.get("output")
-        if not isinstance(output, (list, tuple)) or not all(isinstance(item, (list, tuple)) for item in output):
-            output = ()  # a malformed output carries no bound and no multiplicity witness
-        if not isinstance(length, int) or length <= 0 or not isinstance(digest, str) or (
-            not isinstance(role, str) or not role or type(ordinal) is not int or ordinal < 0
-        ) or type(suffix_length) is not int or suffix_length < 0 or not isinstance(suffix_digest, str) or (
-            type(output_index) is not int or output_index < 0  # malformed (F7): decline, never raise
-        ) or (has_length and (type(output_length) is not int or output_index >= output_length)) or (
-            output and output_index >= len(output)  # a malformed or exceeded recorded length, or an index beyond the output
-        ):
-            continue
-        candidate_ordinal = -1
-        for index, message in _emission_candidate_rows(messages, role, length, digest):
-            content = message.get("content")
-            if str(message.get("role") or "unknown") != role or message.get("tool_calls") or (
-                message.get("tool_call_id")
-            ) or not isinstance(content, str):
-                continue
-            raw = content.encode("utf-8")
-            if len(raw) < length or hashlib.sha256(raw[:length]).hexdigest() != digest:
-                continue
-            candidate_ordinal += 1
-            if candidate_ordinal != ordinal:
-                continue
-            if index < search_from:
-                break
-            try:
-                span, suffix = raw[:length].decode("utf-8"), raw[length:].decode("utf-8")
-            except UnicodeDecodeError:
-                continue
-            normalized_suffix = suffix.strip().encode("utf-8")
-            if len(normalized_suffix) < suffix_length or hashlib.sha256(
-                normalized_suffix[:suffix_length]
-            ).hexdigest() != suffix_digest:
-                continue
-            if not suffix_length and not normalized_suffix:
-                multiplicity = sum(
-                    tuple(item) == tuple(output[output_index]) for item in output
-                ) if output_index < len(output) else descriptor.get("output_multiplicity")
-                if type(multiplicity) is not int or multiplicity > sum(message.get("content") == span for _, message in _emission_candidate_rows(messages, role, length, digest)):
-                    continue
-            retained_source = descriptor.get("retained_source")
-            if isinstance(retained_source, Mapping):
-                retained_source = MappingProxyType(dict(retained_source))
-            entries[index] = EmissionProjectionEntry(
-                entries[index].full_identity,
-                _emission_identity(messages[index], suffix),
-                span,
-                retained_source,
-                str(descriptor["kind"]),
-                suffix_digest,
-                suffix_length,
-                output_index,
-            )
-            search_from = index + 1
-            break
-        else:
-            base = descriptor.get("merge_base")
-            if descriptor["kind"] != "recovery" or not isinstance(base, Mapping):
-                continue
-            for index in range(search_from, min(output_index, len(messages))):
-                message = messages[index]
-                content = message.get("content")
-                if message.get("role") != "user" or not isinstance(content, str) or (
-                    message.get("tool_calls") or message.get("tool_call_id")
-                ):
-                    continue
-                raw = content.encode("utf-8")
-                if raw[-length - 2:-length] != b"\n\n" or hashlib.sha256(raw[-length:]).hexdigest() != digest:
-                    continue
-                older = raw[:-length - 2].decode("utf-8")
-                normalized = older.strip().encode("utf-8")
-                if len(normalized) != base.get("bytes") or hashlib.sha256(normalized).hexdigest() != base.get("sha256"):
-                    continue
-                entries[index] = EmissionProjectionEntry(
-                    entries[index].full_identity, _emission_identity(message, older),
-                    raw[-length:].decode("utf-8"), kind="recovery_base", output_index=output_index,
-                )
-                search_from = index + 1
-                break
-    return EmissionProjection(tuple(entries), complete_length=len(entries))
 
 
 def _merged_composite(entry) -> bool:
@@ -725,22 +520,67 @@ class ReconcileMixin:
     def _active_emission_proof(self):
         """The scoped v4 emissions in force: this process's, else the durable proof's."""
         try:
-            return getattr(self, "_last_emission_descriptors", None) or self._durable_commit_proof_payload()
+            local = getattr(self, "_last_emission_descriptors", None)
+            if local:
+                return local
+            payload = self._durable_commit_proof_payload()
+            retired = getattr(self, "_retired_durable_proof", None)
+            return None if payload and retired is not None and payload.get("created_at") == retired else payload
         except Exception:  # malformed durable history: no proof, full identity everywhere
             return None
+
+    def _retire_stale_durable_proof(self, messages) -> bool:
+        """#671: True, and the durable proof retired for this process (identities read as with no proof), when
+        it is one an adopted stub-first exit left stale: a v4 proof with no process-local descriptors, the list
+        opens with an LCM-emitted head (the #524 rule, not a carrier) that is what a stub-first re-assembly emits
+        (one pure verified summary row covering through the frontier, an LCM-note system row aside), no generated
+        span the proof names prefixes any row, and its reading differs from the rc4 reading only at that head.
+        Else False, also for a proof that cannot be read."""
+        if getattr(self, "_last_emission_descriptors", None):
+            return False  # a process-local proof is this process's own output
+        try:
+            payload = self._durable_commit_proof_payload()
+            if not payload or payload.get("version") != 4 or payload.get("created_at") is None:
+                return False
+            if payload["created_at"] == getattr(self, "_retired_durable_proof", None):
+                return False
+            head, carrier = self._replay_head(messages, 0, int(self._last_compacted_store_id or 0))
+            if not head or carrier or any(
+                isinstance(item.get("generated_span_bytes"), int) and next(_emission_candidate_rows(
+                    messages, item.get("role"), item["generated_span_bytes"], item.get("generated_span_sha256")), None)
+                is not None
+                for item in payload.get("emissions") or ()
+            ):
+                return False
+            rows = [m for m in messages[:head] if m.get("role") != "system"]
+            content = (normalize_content_value(rows[0].get("content")) or "") if len(rows) == 1 else ""
+            end, parts = self._verified_lcm_summary_prefix(content)
+            if end is None or content[end:].strip() or self._dag.coverage_end(parts) != int(
+                    self._last_compacted_store_id or 0):
+                return False  # an older or partial summary, or a row ahead of it: no stub-first head
+            if self._occurrence_replay_identities(messages, payload)[1][head:] != (
+                    self._occurrence_replay_identities(messages, None)[1][head:]):
+                return False
+        except Exception:  # malformed durable history: nothing to retire, the batch is persisted as before
+            return False
+        self._retired_durable_proof = payload["created_at"]
+        return True
 
     def _occurrence_replay_identities(self, messages, proof, projection=None):
         """#488: per occurrence of the COMPLETE list, from its one projection: None for a proven
         emitted scaffold, the remainder of a proven emitted prefix, else FULL identity. Legacy,
         unmatched or ambiguous descriptors project nothing, so those rows keep full identity."""
         projection = projection or _project_emitted_occurrences(messages, proof=proof)
+        # #1385: salvage never clears the newest two tool outputs. Decide once by
+        # position in the COMPLETE list, before any candidate prefix/tail is sliced.
+        recent_tools = _hermes_salvage_protected_positions(messages)
         if not isinstance(proof, Mapping) or proof.get("version") != 4:
             # No v4 proof in force (never compacted, legacy v2/v3): the rc4 contract (A5), except that
             # an objective scaffold is skipped only as the exact emitted head (F3').
             return projection, [
                 None if self._is_verified_replay_scaffold_message(m) and self._legacy_objective_head(m) is None
-                else self._message_replay_identity(m)
-                for m in messages
+                else self._message_replay_identity(m, allow_pruned_tool_alias=i not in recent_tools)
+                for i, m in enumerate(messages)
             ]
         identities = []
         for index, (message, entry) in enumerate(zip(messages, projection.entries)):
@@ -758,7 +598,8 @@ class ReconcileMixin:
                 identities.append(None)
                 continue
             projected = message if content is None else {**message, "content": content}
-            identities.append(self._message_replay_identity(projected, strip_carrier=False))
+            identities.append(self._message_replay_identity(
+                projected, strip_carrier=False, allow_pruned_tool_alias=index not in recent_tools))
         return projection, identities
 
     def _legacy_objective_head(self, message) -> Optional[str]:
@@ -784,7 +625,10 @@ class ReconcileMixin:
     def _stored_row_forms(self, row: Dict[str, Any]) -> set:
         """A stored row's admissible identities: exact and its host-rewrite override form."""
         forms = (self._message_replay_identity(row, stored_row=True, with_host_rewrite=h) for h in (False, True))
-        return set(forms)
+        forms = set(forms)
+        if row.get("content") == _HERMES_PRUNED_TOOL_PLACEHOLDER:
+            forms.add(self._message_replay_identity(row, stored_row=True, allow_pruned_tool_alias=False))
+        return forms
 
     def _replay_row_admits(self, message, row: Dict[str, Any], *, carrier: bool = False) -> bool:
         """A replayed message is a stored row's exact or override form; a DAG-verified carrier by its
@@ -902,15 +746,98 @@ class ReconcileMixin:
         overrides[store_id] = payload
         self._bound_host_rewrite_overrides({store_id})
 
+    def _pruned_tool_output_identity(self, msg: Dict[str, Any], role: str, content: str, *,
+                                     stored_row: bool = False) -> Optional[tuple]:
+        """#773: the replay identity of the stored tool row a host-pruned tool row stands for, else None.
+
+        Only a tool row whose whole content is the placeholder qualifies. The rows it can stand for are
+        this session's tool rows with its tool_call_id, in a conversation its own conversation owns, with
+        a compatible tool name (the same name, or no name on either side: WebUI rows carry none); two
+        different names never match. The source is decided on those rows, in store order:
+
+        - none at all, or the first one is itself the placeholder: no source. A placeholder that is the
+          first output under its id is a genuine output, and a later full row reusing the id is
+          another occurrence.
+        - the candidates are the rows the salvage could have cleared: not the placeholder, a string
+          output (not a canonical non-string representation) longer than the salvage's 200 characters.
+          Those with the row's own tool name decide, else all of them.
+          One replay identity among them: that row. None, or two different ones (a reused id): no
+          source, so no placeholder is ever aliased to an occurrence it may not stand for; the row keeps
+          its own identity and the batch persists as before (#259: visible duplication beats loss).
+
+        With no source the row is new content and keeps its own identity. A placeholder copy an older
+        release stored (``stored_row``: this session) is decided on the rows stored before it, so the
+        host row, the copy and the source are one occurrence and a store already holding copies maps
+        the host list as it did before. Stored rows are never changed."""
+        call_id, store = str(msg.get("tool_call_id") or ""), getattr(self, "_store", None)
+        session = getattr(self, "_session_id", None)
+        if (role != "tool" or content != _HERMES_PRUNED_TOOL_PLACEHOLDER or not call_id or store is None
+                or not session):
+            return None
+        before = None
+        if stored_row:  # only a copy stored after its source in this session, never another session's row
+            try:
+                before = int(msg.get("store_id"))
+            except (TypeError, ValueError):
+                return None
+            if str(msg.get("session_id") or "") != session:
+                return None
+            conversation = str(msg.get("conversation_id") or "").strip()
+        else:
+            conversation = str(getattr(self, "_conversation_id", None) or "").strip()
+        tool_name = str(msg.get("tool_name") or msg.get("name") or "")
+        # Each row's identity is read hundreds of times per pass, so the rows are remembered per bound
+        # store until a write, by this or another connection, may have changed them: an answer read
+        # before the source (or a second output under the id) was stored is never reused after it.
+        try:
+            generation = store.write_generation()
+        except Exception:  # an unreadable store proves nothing: the row keeps its own identity
+            return None
+        if (getattr(self, "_pruned_tool_source_store", None) is not store
+                or getattr(self, "_pruned_tool_source_generation", None) != generation):
+            self._pruned_tool_source_store, self._pruned_tool_source_identities = store, {}
+            self._pruned_tool_source_generation = generation
+        known = self._pruned_tool_source_identities
+        key = (session, conversation, call_id, tool_name)
+        if key not in known:
+            try:
+                rows = store.find_session_tool_rows(session, call_id, conversation_id=conversation,
+                                                    tool_name=tool_name)
+            except Exception:  # an unreadable store proves nothing: the row keeps its own identity
+                return None
+            entries = []
+            for row in rows:  # (store_id, is the placeholder, identity if the salvage could clear it, same name)
+                text = str(row.get("content") or "")
+                cleared = text == _HERMES_PRUNED_TOOL_PLACEHOLDER
+                clearable = (not cleared and len(text) > _HERMES_PRUNE_MIN_CHARS
+                             and not _is_stored_nonstring_content(text))
+                entries.append((int(row["store_id"]), cleared,
+                                self._message_replay_identity(row, stored_row=True) if clearable else None,
+                                str(row.get("tool_name") or "") == tool_name))
+            known[key] = tuple(entries)
+            if len(known) > _HOST_REWRITE_OVERRIDE_CACHE_CAP:  # FIFO-bounded
+                del known[next(iter(known))]
+        rows = [row for row in known[key] if before is None or row[0] < before]
+        if not rows or rows[0][1]:
+            return None
+        candidates = [row for row in rows if row[2] is not None]
+        candidates = [row for row in candidates if row[3]] or candidates
+        return candidates[0][2] if len({row[2] for row in candidates}) == 1 else None
+
     def _message_replay_identity(
         self, msg: Dict[str, Any], *, stored_row: bool = False, with_host_rewrite: bool = False,
-        strip_carrier: bool = True,
+        strip_carrier: bool = True, allow_pruned_tool_alias: bool = True,
     ) -> tuple[str, str, str, str, str]:
         role = str(msg.get("role") or "unknown")
         content = normalize_content_value(msg.get("content")) or ""
         source = None if stored_row else self._survival_projection_source(msg, role, content)
         if source is not None:  # #582: a survival-fit projection is its source row, never a new occurrence
-            return self._message_replay_identity(source, stored_row=True, strip_carrier=strip_carrier)
+            return self._message_replay_identity(
+                source, stored_row=True, strip_carrier=strip_carrier, allow_pruned_tool_alias=allow_pruned_tool_alias)
+        pruned = (self._pruned_tool_output_identity(msg, role, content, stored_row=stored_row)
+                  if allow_pruned_tool_alias and content == _HERMES_PRUNED_TOOL_PLACEHOLDER else None)
+        if pruned is not None:  # #773: likewise a host-pruned tool row (or its stored copy) is the row it cleared
+            return pruned
         strip_payload = False
         # Opt-in: only occurrence/position-bound consumers read the override (#498).
         if stored_row and with_host_rewrite and role == "user":
@@ -1133,7 +1060,9 @@ class ReconcileMixin:
         )
         if not has_generated_summary or (require_lcm_system_note and not has_lcm_system_note):
             return ""
-        identities = [list(self._message_replay_identity(message)) for message in messages]
+        recent_tools = _hermes_salvage_protected_positions(messages)
+        identities = [list(self._message_replay_identity(message, allow_pruned_tool_alias=i not in recent_tools))
+                      for i, message in enumerate(messages)]
         payload = json.dumps(
             {"version": 1, "messages": identities},
             ensure_ascii=False,
@@ -1170,7 +1099,9 @@ class ReconcileMixin:
         """
         if not messages:
             return ""
-        identities = [self._message_replay_identity(message) for message in messages]
+        recent_tools = _hermes_salvage_protected_positions(messages)
+        identities = [self._message_replay_identity(message, allow_pruned_tool_alias=i not in recent_tools)
+                      for i, message in enumerate(messages)]
         if any(_has_lossy_redacted_identity(identity) for identity in identities):
             # A digest-less placeholder makes different rows hash alike; such a
             # snapshot is never replay proof (#484 round 2).
@@ -1182,6 +1113,75 @@ class ReconcileMixin:
             sort_keys=True,
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _replay_snapshot_prefix_digests(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        native_recovery: bool = False,
+        compacted_active: bool = False,
+        session_end: bool = False,
+    ) -> tuple[dict[int, str], dict[int, str], dict[int, str]]:
+        """Index exact legacy digests by cut, resolving each identity once (#1090).
+
+        The version-1 JSON envelope sorts ``messages`` before ``version``. Feed
+        its open array and each serialized identity into one SHA-256 state;
+        closing a COPY with the constant suffix yields the same bytes/digest
+        as the legacy whole-prefix serialization. Hashing prefix bytes again
+        would still be quadratic even if identities were cached.
+
+        Eligibility is prefix-local and namespace-specific: native recovery
+        refuses every prefix containing a lossy identity; engine proof needs
+        both anchors; session-end proof needs the summary anchor only. Empty
+        namespaces do no work. This is a call-local view, never a durable cache
+        of payload files or a change to persisted proof metadata.
+        """
+        native: dict[int, str] = {}
+        active: dict[int, str] = {}
+        ended: dict[int, str] = {}
+        if not (native_recovery or compacted_active or session_end):
+            return native, active, ended
+        state = hashlib.sha256(b'{"messages":[')
+        has_lossy_identity = False
+        has_lcm_system_note = False
+        has_generated_summary = False
+        recent_tools = _hermes_salvage_protected_positions(messages)
+        for cursor, message in enumerate(messages, 1):
+            if compacted_active or session_end:
+                role = str(message.get("role") or "")
+                content = normalize_content_value(message.get("content")) or ""
+                if role == "system":
+                    has_lcm_system_note |= (
+                        "[Note: This conversation uses Lossless Context Management (LCM)." in content
+                        and "Earlier turns have been compacted into hierarchical summaries below." in content
+                    )
+                elif "[Expand for details:" in content:
+                    has_generated_summary |= bool(re.search(
+                        r"\[(?:Recent|Session Arc|Durable|Depth-\d+) Summary \(d\d+, node \d+\)\]",
+                        content,
+                    ))
+            identity = self._message_replay_identity(message, allow_pruned_tool_alias=cursor - 1 not in recent_tools)
+            if native_recovery:
+                has_lossy_identity |= _has_lossy_redacted_identity(identity)
+            if cursor > 1:
+                state.update(b",")
+            state.update(json.dumps(
+                list(identity), ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+            ).encode("utf-8"))
+            eligible_native = native_recovery and not has_lossy_identity
+            eligible_active = compacted_active and has_lcm_system_note and has_generated_summary
+            eligible_end = session_end and has_generated_summary
+            if eligible_native or eligible_active or eligible_end:
+                closed = state.copy()
+                closed.update(b'],"version":1}')
+                digest = closed.hexdigest()
+                if eligible_native:
+                    native[cursor] = digest
+                if eligible_active:
+                    active[cursor] = digest
+                if eligible_end:
+                    ended[cursor] = digest
+        return native, active, ended
 
     def _replay_snapshot_metadata_key(
         self,
@@ -1315,12 +1315,15 @@ class ReconcileMixin:
     def _matches_store_tail_suffix(
         stored_tail: list[tuple[str, str, str, str, str]],
         candidate_prefix: list[tuple[str, str, str, str, str]],
+        literal_prefix: list[tuple[str, str, str, str, str]] | None = None,
     ) -> bool:
         if not candidate_prefix:
             return True
         if len(candidate_prefix) > len(stored_tail):
             return False
-        return stored_tail[-len(candidate_prefix) :] == candidate_prefix
+        # #1385: match the durable occurrence's literal identity before its salvage alias.
+        return all(stored == literal or stored == candidate for stored, literal, candidate in zip(
+            stored_tail[-len(candidate_prefix):], literal_prefix or candidate_prefix, candidate_prefix))
 
     @staticmethod
     def _strip_inline_persisted_output_generation_identity(
@@ -1527,6 +1530,13 @@ class ReconcileMixin:
         ) -> tuple[str, str, str, str, str]:
             return occurrence_identities.get(id(message)) or self._message_replay_identity(message, strip_carrier=False)
 
+        pruned_source_ids = {  # #773: host rows that took a stored row's identity (see the tool anchors)
+            id(m) for m in messages
+            if m.get("role") == "tool"
+            and normalize_content_value(m.get("content")) == _HERMES_PRUNED_TOOL_PLACEHOLDER
+            and active_identity(m)[1] != _HERMES_PRUNED_TOOL_PLACEHOLDER
+        }
+
         sanitized_replay_tail = self._stored_tail_for_sanitized_active_replay(stored_tail)
         effective_session_count = len(sanitized_replay_tail)
         sanitized_tail_collapsed = len(sanitized_replay_tail) < len(stored_tail)
@@ -1609,12 +1619,18 @@ class ReconcileMixin:
         # Every identity the tool-anchored terms are allowed to advance over
         # must itself be durable, on either the raw or the cleaned-up view.
         durable_replay_identities = set(stored_tail) | set(sanitized_replay_tail)
+        native_prefix_digests, engine_prefix_digests, session_end_prefix_digests = (
+            self._replay_snapshot_prefix_digests(
+                messages,
+                native_recovery=bool(native_recovery_snapshot_digests),
+                compacted_active=bool(engine_snapshot_digests),
+                session_end=bool(session_end_snapshot_digests),
+            )
+        )
         empty_prefix_cursor: int | None = None
         for cursor in range(len(messages), -1, -1):
             candidate_messages = messages[:cursor]
-            native_recovery_snapshot_digest = (
-                self._native_recovery_replay_snapshot_digest(candidate_messages)
-            )
+            native_recovery_snapshot_digest = native_prefix_digests.get(cursor, "")
             if (
                 native_recovery_snapshot_digest
                 and native_recovery_snapshot_digest
@@ -1677,17 +1693,20 @@ class ReconcileMixin:
                     return cursor
                 continue
 
+            literal_visible_prefix = [
+                self._message_replay_identity(msg, allow_pruned_tool_alias=False)
+                if id(msg) in pruned_source_ids else active_identity(msg)
+                for msg in candidate_visible_messages
+            ]
+            literal_by_id = {id(msg): identity for msg, identity in zip(candidate_visible_messages, literal_visible_prefix)}
+            literal_prefix = [literal_by_id[id(msg)] for msg in candidate_identity_messages]
             matches_sanitized_tail = (
                 len(candidate_prefix) <= len(sanitized_replay_tail)
-                and self._matches_store_tail_suffix(sanitized_replay_tail, candidate_prefix)
+                and self._matches_store_tail_suffix(sanitized_replay_tail, candidate_prefix, literal_prefix)
             )
-            matches_raw_tail = self._matches_store_tail_suffix(stored_tail, candidate_prefix)
-            engine_snapshot_digest = self._compacted_active_replay_snapshot_digest(candidate_messages)
-            session_end_snapshot_digest = (
-                self._session_end_replay_snapshot_digest(candidate_messages)
-                if allow_session_end_replay_proof
-                else ""
-            )
+            matches_raw_tail = self._matches_store_tail_suffix(stored_tail, candidate_prefix, literal_prefix)
+            engine_snapshot_digest = engine_prefix_digests.get(cursor, "")
+            session_end_snapshot_digest = session_end_prefix_digests.get(cursor, "")
             has_registered_engine_snapshot = (
                 bool(engine_snapshot_digest)
                 and engine_snapshot_digest in engine_snapshot_digests
@@ -1728,10 +1747,13 @@ class ReconcileMixin:
             # that every disjunct below exact-match the WHOLE identity -- role,
             # normalized content, tool_call_id and tool_calls -- against durable
             # rows; content resemblance alone never qualifies.
+            # #773: a host-pruned tool row that took its stored row's identity matches that row by
+            # construction, not by content, so it is never an anchor: a genuinely new call that reuses
+            # an id and whose result is literally the placeholder text is persisted, not advanced over.
             candidate_tool_anchor_indexes = [
                 index
-                for index, identity in enumerate(candidate_prefix)
-                if identity[0] == "tool" and identity[2]
+                for index, (msg, identity) in enumerate(zip(candidate_identity_messages, candidate_prefix))
+                if identity[0] == "tool" and identity[2] and id(msg) not in pruned_source_ids
             ]
             candidate_has_tool_anchor = bool(candidate_tool_anchor_indexes)
             # ...and that exact-identity match is only evidence when EVERY
@@ -1793,12 +1815,12 @@ class ReconcileMixin:
                 filtered_candidate_placeholders
                 and bool(candidate_visible_prefix)
                 and len(candidate_visible_prefix) <= len(sanitized_replay_tail)
-                and self._matches_store_tail_suffix(sanitized_replay_tail, candidate_visible_prefix)
+                and self._matches_store_tail_suffix(sanitized_replay_tail, candidate_visible_prefix, literal_visible_prefix)
             )
             matches_visible_raw_tail = (
                 filtered_candidate_placeholders
                 and bool(candidate_visible_prefix)
-                and self._matches_store_tail_suffix(stored_tail, candidate_visible_prefix)
+                and self._matches_store_tail_suffix(stored_tail, candidate_visible_prefix, literal_visible_prefix)
             )
             early_candidate_has_unrecoverable_persisted_marker = any(
                 str(msg.get("role") or "") == "tool"
@@ -2245,6 +2267,7 @@ class ReconcileMixin:
                 return _proof_user_identity(identity) if payload.get("version") != 2 else identity
 
             projection, occurrences = self._occurrence_replay_identities(messages, payload)
+            recent_tools = _hermes_salvage_protected_positions(messages)
 
             target = list(payload.get("effective_sha256") or [])
             keys = payload.get("filtered_row_keys")
@@ -2355,9 +2378,13 @@ class ReconcileMixin:
                 for row in page:
                     if index >= n:
                         return None
-                    identity = proof_identity(messages[index], stored_row=index + 1 == composite)
-                    if _has_lossy_redacted_identity(identity) or identity != proof_identity(
-                        row, stored_row=True, with_host_rewrite=True
+                    identity = proof_identity(
+                        messages[index], stored_row=index + 1 == composite,
+                        allow_pruned_tool_alias=index not in recent_tools)
+                    if _has_lossy_redacted_identity(identity) or not any(
+                        identity == proof_identity(row, stored_row=True, with_host_rewrite=True,
+                                                   allow_pruned_tool_alias=alias)
+                        for alias in (False, True)
                     ):
                         return None
                     index += 1
@@ -2405,12 +2432,18 @@ class ReconcileMixin:
         if len(rows) != session_count:
             return None
         rewritten = any(self._host_rewrite_override_content(r) is not None for r in rows)
-        for row, message in zip(rows, messages):
-            identity = self._message_replay_identity(message, strip_carrier=False)
-            stored = self._message_replay_identity(row, stored_row=True, with_host_rewrite=True)
-            if _has_lossy_redacted_identity(identity) or _proof_user_identity(identity) != _proof_user_identity(stored):
+        recent_tools = _hermes_salvage_protected_positions(messages)
+        for i, (row, message) in enumerate(zip(rows, messages)):
+            identity = self._message_replay_identity(
+                message, strip_carrier=False, allow_pruned_tool_alias=i not in recent_tools)
+            stored = {self._message_replay_identity(
+                row, stored_row=True, with_host_rewrite=True, allow_pruned_tool_alias=alias)
+                for alias in (False, True)}
+            if _has_lossy_redacted_identity(identity) or not any(
+                _proof_user_identity(identity) == _proof_user_identity(form) for form in stored
+            ):
                 return None
-            rewritten = rewritten or identity != stored
+            rewritten = rewritten or identity not in stored
         return session_count if rewritten else None
 
     def _is_lcm_emitted_head_row(self, message, frontier: int) -> bool:
@@ -2480,7 +2513,10 @@ class ReconcileMixin:
             parts = self._verified_lcm_summary_prefix(normalize_content_value(messages[h].get("content")) or "")[1]
             covered = self._dag.coverage_end(parts)
             starts = [j for j in starts if covered and int(rows[j]["store_id"]) > covered >= (int(rows[j - 1]["store_id"]) if j else 0)]
-        ident = [self._message_replay_identity(m, strip_carrier=carrier and not i) for i, m in enumerate(messages[h:])]
+        recent_tools = _hermes_salvage_protected_positions(messages)
+        ident = [self._message_replay_identity(
+            m, strip_carrier=carrier and not i, allow_pruned_tool_alias=h + i not in recent_tools
+        ) for i, m in enumerate(messages[h:])]
         fits = self._frontier_replay_fits(ident, rows, starts, frontier)
         above_rows = [r for r in rows if int(r["store_id"]) > frontier]
         lineage = (  # the tail holds every row above F only when it reaches a row <= F
@@ -2578,10 +2614,11 @@ class ReconcileMixin:
                 self._load_native_recovery_replay_snapshot_digests()
             )
             if native_recovery_snapshot_digests:
+                native_prefix_digests, _, _ = self._replay_snapshot_prefix_digests(
+                    messages, native_recovery=True,
+                )
                 for cursor in range(len(messages), 0, -1):
-                    digest = self._native_recovery_replay_snapshot_digest(
-                        messages[:cursor]
-                    )
+                    digest = native_prefix_digests.get(cursor, "")
                     if digest not in native_recovery_snapshot_digests:
                         continue
                     self._record_ingest_reconciliation(
@@ -2636,7 +2673,10 @@ class ReconcileMixin:
             if not self._matches_ignore_message_patterns(row, stored_row=True)
         ]
         stored_tail = [
-            self._message_replay_identity(row, stored_row=True)
+            # #1385: a durable literal placeholder is itself replay evidence.
+            # Keep it literal so a newest-two host result can match its own row
+            # without borrowing the identity of an older full output.
+            self._message_replay_identity(row, stored_row=True, allow_pruned_tool_alias=False)
             for row in stored_tail_rows
         ]
         cursor = self._find_reconciled_cursor_for_store_tail(
@@ -2782,6 +2822,16 @@ class ReconcileMixin:
                 effective_incoming=proof_cursor,
             )
             return proof_cursor
+        if self._retire_stale_durable_proof(messages):
+            # #671: reconcile again as a store with no proof does. Only a replay of stored rows confirms the
+            # retirement; any other outcome (a skipped batch, a scaffold-only prefix) is today's decision below.
+            cursor = self._reconcile_ingest_cursor_from_store(
+                messages, allow_session_end_replay_proof=allow_session_end_replay_proof)
+            recon = self._last_ingest_reconciliation
+            if cursor > 0 and recon.get("action") == "advanced cursor" and str(recon.get("reason") or "").startswith("replayed "):
+                recon["reason"] += " past a stale commit proof"
+                return cursor
+            self._retired_durable_proof = None
 
         self._record_ingest_reconciliation(
             action="persisted batch",
@@ -2825,6 +2875,11 @@ class ReconcileMixin:
         together, and a segment that cannot fully cover its needs debits
         nothing. Pinned by ``test_repeated_identical_tool_invocation_is_``
         ``persisted_not_replayed``.
+
+        #1385: a Hermes salvage placeholder that took a stored row's identity
+        matches by construction, not by occurrence. It cannot prove segment
+        replay: a fresh same-id call can genuinely return the placeholder text.
+        Prefer a duplicate ambiguous salvage pair over losing a fresh pair.
         """
         if not self._session_id or cursor >= len(messages):
             return set()
@@ -2869,11 +2924,14 @@ class ReconcileMixin:
                 tool_call_id = str(result.get("tool_call_id") or "")
                 content = normalize_content_value(result.get("content")) or ""
                 result_identity = self._message_replay_identity(result)
+                borrows = (content == _HERMES_PRUNED_TOOL_PLACEHOLDER
+                           and result_identity[1] != _HERMES_PRUNED_TOOL_PLACEHOLDER)
                 if (
                     tool_call_id in call_ids
                     and not _is_hermes_persisted_output_marker(content)
                     and not _has_lossy_redacted_identity(result_identity)
                     and result_identity in stored_identity_counts
+                    and not borrows
                 ):
                     result_indexes[tool_call_id] = probe
                     segment_needs[result_identity] += 1

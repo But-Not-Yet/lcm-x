@@ -6,9 +6,11 @@ that persists every message and provides structured retrieval tools.
 Based on the LCM paper by Ehrlich & Blackman (Voltropy PBC, Feb 2026).
 """
 
+import importlib.util
 import json
 import logging
 import os
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,19 +57,45 @@ def get_recall_policy() -> str:
     return _get_recall_policy()
 
 
+_STANDALONE_CONFIG = None
+
+
+def _load_standalone_config():
+    """Load this tree's config for bare inspection or callbacks after eviction."""
+    global _STANDALONE_CONFIG
+    if _STANDALONE_CONFIG is None:
+        spec = importlib.util.spec_from_file_location(
+            f"{__name__}._standalone_config", Path(__file__).resolve().with_name("config.py"),
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError("Cannot load plugin configuration")
+        module = importlib.util.module_from_spec(spec)
+        # Dataclass processing needs its defining module registered during exec.
+        sys.modules[spec.name] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(spec.name, None)
+            raise
+        _STANDALONE_CONFIG = module
+    return _STANDALONE_CONFIG
+
+
 def _env_flag_enabled(name: str, default: bool = False) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    if __package__ in sys.modules:
+        from .config import _parse_bool_env
+    else:  # Standalone plugin inspection has no package context.
+        _parse_bool_env = _load_standalone_config()._parse_bool_env
+    return _parse_bool_env(name, default, unknown=False, false_values=())
 
 
 def _disabled_tool_names() -> set[str]:
     """Tools disabled via LCM_DISABLED_TOOLS (comma-separated lcm_* names)."""
-    raw = os.environ.get("LCM_DISABLED_TOOLS", "")
-    if not raw:
-        return set()
-    return {part.strip() for part in raw.split(",") if part.strip()}
+    if __package__ in sys.modules:
+        from .config import _disabled_tool_names as read_disabled_tools
+    else:
+        read_disabled_tools = _load_standalone_config()._disabled_tool_names
+    return read_disabled_tools()
 
 
 def _make_wrapped_handler(tool_name: str, engine):
@@ -111,22 +139,6 @@ def _engine_bound_session_id(engine) -> str:
         or getattr(engine, "_session_id", "")
         or ""
     )
-
-
-def _ensure_engine_bound_to_session(
-    active_engine,
-    session_id: str,
-    *,
-    platform: str = "",
-    conversation_id: str = "",
-) -> None:
-    session_id = str(session_id or "")
-    if session_id and _engine_bound_session_id(active_engine) != session_id:
-        active_engine.on_session_start(
-            session_id,
-            platform=platform,
-            conversation_id=conversation_id or None,
-        )
 
 
 def _session_context_value(name: str) -> str:
@@ -512,23 +524,7 @@ def register(ctx):
         use_cold_lcm_engine,
         use_lcm_engine,
     )
-    from .schemas import (
-        LCM_GREP,
-        LCM_RECALL,
-        LCM_QUERY_STATE,
-        LCM_COMPUTE,
-        LCM_COMPILE_EVIDENCE,
-        LCM_EVIDENCE_PACK,
-        LCM_RETRIEVE,
-        LCM_RECENT,
-        LCM_LOAD_SESSION,
-        LCM_DESCRIBE,
-        LCM_EXPAND,
-        LCM_EXPAND_QUERY,
-        LCM_STATUS,
-        LCM_INSPECT,
-        LCM_DOCTOR,
-    )
+    from .tool_registry import TOOL_REGISTRY
 
     # A separate pre-rename copy (plugin ``hermes-lcm``) that loaded first owns
     # the context-engine slot. Registering our hooks too would make two
@@ -683,23 +679,7 @@ def register(ctx):
     # names through the plugin registry (Path A) on message-blind hosts would
     # shadow Path B and lose current-turn ingest, so the Path B fallback is the
     # expected healthy behavior there.
-    _TOOLS = [
-        ("lcm_grep", LCM_GREP, "🔍"),
-        ("lcm_recall", LCM_RECALL, "🧠"),
-        ("lcm_query_state", LCM_QUERY_STATE, "🧾"),
-        ("lcm_compute", LCM_COMPUTE, "🧮"),
-        ("lcm_compile_evidence", LCM_COMPILE_EVIDENCE, "🧷"),
-        ("lcm_evidence_pack", LCM_EVIDENCE_PACK, "📦"),
-        ("lcm_retrieve", LCM_RETRIEVE, "🧭"),
-        ("lcm_recent", LCM_RECENT, "🕒"),
-        ("lcm_load_session", LCM_LOAD_SESSION, "📋"),
-        ("lcm_describe", LCM_DESCRIBE, "📊"),
-        ("lcm_expand", LCM_EXPAND, "🔎"),
-        ("lcm_expand_query", LCM_EXPAND_QUERY, "❓"),
-        ("lcm_status", LCM_STATUS, "💚"),
-        ("lcm_inspect", LCM_INSPECT, "🧭"),
-        ("lcm_doctor", LCM_DOCTOR, "🏥"),
-    ]
+    _TOOLS = [(spec.name, spec.schema, spec.emoji) for spec in TOOL_REGISTRY]
     # Share the loaded-config filter with the native context-engine path:
     # explicitly disabled and flag-dormant tools cost no schema tokens.
     _disabled = engine._omitted_tool_names()
@@ -790,7 +770,7 @@ def register(ctx):
             def _ingest_and_note(active_engine):
                 # The turn ended whether or not its ingest succeeded (#597).
                 try:
-                    return active_engine.ingest(history)
+                    ingested = active_engine.ingest(history)
                 finally:
                     try:
                         note = getattr(active_engine, "note_turn_complete", None)
@@ -798,6 +778,11 @@ def register(ctx):
                             note()
                     except Exception as exc:
                         logger.debug("LCM post_llm_call turn-complete notification error: %s", exc)
+                # #787 (default off): only an enqueue runs here; the preparation runs off-turn.
+                prepare = getattr(active_engine, "_prepare_leaves_after_turn", None)
+                if callable(prepare) and not kwargs.get("interrupted"):
+                    prepare(history)
+                return ingested
 
             def _bind_and_ingest(active_engine):
                 # The host-supplied engine or genuinely cold plugin prototype

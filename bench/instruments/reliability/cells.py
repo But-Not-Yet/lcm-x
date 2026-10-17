@@ -44,7 +44,8 @@ ISSUES = {
     916: (("F4",), "acp-process continuity: survival projection removes the current user tag"),
 }
 # issue -> host-name prefixes on which its bars are declared (absent: every host); ci.gate reads it
-ISSUE_HOSTS = {821: ("r34.4-", "upstream-uid"), 861: ("ref-", "customer-", "r34.4-", "upstream-uid"), 871: ("r34.4-",)}
+ISSUE_HOSTS = {821: ("r34.4-", "upstream-uid"), 861: ("ref-", "customer-", "r34.4-", "r34.10-", "upstream-uid"),
+               871: ("r34.4-", "r34.10-")}
 # issue -> transports on which its bars are declared (absent: every transport); ci.gate reads it
 ISSUE_TRANSPORTS = {861: ("acp-process",)}
 
@@ -160,6 +161,25 @@ def probe_cells() -> list[dict]:
                                           "to_turn": t} for t, c in ctrl.items()]},
                             doc=f"#659 P5 (recorded): a constraint nonce ({shape}) in turn 3, three large reads in turn 6; "
                                 "the fake summariser keeps tags only, so this measures structural retention."))
+    return out
+
+
+def default_window_cells() -> list[dict]:
+    """Shipped-default backtest candidates: small-window cadence and a large current objective."""
+    out = [cell("default-window/64k-cadence", [], in_place=True, window=64000,
+                turns=101, repeat=400,
+                lcm_env={}, min_compactions=3, summary_repeat=300,
+                assistant={"real_usage": True}, bars=[*BARS, "C1"],
+                doc="Default 75% trigger; 101 turns of about 2,300 tokens at 64k; "
+                    "C1 fails when over half the model calls after the first commit follow a commit.")]
+    out.append(cell("default-window/objective-1221", [], in_place=True, window=32768,
+                    turns=2, repeat=1, lcm_env={}, final_compaction_check=False,
+                    assistant={"real_usage": True}, min_compactions=1, bars=["B1", "B2", "B6", "F4"],
+                    tool_plan=[{"turns": [2], "calls": [{"name": "read_file", "args": {
+                        "path": f"~/objective-1221/big-{k:02d}.txt"}}]} for k in range(1, 12)],
+                    doc="#1221 real-host fix control: short setup, one plain 12k objective, then 11 distinct reads. "
+                        "Rc5 publishes a multi-row leaf covering the objective and omits it on the next request; rc6 keeps it. "
+                        "F4 requires the complete current request in the first model request after each commit."))
     return out
 
 
@@ -285,9 +305,9 @@ def registry() -> list[dict]:
 
 def validate(c: dict) -> None:
     assert c["transport"] in TRANSPORTS, c["id"]
-    assert set(c["bars"]) <= set(BARS + DRAIN_BARS), c["id"]
+    assert set(c["bars"]) <= set(BARS + DRAIN_BARS + ("C1", "F4")), c["id"]
     assert {f["kind"] for f in c["faults"]} <= FAULTS, c["id"]
-    assert c["window"] in (128000, 1000000), c["id"]
+    assert c["window"] in (32000, 32768, 64000, 128000, 1000000), c["id"]
     assert all(t in ISSUES or t in (483, 494, 519) for t in c["targets"]), c["id"]
     # Native recovery was removed (O2): only a native-on-off cell (an older lcm-x ref with it ON) may set it.
     assert not c["native_recovery"] or c.get("from_ref"), c["id"]
@@ -296,7 +316,8 @@ def validate(c: dict) -> None:
 
 
 def select(patterns: str, extra=(), opt_in=()) -> list[dict]:
-    """``opt_in`` cells (R2 process_cell.R2_PROBE_CELLS) match an explicit pattern only, never ``all``."""
+    """Default-window backtests and ``opt_in`` probes match explicit patterns only, never ``all``."""
+    opt_in = (*default_window_cells(), *opt_in)
     cells = registry() + list(extra)  # extra: transport-only cells (R2 process_cell.R2_CELLS)
     for c in cells + list(opt_in):
         validate(c)
