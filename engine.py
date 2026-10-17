@@ -6453,15 +6453,40 @@ class LCMEngine(
             key = self._replay_snapshot_metadata_key(_COMPACTION_COMMIT_PROOF_METADATA_PREFIX)
             expected = [_commit_proof_identity_digest(identity) for identity in proof["output_effective"]]
 
-            def extend(payload):
-                if (isinstance(payload, dict) and payload.get("session_id") == proof.get("session_id")
-                        and payload.get("effective_sha256_v4") == expected):
-                    payload["output_metadata"] = proof["output_metadata"]
-                return payload
-
-            self._store.update_metadata_json(key, extend)
+            payload = self._store.read_metadata_json(key)
+            if (isinstance(payload, dict) and payload.get("session_id") == proof.get("session_id")
+                    and payload.get("effective_sha256_v4") == expected):
+                # Keep the rollback-compatible proof wire unchanged. This
+                # snapshot is usable only with the exact proof that wrote it.
+                self._store.write_metadata_json(
+                    [self._replay_snapshot_metadata_key("host_occurrence_snapshot")],
+                    json.dumps({
+                        "proof_sha256": hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest(),
+                        "output_metadata": proof["output_metadata"],
+                    }, sort_keys=True),
+                )
         except Exception:
             logger.debug("LCM occurrence metadata persistence failed", exc_info=True)
+
+    def _durable_commit_proof_payload(self, session_id=None):
+        payload = super()._durable_commit_proof_payload(session_id)
+        if payload is None:
+            return None
+        try:
+            raw = self._store.read_metadata_json(self._replay_snapshot_metadata_key(
+                _COMPACTION_COMMIT_PROOF_METADATA_PREFIX, session_id))
+            snapshot = self._store.read_metadata_json(self._replay_snapshot_metadata_key(
+                "host_occurrence_snapshot", session_id))
+            digest = hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()
+            # A concurrent writer may replace the proof between the two reads:
+            # attach the snapshot only to the proof that was validated above.
+            same_proof = isinstance(raw, dict) and all(
+                raw.get(field) == payload.get(field) for field in ("created_at", "effective_sha256_v4"))
+            if same_proof and isinstance(snapshot, dict) and snapshot.get("proof_sha256") == digest:
+                payload["output_metadata"] = snapshot["output_metadata"]
+        except Exception:
+            logger.debug("LCM occurrence metadata load failed", exc_info=True)
+        return payload
 
     @staticmethod
     def _host_occurrence_metadata(message) -> dict:
@@ -6516,9 +6541,10 @@ class LCMEngine(
             result[index] = (snapshot[output_index] if entry.generated_span is not None
                              and output_index is not None and output_index < len(snapshot)
                              else target[matched])
-            if entry.generated_span is not None:
+            if entry.generated_span is not None and target[matched] is not result[index]:
                 # The scaffold's identity cannot prove that its absorbed user
                 # is still the retained occurrence, even when its text matches.
+                # An explicit carrier already has the engine uid, not its user's.
                 result[index] = {**result[index], "_retained_message_uid": target[matched].get("message_uid")}
             matched += 1
         return result
@@ -6710,7 +6736,12 @@ class LCMEngine(
             self._ingest_cursor_needs_reconcile = False
         cursor = min(max(self._ingest_cursor, 0), n)
         if reconciled_existing_session:
-            durable = self._durable_commit_proof_payload()
+            try:
+                durable = self._durable_commit_proof_payload()
+            except Exception:
+                # A corrupt/unreadable proof is no occurrence evidence. Keep
+                # reconciliation's lossless ambiguous-batch persistence path.
+                durable = None
             proven_cursor = self._cursor_from_durable_commit_proof(reconcile_messages) if durable else None
             if proven_cursor is not None:
                 metadata = self._remapped_output_metadata(messages, durable, min(cursor, proven_cursor))
