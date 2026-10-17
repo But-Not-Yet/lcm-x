@@ -5813,9 +5813,8 @@ def _inspect_externalized_payload_metadata(
     return metadata
 
 
-def lcm_inspect(args: Dict[str, Any], **kwargs) -> str:
-    """Return a read-only metadata inventory of the current LCM session."""
-    return _inspect_tools.lcm_inspect(args, **kwargs)
+# Dispatch resolves this name at call time, so patching it changes behavior (rule 6).
+lcm_inspect = _inspect_tools.lcm_inspect
 
 
 def lcm_status(args: Dict[str, Any], **kwargs) -> str:
