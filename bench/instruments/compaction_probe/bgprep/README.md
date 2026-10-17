@@ -65,7 +65,7 @@ ordered stored-versus-expected identity independently requires the persisted tim
 Matching live tail identities must occur exactly once per stored tail row, in store
 order; unmatched summary carriers are ignored. Leaf source IDs must increase strictly
 within each leaf and across leaves in node order. Scores report `tail_order_preserved`,
-`duplicate_tail` and `leaf_order_preserved`; violations fail integrity.
+`duplicate_tail`, `covered_in_active` (non-tail identities beyond their tail allowance) and `leaf_order_preserved`; violations fail integrity.
 Missing storage, duplicate storage/IDs, duplicate leaf coverage, dangling sources,
 changed identity (role, content, or persisted host `observed_at` timestamp) or
 chronology also fail. Leaf ancestry condensations are not
