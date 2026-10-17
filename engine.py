@@ -8766,40 +8766,9 @@ class LCMEngine(
             retained_generated_context_parts, tail_selected, summary_role, result, emission_candidates,
         )
 
-        # Fresh tail. A user-role summary directly ahead of a historical user
-        # row is emitted as the carrier a host's alternation repair would build
-        # ("summary\n\nrow", identified by _generated_context_carrier_remainder).
-        # A rotating host (Hermes) otherwise publishes both rows, merges them in
-        # memory, and re-flushes the merge as a new row; the durable child then
-        # outgrows the live list and is adopted into the next compress().
-        if (
-            summary_message is not None
-            and leading_msg is None
-            and result
-            and result[-1] is summary_message
-            and tail_selected
-            and tail_selected[0].get("role") == "user"
-            and isinstance(tail_selected[0].get("content"), str)
-            and any(message.get("role") == "user" for message in tail_selected[1:])
-        ):
-            # This shape deliberately matches Hermes _merge_consecutive_users;
-            # copying api_content or row fields would replay the sidecar instead of the summary.
-            carrier = {
-                "role": "user",
-                "content": f"{summary_message['content']}\n\n{tail_selected[0]['content']}",
-            }
-            if self._generated_context_carrier_remainder(carrier) == tail_selected[0]["content"]:
-                source_ids = self._get_store_ids_for_messages([tail_selected[0]])
-                result[-1], carried_tail = carrier, tail_selected[0]
-                if summary_candidate is not None:
-                    summary_candidate.update({
-                        "kind": "carrier",
-                        "span": f"{summary_message['content']}\n\n",
-                        "retained_source": {"store_id": source_ids[0]} if source_ids else None,
-                        "full_identity": _emission_identity(carrier),
-                        "row": carrier,
-                    })
-                tail_selected = tail_selected[1:]
+        carried_tail, tail_selected = self._emit_summary_carrier(
+            summary_message, leading_msg, result, tail_selected, summary_candidate, carried_tail,
+        )
         self._mint_assembled_engine_uids(result, emission_candidates, summary_message, carried_tail,
                                          proactive_msg, generated_context_row, tail_selected)
         result.extend(tail_selected)
@@ -9054,6 +9023,45 @@ class LCMEngine(
                 })
         return (generated_context_row, carried_tail, folded_source_store_id,
                 folded_result_index, folded_original_tail, tail_selected)
+
+    def _emit_summary_carrier(
+        self, summary_message, leading_msg, result, tail_selected, summary_candidate, carried_tail,
+    ) -> tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+        # Fresh tail. A user-role summary directly ahead of a historical user
+        # row is emitted as the carrier a host's alternation repair would build
+        # ("summary\n\nrow", identified by _generated_context_carrier_remainder).
+        # A rotating host (Hermes) otherwise publishes both rows, merges them in
+        # memory, and re-flushes the merge as a new row; the durable child then
+        # outgrows the live list and is adopted into the next compress().
+        if (
+            summary_message is not None
+            and leading_msg is None
+            and result
+            and result[-1] is summary_message
+            and tail_selected
+            and tail_selected[0].get("role") == "user"
+            and isinstance(tail_selected[0].get("content"), str)
+            and any(message.get("role") == "user" for message in tail_selected[1:])
+        ):
+            # This shape deliberately matches Hermes _merge_consecutive_users;
+            # copying api_content or row fields would replay the sidecar instead of the summary.
+            carrier = {
+                "role": "user",
+                "content": f"{summary_message['content']}\n\n{tail_selected[0]['content']}",
+            }
+            if self._generated_context_carrier_remainder(carrier) == tail_selected[0]["content"]:
+                source_ids = self._get_store_ids_for_messages([tail_selected[0]])
+                result[-1], carried_tail = carrier, tail_selected[0]
+                if summary_candidate is not None:
+                    summary_candidate.update({
+                        "kind": "carrier",
+                        "span": f"{summary_message['content']}\n\n",
+                        "retained_source": {"store_id": source_ids[0]} if source_ids else None,
+                        "full_identity": _emission_identity(carrier),
+                        "row": carrier,
+                    })
+                tail_selected = tail_selected[1:]
+        return carried_tail, tail_selected
 
     def _mint_assembled_engine_uids(self, result, candidates, summary_message, carried_tail, recall_row,
                                     context_row, tail_selected) -> None:
