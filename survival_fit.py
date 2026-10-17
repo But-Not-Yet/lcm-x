@@ -235,7 +235,12 @@ class SurvivalFitMixin:
         else:
             cut = self._survival_cut(result, prefix, budget, persisted, reason, store_ids, True) if prefix > system else None
             emergency = prefix > system and cut is None
-            cut = cut or self._survival_cut(result, system, budget, persisted, reason, store_ids, False)
+            # #1281: preserve user text when marks cannot fit and the list already fits the window.
+            # Recovery caps keep the existing last-resort marks unconditionally (#608).
+            hard_cap = (int(self.context_length) - self._survival_host_overhead(messages, observed_tokens)
+                        if window_cap is None and request_cap is None else None)
+            cut = cut or self._survival_cut(result, system, budget, persisted, reason, store_ids, False,
+                                            hard_cap=hard_cap)
         if cut is None:
             return result
         fitted, count, ids, projected, notice = cut
@@ -264,7 +269,7 @@ class SurvivalFitMixin:
         return row
 
     def _survival_cut(self, result, lead: int, budget: int, persisted: bool, reason: str, store_ids,
-                      whole_turns: bool, keep_from: Optional[int] = None):
+                      whole_turns: bool, keep_from: Optional[int] = None, hard_cap: Optional[int] = None):
         """``(fitted, count, ids, projected, notice)`` with ``result[:lead]`` kept, else None. The cut is the
         oldest whole-turn one whose FINAL list (notice included) fits; with ``whole_turns`` there is no
         projection. A carrier ending the kept prefix is split: its user row leaves with its turn, and the
@@ -386,7 +391,9 @@ class SurvivalFitMixin:
             logger.warning("LCM survival fit skipped: an over-budget list holds rows not yet stored (reason=%s)", reason)
             return None
         noticed = build(cut, body[cut:])[0][:len(head)]  # the head as returned: its notice counts too
-        kept = self._survival_projection(body[cut:], store_ids, budget - self._survival_measure(noticed))
+        head_tokens = self._survival_measure(noticed)
+        kept = self._survival_projection(body[cut:], store_ids, budget - head_tokens,
+                                         hard_cap=None if hard_cap is None else hard_cap - head_tokens)
         kept, reply = keep_reply(cut, kept)
         fitted, count, ids, notice = build(cut, kept, reply)
         return accepted(fitted, count, ids, kept, notice)
@@ -402,12 +409,15 @@ class SurvivalFitMixin:
             if content is not None else ""
         return f"{text}\n\n{notice}"
 
-    def _survival_projection(self, turn: List[Dict[str, Any]], store_ids, limit: int) -> List[Dict[str, Any]]:
+    def _survival_projection(self, turn: List[Dict[str, Any]], store_ids, limit: int,
+                             hard_cap: Optional[int] = None) -> List[Dict[str, Any]]:
         """The newest turn, its largest stored rows projected until it fits (tool outputs
         first, then others; user rows last, and only to fit); never an unstored row,
         never an empty list. A projection is a pure function of the stored row and
         its mark's parameters (store id, tokens, head/tail), so a re-ingest recognises
         it by recomputing it from that row (``_survival_projection_source``).
+        With a hard cap, discard unsuccessful user marks if the pre-user list
+        already fits it; no hard cap retains the legacy/recovery behaviour.
         """
         out = list(turn)
         order = sorted(range(len(out)), key=lambda i: (out[i].get("role") != "tool", -count_message_tokens(out[i])))
@@ -427,6 +437,8 @@ class SurvivalFitMixin:
         for roles in (("tool", "assistant"), ("user",)):
             if self._survival_measure(out) <= limit:
                 break
+            before_user = (list(out) if roles == ("user",) and hard_cap is not None
+                           and self._survival_measure(out) <= hard_cap else None)
             # #1220: exhaust head forms before short-row marks; user rows last, and only to fit.
             for index in order:
                 source = turn[index]
@@ -444,6 +456,8 @@ class SurvivalFitMixin:
                 projected = project_message_legacy(out[index], row, tokens)
                 if count_message_tokens(projected) < count_message_tokens(out[index]):
                     out[index] = projected
+            if before_user is not None and self._survival_measure(out) > limit:
+                out = before_user
         return out
 
     _survival_projected_fields = staticmethod(projected_fields)
