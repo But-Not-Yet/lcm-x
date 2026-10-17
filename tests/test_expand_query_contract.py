@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from hermes_lcm import tools, tokens
+from hermes_lcm import expansion_evidence, tools, tokens
 from tests.harness import pin_char_counter
 
 
@@ -86,22 +86,22 @@ def test_expand_query_timeout_logger(
 
 
 def test_expansion_leaf_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
-    cursor = tools._raw_match_cursor_block({
+    cursor = expansion_evidence._raw_match_cursor_block({
         "messages": [{"store_id": "skip"}, {"store_id": 7}],
         "pagination": {"next_store_id": 9, "total_sources": 3},
     })
     assert cursor == {"type": "raw_messages", "messages": [], "pagination": {
         "has_more": True, "returned_sources": 0, "total_sources": 3, "next_store_id": 7,
     }}
-    assert tools._raw_match_cursor_block({"pagination": {"next_store_id": "bad"}}) is None
-    assert tools._collect_store_ids_from_context_blocks(
+    assert expansion_evidence._raw_match_cursor_block({"pagination": {"next_store_id": "bad"}}) is None
+    assert expansion_evidence._collect_store_ids_from_context_blocks(
         [None, {"messages": [{"store_id": 7}, {"store_id": "skip"}]}],  # type: ignore[list-item]
     ) == {7}
     path = [{"node_id": i, "source_index": i} for i in range(10)]
-    assert tools._bounded_source_path_payload(path) == {
+    assert expansion_evidence._bounded_source_path_payload(path) == {
         "source_path": path[-8:], "source_path_depth": 10, "source_path_truncated": True,
     }
-    assert tools._pagination_payload(
+    assert expansion_evidence._pagination_payload(
         total_sources=9, source_offset=1, content_offset=0, source_limit=2,
         returned_sources=2, next_source_offset=3, next_content_offset=0, has_more=True,
     ) == dict(source_offset=1, content_offset=0, source_limit=2, returned_sources=2,
@@ -121,5 +121,26 @@ def test_expansion_leaf_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
                   for kind in ("child_nodes", "descendant_child_nodes"))
     expected = ["sum", '{"source_path":[{"node_id":0,"source_index":0}],"source_path_depth":1,"source_path_truncated":false}',
                 "body", "original", "body", "original", "body", "original", "child", "child"]
-    assert tools._context_content_token_count(blocks) == sum(map(len, expected))
+    assert expansion_evidence._context_content_token_count(blocks) == sum(map(len, expected))
     assert seen == expected
+
+
+def test_expansion_evidence_keeps_tokens_import_lazy(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.util
+    import sys
+    from types import ModuleType
+
+    package = ModuleType("expansion_import_probe")
+    package.__path__ = []
+    monkeypatch.setitem(sys.modules, package.__name__, package)
+    spec = importlib.util.spec_from_file_location(
+        "expansion_import_probe.expansion_evidence", expansion_evidence.__file__,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert "expansion_import_probe.tokens" not in sys.modules
+    fake_tokens = ModuleType("expansion_import_probe.tokens")
+    monkeypatch.setattr(fake_tokens, "count_tokens", lambda text: 17, raising=False)
+    monkeypatch.setitem(sys.modules, fake_tokens.__name__, fake_tokens)
+    assert module._context_content_token_count([{"type": "summary", "summary": "marker"}]) == 17
