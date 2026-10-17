@@ -105,6 +105,9 @@ jobs:
         with: {python-version: '3.12'}
       - run: pip install pytest numpy
         if: steps.relevance.outputs.relevant == 'true'
+      - name: Use the runtime SQLite library
+        if: steps.relevance.outputs.relevant == 'true'
+        uses: ./.github/actions/sqlite-runtime
       # keep identical to ci.yml's stub step
       - name: Stub hermes-agent ABC
         if: steps.relevance.outputs.relevant == 'true'
