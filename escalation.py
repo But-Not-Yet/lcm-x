@@ -97,6 +97,10 @@ class SweepBudgetExhausted(TimeoutError):
         self.reason = reason
 
 
+class UnattributedRescueRefused(Exception):
+    """#1147 r1: the smaller leaf has no durable source and cannot be retried."""
+
+
 def _p90(samples: list[float], cold: float) -> float:
     return sorted(samples)[math.ceil(0.9 * len(samples)) - 1] if samples else cold
 
