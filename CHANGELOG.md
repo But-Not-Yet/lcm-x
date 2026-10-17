@@ -6,6 +6,7 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
+- Fix: foreground session end stops scheduling and drops this engine's queued embedding passes without waiting; every live-session rebind re-arms it. Shutdown and process exit wait up to 2 s for an active pass, including one left running at session end. (#1330)
 - Fix: E2 canonical uid copy evidence never excludes user rows; sync the shadow-mode copy-exclusion docs. (#1124, #1146)
 - Fix: repeated tool groups are excluded whole or kept whole; E1 preserves occurrences with their own uid binding. (#1146, #1154)
 - Fix: proven hidden re-ingest copies no longer consume leaf input or count as hidden backlog. Exclusion requires an earlier owned byte-equal twin that an existing summary or the same leaf covers, tool-call identity or canonical host-uid evidence, and a non-lossy identity. The publication transaction rechecks each copy's bytes, ownership and twin coverage. Stored rows, ingest behavior and the schema are unchanged. (#1124)
