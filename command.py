@@ -4226,6 +4226,7 @@ def _chunk_pending_rows(
     only what it saw.
     """
     if incremental:
+        seen_rows = set()
         already = set()
         inflight = _chunk_inflight_ids(conn, identity_hash)
         boundary_ids = set(_chunk_cursor(conn, identity_hash) or ()) if include_boundaries else set()
@@ -4246,6 +4247,10 @@ def _chunk_pending_rows(
         if incremental and len(documents) >= limit:
             break
         if incremental:
+            # A cursor boundary can also be a revision-gap row.
+            if row[0] in seen_rows:
+                continue
+            seen_rows.add(row[0])
             already = set()
             if row[0] in boundary_ids:
                 # Exit may have published only the first batch of this message.
