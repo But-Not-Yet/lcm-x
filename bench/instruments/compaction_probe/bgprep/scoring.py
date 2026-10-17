@@ -9,7 +9,13 @@ def coverage(probe):
     expected = Counter(probe["expected"])
     stored = Counter(r["identity"] for r in rows)
     ids = Counter(r["store_id"] for r in rows)
-    covered = Counter(i for leaf in probe["leaf_sources"] for i in leaf)
+    leaf_ids = [i for leaf in probe["leaf_sources"] for i in leaf]
+    covered = Counter(leaf_ids)
+    tail_identities = [r.get("active_identity", r["identity"])
+                       for r in sorted(rows, key=lambda r: r["store_id"])
+                       if r["store_id"] > probe["frontier"]]
+    tail_counts = Counter(tail_identities)
+    live_tail = [identity for identity in probe["active_view"] if identity in tail_counts]
     live = Counter(probe["active_view"])
     tail = []
     for row in rows:
@@ -25,14 +31,19 @@ def coverage(probe):
         "duplicate_stored": sum((stored - expected).values()),
         "duplicate_ids": sum(n - 1 for n in ids.values() if n > 1),
         "duplicate_coverage": sum(n - 1 for n in covered.values() if n > 1),
+        "duplicate_tail": sum((Counter(live_tail) - tail_counts).values()),
+        "tail_order_preserved": live_tail == tail_identities,
+        "leaf_order_preserved": all(a < b for a, b in zip(leaf_ids, leaf_ids[1:])),
         "dangling_sources": sorted(set(covered) - set(ids)),
         "ordered_identity_preserved": [r["identity"] for r in rows] == probe["expected"],
     }
 
 
 def intact(score):
-    return score["ordered_identity_preserved"] and not any(score[k] for k in (
-        "lost", "missing_rows", "duplicate_stored", "duplicate_ids", "duplicate_coverage", "dangling_sources"))
+    return all(score[k] for k in (
+        "ordered_identity_preserved", "tail_order_preserved", "leaf_order_preserved")) and not any(score[k] for k in (
+        "lost", "missing_rows", "duplicate_stored", "duplicate_ids", "duplicate_coverage", "duplicate_tail",
+        "dangling_sources"))
 
 
 def promotion(events):

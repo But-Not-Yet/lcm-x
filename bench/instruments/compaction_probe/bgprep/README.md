@@ -9,6 +9,8 @@ Both product and host checkouts must be clean, including untracked files. The
 protocol binds the host Git SHA and context-engine hash. Token estimation is
 pinned before product consumers import their token helpers. Cells execute the
 captured instrument copy, including its replay and scoring modules.
+Each cell checks the host HEAD against the parent's protocol SHA before replay.
+Output must resolve outside the product, host and instrument source trees.
 Use Python 3.11 or newer (the product's CI minimum).
 
 ```sh
@@ -60,6 +62,10 @@ Active unsummarized rows above the frontier count as covered only when their
 exact raw identity is present in the live view, including verified carrier remainders.
 Live coverage matches role/content because carrier projections may omit timestamps;
 ordered stored-versus-expected identity independently requires the persisted timestamp.
+Matching live tail identities must occur exactly once per stored tail row, in store
+order; unmatched summary carriers are ignored. Leaf source IDs must increase strictly
+within each leaf and across leaves in node order. Scores report `tail_order_preserved`,
+`duplicate_tail` and `leaf_order_preserved`; violations fail integrity.
 Missing storage, duplicate storage/IDs, duplicate leaf coverage, dangling sources,
 changed identity (role, content, or persisted host `observed_at` timestamp) or
 chronology also fail. Leaf ancestry condensations are not
@@ -89,6 +95,9 @@ A later candidate uses `--reference REFERENCE.json`; mismatched host contract,
 instrument, workload, route or settings invalidate the comparison. Changing this
 protocol requires a new baseline. Reference files are snapshotted into candidate
 runs. Reference creation is never implied by smoke success.
+Loading a reference also checks its pooled ON, protocol, seeds and per-seed rates
+against the sibling card-covered `summary.json` and `run.json`; edits that disagree
+invalidate the comparison (exit 2).
 
 From a completed run root, `python3 instrument/run.py --rescore .` reads only
 raw snapshots and prints the verdict, every per-seed score and paired deltas.
