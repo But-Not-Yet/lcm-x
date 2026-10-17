@@ -22,13 +22,10 @@ from typing import Callable, Optional
 
 from . import tokens as _token_module
 from .model_routing import apply_lcm_model_route, apply_lcm_reasoning_effort
-from .summary_attempt import (
-    SummaryAttempt,
-    SummaryTiming,
-    is_summary_content_filter_error,
-    is_summary_context_length_error,
-    is_summary_route_config_error,
-)
+from .summary_attempt import SummaryAttempt, SummaryTiming
+# Re-exported for existing callers.
+from .summary_attempt import is_summary_content_filter_error, is_summary_context_length_error, is_summary_route_config_error  # noqa: F401
+from .summary_outcome import SummaryOutcomeFacts, SummaryOutcomeKind, classify_summary_outcome
 from .tokens import count_tokens
 
 logger = logging.getLogger(__name__)
@@ -100,6 +97,10 @@ class SweepBudgetExhausted(TimeoutError):
         self.reason = reason
 
 
+class UnattributedRescueRefused(Exception):
+    """#1147 r1: the smaller leaf has no durable source and cannot be retried."""
+
+
 def _p90(samples: list[float], cold: float) -> float:
     return sorted(samples)[math.ceil(0.9 * len(samples)) - 1] if samples else cold
 
@@ -143,8 +144,10 @@ class ForegroundBudget:
         self.stop_reason = ""  # the reason of the last stop(), for the stop line with the sweep off
         self.hung_route: str | None = None  # a circuit opened by this pass, not a previous hang
         self.leaves, self.first_call_started, self.last_call_ended = 0, None, None
+        self.pre_leaf = None  # #1127: the PhaseSqlTrace of the pre-leaf phase while it runs
         self.host = 0.0  # D5: seconds inside the host's native compressor (a bypassed session), not LCM work
         self.selected = False  # #1162: this compaction selected a leaf chunk (its zero-leaf pass counts)
+        self.summary_failure = ""  # #1162: sticky across every summary call/route in this pass
 
     @property
     def usable_deadline(self) -> float:
@@ -209,13 +212,14 @@ class SummaryCircuitBreaker:
     def _key(self, model: str | None) -> str:
         return (model or "").strip() or _DEFAULT_ROUTE_KEY
 
-    def allows(self, model: str | None, *, now: float | None = None) -> bool:
+    def allows(self, model: str | None, *, now: float | None = None, prune: bool = True) -> bool:
+        """True when the route is closed; ``prune=False`` (#787 worker) reads without dropping an expired entry."""
         key = self._key(model)
         current_time = time.monotonic() if now is None else now
         with self._lock:
             opened_until = self._open_until.get(key, 0.0)
             if opened_until <= current_time:
-                if key in self._open_until:
+                if prune and key in self._open_until:
                     self._open_until.pop(key, None)
                 return True
             return False
@@ -420,6 +424,17 @@ class SummarySpendGuard:
         with self._lock:
             self._prune(current_time)
             self._record_call_locked(current_time)
+
+    def remaining(self, *, now: float | None = None) -> float:
+        """#787: calls the window still allows, recording nothing (0 during a backoff; unlimited when disabled)."""
+        if self.max_calls <= 0:
+            return math.inf
+        current_time = time.monotonic() if now is None else now
+        with self._lock:
+            if current_time < self._backoff_until:
+                return 0
+            cutoff = current_time - self.window_seconds
+            return max(0, self.max_calls - sum(1 for t in self._calls if t >= cutoff))
 
     def clear(self) -> None:
         with self._lock:
@@ -935,36 +950,14 @@ def summary_route_available(
     circuit_breaker: SummaryCircuitBreaker | None,
     *,
     route_key_prefix: str = "",
+    prune: bool = True,
 ) -> bool:
-    """True when no breaker is in use or it allows one route of the summary chain (#628)."""
+    """True when no breaker is in use or it allows one route of the summary chain (#628); ``prune=False`` reads
+    the breaker without changing it."""
     if circuit_breaker is None:
         return True
-    return any(circuit_breaker.allows(route_key_prefix + candidate)
+    return any(circuit_breaker.allows(route_key_prefix + candidate, **({} if prune else {"prune": False}))
                for candidate in _summary_model_chain(model, fallback_models))
-
-
-def _is_budget_cut(error, budget: ForegroundBudget, budget_bound: bool, wall: float, call_timeout,
-                   deadline_installed: bool = False) -> bool:
-    """#605 F4: a timeout is a budget cut when the budget's limit bound the call (its timeout was the usable
-    time left, below the configured one, and it ran out or the usable deadline passed), or the host deadline
-    fired. A configured-timeout hit stays an ordinary route failure, even one that ends near the deadline.
-    A call that ends at the usable deadline under a budget-bound timeout or an installed host deadline is a
-    budget cut whatever its error says, because a host fallback can mask the timeout (#1120).
-    A call that outlives its configured timeout and ends at the usable deadline was bounded by the budget, for
-    example on a host whose timeout is a no-progress window; only where that deadline was installed in the host
-    (#1099), so a provider that ignores its timeout on a host without the seam stays a route failure."""
-    message = str(error or "").lower()
-    if error is None:
-        return False
-    timeout_like = isinstance(error, TimeoutError) or "timed out" in message or "timeout" in message
-    at_deadline = time.monotonic() >= budget.usable_deadline - 1.0
-    return bool(
-        (timeout_like and "host compression deadline" in message)
-        or (budget_bound and at_deadline)
-        or (timeout_like and budget_bound and call_timeout is not None and wall >= call_timeout - 1.0)
-        or (deadline_installed and call_timeout is not None and wall > call_timeout + 1.0
-            and at_deadline)
-    )
 
 
 def _host_stream_deadline_seam() -> bool:
@@ -999,6 +992,55 @@ def _invoke_summary_llm_chain(
     prompt: str,
     max_tokens: int,
     *,
+    model: str = "",
+    fallback_models: list[str] | tuple[str, ...] | None = None,
+    timeout: float | None = None,
+    reasoning_effort: str = "",
+    circuit_breaker: SummaryCircuitBreaker | None = None,
+    spend_guard: "SummarySpendGuard | None" = None,
+    accepts_result: Callable[[str], bool] | None = None,
+    source_tokens: int | None = None,
+    provenance: dict | None = None,
+    deadline: float | None = None,
+    route_key_prefix: str = "",
+    budget: ForegroundBudget | None = None,
+    verbatim_small_source: bool = False,
+    context_length_rescue: bool = False,
+) -> Optional[str]:
+    """Record failures only when the whole route chain ends without a usable result."""
+    chain_error = None
+    context_length_handoff = False
+
+    def note_error(error):
+        nonlocal chain_error, context_length_handoff
+        if error is None:  # #751: the leaf caller will retry a smaller chunk.
+            context_length_handoff = True
+        else:
+            chain_error = type(error).__name__
+
+    try:
+        result = _invoke_summary_llm_routes(
+            prompt, max_tokens, model=model, fallback_models=fallback_models, timeout=timeout,
+            reasoning_effort=reasoning_effort, circuit_breaker=circuit_breaker, spend_guard=spend_guard,
+            accepts_result=accepts_result, source_tokens=source_tokens, provenance=provenance,
+            deadline=deadline, route_key_prefix=route_key_prefix, budget=budget,
+            verbatim_small_source=verbatim_small_source, context_length_rescue=context_length_rescue,
+            note_error=note_error,
+        )
+    except Exception:
+        if budget is not None and chain_error:
+            budget.summary_failure = f"summary call failed: {chain_error}"
+        raise
+    if result is None and budget is not None and chain_error and not context_length_handoff:
+        budget.summary_failure = f"summary call failed: {chain_error}"
+    return result
+
+
+def _invoke_summary_llm_routes(
+    prompt: str,
+    max_tokens: int,
+    *,
+    note_error: Callable[[BaseException | None], None],
     model: str = "",
     fallback_models: list[str] | tuple[str, ...] | None = None,
     timeout: float | None = None,
@@ -1058,35 +1100,49 @@ def _invoke_summary_llm_chain(
         )
         result, route, error = attempt.text, attempt.route, attempt.error
         started, ended = attempt.timing.started, attempt.timing.ended
-        deadline_installed = attempt.timing.deadline_installed
+        if error is not None:
+            note_error(error)
         if budget is not None:
             budget.record_call(route_key, started, ended)
-            if result is None and _is_budget_cut(error, budget, budget_bound, ended - started, call_timeout,
-                                                 deadline_installed):
-                # #1137: a full-window hang opens this route for the NEXT compaction.
-                full_window = min(budget.configured_timeout, budget.hard - budget.reserve - budget.leaf_reserve)
-                if not budget_bound:  # the host timeout can be a no-progress window, shorter than the call
-                    full_window = budget.hard - budget.reserve - budget.leaf_reserve
-                used_window = (
-                    (budget_bound and call_timeout >= 0.9 * full_window)
-                    or (deadline_installed and ended >= budget.usable_deadline - 1.0)
-                )
-                if (circuit_breaker is not None and used_window
-                        and ended - started >= 0.9 * full_window):  # an early host fence is not a hang
-                    circuit_breaker.record_hang(route_key)
-                    if not circuit_breaker.allows(route_key):
-                        budget.hung_route = route_key
-                # #605 F4: still stop this compaction, with no time left for a fallback.
-                raise budget.stop("summariser call cut by the foreground budget")
-        if circuit_breaker is not None and route:
+        # Non-empty results consult the acceptance callback after route bookkeeping.
+        # A missing result may be a budget cut, which must stop before note_route.
+        if result is not None and circuit_breaker is not None and route:
             circuit_breaker.note_route(route_key, route)
-        if result and (accepts_result is None or accepts_result(result)):
+        accepted = bool(result) and (accepts_result is None or accepts_result(result))
+        outcome = classify_summary_outcome(attempt, SummaryOutcomeFacts(
+            budget_present=budget is not None,
+            budget_bound=budget_bound,
+            call_timeout=call_timeout,
+            configured_timeout=budget.configured_timeout if budget is not None else 0.0,
+            hard=budget.hard if budget is not None else 0.0,
+            reserve=budget.reserve if budget is not None else 0.0,
+            leaf_reserve=budget.leaf_reserve if budget is not None else 0.0,
+            usable_deadline=budget.usable_deadline if budget is not None else 0.0,
+            now=time.monotonic() if budget is not None and result is None and error is not None else 0.0,
+            breaker_present=circuit_breaker is not None,
+            accepts_result=accepted,
+            verbatim_small_source=verbatim_small_source,
+            source_tokens=source_tokens,
+            result_tokens=(count_tokens(result) if result and not accepted and verbatim_small_source
+                           and source_tokens is not None else 0),
+            context_length_rescue=context_length_rescue,
+        ))
+        if outcome.kind is SummaryOutcomeKind.BUDGET_CUT:
+            if outcome.record_hang:
+                circuit_breaker.record_hang(route_key)
+                if not circuit_breaker.allows(route_key):
+                    budget.hung_route = route_key
+            # #605 F4: still stop this compaction, with no time left for a fallback.
+            raise budget.stop("summariser call cut by the foreground budget")
+        if result is None and circuit_breaker is not None and route:
+            circuit_breaker.note_route(route_key, route)
+        if outcome.kind is SummaryOutcomeKind.ACCEPTED:
             if circuit_breaker is not None:
                 circuit_breaker.record_success(route_key)
             if provenance is not None:  # #441: the route that actually answered
                 provenance["model"] = candidate_model
             return result
-        if result and verbatim_small_source and source_tokens is not None and count_tokens(result) >= source_tokens:
+        if outcome.kind is SummaryOutcomeKind.VERBATIM_SMALL_SOURCE:
             # #722: the caller stores the source whole; this working route gets no circuit event.
             logger.info(
                 "LCM summary result not shorter; small source stored whole (source_tokens=%d, result_tokens=%d, model=%s)",
@@ -1095,7 +1151,7 @@ def _invoke_summary_llm_chain(
             if provenance is not None:
                 provenance["model"] = "deterministic"
             return result
-        if result is not None:  # #628: a content rejection, not a provider failure
+        if outcome.kind in (SummaryOutcomeKind.REJECTED, SummaryOutcomeKind.REJECTION):
             logger.warning(
                 "LCM summary result rejected (reason=%s, source_tokens=%s, result_tokens=%d, model=%s)",
                 "not_shorter" if result else "no_content" + (
@@ -1104,21 +1160,22 @@ def _invoke_summary_llm_chain(
                 count_tokens(result) if result else 0,
                 candidate_model or _DEFAULT_ROUTE_KEY,
             )
-        if result is None and is_summary_route_config_error(error):
+        if outcome.kind is SummaryOutcomeKind.CONFIG_ERROR:
             if circuit_breaker is None:
                 logger.warning("LLM summarization failed: %s", error)
             else:
                 circuit_breaker.record_config_error(route_key, route=route, error=error, sent_model=candidate_model)
-        elif result is None and is_summary_content_filter_error(error):
+        elif outcome.kind is SummaryOutcomeKind.CONTENT_FILTER:
             if provenance is not None:  # the filtered chunk must not open the route's circuit
                 provenance["content_filter_error"] = True
-        elif result is None and context_length_rescue and is_summary_context_length_error(error):
+        elif outcome.kind is SummaryOutcomeKind.CONTEXT_LENGTH:
+            note_error(None)
             if provenance is not None:  # #751: the chunk is too large for this route; the caller shrinks it
                 provenance["context_length_error"] = True
         elif circuit_breaker is not None:
-            if result is None:
+            if outcome.kind is SummaryOutcomeKind.FAILURE:
                 circuit_breaker.record_failure(route_key)
-            else:
+            elif outcome.kind is SummaryOutcomeKind.REJECTION:
                 circuit_breaker.record_rejection(route_key)
     if skipped == len(chain):
         (logger.debug if all(circuit_breaker.in_config_episode(route_key_prefix + m) for m in chain) else logger.warning)(

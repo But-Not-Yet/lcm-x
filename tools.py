@@ -35,6 +35,7 @@ from .diagnostics import (
     _has_lifecycle_fragmentation,
     _state_db_path_for_engine,
     doctor_guidance_for_checks,
+    survival_fit_count,
 )
 from .dag import build_nodes_fts_spec
 from .db_bootstrap import (
@@ -6404,9 +6405,12 @@ def lcm_status(args: Dict[str, Any], **kwargs) -> str:
         ),
         "last_compression_status": full_status.get("last_compression_status", "idle"),
         "last_compression_noop_reason": full_status.get("last_compression_noop_reason", ""),
+        "last_survival_fit": full_status.get("last_survival_fit"),
         "threshold_full_sweep": full_status.get("threshold_full_sweep"),
         "last_stub_first_exit": full_status.get("last_stub_first_exit"),
         "no_progress_hold": full_status.get("no_progress_hold"),
+        **({"background_leaf_prep": full_status["background_leaf_prep"]}  # #787; absent while off
+           if "background_leaf_prep" in full_status else {}),
         "zero_leaf_streak": full_status.get("zero_leaf_streak"),  # #1162
         "model": full_status.get("model", ""),
         "provider": full_status.get("provider", ""),
@@ -6453,6 +6457,9 @@ def lcm_status(args: Dict[str, Any], **kwargs) -> str:
             ),
             "leaf_target_max_tokens": getattr(
                 engine._config, "leaf_target_max_tokens", LCMConfig.leaf_target_max_tokens
+            ),
+            "stub_first_exit_target_ratio": getattr(
+                engine._config, "stub_first_exit_target_ratio", LCMConfig.stub_first_exit_target_ratio
             ),
             "dynamic_leaf_chunk_enabled": engine._config.dynamic_leaf_chunk_enabled,
             "dynamic_leaf_chunk_max": engine._config.dynamic_leaf_chunk_max,
@@ -6905,6 +6912,12 @@ def lcm_doctor(args: Dict[str, Any], **kwargs) -> str:
             "detail": f"{usage_pct}% used, compaction triggers at {threshold_pct}%",
         })
 
+    # #1162: expose the same survival-fit counter (including last_cause) as /lcm doctor.
+    try:
+        survival_fit = engine._store.read_metadata_json("survival_fit:counter")
+    except Exception:
+        survival_fit = None
+
     # 8. Compaction progress (#1162): consecutive over-threshold passes that stored no leaf
     streak = engine._zero_leaf_streak_status() if hasattr(engine, "_zero_leaf_streak_status") else None
     checks.append({
@@ -6921,6 +6934,7 @@ def lcm_doctor(args: Dict[str, Any], **kwargs) -> str:
 
     return json.dumps({
         "overall": overall,
+        "survival_fit": survival_fit if survival_fit_count(survival_fit) != 0 else None,
         "runtime_identity": engine.get_runtime_identity(),
         "checks": checks,
         "guidance": doctor_guidance_for_checks(checks),

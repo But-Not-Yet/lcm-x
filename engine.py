@@ -5,6 +5,7 @@ with a DAG-based summarization system that preserves every message.
 """
 
 import asyncio
+import atexit
 import contextlib
 import copy
 import hashlib
@@ -22,7 +23,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from agent.context_engine import ContextEngine
 
@@ -52,6 +53,7 @@ from .escalation import (
     SummaryCircuitBreaker,
     SummarySpendGuard,
     SweepBudgetExhausted,  # re-exported: compaction and tests import it from .engine
+    UnattributedRescueRefused,
     _summary_model_chain,
     closed_summary_route_status,
     summarize_with_escalation,
@@ -107,7 +109,7 @@ from .runtime_identity import (
     _git_runtime_identity,
     _plugin_metadata,
 )
-from .embedding_maintenance import run_incremental_embedding_pass
+from .embedding_maintenance import _STOP_EMBEDDING_MAINTENANCE, run_incremental_embedding_pass
 from .rollup_builder import (
     initialize_rollup_invalidation_outbox,
     mark_stale_for_published_summary,
@@ -139,9 +141,10 @@ from .message_patterns import compile_message_patterns, matches_message_pattern
 from .aux_session import AuxiliarySessionMixin
 from .placeholder_ledger import PlaceholderLedgerMixin
 from .reconcile import _COMPACTION_COMMIT_PROOF_METADATA_PREFIX, ReconcileMixin, _PRESERVED_OBJECTIVE_CONTEXT_PREFIX
-from .reconcile import _emission_identity
+from .reconcile import _HERMES_PRUNED_TOOL_PLACEHOLDER, _emission_identity
 from .reconcile import _has_lossy_redacted_identity, _merge_append_cut, _proof_user_identity
 from .compaction import CompactionMixin
+from . import leaf_prep
 from .compaction_request import CompactionRequest
 from .compress_run import CompressRun
 from .identity_anchor import IdentityAnchorMixin, _raw_remainder, identity_anchor_enabled
@@ -163,7 +166,7 @@ from .sqlite_util import (
     _is_sqlite_locked_error,
     _temporary_sqlite_busy_timeout,
 )
-from .store import MessageStore
+from .store import MessageStore, _normalize_conversation_id_value, _normalize_observed_at
 from .tokens import count_message_tokens, count_messages_tokens, count_tokens
 from .assembly_plan import PrefixBudgetFacts, default_prefix_budget, select_prefix, select_tail
 from . import tools as lcm_tools
@@ -185,6 +188,72 @@ def _model_only_display_metadata_key() -> Optional[str]:
 def _model_only_display_metadata_keys() -> frozenset:
     """Every key that can hide a row: the literal key and the host-advertised one."""
     return frozenset(k for k in ("model_only", _model_only_display_metadata_key()) if k)
+
+
+def _host_will_merge_user_rows(previous: Dict[str, Any], following: Any) -> bool:
+    """Conservatively mirror pinned Hermes before stamping a row model-only."""
+    if (previous.get("role") != "user" or not isinstance(following, dict)
+            or following.get("role") != "user"):
+        return False
+    try:
+        from agent.context_compressor import split_user_originated_turn
+    except (ImportError, AttributeError):
+        # Older hosts lack the carrier exemption; retain their plain-user behavior.
+        split_user_originated_turn = None
+    try:
+        from agent.prompt_builder import STEER_DISPLAY_KIND
+    except (ImportError, AttributeError):
+        STEER_DISPLAY_KIND = "steer"
+    return (
+        (split_user_originated_turn is None or split_user_originated_turn(previous)[0] is None)
+        and previous.get("display_kind") != STEER_DISPLAY_KIND
+        # Hermes 0.21.5 merges JSON-sentinel strings too. Predicting a merge on
+        # newer hosts only leaves generated context visible; it cannot hide users.
+        and all(isinstance(row.get("content", ""), str) for row in (previous, following))
+    )
+
+
+def _stamp_generated_model_only(messages, generated_rows, *, copy_rows: bool = False) -> None:
+    """Decide display visibility per final Hermes merge group, using occurrence provenance.
+
+    Hermes keeps the first row's metadata. A group containing human text must
+    remain visible; a group made entirely by LCM can stay model-only.
+    """
+    key = _model_only_display_metadata_key() if generated_rows else None
+    if key is None:
+        return
+    generated_ids = {id(row) for row in generated_rows}
+    hide_keys = _model_only_display_metadata_keys()
+    start = 0
+    while start < len(messages):
+        previous = messages[start].copy()
+        end = start + 1
+        while end < len(messages) and _host_will_merge_user_rows(previous, messages[end]):
+            following = messages[end]
+            before, after = previous.get("content", ""), following.get("content", "")
+            previous["content"] = before + "\n\n" + after if before and after else before or after
+            if previous.get("display_kind") and not following.get("display_kind"):
+                previous.pop("display_kind", None)
+            end += 1
+        generated_only = all(id(row) in generated_ids for row in messages[start:end])
+        for index in range(start, end):
+            row = messages[index]
+            if id(row) not in generated_ids:
+                continue
+            original = row.get("display_metadata") or {}
+            if generated_only:
+                metadata = {**original, key: True}
+            else:
+                metadata = {k: v for k, v in original.items() if k not in hide_keys}
+            if metadata == original:
+                continue
+            if copy_rows:
+                messages[index] = row = row.copy()
+            if metadata:
+                row["display_metadata"] = metadata
+            else:
+                row.pop("display_metadata", None)
+        start = end
 
 _ASSERTION_EXTRACTION_PROCESS_SLOT = threading.BoundedSemaphore(1)
 _EMBEDDING_SCHEMA_READY: set[tuple[Path, bool]] = set()
@@ -225,7 +294,10 @@ class _RollupMaintenanceScheduler:
         self._exclusive_keys: set[tuple[str, str]] = set()
         self._owned_keys: dict[object, set[tuple[str, str]]] = {}
         self._key_owners: dict[tuple[str, str], set[object]] = {}
+        self._retired_active_keys: dict[object, set[tuple[str, str]]] = {}
         self._worker: threading.Thread | None = None
+        self._closed = False
+        self._closed_logged = False
 
     def _track_owner_locked(
         self,
@@ -260,7 +332,13 @@ class _RollupMaintenanceScheduler:
         *,
         owner: object | None = None,
     ) -> bool:
+        global _EMBEDDING_EXIT_QUIESCE_REGISTERED
         with self._condition:
+            if self._closed:
+                if not self._closed_logged:
+                    logger.info("LCM %s maintenance scheduler is closed", self._kind)
+                    self._closed_logged = True
+                return False
             if key in self._exclusive_keys:
                 logger.info(
                     "LCM temporal rollup maintenance deferred while an operator "
@@ -288,6 +366,9 @@ class _RollupMaintenanceScheduler:
                 )
                 return False
             if self._worker is None or not self._worker.is_alive():
+                if self is _EMBEDDING_MAINTENANCE_SCHEDULER and not _EMBEDDING_EXIT_QUIESCE_REGISTERED:
+                    atexit.register(_quiesce_embedding_maintenance)
+                    _EMBEDDING_EXIT_QUIESCE_REGISTERED = True
                 worker = threading.Thread(
                     target=self._run,
                     name=self._thread_name,
@@ -364,6 +445,82 @@ class _RollupMaintenanceScheduler:
                 self._condition.wait(remaining)
             return True
 
+    def retire_owner(self, owner: object, timeout: float) -> bool:
+        """Drop an owner's unshared pending work and wait for its active keys."""
+        try:
+            deadline = time.monotonic() + max(0.0, timeout)
+            with self._condition:
+                keys = self._owned_keys.pop(owner, set())
+                for key in keys:
+                    owners = self._key_owners.get(key, set())
+                    owners.discard(owner)
+                    if owners:
+                        continue
+                    self._key_owners.pop(key, None)
+                    if key in self._queued_keys:
+                        self._jobs = deque(
+                            (queued_key, job) for queued_key, job in self._jobs
+                            if queued_key != key
+                        )
+                        self._queued_keys.discard(key)
+                    if self._follow_up_key == key:
+                        self._follow_up_key = None
+                        self._follow_up_job = None
+                keys |= self._retired_active_keys.pop(owner, set()) & self._active_keys
+                self._condition.notify_all()
+                if timeout <= 0:
+                    active = keys & self._active_keys
+                    if active:
+                        self._retired_active_keys[owner] = active
+                    return not bool(active)
+                while keys & self._active_keys:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        for key in sorted(keys & self._active_keys):
+                            logger.warning(
+                                "LCM %s maintenance retirement timeout for database=%s scope=%s",
+                                self._kind, key[0], key[1],
+                            )
+                        return False
+                    self._condition.wait(remaining)
+                return True
+        except Exception:
+            logger.warning("LCM could not retire %s maintenance owner", self._kind, exc_info=True)
+            return False
+
+    def quiesce(self, timeout: float) -> bool:
+        """Stop accepting work, discard pending passes, and bound the active wait."""
+        try:
+            if self is _EMBEDDING_MAINTENANCE_SCHEDULER:
+                _STOP_EMBEDDING_MAINTENANCE.set()
+            deadline = time.monotonic() + max(0.0, timeout)
+            with self._condition:
+                self._closed = True
+                pending_keys = self._queued_keys.copy()
+                if self._follow_up_key is not None:
+                    pending_keys.add(self._follow_up_key)
+                self._jobs.clear()
+                self._queued_keys.clear()
+                self._follow_up_key = None
+                self._follow_up_job = None
+                for key in pending_keys:
+                    self._release_key_owners_if_idle_locked(key)
+                self._condition.notify_all()
+                while self._active_keys:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        for key in sorted(self._active_keys):
+                            logger.warning(
+                                "LCM %s maintenance quiesce timeout for database=%s scope=%s",
+                                self._kind, key[0], key[1],
+                            )
+                        return False
+                    self._condition.wait(remaining)
+                return True
+        except Exception:
+            logger.warning("LCM could not quiesce %s maintenance", self._kind, exc_info=True)
+            return False
+
     def _run(self) -> None:
         while True:
             with self._condition:
@@ -393,6 +550,10 @@ class _RollupMaintenanceScheduler:
                         self._condition.notify_all()
                         continue
                     self._active_keys.discard(key)
+                    for owner, keys in list(self._retired_active_keys.items()):
+                        keys.discard(key)
+                        if not keys:
+                            self._retired_active_keys.pop(owner, None)
                     self._running_follow_up = False
                     self._release_key_owners_if_idle_locked(key)
                     self._condition.notify_all()
@@ -405,8 +566,35 @@ _ROLLUP_MAINTENANCE_SCHEDULER = _RollupMaintenanceScheduler()
 _EMBEDDING_MAINTENANCE_SCHEDULER = _RollupMaintenanceScheduler(
     kind="incremental embedding", thread_name="lcm-embedding-maintenance"
 )
+_EMBEDDING_RETIRE_TIMEOUT_S = 2.0
+# One in-flight provider batch plus publication, with headroom for a 2-vCPU host.
+# Session retirement keeps its separate budget and never signals process exit.
+_EMBEDDING_EXIT_TIMEOUT_S = 10.0
+_EMBEDDING_EXIT_QUIESCE_REGISTERED = False
+
+
+def _quiesce_embedding_maintenance() -> bool:
+    _flush_pending_tails_at_exit()
+    return _EMBEDDING_MAINTENANCE_SCHEDULER.quiesce(_EMBEDDING_EXIT_TIMEOUT_S)
+
 
 _SESSION_END_BUSY_TIMEOUT_MS = 50
+_SESSION_END_SHUTDOWN_TIMEOUT_MS = 5000
+# Strong references keep an ended engine's only pending copy alive until drained.
+_PENDING_TAIL_ENGINES: set = set()
+
+
+def _flush_pending_tails_at_exit() -> None:
+    deadline = time.monotonic() + _SESSION_END_SHUTDOWN_TIMEOUT_MS / 1000
+    for engine in tuple(_PENDING_TAIL_ENGINES):
+        with engine._exclusive_lifecycle("exit flush", deadline=deadline) as acquired:
+            if acquired:
+                engine._retry_pending_session_tails(deadline=deadline, exiting=True)
+            else:
+                engine._warn_unflushed_session_tails("lifecycle lock")
+
+
+atexit.register(_flush_pending_tails_at_exit)
 # #909/#977: a condensation group of at most this many source tokens is about as long as its summary (Track S
 # output/source rises from about 0.35 at 1.4k tokens to about 0.8 at 0.85k), so condensing it cannot be relied on to
 # shrink the frontier. The configured L3 bound applies when larger: such a source is stored whole.
@@ -474,6 +662,324 @@ def _normalize_total_compactions(value: Any) -> int:
     return value
 
 
+class LeafPrepUnavailable(RuntimeError):
+    """#787: a background preparation cannot serialize this source without writing a payload file."""
+
+
+class LeafSummaryResult(NamedTuple):
+    """#787: one leaf summary and its provenance, returned instead of written to the engine."""
+
+    chunk: List[Dict[str, Any]]
+    source_tokens: int
+    summary: str
+    level: int
+    attempts: int
+    model: str
+    content_filter_error: bool
+    level_3_verbatim: bool
+
+
+def _leaf_target_tokens_for(config, source_tokens: int) -> int:
+    """Leaf summary target (#614); defaults give a fixed 2,000-token target: min(2000, max(2000, 20%)).
+
+    An explicit ratio has no effect while minimum equals maximum; set LCM_LEAF_TARGET_MAX_TOKENS
+    to enable the ratio or a minimum above the default cap. Environment loading warns about these cases.
+    A config object built without the #614 fields uses the class defaults.
+    """
+    ratio = getattr(config, "leaf_target_ratio", LCMConfig.leaf_target_ratio)
+    floor = getattr(config, "leaf_target_min_tokens", LCMConfig.leaf_target_min_tokens)
+    cap = getattr(config, "leaf_target_max_tokens", LCMConfig.leaf_target_max_tokens)
+    return min(cap, max(floor, int(source_tokens * ratio)))
+
+
+def _next_leaf_rescue_chunk_for(
+    config,
+    select_oldest: Callable[[List[Dict[str, Any]], int], List[Dict[str, Any]]],
+    current_chunk: List[Dict[str, Any]],
+    current_source_tokens: int,
+    final: bool = False,
+) -> List[Dict[str, Any]]:
+    if len(current_chunk) <= 1:
+        return []
+
+    # #1123: the rescue may shrink to the pre-v0.27.0 8,000-token chunk, and the last attempt goes straight to it,
+    # so a 24,000-token default leaf reaches a small-context summariser within its three attempts
+    # (24k -> 18k -> 8k); at or below 8,000 nothing changes.
+    floor_tokens = max(1, min(config.leaf_chunk_tokens, _LEAF_RESCUE_FLOOR_TOKENS))
+    if final and floor_tokens < config.leaf_chunk_tokens:
+        shrink_targets = [floor_tokens]
+    else:
+        shrink_targets = [
+            max(floor_tokens, int(current_source_tokens * 0.75)),
+            max(floor_tokens, int(current_source_tokens * 0.50)),
+        ]
+
+    for target in shrink_targets:
+        if target >= current_source_tokens:
+            continue
+        smaller = select_oldest(current_chunk, target)
+        if smaller and len(smaller) < len(current_chunk):
+            return smaller
+
+    return current_chunk[: tool_group_safe_end(current_chunk, len(current_chunk) - 1)]
+
+
+def _is_retry_worthy_leaf_summary_error(exc: Exception) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    message = str(exc).lower()
+    retry_markers = (
+        "context length",
+        "maximum context",
+        "max context",
+        "too many tokens",
+        "token limit",
+        "prompt is too long",
+        "input too long",
+        "request too large",
+        "timed out",
+        "timeout",
+    )
+    return any(marker in message for marker in retry_markers)
+
+
+def _primary_summary_route_for(config, circuit_breaker) -> str:
+    """#605: the route key whose estimate an engine-level admission reads: the first one the circuit allows."""
+    chain = _summary_model_chain(config.summary_model, config.summary_fallback_models)
+    return next((model for model in chain if circuit_breaker.allows(model)), chain[0])
+
+
+def _serialize_leaf_input(
+    messages: List[Dict[str, Any]],
+    *,
+    config,
+    hermes_home: str,
+    session_id: str,
+    externalize_write: bool = True,
+    budget_tokens: Optional[int] = None,
+) -> Tuple[str, bool]:
+    """Serialize messages into labeled text for the summarizer.
+
+    *session_id* names the session that owns the rows. A large tool result is externalized under that session.
+    Message texts, tool arguments and previews share budget_tokens (#611), defaulting to leaf_chunk_tokens.
+    ``externalize_write=False`` (#787,
+    background preparation) writes no payload file and raises LeafPrepUnavailable for a result whose file is not
+    already on disk.
+    """
+    parts: List[List[Any]] = []  # per message: literal strings and indexes into texts
+    texts: List[str] = []
+    kinds: List[str] = []
+
+    def text(value: str, kind: str = "message") -> int:
+        texts.append(value)
+        kinds.append(kind)
+        return len(texts) - 1
+
+    matched_tool_ids = _matched_tool_call_ids(messages)
+    tool_result_names = _tool_result_names(messages)
+    for index, msg in enumerate(messages):
+        role = msg.get("role", "unknown")
+        content = redact_sensitive_value(
+            msg.get("content") or "",
+            config,
+            parse_json_strings=False,
+        )
+        if role == "tool":
+            tool_id = str(msg.get("tool_call_id") or "").strip()
+            externalized = maybe_externalize_tool_output(
+                content,
+                tool_call_id=tool_id,
+                session_id=session_id,
+                config=config,
+                hermes_home=hermes_home,
+                tool_name=str(msg.get("tool_name") or tool_result_names.get(index, "")),
+                **({} if externalize_write else {"write": False, "create_storage": False}),
+            )
+            if externalized and not externalize_write and not Path(externalized["path"]).exists():
+                raise LeafPrepUnavailable("externalized tool result payload is not on disk")
+            if externalized:
+                preview = externalized_preview(sanitize_pre_compaction_content(content))
+                parts.append([f"[TOOL RESULT {tool_id}]: " + externalized["placeholder"], text(preview, "preview")])
+            else:
+                parts.append([f"[TOOL RESULT {tool_id}]: ", text(sanitize_pre_compaction_content(content))])
+            continue
+
+        content = sanitize_pre_compaction_content(content)
+
+        if role == "assistant":
+            # The host's in-memory chat history may set tool_calls to None for
+            # shape uniformity; stored rows never can (MessageStore.to_openai_msg
+            # drops the key when the value is falsy). Treat any falsy value as
+            # "no tool calls" rather than iterating it.
+            tool_calls = msg.get("tool_calls") or []
+            matched_tool_calls = [
+                tc for tc in tool_calls
+                if not _tool_call_id(tc) or _tool_call_id(tc) in matched_tool_ids
+            ]
+            if _is_synthetic_assistant_noise(content):
+                if not matched_tool_calls:
+                    continue
+                content = ""
+            part: List[Any] = ["[ASSISTANT]: ", text(content)]
+            if matched_tool_calls:
+                part.append("\n[Tool calls:\n")
+                first = True
+                for tc in matched_tool_calls:
+                    if isinstance(tc, dict):
+                        fn = tc.get("function", {})
+                        name = fn.get("name", "?")
+                        args = fn.get("arguments", "")
+                        args = redact_sensitive_value(
+                            args,
+                            config,
+                            parse_json_strings=True,
+                        )
+                        args = sanitize_pre_compaction_tool_arguments(args)
+                        part += [("" if first else "\n") + f"  {name}(", text(args, "arguments"), ")"]
+                        first = False
+                part.append("\n]")
+            parts.append(part)
+            continue
+
+        parts.append([f"[{role.upper()}]: ", text(content)])
+
+    clipped_texts = clip_to_budget(
+        texts, config.leaf_chunk_tokens if budget_tokens is None else budget_tokens, kinds)
+    clipped = any(before != after for before, after in zip(texts, clipped_texts))
+    texts = clipped_texts
+    return "\n\n".join("".join(texts[x] if isinstance(x, int) else x for x in part) for part in parts), clipped
+
+
+def summarize_leaf_chunk_with_rescue(
+    initial_chunk: List[Dict[str, Any]],
+    *,
+    config,
+    focus_topic: Optional[str],
+    circuit_breaker,
+    spend_guard,
+    serialize: Callable[..., Tuple[str, bool]],
+    leaf_target_tokens: Callable[[int], int],
+    next_rescue_chunk: Callable[..., List[Dict[str, Any]]],
+    primary_route: Callable[[], str],
+    retry_worthy: Callable[[Exception], bool],
+    budget: Optional[ForegroundBudget] = None,
+    deadline: Optional[float] = None,
+    route_key_prefix: str = "",
+    admit_rescue: Optional[Callable[[list], bool]] = None,
+) -> LeafSummaryResult:
+    """#787 D-2: the leaf summariser with its adaptive rescue (#751), every input explicit, the provenance and the
+    level 3 flags returned. The foreground passes its live values; a background preparation passes a snapshot,
+    its own breaker prefix and spend guard and no budget."""
+    attempt_chunk = list(initial_chunk)
+    max_attempts = 3
+    attempt_number = 0
+    clip_budget = config.leaf_chunk_tokens
+    floor = min(clip_budget, _LEAF_RESCUE_FLOOR_TOKENS)
+
+    while attempt_chunk and attempt_number < max_attempts:
+        attempt_number += 1
+        source_tokens = count_messages_tokens(attempt_chunk)
+        serialized, clipped = (
+            serialize(attempt_chunk)
+            if clip_budget == config.leaf_chunk_tokens else
+            serialize(attempt_chunk, budget_tokens=clip_budget)
+        )
+        token_budget = leaf_target_tokens(source_tokens)
+        logger.info(  # #611 recorder: the serialized summariser input of this leaf call
+            "LCM leaf summary input: input_tokens=%d source_tokens=%d messages=%d",
+            count_tokens(serialized), source_tokens, len(attempt_chunk),
+        )
+
+        # #751: a size refusal is excused only when a smaller chunk can still be tried
+        rescue_chunk = (
+            next_rescue_chunk(attempt_chunk, source_tokens, final=attempt_number + 1 >= max_attempts)
+            if attempt_number < max_attempts else []
+        )
+        can_rescue = bool(rescue_chunk) and len(rescue_chunk) < len(attempt_chunk)
+        rescue_budget = clip_budget
+        # #1132: an indivisible chunk, or an oversized final shrink, can still use #611's floor clip.
+        if (attempt_number < max_attempts and clip_budget > floor and count_tokens(serialized) > floor
+                and (not can_rescue or (attempt_number + 1 >= max_attempts
+                                       and count_messages_tokens(rescue_chunk) > floor))):
+            if not can_rescue:
+                rescue_chunk = attempt_chunk
+            rescue_budget = floor
+            can_rescue = True
+        try:
+            timeout_seconds = config.summary_timeout_ms / 1000
+            if budget is not None:  # #605: the chain caps each attempt; refuse here before any work
+                budget.admit(primary_route())
+            elif deadline is not None:
+                remaining_seconds = deadline - time.monotonic()
+                if remaining_seconds < _THRESHOLD_FULL_SWEEP_MIN_CALL_SECONDS:
+                    raise SweepBudgetExhausted("threshold full sweep time budget exhausted")
+                timeout_seconds = min(timeout_seconds, remaining_seconds)
+            provenance: dict[str, str] = {}
+            summary_text, level = summarize_with_escalation(
+                text=serialized,
+                source_tokens=source_tokens,
+                token_budget=token_budget,
+                depth=0,
+                model=config.summary_model,
+                fallback_models=config.summary_fallback_models,
+                reasoning_effort=config.summary_reasoning_effort,
+                circuit_breaker=circuit_breaker,
+                spend_guard=spend_guard,
+                timeout=timeout_seconds,
+                l2_budget_ratio=config.l2_budget_ratio,
+                l3_truncate_tokens=config.l3_truncate_tokens,
+                focus_topic=focus_topic or "",
+                custom_instructions=config.custom_instructions,
+                prompt_version=getattr(config, "summary_prompt_version", 1),
+                provenance=provenance,
+                **({"budget": budget} if budget is not None else
+                   {"deadline": deadline} if deadline is not None else {}),  # #666/#605: every attempt
+                **({"route_key_prefix": route_key_prefix} if route_key_prefix else {}),  # #787: prep keys
+                verbatim_small_source=not clipped,  # #605 F2; #947: clipped input is not whole
+                # #751: a refusal for size reaches the rescue below; without a smaller chunk it counts as before
+                context_length_rescue=can_rescue,
+            )
+            if level == 3 and provenance.get("context_length_error") and summary_text != serialized and can_rescue:
+                if admit_rescue is not None and not admit_rescue(rescue_chunk):  # #1147 r1: refuse before retry.
+                    raise UnattributedRescueRefused()
+                logger.warning(
+                    "LCM leaf summarization retrying with smaller oldest chunk after a context-length "
+                    "refusal (attempt %d/%d, %d→%d messages, clip budget %d→%d tokens)",
+                    attempt_number, max_attempts, len(attempt_chunk), len(rescue_chunk), clip_budget, rescue_budget,
+                )
+                attempt_chunk = rescue_chunk
+                clip_budget = rescue_budget
+                continue
+            return LeafSummaryResult(
+                attempt_chunk, source_tokens, summary_text, level, attempt_number,
+                model=provenance.get("model", ""),
+                content_filter_error=bool(provenance.get("content_filter_error")),
+                # #652: no fragment; #947: a clipped source returned unchanged by the level-3 fallback is a fragment
+                level_3_verbatim=level == 3 and not clipped and summary_text == serialized,
+            )
+        except Exception as exc:
+            if isinstance(exc, (SweepBudgetExhausted, UnattributedRescueRefused)):
+                raise  # #1147 r1: budget and lineage refusals cannot be retried.
+            if attempt_number >= max_attempts or not retry_worthy(exc):
+                raise
+            if not can_rescue:
+                raise
+            if admit_rescue is not None and not admit_rescue(rescue_chunk):  # #1147 r1: refuse before retry.
+                raise UnattributedRescueRefused()
+            logger.warning(
+                "LCM leaf summarization retrying with smaller oldest chunk after retry-worthy failure: %s (attempt %d/%d, %d→%d messages)",
+                exc,
+                attempt_number,
+                max_attempts,
+                len(attempt_chunk),
+                len(rescue_chunk),
+            )
+            attempt_chunk = rescue_chunk
+            clip_budget = rescue_budget
+
+    raise RuntimeError("adaptive leaf rescue exhausted without a valid chunk")
+
+
 _OVERFLOW_RECOVERY_PLACEHOLDER = (
     "[LCM overflow recovery] The active context held only orphaned tool results, "
     "which cannot be sent to the provider on their own, so they were dropped. "
@@ -534,6 +1040,8 @@ class LCMEngine(
         self._condensation_inflight_lock = threading.Lock()
         self._stable_use_owner_thread: int | None = None
         self._stable_use_closed = False
+        self._pending_session_tails: list[dict] = []
+        self._session_end_flush_active = False
         self._assertion_extraction_metrics_lock = threading.RLock()
         self._assertion_extraction_idle = threading.Event()
         self._assertion_extraction_idle.set()
@@ -792,6 +1300,8 @@ class LCMEngine(
         self._last_compress_leaves: Optional[tuple[str, int]] = None  # #597: latest call, bound conversation
         self._last_hidden_backlog: Optional[HiddenBacklog] = None  # #597: latest check in this compress()
         self._hidden_backlog_unknown_warned: set[str] = set()
+        self._unattributed_leaf_warned: set[tuple[str, int]] = set()
+        self._leaf_rescue_admit: Callable[[list], bool] | None = None  # #1147 r1: per-call rescue lineage check
         self._compaction_request = CompactionRequest()
         self._no_progress_candidate = False  # set by _compress_impl for compress()
         self._objective_only_noop = False
@@ -848,6 +1358,7 @@ class LCMEngine(
         # diagnostic drains do not retain every historical session key forever.
         self._rollup_maintenance_owner = object()
         self._embedding_maintenance_owner = object()
+        self._embedding_maintenance_retired = False
         # Host-facing engine name: ENGINE_NAME, or the legacy alias when the
         # active Hermes config still selects ``context.engine: lcm`` (#471).
         self._engine_name = ENGINE_NAME
@@ -1000,6 +1511,7 @@ class LCMEngine(
 
     def _close_storage(self) -> None:
         """Best-effort close of currently bound SQLite helpers."""
+        self._discard_prepared_leaves()
         for attr in (
             "_adaptive_retrieval",
             "_store",
@@ -1009,6 +1521,10 @@ class LCMEngine(
             "_query_views",
         ):
             helper = getattr(self, attr, None)
+            if attr == "_store" and any(
+                tail["store"] is helper for tail in self._pending_session_tails
+            ):
+                continue  # A profile rebind must not close a pending tail's store.
             close = getattr(helper, "close", None)
             if callable(close):
                 try:
@@ -1032,6 +1548,7 @@ class LCMEngine(
 
     def _reset_profile_runtime_state(self) -> None:
         """Clear process-local session state that cannot cross profile homes."""
+        self._discard_prepared_leaves()  # #787: a configured database path keeps its store across homes
         self._store.clear_context_windows()
         # R6-4: survival-fit warnings belong to the store they were raised on.
         self._survival_fit_pending_warning, self._survival_fit_warned = None, set()
@@ -1712,8 +2229,7 @@ class LCMEngine(
 
     def _primary_summary_route(self) -> str:
         """#605: the route key whose estimate an engine-level admission reads: the first one the circuit allows."""
-        chain = _summary_model_chain(self._config.summary_model, self._config.summary_fallback_models)
-        return next((model for model in chain if self._summary_circuit_breaker.allows(model)), chain[0])
+        return _primary_summary_route_for(self._config, self._summary_circuit_breaker)
 
     def _foreground_budget_seconds(self) -> tuple[float, float]:
         """#605: (soft, hard) seconds; an invalid hard is 120, an invalid soft 60, and soft is at most hard."""
@@ -1824,6 +2340,21 @@ class LCMEngine(
         leaves = self._last_compress_leaves
         progress = leaves is not None and leaves[0] == self._hold_conversation_key() and leaves[1] >= 1
         self._start_no_progress_hold("host_rejected_progress" if progress else "host_rejected")
+
+    def _discard_prepared_leaves(self) -> None:
+        """#787: shutdown and storage rebind drop this store's queued preparations and prepared leaves."""
+        store = getattr(self, "_store", None)
+        if store is not None:
+            leaf_prep.discard(store.db_path)
+
+    def _prepare_leaves_after_turn(self, history) -> None:
+        """#787 (default off): after a completed turn's ingest, enqueue one background leaf preparation (O(1))."""
+        if not getattr(self._config, "background_leaf_prep_enabled", False):
+            return
+        try:
+            leaf_prep.enqueue_after_turn(self, history)
+        except Exception:
+            logger.debug("LCM background leaf preparation enqueue failed", exc_info=True)
 
     def note_turn_complete(self) -> None:
         """#597/#922/#904: end turn-paced holds at the end of a foreground turn of this engine (never a
@@ -2181,22 +2712,7 @@ class LCMEngine(
                 self._record_ingest_failure("per-turn ingest()", e)
 
     def _is_retry_worthy_leaf_summary_error(self, exc: Exception) -> bool:
-        if isinstance(exc, TimeoutError):
-            return True
-        message = str(exc).lower()
-        retry_markers = (
-            "context length",
-            "maximum context",
-            "max context",
-            "too many tokens",
-            "token limit",
-            "prompt is too long",
-            "input too long",
-            "request too large",
-            "timed out",
-            "timeout",
-        )
-        return any(marker in message for marker in retry_markers)
+        return _is_retry_worthy_leaf_summary_error(exc)
 
     def _next_leaf_rescue_chunk(
         self,
@@ -2204,42 +2720,12 @@ class LCMEngine(
         current_source_tokens: int,
         final: bool = False,
     ) -> List[Dict[str, Any]]:
-        if len(current_chunk) <= 1:
-            return []
-
-        # #1123: the rescue may shrink to the pre-v0.27.0 8,000-token chunk, and the last attempt goes straight to it,
-        # so a 24,000-token default leaf reaches a small-context summariser within its three attempts
-        # (24k -> 18k -> 8k); at or below 8,000 nothing changes.
-        floor_tokens = max(1, min(self._config.leaf_chunk_tokens, _LEAF_RESCUE_FLOOR_TOKENS))
-        if final and floor_tokens < self._config.leaf_chunk_tokens:
-            shrink_targets = [floor_tokens]
-        else:
-            shrink_targets = [
-                max(floor_tokens, int(current_source_tokens * 0.75)),
-                max(floor_tokens, int(current_source_tokens * 0.50)),
-            ]
-
-        for target in shrink_targets:
-            if target >= current_source_tokens:
-                continue
-            smaller = self._select_oldest_leaf_chunk(current_chunk, target)
-            if smaller and len(smaller) < len(current_chunk):
-                return smaller
-
-        return current_chunk[: tool_group_safe_end(current_chunk, len(current_chunk) - 1)]
+        return _next_leaf_rescue_chunk_for(
+            self._config, self._select_oldest_leaf_chunk, current_chunk, current_source_tokens, final=final)
 
     def _leaf_target_tokens(self, source_tokens: int) -> int:
-        """Leaf summary target (#614); defaults give a fixed 2,000-token target: min(2000, max(2000, 20%)).
-
-        An explicit ratio has no effect while minimum equals maximum; set LCM_LEAF_TARGET_MAX_TOKENS
-        to enable the ratio or a minimum above the default cap. Environment loading warns about these cases.
-        A config object built without the #614 fields uses the class defaults.
-        """
-        cfg = self._config
-        ratio = getattr(cfg, "leaf_target_ratio", LCMConfig.leaf_target_ratio)
-        floor = getattr(cfg, "leaf_target_min_tokens", LCMConfig.leaf_target_min_tokens)
-        cap = getattr(cfg, "leaf_target_max_tokens", LCMConfig.leaf_target_max_tokens)
-        return min(cap, max(floor, int(source_tokens * ratio)))
+        """Leaf summary target (#614); defaults give a fixed 2,000-token target: min(2000, max(2000, 20%))."""
+        return _leaf_target_tokens_for(self._config, source_tokens)
     def _take_leaf_summary_model(self) -> str:
         """Return and clear the model that produced the last leaf summary (#441)."""
         model = getattr(self, "_last_leaf_summary_model", "")
@@ -2252,108 +2738,26 @@ class LCMEngine(
         focus_topic: Optional[str] = None,
         deadline: Optional[float] = None,
     ) -> tuple[List[Dict[str, Any]], int, str, int, int]:
-        attempt_chunk = list(initial_chunk)
-        budget = self._foreground_call_budget()
-        max_attempts = 3
-        attempt_number = 0
-        clip_budget = self._config.leaf_chunk_tokens
-        floor = min(clip_budget, _LEAF_RESCUE_FLOOR_TOKENS)
-
-        while attempt_chunk and attempt_number < max_attempts:
-            attempt_number += 1
-            source_tokens = count_messages_tokens(attempt_chunk)
-            serialized, clipped = (
-                self._serialize_messages_with_clip(attempt_chunk)
-                if clip_budget == self._config.leaf_chunk_tokens else
-                self._serialize_messages_with_clip(attempt_chunk, budget_tokens=clip_budget)
-            )
-            token_budget = self._leaf_target_tokens(source_tokens)
-            logger.info(  # #611 recorder: the serialized summariser input of this leaf call
-                "LCM leaf summary input: input_tokens=%d source_tokens=%d messages=%d",
-                count_tokens(serialized), source_tokens, len(attempt_chunk),
-            )
-
-            # #751: a size refusal is excused only when a smaller chunk can still be tried
-            rescue_chunk = (
-                self._next_leaf_rescue_chunk(attempt_chunk, source_tokens, final=attempt_number + 1 >= max_attempts)
-                if attempt_number < max_attempts else []
-            )
-            can_rescue = bool(rescue_chunk) and len(rescue_chunk) < len(attempt_chunk)
-            rescue_budget = clip_budget
-            # #1132: an indivisible chunk, or an oversized final shrink, can still use #611's floor clip.
-            if (attempt_number < max_attempts and clip_budget > floor and count_tokens(serialized) > floor
-                    and (not can_rescue or (attempt_number + 1 >= max_attempts
-                                           and count_messages_tokens(rescue_chunk) > floor))):
-                if not can_rescue:
-                    rescue_chunk = attempt_chunk
-                rescue_budget = floor
-                can_rescue = True
-            try:
-                timeout_seconds = self._config.summary_timeout_ms / 1000
-                if budget is not None:  # #605: the chain caps each attempt; refuse here before any work
-                    budget.admit(self._primary_summary_route())
-                elif deadline is not None:
-                    remaining_seconds = deadline - time.monotonic()
-                    if remaining_seconds < _THRESHOLD_FULL_SWEEP_MIN_CALL_SECONDS:
-                        raise SweepBudgetExhausted("threshold full sweep time budget exhausted")
-                    timeout_seconds = min(timeout_seconds, remaining_seconds)
-                provenance: dict[str, str] = {}
-                summary_text, level = summarize_with_escalation(
-                    text=serialized,
-                    source_tokens=source_tokens,
-                    token_budget=token_budget,
-                    depth=0,
-                    model=self._config.summary_model,
-                    fallback_models=self._config.summary_fallback_models,
-                    reasoning_effort=self._config.summary_reasoning_effort,
-                    circuit_breaker=self._summary_circuit_breaker,
-                    spend_guard=self._summary_spend_guard,
-                    timeout=timeout_seconds,
-                    l2_budget_ratio=self._config.l2_budget_ratio,
-                    l3_truncate_tokens=self._config.l3_truncate_tokens,
-                    focus_topic=focus_topic or "",
-                    custom_instructions=self._config.custom_instructions,
-                    prompt_version=getattr(self._config, "summary_prompt_version", 1),
-                    provenance=provenance,
-                    **({"budget": budget} if budget is not None else
-                       {"deadline": deadline} if deadline is not None else {}),  # #666/#605: every attempt
-                    verbatim_small_source=not clipped,  # #605 F2; #947: clipped input is not whole
-                    # #751: a refusal for size reaches the rescue below; without a smaller chunk it counts as before
-                    context_length_rescue=can_rescue,
-                )
-                if level == 3 and provenance.get("context_length_error") and summary_text != serialized and can_rescue:
-                    logger.warning(
-                        "LCM leaf summarization retrying with smaller oldest chunk after a context-length "
-                        "refusal (attempt %d/%d, %d→%d messages, clip budget %d→%d tokens)",
-                        attempt_number, max_attempts, len(attempt_chunk), len(rescue_chunk), clip_budget, rescue_budget,
-                    )
-                    attempt_chunk = rescue_chunk
-                    clip_budget = rescue_budget
-                    continue
-                self._last_leaf_summary_model = provenance.get("model", "")
-                self._last_leaf_content_filter_error = bool(provenance.get("content_filter_error"))
-                # #652: no fragment; #947: a clipped source returned unchanged by the level-3 fallback is a fragment too
-                self._last_leaf_level_3_verbatim = level == 3 and not clipped and summary_text == serialized
-                return attempt_chunk, source_tokens, summary_text, level, attempt_number
-            except Exception as exc:
-                if isinstance(exc, SweepBudgetExhausted):
-                    raise  # a smaller chunk cannot get the time back
-                if attempt_number >= max_attempts or not self._is_retry_worthy_leaf_summary_error(exc):
-                    raise
-                if not can_rescue:
-                    raise
-                logger.warning(
-                    "LCM leaf summarization retrying with smaller oldest chunk after retry-worthy failure: %s (attempt %d/%d, %d→%d messages)",
-                    exc,
-                    attempt_number,
-                    max_attempts,
-                    len(attempt_chunk),
-                    len(rescue_chunk),
-                )
-                attempt_chunk = rescue_chunk
-                clip_budget = rescue_budget
-
-        raise RuntimeError("adaptive leaf rescue exhausted without a valid chunk")
+        """The foreground leaf summariser: the live values in, the provenance written back (#441, #652)."""
+        result = summarize_leaf_chunk_with_rescue(
+            initial_chunk,
+            config=self._config,
+            focus_topic=focus_topic,
+            circuit_breaker=self._summary_circuit_breaker,
+            spend_guard=self._summary_spend_guard,
+            serialize=self._serialize_messages_with_clip,
+            leaf_target_tokens=self._leaf_target_tokens,
+            next_rescue_chunk=self._next_leaf_rescue_chunk,
+            primary_route=self._primary_summary_route,
+            retry_worthy=self._is_retry_worthy_leaf_summary_error,
+            budget=self._foreground_call_budget(),
+            deadline=deadline,
+            admit_rescue=getattr(self, "_leaf_rescue_admit", None),
+        )
+        self._last_leaf_summary_model = result.model
+        self._last_leaf_content_filter_error = result.content_filter_error
+        self._last_leaf_level_3_verbatim = result.level_3_verbatim
+        return result.chunk, result.source_tokens, result.summary, result.level, result.attempts
 
     # -- ContextEngine optional methods ------------------------------------
 
@@ -2427,7 +2831,7 @@ class LCMEngine(
         one pass queued per database, and the pass runs the backfill core under
         its lease on a private connection.
         """
-        if not getattr(self._config, "embeddings_enabled", False):
+        if self._embedding_maintenance_retired or not getattr(self._config, "embeddings_enabled", False):
             return
         try:
             raw_database_path = str(self._dag.db_path)
@@ -2474,6 +2878,19 @@ class LCMEngine(
                 exc_info=True,
             )
 
+    def _rearm_embedding_maintenance(self) -> None:
+        self._embedding_maintenance_retired = False
+
+    def _retire_embedding_maintenance(self, wait: bool) -> None:
+        self._embedding_maintenance_retired = True
+        try:
+            _EMBEDDING_MAINTENANCE_SCHEDULER.retire_owner(
+                self._embedding_maintenance_owner,
+                timeout=_EMBEDDING_RETIRE_TIMEOUT_S if wait else 0,
+            )
+        except Exception:
+            logger.warning("LCM could not retire background incremental embedding", exc_info=True)
+
     def drain_embedding_maintenance(self, timeout: float | None = None) -> bool:
         """Wait for embedding passes scheduled by this engine (tests and diagnostics)."""
         return _EMBEDDING_MAINTENANCE_SCHEDULER.drain_owner(
@@ -2495,6 +2912,7 @@ class LCMEngine(
         conversation_id: str | None = None,
     ) -> None:
         state = self._lifecycle.bind_session(session_id, conversation_id=conversation_id)
+        self._rearm_embedding_maintenance()
         if getattr(self, "_survival_overhead_observation", None) is not None and \
                 self._survival_overhead_observation[0] != state.conversation_id:
             self._survival_overhead_observation = None
@@ -3518,6 +3936,9 @@ class LCMEngine(
                 frontier,
             )
         self._last_compacted_store_id = frontier
+        if self._embedding_maintenance_retired:
+            self._rearm_embedding_maintenance()
+            self._schedule_embedding_maintenance()
         logger.info(
             "LCM re-bound %s after an unadopted compaction commit or another engine's end (frontier=%d)",
             self._session_id, frontier,
@@ -3593,6 +4014,9 @@ class LCMEngine(
             self._last_compacted_store_id,
             self._ingest_cursor if cursor_proven else "reconcile",
         )
+        if self._embedding_maintenance_retired:
+            self._rearm_embedding_maintenance()
+            self._schedule_embedding_maintenance()
         return True
 
     def _continue_compression_boundary(
@@ -3970,6 +4394,80 @@ class LCMEngine(
             "reset_epoch": state.last_reset_at if state is not None else None,
         }
 
+    def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
+        """Handle Hermes' reset-only switch after an end or an empty /new.
+
+        CLI /new omits on_session_start, but reset_session_state supplies the
+        new id here. The host DB stays host-owned; only the explicit id is used.
+        Detachment is unsupported: Hermes must keep review-fork compression off.
+        """
+        session_id = str(session_id or "")
+        if not session_id:
+            raise NotImplementedError(
+                "LCM-X cannot detach a context engine from its session; "
+                "keep compression off on this fork"
+            )
+        with self._exclusive_lifecycle("rebind"):
+            if (
+                self._stable_use_closed
+                or not self._session_id
+                or session_id == self._session_id
+                or self._session_id != self._foreground_session_id
+                or self._thread_context_stateless()
+                or self._thread_context_has_auxiliary_session(session_id)
+                or self._is_live_auxiliary_child_session(session_id, self._session_id, {})
+            ):
+                return
+            state = self._lifecycle.get_by_conversation(self._conversation_id)
+            if state is not None and state.current_session_id == self._session_id:
+                # Empty-history CLI /new skips end. Require a reset of this exact
+                # binding and no stored/attempted ingest or summary/commit history.
+                # Prefix fingerprints survive reset, including a failed ingest.
+                empty_reset_binding = (
+                    self._pending_reset_session_id == self._session_id
+                    and self._pending_reset_conversation_id == self._conversation_id
+                    and self._pending_reset_frontier_store_id == 0
+                    and self._ingest_cursor == 0
+                    and not self._compression_boundary_ingest_pending
+                    and not self._pending_context_anchor_messages
+                    and not self._lcm_normal_message_prefix_fingerprints.get(
+                        (self._session_id, self._conversation_id)
+                    )
+                    and state.current_frontier_store_id == 0
+                    and state.last_finalized_session_id is None
+                    and state.last_finalized_frontier_store_id == 0
+                    and state.last_finalized_at is None
+                    and state.last_rollover_at is None
+                    and state.last_maintenance_attempt_at is None
+                    and not state.debt_kind and state.debt_size_estimate == 0
+                    and state.last_reset_at is not None
+                    and state.updated_at == state.last_reset_at
+                    and self._store.get_session_count(self._session_id) == 0
+                    and self._dag.get_session_node_count(self._session_id) == 0
+                    and self._dag.get_session_node_count(self._conversation_id) == 0
+                )
+                if not empty_reset_binding:
+                    return
+                self._on_session_end_unlocked(self._session_id, [])
+                if self._session_ignored or self._session_stateless:
+                    # Bypass end hooks skip lifecycle writes. The exact reset
+                    # and empty-binding proof above permits finalizing here.
+                    self._lifecycle.finalize_session(self._conversation_id, self._session_id)
+                state = self._lifecycle.get_by_conversation(self._conversation_id)
+            if (
+                state is None
+                or state.current_session_id is not None
+                or state.last_finalized_session_id != self._session_id
+            ):
+                return
+            self._on_session_start_unlocked(session_id, platform=self._session_platform)
+            if self._session_ignored or self._session_stateless:
+                # This is an explicit foreground reset, unlike a side-channel
+                # start. Keep it eligible for the next reset back to normal.
+                self._foreground_session_id = self._session_id
+                self._foreground_session_platform = self._session_platform
+                self._foreground_conversation_id = self._conversation_id
+
     def on_session_start(self, session_id: str, **kwargs) -> None:
         with self._exclusive_lifecycle("rebind"):
             if self._stable_use_closed:
@@ -3981,6 +4479,9 @@ class LCMEngine(
                     setattr(self, name, None)
 
     def _on_session_start_unlocked(self, session_id: str, **kwargs) -> None:
+        # The post-LLM hook also binds here under stable engine use, without
+        # entering the public wrapper.
+        self._retry_session_end_tails()
         if "hermes_home" in kwargs:
             self._rebind_storage_for_home(str(kwargs.get("hermes_home") or ""))
         if getattr(self, "_legacy_conversation_ids_store", None) is not self._store:
@@ -4274,7 +4775,11 @@ class LCMEngine(
         with self._exclusive_lifecycle("end"):
             if self._stable_use_closed:
                 return
-            self._on_session_end_unlocked(session_id, messages)
+            self._retry_session_end_tails()
+            try:
+                self._on_session_end_unlocked(session_id, messages)
+            finally:
+                self._session_end_flush_active = False
 
     def _on_session_end_unlocked(
         self,
@@ -4555,6 +5060,18 @@ class LCMEngine(
                 self._session_id,
             )
             return
+        # Only this path ends the foreground binding. Same-id bypass callbacks
+        # above can leave it serving, so session-id equality alone is insufficient.
+        try:
+            self._finalize_foreground_session_end_unlocked(session_id, messages)
+        finally:
+            self._retire_embedding_maintenance(wait=False)
+
+    def _finalize_foreground_session_end_unlocked(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+    ) -> None:
         proof = getattr(self, "_compress_commit_proof", None)
         if (
             proof
@@ -4587,6 +5104,7 @@ class LCMEngine(
             )
             return
         unflushed = max(0, len(messages) - self._ingest_cursor)
+        pending_before = len(self._pending_session_tails)
         ingest_finished = False
         try:
             with _temporary_sqlite_busy_timeout(
@@ -4605,10 +5123,12 @@ class LCMEngine(
                     # Only the current-session full-history session-end call may
                     # consume session-end replay proof; ordinary ingest never
                     # does, so a host-supplied history cannot skip a fresh delta.
+                    self._session_end_flush_active = True
                     self._ingest_messages(
                         messages,
                         allow_session_end_replay_proof=is_current_session_full_history_end,
                     )
+                    self._session_end_flush_active = False
                     ingest_finished = True
                 except KeyboardInterrupt:
                     logger.warning(
@@ -4621,7 +5141,10 @@ class LCMEngine(
                     if _is_sqlite_locked_error(exc):
                         logger.warning(
                             "LCM session-end raw-message ingest skipped due to SQLite lock after short wait; "
-                            "final messages may be absent from the plugin-local store: %s unflushed=%d",
+                            "%s: %s unflushed=%d",
+                            "retry pending at the next session start or shutdown"
+                            if len(self._pending_session_tails) > pending_before
+                            else "final messages may be absent from the plugin-local store",
                             exc,
                             unflushed,
                         )
@@ -5062,6 +5585,8 @@ class LCMEngine(
             "threshold_full_sweep": dict(self._last_threshold_full_sweep),
             "last_stub_first_exit": dict(self._last_stub_first_exit) if self._last_stub_first_exit else None,
             "no_progress_hold": self._no_progress_hold_status(),
+            **({"background_leaf_prep": leaf_prep.status()}  # #787 D-13; absent while off
+               if getattr(self._config, "background_leaf_prep_enabled", False) else {}),
             "zero_leaf_streak": self._zero_leaf_streak_status(),
             "ingest_failure_count": self._ingest_failure_count,
             "consecutive_ingest_failures": self._consecutive_ingest_failures,
@@ -5497,9 +6022,11 @@ class LCMEngine(
         cached: List[Dict[str, Any]],
         fresh: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        """#772: a stub and its payload share an identity, so the cache would resurrect a host-held stub."""
+        """#772: a stub and its payload share an identity, so the cache would resurrect a host-held stub.
+        #773: the host's pruned-tool placeholder shares its stored row's identity too, so the host keeps it."""
         def is_stub(message: Dict[str, Any]) -> bool:
-            return is_externalized_placeholder(text_content_for_pattern_matching(message.get("content")) or "")
+            text = text_content_for_pattern_matching(message.get("content")) or ""
+            return is_externalized_placeholder(text) or text == _HERMES_PRUNED_TOOL_PLACEHOLDER
 
         current = [
             fresh[idx]
@@ -5933,6 +6460,7 @@ class LCMEngine(
         self._capture_host_rewrites(messages)
         n = len(messages)
         cursor = min(max(self._ingest_cursor, 0), n)
+        accepted_compaction_prefix = 0
         proof = getattr(self, "_compress_commit_proof", None)
         if (
             not self._ingest_cursor_needs_reconcile
@@ -5962,12 +6490,14 @@ class LCMEngine(
             elif n >= self._ingest_cursor and [
                 self._proof_replay_identity(m, strip_carrier=False) for m in messages[: self._ingest_cursor]
             ] == proof["output"]:
+                accepted_compaction_prefix = cursor
                 self._compress_commit_proof = None
             elif (proof.get("end_consumed") or proof.get("native")) and host_input is not None and n >= len(host_input) and [
                 self._proof_replay_identity(m, strip_carrier=False) for m in messages[: len(host_input)]
             ] == host_input:
                 self._ingest_cursor = len(host_input)
                 cursor = self._ingest_cursor
+                accepted_compaction_prefix = cursor
                 self._compress_commit_proof = None
             else:
                 remapped = self._remap_cursor_through_host_merge(messages, proof)
@@ -5976,6 +6506,7 @@ class LCMEngine(
                 if remapped is not None:
                     self._ingest_cursor = remapped
                     cursor = remapped
+                    accepted_compaction_prefix = cursor
                     self._compress_commit_proof = None
                 else:
                     self._ingest_cursor_needs_reconcile = True
@@ -6084,10 +6615,13 @@ class LCMEngine(
                 audit_from = next((idx for idx, identity in enumerate(current_prefix_identities)
                                    if identity != cached_source_identities[idx]), None)
             try:
-                if reconciled_existing_session and cursor > 0:
+                if (reconciled_existing_session or accepted_compaction_prefix) and cursor > 0:
                     self._store.backfill_observed_at_many(
                         self._identity_anchor_backfill_prefix(messages, reconcile_messages, cursor))
-                anchor_plan = self._identity_anchor_prematch(messages, reconcile_messages, cursor, audit_from)
+                # #1403: the accepted output supersedes the stale pre-compaction cache for
+                # this ingest only. The one-shot commit proof has already retired above.
+                accepted = {"accepted_prefix": accepted_compaction_prefix} if accepted_compaction_prefix else {}
+                anchor_plan = self._identity_anchor_prematch(messages, reconcile_messages, cursor, audit_from, **accepted)
                 anchor_plan["replayed"] -= replayed_tool_segment_indexes
                 self._identity_anchor_version_rewind(messages, anchor_plan)
                 self._identity_anchor_commit(anchor_plan)
@@ -6438,17 +6972,29 @@ class LCMEngine(
                 active_replay_messages[absolute_idx] = stubbed_message
 
         estimates = [count_message_tokens(m) for m in protected_messages]
-        store_ids = self._store._append_protected_batch(
-            self._session_id,
-            protected_messages,
-            estimates,
-            source=self._session_platform,
-            conversation_id=self._conversation_id,
-            metadata_factory=self._real_user_scaffold_metadata_rows,
-            metadata_messages=[
-                msg for _idx, msg in messages_to_store_with_index
-            ],
+        batch = dict(
+            store=self._store, session_id=self._session_id,
+            source=self._session_platform, conversation_id=self._conversation_id,
+            messages=protected_messages, estimates=estimates,
+            metadata_messages=[msg for _idx, msg in messages_to_store_with_index],
         )
+        pending_after_store_id = 0
+        if self._session_end_flush_active:
+            tail = self._store.get_session_tail(self._session_id, limit=1)
+            pending_after_store_id = tail[-1]["store_id"] if tail else 0
+        try:
+            store_ids = self._append_ingest_batch(batch)
+        except Exception as exc:
+            if self._session_end_flush_active and _is_sqlite_locked_error(exc):
+                # Freeze the already filtered/protected rows, not the host's
+                # mutable history or the next session's ingest cursor.
+                pending = {**batch, "after_store_id": pending_after_store_id}
+                for key in ("messages", "estimates", "metadata_messages"):
+                    pending[key] = copy.deepcopy(pending[key])
+                if not any(old == pending for old in self._pending_session_tails):
+                    self._pending_session_tails.append(pending)
+                _PENDING_TAIL_ENGINES.add(self)
+            raise
         originals = [messages[idx] for idx, _msg in messages_to_store_with_index]
         self._watch_stored_user_rows(zip(originals, protected_messages, store_ids))
         if anchor_plan is not None:
@@ -6783,85 +7329,13 @@ class LCMEngine(
         Message texts, tool arguments and previews share budget_tokens (#611),
         defaulting to leaf_chunk_tokens when omitted.
         """
-        parts: List[List[Any]] = []  # per message: literal strings and indexes into texts
-        texts: List[str] = []
-        kinds: List[str] = []
-
-        def text(value: str, kind: str = "message") -> int:
-            texts.append(value)
-            kinds.append(kind)
-            return len(texts) - 1
-
-        matched_tool_ids = _matched_tool_call_ids(messages)
-        tool_result_names = _tool_result_names(messages)
-        for index, msg in enumerate(messages):
-            role = msg.get("role", "unknown")
-            content = redact_sensitive_value(
-                msg.get("content") or "",
-                self._config,
-                parse_json_strings=False,
-            )
-            if role == "tool":
-                tool_id = str(msg.get("tool_call_id") or "").strip()
-                externalized = maybe_externalize_tool_output(
-                    content,
-                    tool_call_id=tool_id,
-                    session_id=self._session_id if session_id is None else session_id,
-                    config=self._config,
-                    hermes_home=self._hermes_home,
-                    tool_name=str(msg.get("tool_name") or tool_result_names.get(index, "")),
-                )
-                if externalized:
-                    preview = externalized_preview(sanitize_pre_compaction_content(content))
-                    parts.append([f"[TOOL RESULT {tool_id}]: " + externalized["placeholder"], text(preview, "preview")])
-                else:
-                    parts.append([f"[TOOL RESULT {tool_id}]: ", text(sanitize_pre_compaction_content(content))])
-                continue
-
-            content = sanitize_pre_compaction_content(content)
-
-            if role == "assistant":
-                # The host's in-memory chat history may set tool_calls to None for
-                # shape uniformity; stored rows never can (MessageStore.to_openai_msg
-                # drops the key when the value is falsy). Treat any falsy value as
-                # "no tool calls" rather than iterating it.
-                tool_calls = msg.get("tool_calls") or []
-                matched_tool_calls = [
-                    tc for tc in tool_calls
-                    if not _tool_call_id(tc) or _tool_call_id(tc) in matched_tool_ids
-                ]
-                if _is_synthetic_assistant_noise(content):
-                    if not matched_tool_calls:
-                        continue
-                    content = ""
-                part: List[Any] = ["[ASSISTANT]: ", text(content)]
-                if matched_tool_calls:
-                    part.append("\n[Tool calls:\n")
-                    first = True
-                    for tc in matched_tool_calls:
-                        if isinstance(tc, dict):
-                            fn = tc.get("function", {})
-                            name = fn.get("name", "?")
-                            args = fn.get("arguments", "")
-                            args = redact_sensitive_value(
-                                args,
-                                self._config,
-                                parse_json_strings=True,
-                            )
-                            args = sanitize_pre_compaction_tool_arguments(args)
-                            part += [("" if first else "\n") + f"  {name}(", text(args, "arguments"), ")"]
-                            first = False
-                    part.append("\n]")
-                parts.append(part)
-                continue
-
-            parts.append([f"[{role.upper()}]: ", text(content)])
-
-        clipped_texts = clip_to_budget(
-            texts, self._config.leaf_chunk_tokens if budget_tokens is None else budget_tokens, kinds)
-        clipped = any(before != after for before, after in zip(texts, clipped_texts))
-        texts = clipped_texts
-        return "\n\n".join("".join(texts[x] if isinstance(x, int) else x for x in part) for part in parts), clipped
+        return _serialize_leaf_input(
+            messages,
+            config=self._config,
+            hermes_home=self._hermes_home,
+            session_id=self._session_id if session_id is None else session_id,
+            budget_tokens=budget_tokens,
+        )
 
     # -- Internal: tool-pair sanitization ------------------------------------
 
@@ -8346,16 +8820,8 @@ class LCMEngine(
                 system_msg, tail_messages, assembly_cap_override, include_lcm_note, retained_user_message,
                 stub_over_cap_tool_results, persist, (*kept_reply["rejected"], f"step{kept_reply['step']}={why}"))
 
-        # Stamp only final standalone generated occurrences, never a same-text host row.
-        # Explicit carriers and assistant merges with human text are not generated rows.
-        # Measurement candidates above never receive display metadata.
-        key = _model_only_display_metadata_key() if generated_rows else None
-        if key is not None:
-            generated_ids = {id(row) for row in generated_rows}
-            for row in result:
-                if id(row) in generated_ids:
-                    row["display_metadata"] = {**(row.get("display_metadata") or {}), key: True}
         if not persist:
+            _stamp_generated_model_only(result, generated_rows)
             return result
 
         existing_folded_lineage = self._load_folded_tail_lineage(result)
@@ -8369,11 +8835,14 @@ class LCMEngine(
                 folded_source_store_id,
             ):
                 result[folded_result_index] = folded_original_tail
-                result = self._sanitize_active_context_messages(result)
+                result = self._sanitize_active_context_messages(result, generated_rows=generated_rows)
                 self._clear_folded_tail_lineage()
         elif existing_folded_lineage is None:
             self._clear_folded_tail_lineage()
 
+        # Decide only after the final cleanup, including fold recovery. Trial
+        # assemblies above use the same decision without publishing proof.
+        _stamp_generated_model_only(result, generated_rows)
         # Persist proof only for the exact provider-visible compacted snapshot
         # assembled by this engine. Ingested input is not trusted replay proof.
         self._remember_compacted_active_replay_snapshot(result)
@@ -9133,17 +9602,127 @@ class LCMEngine(
 
     # -- Lifecycle ---------------------------------------------------------
 
+    def _retry_session_end_tails(self, *, deadline: float | None = None) -> None:
+        # Hermes can replace the engine at /new or /resume. The ended instance
+        # still owns its batch and lock; a sibling bind supplies the retry point.
+        if deadline is None:
+            deadline = time.monotonic() + _SESSION_END_BUSY_TIMEOUT_MS / 1000
+        self._retry_pending_session_tails(deadline=deadline)
+        for engine in tuple(_PENDING_TAIL_ENGINES):
+            if engine is self or time.monotonic() >= deadline:
+                continue
+            if not any(t["store"].db_path == self._store.db_path for t in engine._pending_session_tails):
+                continue
+            # Never wait for a sibling lifecycle (or invert its lock ordering).
+            if engine._stable_use_lock.acquire(blocking=False):
+                try:
+                    engine._retry_pending_session_tails(deadline=deadline)
+                finally:
+                    engine._stable_use_lock.release()
+
+    def _append_ingest_batch(self, batch: dict) -> list[int]:
+        """The same atomic raw-row/provenance write for ingest and end retry."""
+        return batch["store"]._append_protected_batch(
+            batch["session_id"], batch["messages"], batch["estimates"],
+            source=batch["source"], conversation_id=batch["conversation_id"],
+            metadata_factory=self._real_user_scaffold_metadata_rows,
+            metadata_messages=batch["metadata_messages"],
+        )
+
+    @staticmethod
+    def _pending_row_identity(message: dict, *, stored: bool = False) -> tuple:
+        # These are already protected storage rows: do not apply active-session
+        # projections or lossy matching. Position + full payload + host stamp
+        # distinguish repeated occurrences without a new durable identity.
+        return (
+            message.get("role", "unknown"), normalize_content_value(message.get("content")),
+            message.get("tool_call_id"), json.dumps(message.get("tool_calls") or None, sort_keys=True),
+            message.get("tool_name"),
+            message.get("observed_at") if stored else _normalize_observed_at(message.get("timestamp")),
+        )
+
+    def _trim_replayed_pending_tail(self, tail: dict) -> None:
+        # Stored ids are normalized; compare the captured id the same way.
+        conversation_id = _normalize_conversation_id_value(tail["conversation_id"])
+        rows = tail["store"].get_range(
+            tail["session_id"], start_id=tail["after_store_id"] + 1,
+            conversation_id=conversation_id, limit=len(tail["messages"]),
+        )
+        covered = 0
+        for message, row in zip(tail["messages"], rows):
+            if row["conversation_id"] != conversation_id:
+                break
+            if self._pending_row_identity(message) != self._pending_row_identity(row, stored=True):
+                break
+            covered += 1
+            tail["after_store_id"] = row["store_id"]
+        for key in ("messages", "estimates", "metadata_messages"):
+            tail[key] = tail[key][covered:]
+
+    def _retry_pending_session_tails(self, *, deadline: float | None = None, exiting: bool = False) -> None:
+        """Drain under the lifecycle lock, sharing one busy-wait budget."""
+        if not self._pending_session_tails:
+            return
+        if deadline is None:
+            deadline = time.monotonic() + _SESSION_END_BUSY_TIMEOUT_MS / 1000
+        for tail in list(self._pending_session_tails):
+            store = tail["store"]
+            try:
+                with _temporary_sqlite_busy_timeout(
+                    [store._conn], max(0, int((deadline - time.monotonic()) * 1000)),
+                ):
+                    self._trim_replayed_pending_tail(tail)
+                    if tail["messages"]:
+                        self._append_ingest_batch(tail)
+                    self._pending_session_tails.remove(tail)
+                    if store is self._store and tail["session_id"] == self._session_id:
+                        self._ingest_cursor_needs_reconcile = True
+            except (Exception, KeyboardInterrupt):
+                logger.debug("LCM pending session-end retry deferred", exc_info=True)
+                break
+            finally:
+                if store is not self._store and not any(t["store"] is store for t in self._pending_session_tails):
+                    store.close()
+            if time.monotonic() >= deadline:
+                break
+        if exiting:
+            self._warn_unflushed_session_tails("SQLite lock")
+        elif not self._pending_session_tails:
+            _PENDING_TAIL_ENGINES.discard(self)
+
+    def _warn_unflushed_session_tails(self, reason: str) -> None:
+        remaining = sum(len(tail["messages"]) for tail in self._pending_session_tails)
+        if remaining:
+            logger.warning(
+                "LCM session-end raw-message ingest skipped due to %s after shutdown retry; "
+                "final messages may be absent from the plugin-local store unflushed=%d", reason, remaining,
+            )
+        # One exit attempt, even if embedding quiesce also invokes the hook.
+        _PENDING_TAIL_ENGINES.discard(self)
+
     @contextmanager
-    def _exclusive_lifecycle(self, action: str):
+    def _exclusive_lifecycle(self, action: str, *, deadline: float | None = None):
         thread_id = threading.get_ident()
         if self._stable_use_owner_thread == thread_id:
             raise RuntimeError(f"LCM lifecycle {action} attempted during stable engine use")
-        with self._stable_use_lock:
-            self._stable_use_owner_thread = thread_id
-            try:
-                yield
-            finally:
-                self._stable_use_owner_thread = None
+        if deadline is None:
+            with self._stable_use_lock:
+                self._stable_use_owner_thread = thread_id
+                try:
+                    yield True
+                finally:
+                    self._stable_use_owner_thread = None
+            return
+        # Only the exit hook bounds its wait; shutdown still waits for active use.
+        if not self._stable_use_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            yield False
+            return
+        self._stable_use_owner_thread = thread_id
+        try:
+            yield True
+        finally:
+            self._stable_use_owner_thread = None
+            self._stable_use_lock.release()
 
     def _run_stably(
         self,
@@ -9180,10 +9759,15 @@ class LCMEngine(
         with self._exclusive_lifecycle("shutdown"):
             if self._stable_use_closed:
                 return
-            self._shutdown_unlocked()
+            self._shutdown_unlocked(deadline=time.monotonic() + _SESSION_END_SHUTDOWN_TIMEOUT_MS / 1000)
             self._stable_use_closed = True
 
-    def _shutdown_unlocked(self):
+    def _shutdown_unlocked(self, *, deadline: float):
+        self._retry_pending_session_tails(
+            deadline=deadline, exiting=True,
+        )
+        self._discard_prepared_leaves()
+        self._retire_embedding_maintenance(wait=True)
         cleanup = [
             self._unregister_active_engine_binding,
             *(
