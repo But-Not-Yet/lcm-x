@@ -616,8 +616,11 @@ def test_historical_633_machine():
 def test_known_open_exclusions_track_their_strict_xfails():
     """The main machine may skip an open issue's input shape only while that issue's strict xfail is still here.
     When the fix lands and its xfail is removed, this fails until the KNOWN_OPEN entry goes too."""
+    from tests.invariants.test_retry_r5 import test_retry_host_merged_scaffold_after_compaction
+
+    seeds = [*globals().values(), test_retry_host_merged_scaffold_after_compaction]
     reasons = {str(mark.kwargs.get("reason", ""))
-               for value in list(globals().values()) if callable(value)
+               for value in seeds if callable(value)
                for mark in getattr(value, "pytestmark", [])
                if mark.name == "xfail" and mark.kwargs.get("strict")}
     reasons.update(str(mark.kwargs.get("reason", ""))
