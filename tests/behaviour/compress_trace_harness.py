@@ -99,6 +99,12 @@ SCENARIOS = (
     Scenario("lifecycle-publication-conflict", mode="conflict"),
     Scenario("child-session-bypass", shape="child", force=False),
     Scenario("child-session-forced", shape="child"),
+    *(Scenario(f"{kind}-bypass-{label}", setup="bypass-no-aux", force=False,
+               current_tokens=count, request="all", retry=True,
+               overrides=((f"{pattern}_session_patterns", ["trace-bypass"]),
+                          ("context_threshold", 0.9)))
+      for kind, pattern in (("ignored", "ignore"), ("stateless", "stateless"))
+      for label, count in (("missing", None), ("zero", 0), ("negative", -1))),
     Scenario("boundary-cleanup-only", request="cleanup_only_due_to_boundary_cooldown"),
     Scenario("below-threshold-cleanup-only", force=False, current_tokens=1,
              request="below_threshold_cleanup_only"),
@@ -696,6 +702,11 @@ def observe(case: Scenario, root: Path) -> Trace:
             view = transcript(case)
             if settings.get("ignore_message_patterns"):
                 engine._compiled_ignore_message_patterns = [LiteralPattern()]
+            if case.setup == "bypass-no-aux":
+                engine.ingest(view)
+                engine.on_session_start("trace-bypass", context_length=200000, platform="cli")
+                assert engine._bypasses_lcm_context_management()
+                assert engine._thread_context_session_id() == ""
             if case.setup == "stored":
                 engine._store.append_batch("S", view, conversation_id="trace-conversation")
                 engine._ingest_cursor = len(view)
@@ -726,7 +737,12 @@ def observe(case: Scenario, root: Path) -> Trace:
             if case.mode == "open-circuit":
                 for _ in range(3):
                     engine._summary_circuit_breaker.record_failure("trace-model")
-            if case.request:
+            request_fields = ("cleanup_only_due_to_boundary_cooldown", "below_threshold_cleanup_only",
+                              "automatic_request", "hold_fit_only_requested")
+            if case.request == "all":
+                for name in request_fields:
+                    setattr(engine._compaction_request, name, True)
+            elif case.request:
                 setattr(engine._compaction_request, case.request, True)
             provider = Provider(case, clock, events, canonical, engine)
             patch.setattr(escalation, "_call_llm_for_summary", provider)
@@ -747,6 +763,10 @@ def observe(case: Scenario, root: Path) -> Trace:
             initial = state(engine, canonical)
             conns = connections(engine)
             shapes: dict[tuple[str, str], int] = {}
+            if case.setup == "bypass-no-aux":
+                parent_rows = harness.stored_rows(engine, "S")
+                parent_binding = (engine._session_id, engine._conversation_id,
+                                  engine._ingest_cursor, engine._last_compacted_store_id)
 
             def trace_sql(connection: str, sql: str) -> None:
                 # SQLite-internal FTS5 statements vary by SQLite build.
@@ -768,6 +788,8 @@ def observe(case: Scenario, root: Path) -> Trace:
                 try:
                     for attempt in range(2 if case.retry else 1):
                         events.append(f"compress attempt={attempt + 1}")
+                        if case.setup == "bypass-no-aux":
+                            before_storage = [list(conn.iterdump()) for _, conn in conns]
                         events.append("leaf_prep before " + compact(prepared_state(engine, canonical)))
                         returned = view
                         # The public wrapper owns these scopes. Invoke the target
@@ -787,6 +809,13 @@ def observe(case: Scenario, root: Path) -> Trace:
                             if not isinstance(exc, (Exception, HostInterrupted)):
                                 raise
                             events.append(f"raise {type(exc).__name__} message={compact(canonical.text(str(exc)))}")
+                        if case.setup == "bypass-no-aux":
+                            assert not any(getattr(engine._compaction_request, name) for name in request_fields)
+                            assert before_storage == [list(conn.iterdump()) for _, conn in conns]
+                            assert parent_rows == harness.stored_rows(engine, "S")
+                            assert parent_binding == (engine._session_id, engine._conversation_id,
+                                                      engine._ingest_cursor, engine._last_compacted_store_id)
+                            events.append("bypass no-aux: request consumed; parent storage and binding unchanged")
                         events.append("leaf_prep after " + compact(prepared_state(engine, canonical)))
                         # This host contract exposes _assemble_context rather than a public assemble().
                         leading = engine._leading_anchor_count(returned)
