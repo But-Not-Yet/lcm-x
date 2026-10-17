@@ -4371,6 +4371,80 @@ class LCMEngine(
             "reset_epoch": state.last_reset_at if state is not None else None,
         }
 
+    def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
+        """Handle Hermes' reset-only switch after an end or an empty /new.
+
+        CLI /new omits on_session_start, but reset_session_state supplies the
+        new id here. The host DB stays host-owned; only the explicit id is used.
+        Detachment is unsupported: Hermes must keep review-fork compression off.
+        """
+        session_id = str(session_id or "")
+        if not session_id:
+            raise NotImplementedError(
+                "LCM-X cannot detach a context engine from its session; "
+                "keep compression off on this fork"
+            )
+        with self._exclusive_lifecycle("rebind"):
+            if (
+                self._stable_use_closed
+                or not self._session_id
+                or session_id == self._session_id
+                or self._session_id != self._foreground_session_id
+                or self._thread_context_stateless()
+                or self._thread_context_has_auxiliary_session(session_id)
+                or self._is_live_auxiliary_child_session(session_id, self._session_id, {})
+            ):
+                return
+            state = self._lifecycle.get_by_conversation(self._conversation_id)
+            if state is not None and state.current_session_id == self._session_id:
+                # Empty-history CLI /new skips end. Require a reset of this exact
+                # binding and no stored/attempted ingest or summary/commit history.
+                # Prefix fingerprints survive reset, including a failed ingest.
+                empty_reset_binding = (
+                    self._pending_reset_session_id == self._session_id
+                    and self._pending_reset_conversation_id == self._conversation_id
+                    and self._pending_reset_frontier_store_id == 0
+                    and self._ingest_cursor == 0
+                    and not self._compression_boundary_ingest_pending
+                    and not self._pending_context_anchor_messages
+                    and not self._lcm_normal_message_prefix_fingerprints.get(
+                        (self._session_id, self._conversation_id)
+                    )
+                    and state.current_frontier_store_id == 0
+                    and state.last_finalized_session_id is None
+                    and state.last_finalized_frontier_store_id == 0
+                    and state.last_finalized_at is None
+                    and state.last_rollover_at is None
+                    and state.last_maintenance_attempt_at is None
+                    and not state.debt_kind and state.debt_size_estimate == 0
+                    and state.last_reset_at is not None
+                    and state.updated_at == state.last_reset_at
+                    and self._store.get_session_count(self._session_id) == 0
+                    and self._dag.get_session_node_count(self._session_id) == 0
+                    and self._dag.get_session_node_count(self._conversation_id) == 0
+                )
+                if not empty_reset_binding:
+                    return
+                self._on_session_end_unlocked(self._session_id, [])
+                if self._session_ignored or self._session_stateless:
+                    # Bypass end hooks skip lifecycle writes. The exact reset
+                    # and empty-binding proof above permits finalizing here.
+                    self._lifecycle.finalize_session(self._conversation_id, self._session_id)
+                state = self._lifecycle.get_by_conversation(self._conversation_id)
+            if (
+                state is None
+                or state.current_session_id is not None
+                or state.last_finalized_session_id != self._session_id
+            ):
+                return
+            self._on_session_start_unlocked(session_id, platform=self._session_platform)
+            if self._session_ignored or self._session_stateless:
+                # This is an explicit foreground reset, unlike a side-channel
+                # start. Keep it eligible for the next reset back to normal.
+                self._foreground_session_id = self._session_id
+                self._foreground_session_platform = self._session_platform
+                self._foreground_conversation_id = self._conversation_id
+
     def on_session_start(self, session_id: str, **kwargs) -> None:
         with self._exclusive_lifecycle("rebind"):
             if self._stable_use_closed:
