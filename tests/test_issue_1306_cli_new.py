@@ -221,6 +221,38 @@ def host_namespace(relative_path, names):
     return namespace
 
 
+def test_real_hermes_construction_after_finalization_uses_fresh_engine(engine, monkeypatch):
+    """Construction clones even a finalized plugin instance before offering a bind."""
+    history = []
+    turn(history, "resident turn")
+    engine.on_session_end("old", history)
+    before = binding_snapshot(engine)
+    namespace = host_namespace("agent/agent_init.py", {"_select_context_engine"})
+    namespace.update(suppress=contextlib.suppress,
+                     _ra=lambda: SimpleNamespace(logger=logging.getLogger(__name__)))
+    # Exercise the host's general-plugin selection branch, with the finalized
+    # resident as its candidate. Named loading creates a new instance in register().
+    monkeypatch.setitem(sys.modules, "plugins.context_engine", SimpleNamespace(
+        load_context_engine=lambda name: None))
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", SimpleNamespace(
+        get_plugin_context_engine=lambda: engine))
+    constructed = namespace["_select_context_engine"]({"context": {"engine": engine.name}})
+    assert constructed is not engine
+    try:
+        assert constructed.bound_session_id == ""
+        constructed.bind_session_state(session_db=object(), session_id="unrelated")
+        assert constructed.bound_session_id == ""
+        assert binding_snapshot(engine) == before
+        constructed.on_session_start("unrelated", platform="cli")
+        constructed.ingest([{"role": "user", "content": "unrelated turn"}])
+        assert constructed._store.get_session_count("unrelated") == 1
+        assert engine.bound_session_id == engine.current_session_id == "old"
+        assert engine._store.get_session_count("old") == len(history)
+        assert engine._lifecycle.get_by_conversation("old").current_session_id is None
+    finally:
+        constructed.shutdown()
+
+
 def real_reset(engine, target):
     namespace = host_namespace("run_agent.py", {"AIAgent", "_call_engine_hook"})
     host = namespace["AIAgent"]()
