@@ -2012,14 +2012,10 @@ _ASSERTION_TRIGGER_FRAGMENTS: dict[str, tuple[str, ...]] = {
 }
 
 
-def ensure_assertion_tables(conn: sqlite3.Connection) -> None:
-    """Materialize the opt-in V4 assertion family in the existing ``lcm.db``."""
-    # This guard is owned by the rebuildable assertion family. Recreate it so
-    # databases opened after the optional source-time migration compare the
-    # derived observation time, with the legacy write timestamp as fallback.
-    conn.execute("DROP TRIGGER IF EXISTS lcm_assertion_source_insert_guard")
-    conn.executescript(
-        """
+@lru_cache(maxsize=1)
+def _assertion_schema_statements() -> dict[str, str]:
+    """Keep initialization and schema verification on the same DDL contract."""
+    schema_sql = """
         CREATE TABLE IF NOT EXISTS lcm_assertion_sources (
             source_store_id INTEGER NOT NULL,
             extraction_version TEXT NOT NULL
@@ -2233,7 +2229,58 @@ def ensure_assertion_tables(conn: sqlite3.Connection) -> None:
                AND source_content_sha256 = OLD.source_content_sha256;
         END;
         """
-    )
+    statements = {}
+    statement = ""
+    for line in schema_sql.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            match = re.match(
+                r"\s*CREATE (?:TABLE|(?:UNIQUE )?INDEX|TRIGGER) IF NOT EXISTS (\w+)",
+                statement,
+            )
+            assert match is not None
+            statements[match[1]] = statement.strip()
+            statement = ""
+    assert not statement.strip()
+    return statements
+
+
+def ensure_assertion_tables(conn: sqlite3.Connection) -> None:
+    """Materialize missing assertion objects; replace the source guard atomically."""
+    statements = _assertion_schema_statements()
+    guard = "lcm_assertion_source_insert_guard"
+
+    def pending() -> list[str]:
+        placeholders = ",".join("?" for _ in statements)
+        existing = dict(conn.execute(
+            f"SELECT name, sql FROM sqlite_master WHERE name IN ({placeholders})",
+            tuple(statements),
+        ).fetchall())
+        # Only the source-time guard has an in-place upgrade. Other malformed
+        # objects remain untouched and are rejected by verify_assertion_schema.
+        return [
+            name for name, sql in statements.items()
+            if name not in existing or (
+                name == guard
+                and _normalize_trigger_sql(existing[name]) != _normalize_trigger_sql(sql)
+            )
+        ]
+
+    if not pending():
+        return
+    # Do not use executescript here: its implicit commit would expose the gap
+    # between the DROP and CREATE to concurrent assertion/FTS connections.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # Another opener may have completed initialization while we waited.
+        for name in pending():
+            if name == guard:
+                conn.execute(f"DROP TRIGGER IF EXISTS {guard}")
+            conn.execute(statements[name])
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 @lru_cache(maxsize=1)
