@@ -41,6 +41,17 @@ def protocol(args):
                 host_context_sha256=hashlib.sha256((args.hermes_source / "agent/context_engine.py").read_bytes()).hexdigest())
 
 
+def load_reference(path):
+    ref = json.loads(path.read_text())
+    meta = json.loads((path.parent / "run.json").read_text())
+    summary = json.loads((path.parent / "summary.json").read_text())
+    expected = dict(pooled_on=summary["pooled_on"], protocol=meta["protocol"], seeds=meta["seeds"],
+                    per_seed={str(s): summary["cells"][f"on-{s}"]["promotion"] for s in meta["seeds"]})
+    if any(ref[k] != value for k, value in expected.items()):
+        raise ValueError("reference/card-covered files mismatch")
+    return ref
+
+
 def summarize(root):
     meta = json.loads((root / "run.json").read_text())
     if (root / "projection.json").exists():
@@ -148,6 +159,7 @@ def main():
     parser.add_argument("--rescore", type=Path, help="Read immutable raw snapshots and print score, without product/host imports")
     parser.add_argument("--card-tool", type=Path, default=Path.home() / ".claude/scripts/bench-card.py")
     parser.add_argument("--cell", nargs=2, help=argparse.SUPPRESS)
+    parser.add_argument("--host-sha", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if sys.version_info < (3, 11):
         parser.error("Python >=3.11 required (same minimum as product CI)")
@@ -158,8 +170,12 @@ def main():
     if not all((args.runner, args.out, args.hermes_source, args.product_sha)):
         parser.error("runner, --out, --hermes-source and --product-sha required")
     args.out, args.product_source, args.hermes_source = (p.resolve() for p in (args.out, args.product_source, args.hermes_source))
+    if any(args.out.is_relative_to(source) for source in (args.product_source, args.hermes_source, HERE)):
+        parser.error("output must be outside product, host and instrument source trees")
     if git(args.product_source, "rev-parse", "HEAD") != args.product_sha:
         raise ValueError("product HEAD does not match pinned SHA")
+    if args.cell and git(args.hermes_source, "rev-parse", "HEAD") != args.host_sha:
+        raise ValueError("host HEAD does not match pinned SHA")
     for name, source in (("product", args.product_source), ("host", args.hermes_source)):
         if git(source, "status", "--porcelain", "--untracked-files=normal"):
             parser.error(f"{name} checkout is dirty")
@@ -185,7 +201,7 @@ def main():
         parser.error("--real-route requires explicit --summary-model")
     current_protocol = protocol(args)
     if args.reference:
-        ref = json.loads(args.reference.read_text())
+        ref = load_reference(args.reference)
         if ref["product_sha"] != BASE or ref["seeds"] != [1, 2, 3] or ref["protocol"] != current_protocol:
             raise ValueError("reference identity/protocol mismatch (before replay)")
     if args.out.exists():
@@ -219,6 +235,7 @@ def main():
             cmd = [sys.executable, "-B", str(args.out / "instrument" / "run.py"), args.runner, "--out", str(root),
                    "--product-source", str(args.product_source), "--product-sha", args.product_sha,
                    "--hermes-source", str(args.hermes_source), "--gap-seconds", str(args.gap_seconds),
+                   "--host-sha", current_protocol["host_sha"],
                    "--cell", arm, str(seed), "--summary-model", args.summary_model]
             if args.real_route:
                 cmd.append("--real-route")

@@ -27,6 +27,34 @@ def test_active_unsummarized_tail_is_covered(probe):
     assert intact(score) and score["active_tail_ids"] == [3] and score["lost"] == 0
 
 
+@pytest.mark.parametrize("live,ordered,duplicates", [
+    (["b", "a"], False, 0), (["a", "b", "b"], False, 1),
+    (["a", "b"], True, 0), (["summary", "a", "b"], True, 0),
+])
+def test_active_tail_order_and_multiplicity(live, ordered, duplicates):
+    probe = dict(expected=["stored a", "stored b"],
+                 rows=[dict(store_id=i, identity="stored " + v, active_identity=v)
+                       for i, v in enumerate(["a", "b"], 1)],
+                 leaf_sources=[], frontier=0, active_view=live)
+    score = coverage(probe)
+    assert score["tail_order_preserved"] is ordered
+    assert score["duplicate_tail"] == duplicates
+    assert intact(score) is ordered
+
+
+@pytest.mark.parametrize("leaves,ordered", [
+    ([[2, 1]], False), ([[1, 2]], True), ([[3, 4], [1, 2]], False),
+])
+def test_ordered_leaf_provenance(leaves, ordered):
+    count = sum(map(len, leaves))
+    probe = dict(expected=list(range(1, count + 1)),
+                 rows=[dict(store_id=i, identity=i) for i in range(1, count + 1)],
+                 leaf_sources=leaves, frontier=count, active_view=[])
+    score = coverage(probe)
+    assert score["leaf_order_preserved"] is ordered
+    assert intact(score) is ordered
+
+
 @pytest.mark.parametrize("corrupt,field", [
     ("missing_tail", "lost"), ("missing_stored", "missing_rows"),
     ("duplicate_leaf", "duplicate_coverage"), ("duplicate_stored", "duplicate_stored"),
@@ -150,6 +178,7 @@ def test_successful_reference_uses_snapshot_cells(runner_main, monkeypatch):
     assert len(commands) == 6
     for cmd in commands:
         assert Path(cmd[2]) == out / "instrument/run.py"
+        assert cmd[cmd.index("--host-sha") + 1] == run.BASE
     # Import the copied entry point from elsewhere: both siblings must resolve to the copy.
     code = ("import run, replay, scoring; from pathlib import Path; "
             "assert all(Path(m.__file__).parent == Path('" + str(out / "instrument") + "') "
@@ -166,6 +195,68 @@ def test_protocol_binds_host_git_sha(runner_main, monkeypatch):
     protocol = json.loads((out / "run.json").read_text())["protocol"]
     assert protocol["host_sha"] == "host-sha"
     assert protocol["host_context_sha256"]
+
+
+@pytest.mark.parametrize("pin", ["changed-host", None, run.BASE])
+def test_cell_checks_pinned_host_before_replay(runner_main, monkeypatch, pin):
+    out, _ = runner_main
+    sys.argv.extend(["--cell", "on", "1"])
+    if pin is not None:
+        sys.argv.extend(["--host-sha", pin])
+    replays = []
+    monkeypatch.setattr(run, "run_cell", lambda *a: replays.append(a))
+    if pin == run.BASE:
+        assert run.main() == 0
+        assert len(replays) == 1
+    else:
+        with pytest.raises(ValueError, match="host HEAD"):
+            run.main()
+        assert not replays and not out.exists()
+
+
+@pytest.mark.parametrize("field", [None, "pooled_on", "protocol", "seeds", "per_seed"])
+def test_reference_matches_card_covered_files(runner_main, monkeypatch, field):
+    out, host = runner_main
+    sys.argv.remove("--freeze-reference")
+    refroot = host.parent / "reference"
+    refroot.mkdir()
+    ref = dict(product_sha=run.BASE, seeds=[1, 2, 3], protocol=run.protocol(SimpleNamespace(
+        gap_seconds=60, real_route=False, summary_model="", jobs=6,
+        seeds=[1, 2, 3], hermes_source=host)), pooled_on=dict(numerator=3, denominator=6, rate=.5),
+        per_seed={str(s): dict(numerator=1, denominator=2, rate=.5) for s in (1, 2, 3)})
+    (refroot / "run.json").write_text(json.dumps(dict(seeds=ref["seeds"], protocol=ref["protocol"])))
+    (refroot / "summary.json").write_text(json.dumps(dict(pooled_on=ref["pooled_on"], cells={
+        f"on-{s}": dict(promotion=ref["per_seed"][str(s)]) for s in (1, 2, 3)})))
+    if field == "pooled_on":
+        ref[field] = dict(numerator=0, denominator=6, rate=0)
+    elif field == "protocol":
+        ref[field]["jobs"] = 1
+    elif field == "seeds":
+        ref[field] = [1]
+    elif field == "per_seed":
+        ref[field]["1"]["rate"] = 0
+    path = refroot / "REFERENCE.json"
+    path.write_text(json.dumps(ref))
+    sys.argv.extend(["--reference", str(path)])
+    if field is None:
+        assert run.main() == 0
+    else:
+        with pytest.raises(ValueError, match="reference.*mismatch"):
+            run.main()
+        assert not out.exists()
+
+
+@pytest.mark.parametrize("source", ["product", "host", "instrument"])
+def test_output_inside_source_refused_before_creation(runner_main, monkeypatch, source):
+    out, host = runner_main
+    instrument = host.parent / "instrument"
+    monkeypatch.setattr(run, "HERE", instrument)
+    root = {"product": host.parent / "product", "host": host, "instrument": instrument}[source]
+    output = root / "nested/output"
+    sys.argv[sys.argv.index("--out") + 1] = str(output)
+    with pytest.raises(SystemExit) as exc:
+        run.main()
+    assert exc.value.code == 2 and not output.exists() and not out.exists()
 
 
 def test_card_command_has_no_local_paths(tmp_path, monkeypatch):
