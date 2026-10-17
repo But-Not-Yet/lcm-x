@@ -56,6 +56,7 @@ OBSERVED_ATTRIBUTES = frozenset({
     "_generated_ignored_active_replay_placeholder_hash_ordinals",
     "_out_of_band_durable_rows",
     "_foreground_budget", "_ingest_cursor", "_consecutive_ingest_failures",
+    "_pruned_tool_source_generation", "_pruned_tool_source_identities", "_pruned_tool_source_store",
 })
 Trace = list[str]
 Message = dict[str, Any]
