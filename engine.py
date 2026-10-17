@@ -3037,13 +3037,6 @@ class LCMEngine(
             self._lcm_session_last_platform[session_id] = platform
             self._lcm_session_last_bypassed[session_id] = True
 
-    def _unmark_lcm_bypass_lineage_session(self, session_id: str) -> None:
-        if not session_id:
-            return
-        with self._auxiliary_session_lock:
-            self._lcm_bypass_lineage_session_ids.discard(session_id)
-            self._lcm_bypass_lineage_platforms.pop(session_id, None)
-
     def _handoff_lcm_bypass_lineage(
         self,
         old_session_id: str,
@@ -3514,16 +3507,7 @@ class LCMEngine(
         *,
         stored_row: bool = False,
     ) -> str:
-        identity = self._message_replay_identity(
-            message,
-            stored_row=stored_row,
-        )
-        serialized = json.dumps(
-            list(identity),
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        return self._replay_identity_sha256(message, stored_row=stored_row)
 
     def _write_retained_user_anchor(self, row: Optional[Dict[str, Any]]) -> bool:
         """Persist one exact retained-user occurrence, or an explicit empty marker."""
@@ -5883,9 +5867,6 @@ class LCMEngine(
             if isinstance(payload_content, str):
                 parts.append(payload_content)
         return parts
-
-    def _stored_row_externalized_text_for_pattern_matching(self, msg: Dict[str, Any]) -> str:
-        return "\n".join(self._stored_row_externalized_text_parts_for_pattern_matching(msg))
 
     def _is_cached_active_replay_message_at_index(self, idx: int, msg: Dict[str, Any]) -> bool:
         if idx < 0 or idx >= len(self._last_active_replay_messages):
