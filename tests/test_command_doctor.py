@@ -64,6 +64,9 @@ CASES = (
     "embedding_raise",
     "wal_affected",
 )
+# The JSON tool never runs these queries, so their faults exist only on the text surface.
+TEXT_ONLY_FAULTS = frozenset({"messages_fts_error", "nodes_fts_error", "count_error", "debt_error"})
+
 TOOL_ONLY = (
     "schema_raise",
     "fts_raise",
@@ -280,10 +283,14 @@ def doctor_engine(
             "schema_error",
             "schema_raise",
             "integrity_error",
+            "messages_fts_error",
+            "nodes_fts_error",
             "flags_error",
+            "count_error",
             "journal_error",
             "quick_error",
             "payload_error",
+            "debt_error",
             "source_error",
             "fragmentation_error",
             "fts_raise",
@@ -448,7 +455,7 @@ def test_doctor_text_bytes(
         )
 
 
-@pytest.mark.parametrize("case", (*CASES, *TOOL_ONLY))
+@pytest.mark.parametrize("case", (*(c for c in CASES if c not in TEXT_ONLY_FAULTS), *TOOL_ONLY))
 def test_doctor_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
