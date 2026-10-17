@@ -95,12 +95,36 @@ def digest(rows: list[dict[str, Any]]) -> str:
     return hashlib.sha256("\n".join(f"{r['store_id']}:{canonical(r)}" for r in rows).encode()).hexdigest()
 
 
+def host_order(ledger: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The ledger in host order: parallel tool results finish in any order, but the
+    host appends them in the order of the assistant's tool calls."""
+    ordered: list[dict[str, Any]] = []
+    position: dict[str, int] = {}
+    for message in ledger:
+        if message.get("role") != "tool":
+            position = {c["id"]: i for i, c in enumerate(message.get("tool_calls") or [])}
+            ordered.append(message)
+            continue
+        group_start = len(ordered)
+        while group_start and ordered[group_start - 1].get("role") == "tool":
+            group_start -= 1
+        group = ordered[group_start:] + [message]
+        ordered[group_start:] = sorted(group, key=lambda m: position.get(m.get("tool_call_id"), len(position)))
+    return ordered
+
+
 def checkpoint(engine: Any, home: Path, turn: int, history: list[dict[str, Any]],
                ledger: list[dict[str, Any]]) -> dict[str, Any]:
     rows = stored(home, engine)
     got, want = Counter(map(canonical, rows)), Counter(map(canonical, ledger))
     assert got == want, (f"I1 exactly-once at turn {turn}: stored={len(rows)} expected={len(ledger)} "
                          f"missing={str(list((want - got).elements())[:1])[:250]} extra={str(list((got - want).elements())[:1])[:250]}")
+    # The multiset check above cannot see reordering; store order must follow host order.
+    got_order, want_order = [canonical(r) for r in rows], [canonical(m) for m in host_order(ledger)]
+    if got_order != want_order:
+        first = next(i for i, (a, b) in enumerate(zip(got_order, want_order)) if a != b)
+        raise AssertionError(f"I1 chronology at turn {turn}: store order diverges from host order "
+                             f"at position {first}: stored={got_order[first][:250]} expected={want_order[first][:250]}")
     paired(history)
     tools = importlib.import_module(type(engine).__module__.rsplit(".", 1)[0] + ".tools")
     recalled = 0
