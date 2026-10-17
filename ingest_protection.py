@@ -304,7 +304,7 @@ def _apply_sensitive_pattern(name: str, repl, text: str) -> str:
     return _SENSITIVE_PATTERN_CATALOG[name].sub(repl, text)
 
 
-def _redact_private_key_blocks_with(text: str, placeholder) -> str:
+def _redact_private_key_blocks_with(text: str, placeholder: Callable[[str], str]) -> str:
     """Redact PEM private keys in one linear pass over a normalized line model.
 
     Handles, fail-closed toward redaction (#365, rounds 3-6):
@@ -942,7 +942,7 @@ def _add_inline_persisted_output_identity_metadata(text: str, preview_sha256: st
     return text.replace("</persisted-output>", f"{identity}\n</persisted-output>", 1)
 
 
-def sensitive_pattern_status(config) -> dict[str, Any]:
+def sensitive_pattern_status(config: Any) -> dict[str, Any]:
     """Return metadata-only status for durable and provider-copy protection."""
     configured, active, unknown = _configured_sensitive_pattern_names(config)
     enabled = bool(getattr(config, "sensitive_patterns_enabled", False))
@@ -973,7 +973,7 @@ def sensitive_pattern_status(config) -> dict[str, Any]:
     }
 
 
-def _configured_sensitive_pattern_names(config) -> tuple[list[str], list[str], list[str]]:
+def _configured_sensitive_pattern_names(config: Any) -> tuple[list[str], list[str], list[str]]:
     raw = getattr(config, "sensitive_patterns", []) or []
     if isinstance(raw, str):
         names = [part.strip() for part in raw.split(",") if part.strip()]
@@ -1015,7 +1015,7 @@ def embedding_provider_requires_privacy(provider_id: str) -> bool:
     return str(provider_id or "").strip().lower() in _EMBEDDING_PRIVACY_CLOUD_PROVIDERS
 
 
-def embedding_privacy_revision(config) -> str:
+def embedding_privacy_revision(config: Any) -> str:
     """Return the canonical identity revision for cloud embedding input.
 
     The active revision contains only a transform version and a digest of sorted
@@ -1379,7 +1379,7 @@ def validate_embedding_privacy_dispatch(
     return revision
 
 
-def _active_sensitive_pattern_names(config) -> list[str]:
+def _active_sensitive_pattern_names(config: Any) -> list[str]:
     if not bool(getattr(config, "sensitive_patterns_enabled", False)):
         return []
     _configured, active, _unknown = _configured_sensitive_pattern_names(config)
@@ -1557,7 +1557,7 @@ def _externalize_quarantined_assistant_output(
 def restore_ingest_payload_placeholders(
     text: str,
     *,
-    config,
+    config: Any,
     hermes_home: str = "",
     session_id: str = "",
 ) -> str:
@@ -2090,7 +2090,7 @@ def _append_unique_refs(target: list[str], refs: list[str]) -> None:
             target.append(ref)
 
 
-def _walk_string_values(value: Any):
+def _walk_string_values(value: Any) -> Iterator[str]:
     if isinstance(value, str):
         parsed = _maybe_parse_json_string(value)
         if parsed is None:
@@ -2107,7 +2107,7 @@ def _walk_string_values(value: Any):
             yield from _walk_string_values(item)
 
 
-def _walk_tool_call_argument_values(value: Any):
+def _walk_tool_call_argument_values(value: Any) -> Iterator[Any]:
     if isinstance(value, dict):
         for key, nested in value.items():
             if key == "arguments":
@@ -2369,7 +2369,7 @@ def _refs_for_externalized_integrity_scan(
     )
 
 
-def scan_externalized_payload_integrity(conn, config, *, hermes_home: str = "", limit: int = 5) -> dict[str, Any]:
+def scan_externalized_payload_integrity(conn: Any, config: Any, *, hermes_home: str = "", limit: int = 5) -> dict[str, Any]:
     """Compare externalized payload refs stored in messages with JSON files.
 
     This is intentionally read-only and metadata-only. It does not open payload
@@ -2468,7 +2468,7 @@ def scan_externalized_payload_integrity(conn, config, *, hermes_home: str = "", 
     }
 
 
-def scan_sqlite_payload_risks(conn, *, limit: int = 5) -> dict[str, Any]:
+def scan_sqlite_payload_risks(conn: Any, *, limit: int = 5) -> dict[str, Any]:
     """Return bounded diagnostics for suspicious inline payload storage.
 
     Diagnostics intentionally omit previews/raw payload text. Rows include only
@@ -2476,7 +2476,7 @@ def scan_sqlite_payload_risks(conn, *, limit: int = 5) -> dict[str, Any]:
     externalized placeholder is present.
     """
 
-    def make_row(row, *, field: str, length_key: str, category: str) -> dict[str, Any]:
+    def make_row(row: Any, *, field: str, length_key: str, category: str) -> dict[str, Any]:
         store_id, session_id, source, role, length, value = row
         value = value or ""
         result = {
@@ -2668,7 +2668,7 @@ def scan_sqlite_payload_risks(conn, *, limit: int = 5) -> dict[str, Any]:
         "heartbeat_noise_rows": heartbeat_noise_rows,
     }
 
-def externalized_payload_stats(config, hermes_home: str = "") -> dict[str, Any]:
+def externalized_payload_stats(config: Any, hermes_home: str = "") -> dict[str, Any]:
     from .externalize import get_large_output_storage_dir
 
     storage_dir = get_large_output_storage_dir(config, hermes_home=hermes_home, create=False)
