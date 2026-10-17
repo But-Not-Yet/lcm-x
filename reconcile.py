@@ -593,6 +593,11 @@ class _TailReplayCandidate:
     has_filtered_full_replay: bool = field(init=False)
     has_inline_generation_cleanup_replay: bool = field(init=False)
     has_inline_persisted_generation_suffix_replay: bool = field(init=False)
+    has_tool_id_anchored_replay: bool = field(init=False)
+    has_effective_full_replay: bool = field(init=False)
+    has_raw_full_replay: bool = field(init=False)
+    has_scaffold_suffix_replay: bool = field(init=False)
+    has_raw_cleanup_replay: bool = field(init=False)
 
 
 class ReconcileMixin:
@@ -2298,6 +2303,152 @@ class ReconcileMixin:
         candidate.has_inline_generation_cleanup_replay = has_inline_generation_cleanup_replay
         candidate.has_inline_persisted_generation_suffix_replay = has_inline_persisted_generation_suffix_replay
 
+    def _complete_replay_evidence(
+        self, run: _TailReplayRun, candidate: _TailReplayCandidate,
+    ) -> None:
+        messages = run.messages
+        stored_tail = run.stored_tail
+        raw_session_count = run.raw_session_count
+        scaffold_ids = run.scaffold_ids
+        objective_ids = run.objective_ids
+        effective_session_count = run.effective_session_count
+        sanitized_tail_collapsed = run.sanitized_tail_collapsed
+        effective_fresh_tail_count = run.effective_fresh_tail_count
+        cursor = candidate.cursor
+        candidate_messages = candidate.candidate_messages
+        candidate_prefix = candidate.candidate_prefix
+        matches_sanitized_tail = candidate.matches_sanitized_tail
+        matches_raw_tail = candidate.matches_raw_tail
+        candidate_has_persisted_marker = candidate.candidate_has_persisted_marker
+        candidate_has_unrecoverable_persisted_marker = candidate.candidate_has_unrecoverable_persisted_marker
+        candidate_has_tool_anchor = candidate.candidate_has_tool_anchor
+        candidate_has_lossy_redacted_replay_identity = candidate.candidate_has_lossy_redacted_replay_identity
+        matches_tool_anchored_stale_window = candidate.matches_tool_anchored_stale_window
+        candidate_ends_with_replayed_tool_result = candidate.candidate_ends_with_replayed_tool_result
+        has_durable_persisted_marker_suffix_replay = candidate.has_durable_persisted_marker_suffix_replay
+        matches_durable_persisted_output_full_replay = candidate.matches_durable_persisted_output_full_replay
+        has_inline_generation_cleanup_replay = candidate.has_inline_generation_cleanup_replay
+        has_inline_persisted_generation_suffix_replay = candidate.has_inline_persisted_generation_suffix_replay
+        has_persisted_marker_singleton_replay = candidate.has_persisted_marker_singleton_replay
+        candidate_has_system = candidate.candidate_has_system
+        has_quarantined_singleton_replay = candidate.has_quarantined_singleton_replay
+        has_filtered_full_replay = candidate.has_filtered_full_replay
+        raw_suffix_needs_cleanup_equivalence = candidate.raw_suffix_needs_cleanup_equivalence
+
+        has_raw_persisted_marker_exact_replay = (
+            candidate_has_persisted_marker
+            and not candidate_has_unrecoverable_persisted_marker
+            and matches_raw_tail
+            and candidate_prefix == stored_tail[-len(candidate_prefix) :]
+        )
+        # Tool-anchored replay proof.
+        #
+        # The full-replay terms above carry a length guard (a candidate must
+        # cover the durable session) because repeated CONTENT ALONE is not
+        # proof: a fresh delta can legitimately repeat the visible tail, and
+        # treating it as replay silently loses it. The tool-anchored terms
+        # drop that length guard, so they need their own justification.
+        #
+        # It is NOT "a tool_call_id is minted once and cannot be re-issued".
+        # LCM cannot assume that -- see the note on
+        # ``stored_tool_identities`` above, and the explicit disclaimer in
+        # ``find_externalized_tool_result_content_for_call``.
+        #
+        # The invariant that actually makes the bypass safe: EVERY identity
+        # in the advanced prefix is exact-matched -- role, normalized
+        # content, tool_call_id and tool_calls together -- to a durable row,
+        # and at least one of them is a durable tool row carrying an id.
+        # ``matches_sanitized_tail`` and ``matches_raw_tail`` match the whole
+        # prefix against the durable tail suffix;
+        # ``matches_tool_anchored_stale_window`` matches it against a
+        # contiguous durable window; ``candidate_ends_with_``
+        # ``replayed_tool_result`` requires the durable tool pair plus
+        # durable contentless assistants. Nothing outside the durable set is
+        # ever consumed here, so a genuinely new turn -- including one that
+        # reuses an id but produces a different result -- cannot be skipped:
+        # it falls through to the ambiguous-delta path and is persisted
+        # (#259: visible duplication beats silent loss). The one accepted
+        # residual is a byte-identical repeat; see ``stored_tool_identities``.
+        #
+        # That invariant depends on every advanced identity being LOSSLESS,
+        # so a lossy-redacted prefix is excluded here as well as from
+        # ``stored_tool_identities``: this guard is what also withholds the
+        # bypass from ``matches_tool_anchored_stale_window``, which window
+        # matches ``stored_tail`` directly and never consults that set.
+        # Pinned by
+        # ``test_reused_tool_call_id_with_lossy_redacted_result_is_persisted_not_replayed``
+        # and, for the call-arguments half of the identity, by
+        # ``test_lossy_redacted_tool_call_arguments_are_not_replay_proof``.
+        #
+        # Persisted-output markers are excluded: their identity is recovered
+        # from an external file, so it is not a durable-row match and gets
+        # its own proof terms above.
+        has_tool_id_anchored_replay = (
+            not candidate_has_persisted_marker
+            and candidate_has_tool_anchor
+            and not candidate_has_lossy_redacted_replay_identity
+            and (
+                matches_sanitized_tail
+                or matches_raw_tail
+                or matches_tool_anchored_stale_window
+                or candidate_ends_with_replayed_tool_result
+            )
+        )
+
+        has_persisted_marker_specific_replay_evidence = (
+            not candidate_has_persisted_marker
+            or has_durable_persisted_marker_suffix_replay
+            or matches_durable_persisted_output_full_replay
+            or has_inline_generation_cleanup_replay
+            or has_inline_persisted_generation_suffix_replay
+            or has_persisted_marker_singleton_replay
+            or has_raw_persisted_marker_exact_replay
+        )
+        has_effective_full_replay = (
+            has_persisted_marker_specific_replay_evidence
+            and matches_sanitized_tail
+            and len(candidate_prefix) >= effective_session_count
+            and (
+                candidate_has_system
+                or (effective_session_count > 1 and not sanitized_tail_collapsed)
+                or has_quarantined_singleton_replay
+                or has_filtered_full_replay
+            )
+        )
+
+        has_scaffold_evidence = any(
+            id(msg) in scaffold_ids for msg in candidate_messages
+        )
+        has_raw_full_replay = (
+            has_persisted_marker_specific_replay_evidence
+            and matches_raw_tail
+            and not has_scaffold_evidence
+            and len(candidate_messages) >= raw_session_count
+            and raw_session_count > 1
+        )
+        has_preserved_objective_scaffold = any(id(msg) in objective_ids for msg in candidate_messages)
+        candidate_suffix_has_user_turn = any(identity[0] == "user" for identity in candidate_prefix)
+        has_scaffold_suffix_replay = (
+            has_persisted_marker_specific_replay_evidence
+            and matches_sanitized_tail
+            and has_preserved_objective_scaffold
+            and not candidate_suffix_has_user_turn
+        )
+        has_raw_cleanup_replay = (
+            has_persisted_marker_specific_replay_evidence
+            and matches_raw_tail
+            and has_scaffold_evidence
+            and cursor < len(messages)
+            and len(candidate_prefix) >= max(1, effective_fresh_tail_count)
+            and raw_suffix_needs_cleanup_equivalence
+        )
+
+        candidate.has_tool_id_anchored_replay = has_tool_id_anchored_replay
+        candidate.has_effective_full_replay = has_effective_full_replay
+        candidate.has_raw_full_replay = has_raw_full_replay
+        candidate.has_scaffold_suffix_replay = has_scaffold_suffix_replay
+        candidate.has_raw_cleanup_replay = has_raw_cleanup_replay
+
     def _find_reconciled_cursor_for_store_tail(
         self,
         messages: List[Dict[str, Any]],
@@ -2318,12 +2469,7 @@ class ReconcileMixin:
         )
         self._prepare_tail_replay_run(run)
         messages = run.messages
-        scaffold_ids = run.scaffold_ids
-        objective_ids = run.objective_ids
         sanitized_replay_tail = run.sanitized_replay_tail
-        effective_session_count = run.effective_session_count
-        sanitized_tail_collapsed = run.sanitized_tail_collapsed
-        effective_fresh_tail_count = run.effective_fresh_tail_count
         native_recovery_snapshot_digests = run.native_recovery_snapshot_digests
         native_prefix_digests = run.native_prefix_digests
         empty_prefix_cursor: int | None = None
@@ -2358,8 +2504,6 @@ class ReconcileMixin:
             matches_sanitized_tail = candidate.matches_sanitized_tail
             matches_raw_tail = candidate.matches_raw_tail
             has_durable_compacted_snapshot_replay = candidate.has_durable_compacted_snapshot_replay
-            candidate_has_tool_anchor = candidate.candidate_has_tool_anchor
-            candidate_has_lossy_redacted_replay_identity = candidate.candidate_has_lossy_redacted_replay_identity
             candidate_ends_with_replayed_tool_result = candidate.candidate_ends_with_replayed_tool_result
             matches_tool_anchored_stale_window = candidate.matches_tool_anchored_stale_window
             matches_visible_sanitized_tail = (
@@ -2385,11 +2529,9 @@ class ReconcileMixin:
             if (matches_visible_sanitized_tail or matches_visible_raw_tail) and not early_candidate_has_unrecoverable_persisted_marker:
                 return cursor
             self._collect_persisted_replay_evidence(run, candidate)
-            candidate_has_persisted_marker = candidate.candidate_has_persisted_marker
             matches_durable_persisted_output_full_replay = candidate.matches_durable_persisted_output_full_replay
             candidate_has_unrecoverable_persisted_marker = candidate.candidate_has_unrecoverable_persisted_marker
             matches_inline_generation_cleanup_tail = candidate.matches_inline_generation_cleanup_tail
-            raw_suffix_needs_cleanup_equivalence = candidate.raw_suffix_needs_cleanup_equivalence
             if (
                 not matches_sanitized_tail
                 and not matches_raw_tail
@@ -2402,123 +2544,19 @@ class ReconcileMixin:
                 continue
 
             self._collect_singleton_replay_evidence(run, candidate)
-            candidate_has_system = candidate.candidate_has_system
-            has_quarantined_singleton_replay = candidate.has_quarantined_singleton_replay
             has_externalized_singleton_replay = candidate.has_externalized_singleton_replay
             has_persisted_marker_singleton_replay = candidate.has_persisted_marker_singleton_replay
             has_durable_persisted_marker_suffix_replay = candidate.has_durable_persisted_marker_suffix_replay
-            has_filtered_full_replay = candidate.has_filtered_full_replay
             has_inline_generation_cleanup_replay = candidate.has_inline_generation_cleanup_replay
             has_inline_persisted_generation_suffix_replay = candidate.has_inline_persisted_generation_suffix_replay
             if candidate_has_unrecoverable_persisted_marker:
                 continue
-            has_raw_persisted_marker_exact_replay = (
-                candidate_has_persisted_marker
-                and not candidate_has_unrecoverable_persisted_marker
-                and matches_raw_tail
-                and candidate_prefix == stored_tail[-len(candidate_prefix) :]
-            )
-            # Tool-anchored replay proof.
-            #
-            # The full-replay terms above carry a length guard (a candidate must
-            # cover the durable session) because repeated CONTENT ALONE is not
-            # proof: a fresh delta can legitimately repeat the visible tail, and
-            # treating it as replay silently loses it. The tool-anchored terms
-            # drop that length guard, so they need their own justification.
-            #
-            # It is NOT "a tool_call_id is minted once and cannot be re-issued".
-            # LCM cannot assume that -- see the note on
-            # ``stored_tool_identities`` above, and the explicit disclaimer in
-            # ``find_externalized_tool_result_content_for_call``.
-            #
-            # The invariant that actually makes the bypass safe: EVERY identity
-            # in the advanced prefix is exact-matched -- role, normalized
-            # content, tool_call_id and tool_calls together -- to a durable row,
-            # and at least one of them is a durable tool row carrying an id.
-            # ``matches_sanitized_tail`` and ``matches_raw_tail`` match the whole
-            # prefix against the durable tail suffix;
-            # ``matches_tool_anchored_stale_window`` matches it against a
-            # contiguous durable window; ``candidate_ends_with_``
-            # ``replayed_tool_result`` requires the durable tool pair plus
-            # durable contentless assistants. Nothing outside the durable set is
-            # ever consumed here, so a genuinely new turn -- including one that
-            # reuses an id but produces a different result -- cannot be skipped:
-            # it falls through to the ambiguous-delta path and is persisted
-            # (#259: visible duplication beats silent loss). The one accepted
-            # residual is a byte-identical repeat; see ``stored_tool_identities``.
-            #
-            # That invariant depends on every advanced identity being LOSSLESS,
-            # so a lossy-redacted prefix is excluded here as well as from
-            # ``stored_tool_identities``: this guard is what also withholds the
-            # bypass from ``matches_tool_anchored_stale_window``, which window
-            # matches ``stored_tail`` directly and never consults that set.
-            # Pinned by
-            # ``test_reused_tool_call_id_with_lossy_redacted_result_is_persisted_not_replayed``
-            # and, for the call-arguments half of the identity, by
-            # ``test_lossy_redacted_tool_call_arguments_are_not_replay_proof``.
-            #
-            # Persisted-output markers are excluded: their identity is recovered
-            # from an external file, so it is not a durable-row match and gets
-            # its own proof terms above.
-            has_tool_id_anchored_replay = (
-                not candidate_has_persisted_marker
-                and candidate_has_tool_anchor
-                and not candidate_has_lossy_redacted_replay_identity
-                and (
-                    matches_sanitized_tail
-                    or matches_raw_tail
-                    or matches_tool_anchored_stale_window
-                    or candidate_ends_with_replayed_tool_result
-                )
-            )
-
-            has_persisted_marker_specific_replay_evidence = (
-                not candidate_has_persisted_marker
-                or has_durable_persisted_marker_suffix_replay
-                or matches_durable_persisted_output_full_replay
-                or has_inline_generation_cleanup_replay
-                or has_inline_persisted_generation_suffix_replay
-                or has_persisted_marker_singleton_replay
-                or has_raw_persisted_marker_exact_replay
-            )
-            has_effective_full_replay = (
-                has_persisted_marker_specific_replay_evidence
-                and matches_sanitized_tail
-                and len(candidate_prefix) >= effective_session_count
-                and (
-                    candidate_has_system
-                    or (effective_session_count > 1 and not sanitized_tail_collapsed)
-                    or has_quarantined_singleton_replay
-                    or has_filtered_full_replay
-                )
-            )
-
-            has_scaffold_evidence = any(
-                id(msg) in scaffold_ids for msg in candidate_messages
-            )
-            has_raw_full_replay = (
-                has_persisted_marker_specific_replay_evidence
-                and matches_raw_tail
-                and not has_scaffold_evidence
-                and len(candidate_messages) >= raw_session_count
-                and raw_session_count > 1
-            )
-            has_preserved_objective_scaffold = any(id(msg) in objective_ids for msg in candidate_messages)
-            candidate_suffix_has_user_turn = any(identity[0] == "user" for identity in candidate_prefix)
-            has_scaffold_suffix_replay = (
-                has_persisted_marker_specific_replay_evidence
-                and matches_sanitized_tail
-                and has_preserved_objective_scaffold
-                and not candidate_suffix_has_user_turn
-            )
-            has_raw_cleanup_replay = (
-                has_persisted_marker_specific_replay_evidence
-                and matches_raw_tail
-                and has_scaffold_evidence
-                and cursor < len(messages)
-                and len(candidate_prefix) >= max(1, effective_fresh_tail_count)
-                and raw_suffix_needs_cleanup_equivalence
-            )
+            self._complete_replay_evidence(run, candidate)
+            has_tool_id_anchored_replay = candidate.has_tool_id_anchored_replay
+            has_effective_full_replay = candidate.has_effective_full_replay
+            has_raw_full_replay = candidate.has_raw_full_replay
+            has_scaffold_suffix_replay = candidate.has_scaffold_suffix_replay
+            has_raw_cleanup_replay = candidate.has_raw_cleanup_replay
             if (
                 has_effective_full_replay
                 or has_externalized_singleton_replay
