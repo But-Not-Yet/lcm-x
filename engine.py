@@ -5,6 +5,7 @@ with a DAG-based summarization system that preserves every message.
 """
 
 import asyncio
+import atexit
 import contextlib
 import copy
 import hashlib
@@ -20,16 +21,19 @@ import uuid
 from collections import Counter, deque
 from contextlib import contextmanager
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from agent.context_engine import ContextEngine
 
-from .codex_routing import (
-    _codex_oauth_context_cap,
-    _is_codex_gpt55_route,
+from .compaction_policy import (
+    assembly_token_cap,
+    effective_context_length,
+    resolve_threshold,
+    threshold_tokens,
 )
-from .config import LCMConfig
+from .config import LCMConfig, _disabled_tool_names
 from .dag import SummaryDAG, SummaryNode
 from .diagnostics import _enforce_state_db_containment
 from .engine_registry import (
@@ -49,6 +53,7 @@ from .escalation import (
     SummaryCircuitBreaker,
     SummarySpendGuard,
     SweepBudgetExhausted,  # re-exported: compaction and tests import it from .engine
+    UnattributedRescueRefused,
     _summary_model_chain,
     closed_summary_route_status,
     summarize_with_escalation,
@@ -98,12 +103,13 @@ from .ingest_protection import (
     sensitive_pattern_status,
 )
 from .plugin_identity import ENGINE_NAME, LEGACY_ENGINE_NAME, PLUGIN_NAME
+from .tool_pairs import repair_tool_pairs
 from .runtime_identity import (
     _PLUGIN_ROOT,
     _git_runtime_identity,
     _plugin_metadata,
 )
-from .embedding_maintenance import run_incremental_embedding_pass
+from .embedding_maintenance import _STOP_EMBEDDING_MAINTENANCE, run_incremental_embedding_pass
 from .rollup_builder import (
     initialize_rollup_invalidation_outbox,
     mark_stale_for_published_summary,
@@ -113,23 +119,7 @@ from .assertion_extraction import ModelAssertionExtractor
 from .assertion_store import AssertionStore, SourceSnapshot
 from .adaptive_retrieval import AdaptiveRetrievalRegistry
 from .query_view_store import QueryViewStore
-from .schemas import (
-    LCM_DESCRIBE,
-    LCM_DOCTOR,
-    LCM_EXPAND,
-    LCM_EXPAND_QUERY,
-    LCM_GREP,
-    LCM_INSPECT,
-    LCM_LOAD_SESSION,
-    LCM_COMPUTE,
-    LCM_COMPILE_EVIDENCE,
-    LCM_EVIDENCE_PACK,
-    LCM_QUERY_STATE,
-    LCM_RECALL,
-    LCM_RECENT,
-    LCM_RETRIEVE,
-    LCM_STATUS,
-)
+from .tool_registry import TOOL_REGISTRY
 from .sanitize import (
     _clean_active_assistant_message,
     _should_drop_active_assistant_message,
@@ -151,14 +141,17 @@ from .message_patterns import compile_message_patterns, matches_message_pattern
 from .aux_session import AuxiliarySessionMixin
 from .placeholder_ledger import PlaceholderLedgerMixin
 from .reconcile import _COMPACTION_COMMIT_PROOF_METADATA_PREFIX, ReconcileMixin, _PRESERVED_OBJECTIVE_CONTEXT_PREFIX
-from .reconcile import _emission_identity
+from .reconcile import _HERMES_PRUNED_TOOL_PLACEHOLDER, _emission_identity
 from .reconcile import _has_lossy_redacted_identity, _merge_append_cut, _proof_user_identity
 from .compaction import CompactionMixin
+from . import leaf_prep
+from .compaction_request import CompactionRequest
+from .compress_run import CompressRun
 from .identity_anchor import IdentityAnchorMixin, _raw_remainder, identity_anchor_enabled
 from .host_uid import HostUidShadowMixin
 from .host_uid_emit import carry_identity, identity_emit_enabled, record_absorbed_message, sync_cached_host_metadata
 from .store_complete import HiddenBacklog, StoreCompleteMixin
-from .survival_fit import SurvivalFitMixin, _carries_survival_notice
+from .survival_fit import SurvivalFitMixin, _carries_survival_notice, _host_estimate, survival_reserve_fraction
 from .db_bootstrap import refresh_legacy_conversation_ids
 from .reset_state import ResetStateMixin
 from .bypass import BypassMixin
@@ -175,11 +168,27 @@ from .sqlite_util import (
 )
 from .store import MessageStore
 from .tokens import count_message_tokens, count_messages_tokens, count_tokens
+from .assembly_plan import PrefixBudgetFacts, default_prefix_budget, select_prefix, select_tail
 from .frontier_state import FrontierState
 from . import tools as lcm_tools
 
 logger = logging.getLogger(__name__)
 _NATIVE_RECOVERY_WARNING_LOGGED = False
+
+
+@lru_cache(maxsize=1)
+def _model_only_display_metadata_key() -> Optional[str]:
+    """Older hosts keep today's display behavior; resolve the host capability once."""
+    try:
+        from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
+        return MODEL_ONLY_DISPLAY_METADATA_KEY
+    except (ImportError, AttributeError):
+        return None
+
+
+def _model_only_display_metadata_keys() -> frozenset:
+    """Every key that can hide a row: the literal key and the host-advertised one."""
+    return frozenset(k for k in ("model_only", _model_only_display_metadata_key()) if k)
 
 _ASSERTION_EXTRACTION_PROCESS_SLOT = threading.BoundedSemaphore(1)
 _EMBEDDING_SCHEMA_READY: set[tuple[Path, bool]] = set()
@@ -220,7 +229,10 @@ class _RollupMaintenanceScheduler:
         self._exclusive_keys: set[tuple[str, str]] = set()
         self._owned_keys: dict[object, set[tuple[str, str]]] = {}
         self._key_owners: dict[tuple[str, str], set[object]] = {}
+        self._retired_active_keys: dict[object, set[tuple[str, str]]] = {}
         self._worker: threading.Thread | None = None
+        self._closed = False
+        self._closed_logged = False
 
     def _track_owner_locked(
         self,
@@ -255,7 +267,13 @@ class _RollupMaintenanceScheduler:
         *,
         owner: object | None = None,
     ) -> bool:
+        global _EMBEDDING_EXIT_QUIESCE_REGISTERED
         with self._condition:
+            if self._closed:
+                if not self._closed_logged:
+                    logger.info("LCM %s maintenance scheduler is closed", self._kind)
+                    self._closed_logged = True
+                return False
             if key in self._exclusive_keys:
                 logger.info(
                     "LCM temporal rollup maintenance deferred while an operator "
@@ -283,6 +301,9 @@ class _RollupMaintenanceScheduler:
                 )
                 return False
             if self._worker is None or not self._worker.is_alive():
+                if self is _EMBEDDING_MAINTENANCE_SCHEDULER and not _EMBEDDING_EXIT_QUIESCE_REGISTERED:
+                    atexit.register(_quiesce_embedding_maintenance)
+                    _EMBEDDING_EXIT_QUIESCE_REGISTERED = True
                 worker = threading.Thread(
                     target=self._run,
                     name=self._thread_name,
@@ -359,6 +380,82 @@ class _RollupMaintenanceScheduler:
                 self._condition.wait(remaining)
             return True
 
+    def retire_owner(self, owner: object, timeout: float) -> bool:
+        """Drop an owner's unshared pending work and wait for its active keys."""
+        try:
+            deadline = time.monotonic() + max(0.0, timeout)
+            with self._condition:
+                keys = self._owned_keys.pop(owner, set())
+                for key in keys:
+                    owners = self._key_owners.get(key, set())
+                    owners.discard(owner)
+                    if owners:
+                        continue
+                    self._key_owners.pop(key, None)
+                    if key in self._queued_keys:
+                        self._jobs = deque(
+                            (queued_key, job) for queued_key, job in self._jobs
+                            if queued_key != key
+                        )
+                        self._queued_keys.discard(key)
+                    if self._follow_up_key == key:
+                        self._follow_up_key = None
+                        self._follow_up_job = None
+                keys |= self._retired_active_keys.pop(owner, set()) & self._active_keys
+                self._condition.notify_all()
+                if timeout <= 0:
+                    active = keys & self._active_keys
+                    if active:
+                        self._retired_active_keys[owner] = active
+                    return not bool(active)
+                while keys & self._active_keys:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        for key in sorted(keys & self._active_keys):
+                            logger.warning(
+                                "LCM %s maintenance retirement timeout for database=%s scope=%s",
+                                self._kind, key[0], key[1],
+                            )
+                        return False
+                    self._condition.wait(remaining)
+                return True
+        except Exception:
+            logger.warning("LCM could not retire %s maintenance owner", self._kind, exc_info=True)
+            return False
+
+    def quiesce(self, timeout: float) -> bool:
+        """Stop accepting work, discard pending passes, and bound the active wait."""
+        try:
+            if self is _EMBEDDING_MAINTENANCE_SCHEDULER:
+                _STOP_EMBEDDING_MAINTENANCE.set()
+            deadline = time.monotonic() + max(0.0, timeout)
+            with self._condition:
+                self._closed = True
+                pending_keys = self._queued_keys.copy()
+                if self._follow_up_key is not None:
+                    pending_keys.add(self._follow_up_key)
+                self._jobs.clear()
+                self._queued_keys.clear()
+                self._follow_up_key = None
+                self._follow_up_job = None
+                for key in pending_keys:
+                    self._release_key_owners_if_idle_locked(key)
+                self._condition.notify_all()
+                while self._active_keys:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        for key in sorted(self._active_keys):
+                            logger.warning(
+                                "LCM %s maintenance quiesce timeout for database=%s scope=%s",
+                                self._kind, key[0], key[1],
+                            )
+                        return False
+                    self._condition.wait(remaining)
+                return True
+        except Exception:
+            logger.warning("LCM could not quiesce %s maintenance", self._kind, exc_info=True)
+            return False
+
     def _run(self) -> None:
         while True:
             with self._condition:
@@ -388,6 +485,10 @@ class _RollupMaintenanceScheduler:
                         self._condition.notify_all()
                         continue
                     self._active_keys.discard(key)
+                    for owner, keys in list(self._retired_active_keys.items()):
+                        keys.discard(key)
+                        if not keys:
+                            self._retired_active_keys.pop(owner, None)
                     self._running_follow_up = False
                     self._release_key_owners_if_idle_locked(key)
                     self._condition.notify_all()
@@ -400,6 +501,16 @@ _ROLLUP_MAINTENANCE_SCHEDULER = _RollupMaintenanceScheduler()
 _EMBEDDING_MAINTENANCE_SCHEDULER = _RollupMaintenanceScheduler(
     kind="incremental embedding", thread_name="lcm-embedding-maintenance"
 )
+_EMBEDDING_RETIRE_TIMEOUT_S = 2.0
+# One in-flight provider batch plus publication, with headroom for a 2-vCPU host.
+# Session retirement keeps its separate budget and never signals process exit.
+_EMBEDDING_EXIT_TIMEOUT_S = 10.0
+_EMBEDDING_EXIT_QUIESCE_REGISTERED = False
+
+
+def _quiesce_embedding_maintenance() -> bool:
+    return _EMBEDDING_MAINTENANCE_SCHEDULER.quiesce(_EMBEDDING_EXIT_TIMEOUT_S)
+
 
 _SESSION_END_BUSY_TIMEOUT_MS = 50
 # #909/#977: a condensation group of at most this many source tokens is about as long as its summary (Track S
@@ -408,7 +519,6 @@ _SESSION_END_BUSY_TIMEOUT_MS = 50
 _CONDENSATION_LIGHT_GROUP_TOKENS = 512
 # #1123: the smallest source the adaptive leaf rescue shrinks to (the pre-v0.27.0 default leaf chunk)
 _LEAF_RESCUE_FLOOR_TOKENS = 8_000
-_CODEX_GPT55_COMPACTION_THRESHOLD = 0.85
 _TOTAL_COMPACTIONS_SCOPE = "current_conversation"
 
 # Auto-focus topic derivation: infer a compact focus hint from the most recent
@@ -451,11 +561,341 @@ def _summary_part_text(node) -> str:
     )
 
 
+def _visible_reply_text(message: Any) -> str:
+    """#1162: the stripped text of a row Hermes' reply anchor treats as the visible reply, else ''."""
+    if not isinstance(message, dict) or message.get("role") != "assistant" or message.get("tool_calls"):
+        return ""
+    content = message.get("content")
+    if message.get("_compressed_summary") or LCMEngine._is_context_summary_content(content):
+        return ""
+    if isinstance(content, list):  # Hermes _message_text
+        content = "\n".join(str(p.get("text") or p.get("content") or "") for p in content if isinstance(p, dict))
+    return content.strip() if isinstance(content, str) else ""
+
+
 def _normalize_total_compactions(value: Any) -> int:
     """Return a persisted compaction total only when it is a valid counter."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return 0
     return value
+
+
+class LeafPrepUnavailable(RuntimeError):
+    """#787: a background preparation cannot serialize this source without writing a payload file."""
+
+
+class LeafSummaryResult(NamedTuple):
+    """#787: one leaf summary and its provenance, returned instead of written to the engine."""
+
+    chunk: List[Dict[str, Any]]
+    source_tokens: int
+    summary: str
+    level: int
+    attempts: int
+    model: str
+    content_filter_error: bool
+    level_3_verbatim: bool
+
+
+def _leaf_target_tokens_for(config, source_tokens: int) -> int:
+    """Leaf summary target (#614); defaults give a fixed 2,000-token target: min(2000, max(2000, 20%)).
+
+    An explicit ratio has no effect while minimum equals maximum; set LCM_LEAF_TARGET_MAX_TOKENS
+    to enable the ratio or a minimum above the default cap. Environment loading warns about these cases.
+    A config object built without the #614 fields uses the class defaults.
+    """
+    ratio = getattr(config, "leaf_target_ratio", LCMConfig.leaf_target_ratio)
+    floor = getattr(config, "leaf_target_min_tokens", LCMConfig.leaf_target_min_tokens)
+    cap = getattr(config, "leaf_target_max_tokens", LCMConfig.leaf_target_max_tokens)
+    return min(cap, max(floor, int(source_tokens * ratio)))
+
+
+def _next_leaf_rescue_chunk_for(
+    config,
+    select_oldest: Callable[[List[Dict[str, Any]], int], List[Dict[str, Any]]],
+    current_chunk: List[Dict[str, Any]],
+    current_source_tokens: int,
+    final: bool = False,
+) -> List[Dict[str, Any]]:
+    if len(current_chunk) <= 1:
+        return []
+
+    # #1123: the rescue may shrink to the pre-v0.27.0 8,000-token chunk, and the last attempt goes straight to it,
+    # so a 24,000-token default leaf reaches a small-context summariser within its three attempts
+    # (24k -> 18k -> 8k); at or below 8,000 nothing changes.
+    floor_tokens = max(1, min(config.leaf_chunk_tokens, _LEAF_RESCUE_FLOOR_TOKENS))
+    if final and floor_tokens < config.leaf_chunk_tokens:
+        shrink_targets = [floor_tokens]
+    else:
+        shrink_targets = [
+            max(floor_tokens, int(current_source_tokens * 0.75)),
+            max(floor_tokens, int(current_source_tokens * 0.50)),
+        ]
+
+    for target in shrink_targets:
+        if target >= current_source_tokens:
+            continue
+        smaller = select_oldest(current_chunk, target)
+        if smaller and len(smaller) < len(current_chunk):
+            return smaller
+
+    return current_chunk[: tool_group_safe_end(current_chunk, len(current_chunk) - 1)]
+
+
+def _is_retry_worthy_leaf_summary_error(exc: Exception) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    message = str(exc).lower()
+    retry_markers = (
+        "context length",
+        "maximum context",
+        "max context",
+        "too many tokens",
+        "token limit",
+        "prompt is too long",
+        "input too long",
+        "request too large",
+        "timed out",
+        "timeout",
+    )
+    return any(marker in message for marker in retry_markers)
+
+
+def _primary_summary_route_for(config, circuit_breaker) -> str:
+    """#605: the route key whose estimate an engine-level admission reads: the first one the circuit allows."""
+    chain = _summary_model_chain(config.summary_model, config.summary_fallback_models)
+    return next((model for model in chain if circuit_breaker.allows(model)), chain[0])
+
+
+def _serialize_leaf_input(
+    messages: List[Dict[str, Any]],
+    *,
+    config,
+    hermes_home: str,
+    session_id: str,
+    externalize_write: bool = True,
+    budget_tokens: Optional[int] = None,
+) -> Tuple[str, bool]:
+    """Serialize messages into labeled text for the summarizer.
+
+    *session_id* names the session that owns the rows. A large tool result is externalized under that session.
+    Message texts, tool arguments and previews share budget_tokens (#611), defaulting to leaf_chunk_tokens.
+    ``externalize_write=False`` (#787,
+    background preparation) writes no payload file and raises LeafPrepUnavailable for a result whose file is not
+    already on disk.
+    """
+    parts: List[List[Any]] = []  # per message: literal strings and indexes into texts
+    texts: List[str] = []
+    kinds: List[str] = []
+
+    def text(value: str, kind: str = "message") -> int:
+        texts.append(value)
+        kinds.append(kind)
+        return len(texts) - 1
+
+    matched_tool_ids = _matched_tool_call_ids(messages)
+    tool_result_names = _tool_result_names(messages)
+    for index, msg in enumerate(messages):
+        role = msg.get("role", "unknown")
+        content = redact_sensitive_value(
+            msg.get("content") or "",
+            config,
+            parse_json_strings=False,
+        )
+        if role == "tool":
+            tool_id = str(msg.get("tool_call_id") or "").strip()
+            externalized = maybe_externalize_tool_output(
+                content,
+                tool_call_id=tool_id,
+                session_id=session_id,
+                config=config,
+                hermes_home=hermes_home,
+                tool_name=str(msg.get("tool_name") or tool_result_names.get(index, "")),
+                **({} if externalize_write else {"write": False, "create_storage": False}),
+            )
+            if externalized and not externalize_write and not Path(externalized["path"]).exists():
+                raise LeafPrepUnavailable("externalized tool result payload is not on disk")
+            if externalized:
+                preview = externalized_preview(sanitize_pre_compaction_content(content))
+                parts.append([f"[TOOL RESULT {tool_id}]: " + externalized["placeholder"], text(preview, "preview")])
+            else:
+                parts.append([f"[TOOL RESULT {tool_id}]: ", text(sanitize_pre_compaction_content(content))])
+            continue
+
+        content = sanitize_pre_compaction_content(content)
+
+        if role == "assistant":
+            # The host's in-memory chat history may set tool_calls to None for
+            # shape uniformity; stored rows never can (MessageStore.to_openai_msg
+            # drops the key when the value is falsy). Treat any falsy value as
+            # "no tool calls" rather than iterating it.
+            tool_calls = msg.get("tool_calls") or []
+            matched_tool_calls = [
+                tc for tc in tool_calls
+                if not _tool_call_id(tc) or _tool_call_id(tc) in matched_tool_ids
+            ]
+            if _is_synthetic_assistant_noise(content):
+                if not matched_tool_calls:
+                    continue
+                content = ""
+            part: List[Any] = ["[ASSISTANT]: ", text(content)]
+            if matched_tool_calls:
+                part.append("\n[Tool calls:\n")
+                first = True
+                for tc in matched_tool_calls:
+                    if isinstance(tc, dict):
+                        fn = tc.get("function", {})
+                        name = fn.get("name", "?")
+                        args = fn.get("arguments", "")
+                        args = redact_sensitive_value(
+                            args,
+                            config,
+                            parse_json_strings=True,
+                        )
+                        args = sanitize_pre_compaction_tool_arguments(args)
+                        part += [("" if first else "\n") + f"  {name}(", text(args, "arguments"), ")"]
+                        first = False
+                part.append("\n]")
+            parts.append(part)
+            continue
+
+        parts.append([f"[{role.upper()}]: ", text(content)])
+
+    clipped_texts = clip_to_budget(
+        texts, config.leaf_chunk_tokens if budget_tokens is None else budget_tokens, kinds)
+    clipped = any(before != after for before, after in zip(texts, clipped_texts))
+    texts = clipped_texts
+    return "\n\n".join("".join(texts[x] if isinstance(x, int) else x for x in part) for part in parts), clipped
+
+
+def summarize_leaf_chunk_with_rescue(
+    initial_chunk: List[Dict[str, Any]],
+    *,
+    config,
+    focus_topic: Optional[str],
+    circuit_breaker,
+    spend_guard,
+    serialize: Callable[..., Tuple[str, bool]],
+    leaf_target_tokens: Callable[[int], int],
+    next_rescue_chunk: Callable[..., List[Dict[str, Any]]],
+    primary_route: Callable[[], str],
+    retry_worthy: Callable[[Exception], bool],
+    budget: Optional[ForegroundBudget] = None,
+    deadline: Optional[float] = None,
+    route_key_prefix: str = "",
+    admit_rescue: Optional[Callable[[list], bool]] = None,
+) -> LeafSummaryResult:
+    """#787 D-2: the leaf summariser with its adaptive rescue (#751), every input explicit, the provenance and the
+    level 3 flags returned. The foreground passes its live values; a background preparation passes a snapshot,
+    its own breaker prefix and spend guard and no budget."""
+    attempt_chunk = list(initial_chunk)
+    max_attempts = 3
+    attempt_number = 0
+    clip_budget = config.leaf_chunk_tokens
+    floor = min(clip_budget, _LEAF_RESCUE_FLOOR_TOKENS)
+
+    while attempt_chunk and attempt_number < max_attempts:
+        attempt_number += 1
+        source_tokens = count_messages_tokens(attempt_chunk)
+        serialized, clipped = (
+            serialize(attempt_chunk)
+            if clip_budget == config.leaf_chunk_tokens else
+            serialize(attempt_chunk, budget_tokens=clip_budget)
+        )
+        token_budget = leaf_target_tokens(source_tokens)
+        logger.info(  # #611 recorder: the serialized summariser input of this leaf call
+            "LCM leaf summary input: input_tokens=%d source_tokens=%d messages=%d",
+            count_tokens(serialized), source_tokens, len(attempt_chunk),
+        )
+
+        # #751: a size refusal is excused only when a smaller chunk can still be tried
+        rescue_chunk = (
+            next_rescue_chunk(attempt_chunk, source_tokens, final=attempt_number + 1 >= max_attempts)
+            if attempt_number < max_attempts else []
+        )
+        can_rescue = bool(rescue_chunk) and len(rescue_chunk) < len(attempt_chunk)
+        rescue_budget = clip_budget
+        # #1132: an indivisible chunk, or an oversized final shrink, can still use #611's floor clip.
+        if (attempt_number < max_attempts and clip_budget > floor and count_tokens(serialized) > floor
+                and (not can_rescue or (attempt_number + 1 >= max_attempts
+                                       and count_messages_tokens(rescue_chunk) > floor))):
+            if not can_rescue:
+                rescue_chunk = attempt_chunk
+            rescue_budget = floor
+            can_rescue = True
+        try:
+            timeout_seconds = config.summary_timeout_ms / 1000
+            if budget is not None:  # #605: the chain caps each attempt; refuse here before any work
+                budget.admit(primary_route())
+            elif deadline is not None:
+                remaining_seconds = deadline - time.monotonic()
+                if remaining_seconds < _THRESHOLD_FULL_SWEEP_MIN_CALL_SECONDS:
+                    raise SweepBudgetExhausted("threshold full sweep time budget exhausted")
+                timeout_seconds = min(timeout_seconds, remaining_seconds)
+            provenance: dict[str, str] = {}
+            summary_text, level = summarize_with_escalation(
+                text=serialized,
+                source_tokens=source_tokens,
+                token_budget=token_budget,
+                depth=0,
+                model=config.summary_model,
+                fallback_models=config.summary_fallback_models,
+                reasoning_effort=config.summary_reasoning_effort,
+                circuit_breaker=circuit_breaker,
+                spend_guard=spend_guard,
+                timeout=timeout_seconds,
+                l2_budget_ratio=config.l2_budget_ratio,
+                l3_truncate_tokens=config.l3_truncate_tokens,
+                focus_topic=focus_topic or "",
+                custom_instructions=config.custom_instructions,
+                prompt_version=getattr(config, "summary_prompt_version", 1),
+                provenance=provenance,
+                **({"budget": budget} if budget is not None else
+                   {"deadline": deadline} if deadline is not None else {}),  # #666/#605: every attempt
+                **({"route_key_prefix": route_key_prefix} if route_key_prefix else {}),  # #787: prep keys
+                verbatim_small_source=not clipped,  # #605 F2; #947: clipped input is not whole
+                # #751: a refusal for size reaches the rescue below; without a smaller chunk it counts as before
+                context_length_rescue=can_rescue,
+            )
+            if level == 3 and provenance.get("context_length_error") and summary_text != serialized and can_rescue:
+                if admit_rescue is not None and not admit_rescue(rescue_chunk):  # #1147 r1: refuse before retry.
+                    raise UnattributedRescueRefused()
+                logger.warning(
+                    "LCM leaf summarization retrying with smaller oldest chunk after a context-length "
+                    "refusal (attempt %d/%d, %d→%d messages, clip budget %d→%d tokens)",
+                    attempt_number, max_attempts, len(attempt_chunk), len(rescue_chunk), clip_budget, rescue_budget,
+                )
+                attempt_chunk = rescue_chunk
+                clip_budget = rescue_budget
+                continue
+            return LeafSummaryResult(
+                attempt_chunk, source_tokens, summary_text, level, attempt_number,
+                model=provenance.get("model", ""),
+                content_filter_error=bool(provenance.get("content_filter_error")),
+                # #652: no fragment; #947: a clipped source returned unchanged by the level-3 fallback is a fragment
+                level_3_verbatim=level == 3 and not clipped and summary_text == serialized,
+            )
+        except Exception as exc:
+            if isinstance(exc, (SweepBudgetExhausted, UnattributedRescueRefused)):
+                raise  # #1147 r1: budget and lineage refusals cannot be retried.
+            if attempt_number >= max_attempts or not retry_worthy(exc):
+                raise
+            if not can_rescue:
+                raise
+            if admit_rescue is not None and not admit_rescue(rescue_chunk):  # #1147 r1: refuse before retry.
+                raise UnattributedRescueRefused()
+            logger.warning(
+                "LCM leaf summarization retrying with smaller oldest chunk after retry-worthy failure: %s (attempt %d/%d, %d→%d messages)",
+                exc,
+                attempt_number,
+                max_attempts,
+                len(attempt_chunk),
+                len(rescue_chunk),
+            )
+            attempt_chunk = rescue_chunk
+            clip_budget = rescue_budget
+
+    raise RuntimeError("adaptive leaf rescue exhausted without a valid chunk")
 
 
 _OVERFLOW_RECOVERY_PLACEHOLDER = (
@@ -738,6 +1178,7 @@ class LCMEngine(
         # #671: the latest stub-first exit (tokens before/after, target, backlog rows) and this compress()'s.
         self._last_stub_first_exit: Optional[dict[str, int]] = None
         self._stub_first_exit_now: Optional[dict[str, int]] = None
+        self._compress_calls = 0  # #1116: which compress() a stub-first proof came from
         self._last_compression_status = "idle"
         self._last_compression_noop_reason = ""
         # Ingest-failure tracking. The core promise is that nothing is ever
@@ -768,31 +1209,26 @@ class LCMEngine(
         # #618: it holds only the conversation it was armed for.
         self._sweep_budget_hold_until: float = 0.0
         self._sweep_budget_hold_conversation = ""
+        self._sweep_budget_hold_turn_paced = False
+        self._hung_summary_strike: Optional[tuple[str, str]] = None
         # #651: (monotonic until, reason) after an automatic threshold pass made no progress or
         # the host refused one. #597: a progress refusal also ends at turn end.
         self._no_progress_hold: Optional[tuple[float, str]] = None
         self._last_compress_leaves: Optional[tuple[str, int]] = None  # #597: latest call, bound conversation
         self._last_hidden_backlog: Optional[HiddenBacklog] = None  # #597: latest check in this compress()
         self._hidden_backlog_unknown_warned: set[str] = set()
-        # #618: one-shot from compress(): a hold is active at the survival ceiling, so the pass only fits.
-        self._hold_fit_only_requested = False
+        self._unattributed_leaf_warned: set[tuple[str, int]] = set()
+        self._leaf_rescue_admit: Callable[[list], bool] | None = None  # #1147 r1: per-call rescue lineage check
+        self._compaction_request = CompactionRequest()
         self._no_progress_candidate = False  # set by _compress_impl for compress()
         self._objective_only_noop = False
         self._compress_dropped_ignored_rows = False  # #1013: this compress() dropped ignored rows
         self._last_gate_tokens = 0  # the latest should_compress/preflight observation
-        # #651 one-shot handoff: preflight asked for maintenance below the host
-        # threshold, so the automatic compress() that follows is cleanup-only.
-        self._preflight_below_threshold_cleanup_only = False
-        # #677 one-shot: any preflight request; compress() makes it cleanup-only below the host's count.
-        self._preflight_automatic_request = False
-        # One-shot handoff from preflight: adopt an already-durable replay
-        # cleanup during boundary cooldown without running summary work.
-        self._preflight_cleanup_only_due_to_boundary_cooldown = False
         # Temporary source window used only while compress() assembles context.
         # _assemble_context also serves tests and recovery paths directly, so
         # keep anchoring opt-in rather than changing its public behavior.
         self._pending_context_anchor_messages: Optional[List[Dict[str, Any]]] = None
-        self._current_compress_store_ids_by_message_id: dict[int, int] = {}
+        self._compress_run = CompressRun()
         self._current_compress_placeholder_identity_counts: dict[tuple[str, str, str, str], int] = {}
         self._last_active_replay_source_identities: list[tuple[Any, ...]] = []
         self._last_active_replay_messages: list[Dict[str, Any]] = []
@@ -831,6 +1267,7 @@ class LCMEngine(
         self._lcm_normal_message_prefix_fingerprints: dict[tuple[str, str], list[str]] = {}
         self._lcm_current_start_allows_bypass_lineage = False
         self._auxiliary_session_lock = threading.RLock()
+        self._child_host_fallback_states: dict[str, dict[int, dict]] = {}
         self._host_fallback_compressor: Any = None
         self._host_fallback_session_id = ""
         self._host_fallback_import_warning_logged = False
@@ -838,6 +1275,7 @@ class LCMEngine(
         # diagnostic drains do not retain every historical session key forever.
         self._rollup_maintenance_owner = object()
         self._embedding_maintenance_owner = object()
+        self._embedding_maintenance_retired = False
         # Host-facing engine name: ENGINE_NAME, or the legacy alias when the
         # active Hermes config still selects ``context.engine: lcm`` (#471).
         self._engine_name = ENGINE_NAME
@@ -1048,6 +1486,7 @@ class LCMEngine(
 
     def _close_storage(self) -> None:
         """Best-effort close of currently bound SQLite helpers."""
+        self._discard_prepared_leaves()
         for attr in (
             "_adaptive_retrieval",
             "_store",
@@ -1080,6 +1519,7 @@ class LCMEngine(
 
     def _reset_profile_runtime_state(self) -> None:
         """Clear process-local session state that cannot cross profile homes."""
+        self._discard_prepared_leaves()  # #787: a configured database path keeps its store across homes
         self._store.clear_context_windows()
         # R6-4: survival-fit warnings belong to the store they were raised on.
         self._survival_fit_pending_warning, self._survival_fit_warned = None, set()
@@ -1125,8 +1565,8 @@ class LCMEngine(
             self._lcm_bypass_message_prefix_fingerprints.clear()
             self._lcm_normal_message_prefix_fingerprints.clear()
         self._lcm_current_start_allows_bypass_lineage = False
-        self._host_fallback_compressor = None
-        self._host_fallback_session_id = ""
+        for state in self._host_fallback_states():
+            self._clear_host_fallback_state(state)
         self._host_fallback_import_warning_logged = False
         # B-ID-2: #436 caches name rows and ancestry of the previous profile's store.
         self._identity_anchor_recent, self._identity_anchor_versions = [], []
@@ -1181,39 +1621,12 @@ class LCMEngine(
             if getattr(self._config, "config_sources", None)
             else "manual_or_default"
         )
-        explicit_lcm_override = source in {
-            "env:LCM_CONTEXT_THRESHOLD",
-            "config_yaml:lcm.context_threshold",
-        }
         route_model = self.model if model is None else model
         route_provider = self.provider if provider is None else provider
-        # Per-model threshold overrides take priority over everything else.
-        # Longest substring match wins (so "glm-5.2-1M" beats "glm-5.2").
-        if self._config.model_thresholds and route_model:
-            best_key = ""
-            for key in self._config.model_thresholds:
-                if key in route_model and len(key) > len(best_key):
-                    best_key = key
-            if best_key:
-                override = float(self._config.model_thresholds[best_key])
-                return (
-                    override,
-                    f"model_thresholds:{best_key}",
-                    {"from": configured, "to": override},
-                )
-        # 5.6 deliberately excluded — F59 measured the standard threshold regime at 100% retention on gpt-5.6-sol; extension requires its own registered run.
-        if (
-            _is_codex_gpt55_route(route_model, route_provider)
-            and self._config.codex_gpt55_autoraise_enabled
-            and not explicit_lcm_override
-            and configured < _CODEX_GPT55_COMPACTION_THRESHOLD
-        ):
-            return (
-                _CODEX_GPT55_COMPACTION_THRESHOLD,
-                "codex_gpt55_autoraise",
-                {"from": configured, "to": _CODEX_GPT55_COMPACTION_THRESHOLD},
-            )
-        return configured, source, None
+        return resolve_threshold(
+            configured, source, self._config.model_thresholds,
+            self._config.codex_gpt55_autoraise_enabled, route_model, route_provider,
+        )
 
     def _effective_context_length(
         self,
@@ -1224,14 +1637,7 @@ class LCMEngine(
     ) -> tuple[int, int | None, str]:
         route_model = self.model if model is None else model
         route_provider = self.provider if provider is None else provider
-        cap = _codex_oauth_context_cap(route_model, route_provider)
-        if cap is not None and raw_context_length > cap:
-            return (
-                cap,
-                cap,
-                "codex_oauth_context_cap",
-            )
-        return raw_context_length, None, ""
+        return effective_context_length(raw_context_length, route_model, route_provider)
 
     def _effective_threshold_tokens(self, context_threshold_tokens: int) -> int:
         """Return the host-visible preflight trigger token count.
@@ -1243,11 +1649,7 @@ class LCMEngine(
         tool/schema-heavy request can skip host preflight entirely.
         """
         assembly_cap = self._effective_assembly_token_cap()
-        if assembly_cap is not None and assembly_cap > 0:
-            if context_threshold_tokens > 0:
-                return min(context_threshold_tokens, assembly_cap)
-            return assembly_cap
-        return context_threshold_tokens
+        return threshold_tokens(context_threshold_tokens, assembly_cap)
 
     def _set_context_length(
         self,
@@ -1347,7 +1749,7 @@ class LCMEngine(
         an LCM no-op (for example, when request pressure is high but all
         compactable raw backlog is protected by the fresh tail).
         """
-        return self._last_compression_status
+        return self._bypass_compress_state().get("_last_compression_status", "idle")
 
     @last_compression_status.setter
     def last_compression_status(self, value: str) -> None:
@@ -1357,17 +1759,58 @@ class LCMEngine(
         in ``conversation_compression.py`` raises ``AttributeError: property
         has no setter``, crashing context compression.
         """
-        self._last_compression_status = value
+        self._bypass_compress_state()["_last_compression_status"] = value
 
     @property
     def last_compression_noop_reason(self) -> str:
         """Human-readable reason for the latest no-op compression decision."""
-        return self._last_compression_noop_reason
+        return self._bypass_compress_state().get("_last_compression_noop_reason", "")
 
     @property
     def last_compression_was_noop(self) -> bool:
         """Whether the most recent compression/preflight decision was a no-op."""
-        return self._last_compression_status == "noop"
+        return self.last_compression_status == "noop"
+
+    # Compatibility views for existing tests and parent-state snapshots.
+    @property
+    def _current_compress_store_ids_by_message_id(self) -> dict[int, int]:
+        return self._compress_run.store_ids_by_message_id
+
+    @_current_compress_store_ids_by_message_id.setter
+    def _current_compress_store_ids_by_message_id(self, value: dict[int, int]) -> None:
+        self._compress_run.store_ids_by_message_id = value
+
+    @property
+    def _preflight_cleanup_only_due_to_boundary_cooldown(self) -> bool:
+        return self._compaction_request.cleanup_only_due_to_boundary_cooldown
+
+    @_preflight_cleanup_only_due_to_boundary_cooldown.setter
+    def _preflight_cleanup_only_due_to_boundary_cooldown(self, value: bool) -> None:
+        self._compaction_request.cleanup_only_due_to_boundary_cooldown = value
+
+    @property
+    def _preflight_below_threshold_cleanup_only(self) -> bool:
+        return self._compaction_request.below_threshold_cleanup_only
+
+    @_preflight_below_threshold_cleanup_only.setter
+    def _preflight_below_threshold_cleanup_only(self, value: bool) -> None:
+        self._compaction_request.below_threshold_cleanup_only = value
+
+    @property
+    def _preflight_automatic_request(self) -> bool:
+        return self._compaction_request.automatic_request
+
+    @_preflight_automatic_request.setter
+    def _preflight_automatic_request(self, value: bool) -> None:
+        self._compaction_request.automatic_request = value
+
+    @property
+    def _hold_fit_only_requested(self) -> bool:
+        return self._compaction_request.hold_fit_only_requested
+
+    @_hold_fit_only_requested.setter
+    def _hold_fit_only_requested(self, value: bool) -> None:
+        self._compaction_request.hold_fit_only_requested = value
 
     def _mark_preflight_compression_requested(
         self,
@@ -1386,7 +1829,7 @@ class LCMEngine(
         """
         self._last_compression_status = "pending"
         self._last_compression_noop_reason = ""
-        self._preflight_automatic_request = True
+        self._compaction_request.automatic_request = True
         if not depends_on_pressure_yield:
             self._pressure_yield_invocation_verdict = "clear"
         return True
@@ -1505,11 +1948,12 @@ class LCMEngine(
                                 auxiliary_session_id
                             )
                         self._auxiliary_last_prompt_tokens.pop(auxiliary_session_id, None)
-                        if self._host_fallback_session_id == auxiliary_session_id:
+                        if self._host_fallback_state_for_session(auxiliary_session_id).get("_host_fallback_session_id") == auxiliary_session_id:
                             self._end_host_fallback_compressor_for_session(
                                 auxiliary_session_id,
                                 [],
                                 current_session_bypasses=True,
+                                require_session_match=True,
                             )
                         self._auxiliary_session_generations[
                             auxiliary_session_id
@@ -1736,10 +2180,14 @@ class LCMEngine(
         self._last_boundary_skip_time = 0
         return False
 
-    def _start_sweep_budget_hold(self, seconds: Optional[float] = None) -> None:
+    def _start_sweep_budget_hold(self, seconds: Optional[float] = None, *, turn_paced: bool = False) -> None:
         hold = _SWEEP_BUDGET_HOLD_SECONDS if seconds is None else min(_SWEEP_BUDGET_HOLD_SECONDS, max(1.0, seconds))
         self._sweep_budget_hold_until = time.monotonic() + hold
         self._sweep_budget_hold_conversation = self._hold_conversation_key()  # #618
+        if turn_paced and not self._sweep_budget_hold_turn_paced:
+            logger.info("LCM hung summary hold armed until turn end (cap %.0fs): %s",
+                        hold, self._hung_summary_strike[1])
+        self._sweep_budget_hold_turn_paced = turn_paced
 
     def _hold_conversation_key(self) -> str:
         """#618: the conversation a #608 hold belongs to."""
@@ -1752,8 +2200,7 @@ class LCMEngine(
 
     def _primary_summary_route(self) -> str:
         """#605: the route key whose estimate an engine-level admission reads: the first one the circuit allows."""
-        chain = _summary_model_chain(self._config.summary_model, self._config.summary_fallback_models)
-        return next((model for model in chain if self._summary_circuit_breaker.allows(model)), chain[0])
+        return _primary_summary_route_for(self._config, self._summary_circuit_breaker)
 
     def _foreground_budget_seconds(self) -> tuple[float, float]:
         """#605: (soft, hard) seconds; an invalid hard is 120, an invalid soft 60, and soft is at most hard."""
@@ -1772,6 +2219,17 @@ class LCMEngine(
         """#628: false while the circuit refuses every summary route."""
         return summary_route_available(
             self._config.summary_model, self._config.summary_fallback_models, self._summary_circuit_breaker)
+
+    def _hung_summary_route_has_fallback(self, budget: ForegroundBudget) -> bool:
+        """Only this pass's hang can waive its hold, while another route in the chain is still usable
+        (the primary too, when the hang was on a fallback)."""
+        return (
+            budget.hung_route is not None
+            and not self._summary_circuit_breaker.allows(budget.hung_route)
+            and any(self._summary_circuit_breaker.allows(model) for model in _summary_model_chain(
+                self._config.summary_model, self._config.summary_fallback_models)
+                if model != budget.hung_route)
+        )
 
     def _fit_can_rescue(self, force_overflow: bool) -> bool:
         """#652: false when forced or no survival fit can keep the request under the window (fit off, or
@@ -1835,6 +2293,11 @@ class LCMEngine(
         until, reason = self._no_progress_hold
         return {"reason": reason, "until": time.time() + max(0.0, until - time.monotonic())}  # #618: wall clock
 
+    def _zero_leaf_streak_status(self) -> Optional[dict]:
+        """#1162: this conversation's consecutive over-threshold passes that stored no leaf, and the last reason."""
+        streak = self.__dict__.get("_zero_leaf_streaks", {}).get(self._hold_conversation_key())
+        return dict(streak) if streak else None
+
     def record_rejected_compaction(self) -> None:
         """#651 host breaker hook: the host refused the last compaction (the result would be larger). Called
         without arguments inside an error-swallowing wrapper. #665: a refusal of a bypassed (auxiliary or
@@ -1849,10 +2312,34 @@ class LCMEngine(
         progress = leaves is not None and leaves[0] == self._hold_conversation_key() and leaves[1] >= 1
         self._start_no_progress_hold("host_rejected_progress" if progress else "host_rejected")
 
+    def _discard_prepared_leaves(self) -> None:
+        """#787: shutdown and storage rebind drop this store's queued preparations and prepared leaves."""
+        store = getattr(self, "_store", None)
+        if store is not None:
+            leaf_prep.discard(store.db_path)
+
+    def _prepare_leaves_after_turn(self, history) -> None:
+        """#787 (default off): after a completed turn's ingest, enqueue one background leaf preparation (O(1))."""
+        if not getattr(self._config, "background_leaf_prep_enabled", False):
+            return
+        try:
+            leaf_prep.enqueue_after_turn(self, history)
+        except Exception:
+            logger.debug("LCM background leaf preparation enqueue failed", exc_info=True)
+
     def note_turn_complete(self) -> None:
         """#597/#922/#904: end turn-paced holds at the end of a foreground turn of this engine (never a
         bypassed auxiliary/stateless call); cheap, fail-soft host notification."""
         try:
+            if (self._sweep_budget_hold_turn_paced and self._hung_summary_strike is not None
+                    and self._hung_summary_strike[0] == self._hold_conversation_key()
+                    and self._sweep_budget_hold_conversation == self._hold_conversation_key()
+                    and self._sweep_budget_hold_active()
+                    and not self._bypasses_lcm_context_management()):
+                route = self._hung_summary_strike[1]
+                self._sweep_budget_hold_until, self._sweep_budget_hold_turn_paced = 0.0, False
+                self._summary_circuit_breaker.release_hang(route)
+                logger.info("LCM hung summary hold released at turn end: %s", route)
             hold = self._no_progress_hold
             if (hold is not None and hold[1] in _TURN_END_HOLD_REASONS
                     and not self._bypasses_lcm_context_management()):
@@ -1866,7 +2353,7 @@ class LCMEngine(
         (``ignore_cooldown``), a pending below-threshold cleanup-only pass, forced overflow and the survival
         ceiling are never blocked; the hold governs LCM-managed compaction only, never a bypassed session.
         #625: the #608 sweep hold blocks the same way."""
-        if ignore_cooldown or self._preflight_below_threshold_cleanup_only:
+        if ignore_cooldown or self._compaction_request.below_threshold_cleanup_only:
             return False
         tokens = max(int(self.last_prompt_tokens or 0), self._last_gate_tokens)
         return self._no_progress_hold_blocks(tokens) or self._sweep_budget_hold_blocks(tokens)
@@ -1901,7 +2388,7 @@ class LCMEngine(
         window = int(self.context_length or 0)
         if window <= 0:
             return None
-        reserve = min(0.9, max(0.0, float(getattr(self._config, "survival_reserve", 0.15) or 0.0)))
+        reserve = survival_reserve_fraction(self._config)
         return int(window * (1 - reserve))
 
     def _hold_fit_only_applies(self, tokens: int) -> bool:
@@ -2196,22 +2683,7 @@ class LCMEngine(
                 self._record_ingest_failure("per-turn ingest()", e)
 
     def _is_retry_worthy_leaf_summary_error(self, exc: Exception) -> bool:
-        if isinstance(exc, TimeoutError):
-            return True
-        message = str(exc).lower()
-        retry_markers = (
-            "context length",
-            "maximum context",
-            "max context",
-            "too many tokens",
-            "token limit",
-            "prompt is too long",
-            "input too long",
-            "request too large",
-            "timed out",
-            "timeout",
-        )
-        return any(marker in message for marker in retry_markers)
+        return _is_retry_worthy_leaf_summary_error(exc)
 
     def _next_leaf_rescue_chunk(
         self,
@@ -2219,40 +2691,12 @@ class LCMEngine(
         current_source_tokens: int,
         final: bool = False,
     ) -> List[Dict[str, Any]]:
-        if len(current_chunk) <= 1:
-            return []
-
-        # #1123: the rescue may shrink to the pre-v0.27.0 8,000-token chunk, and the last attempt goes straight to it,
-        # so a 24,000-token default leaf reaches a small-context summariser within its three attempts
-        # (24k -> 18k -> 8k); at or below 8,000 nothing changes.
-        floor_tokens = max(1, min(self._config.leaf_chunk_tokens, _LEAF_RESCUE_FLOOR_TOKENS))
-        if final and floor_tokens < self._config.leaf_chunk_tokens:
-            shrink_targets = [floor_tokens]
-        else:
-            shrink_targets = [
-                max(floor_tokens, int(current_source_tokens * 0.75)),
-                max(floor_tokens, int(current_source_tokens * 0.50)),
-            ]
-
-        for target in shrink_targets:
-            if target >= current_source_tokens:
-                continue
-            smaller = self._select_oldest_leaf_chunk(current_chunk, target)
-            if smaller and len(smaller) < len(current_chunk):
-                return smaller
-
-        return current_chunk[: tool_group_safe_end(current_chunk, len(current_chunk) - 1)]
+        return _next_leaf_rescue_chunk_for(
+            self._config, self._select_oldest_leaf_chunk, current_chunk, current_source_tokens, final=final)
 
     def _leaf_target_tokens(self, source_tokens: int) -> int:
-        """Leaf summary target (#614); defaults give a fixed 2,000-token target: min(2000, max(2000, 20%)).
-
-        A config object built without the #614 fields uses the class defaults.
-        """
-        cfg = self._config
-        ratio = getattr(cfg, "leaf_target_ratio", LCMConfig.leaf_target_ratio)
-        floor = getattr(cfg, "leaf_target_min_tokens", LCMConfig.leaf_target_min_tokens)
-        cap = getattr(cfg, "leaf_target_max_tokens", LCMConfig.leaf_target_max_tokens)
-        return min(cap, max(floor, int(source_tokens * ratio)))
+        """Leaf summary target (#614); defaults give a fixed 2,000-token target: min(2000, max(2000, 20%))."""
+        return _leaf_target_tokens_for(self._config, source_tokens)
     def _take_leaf_summary_model(self) -> str:
         """Return and clear the model that produced the last leaf summary (#441)."""
         model = getattr(self, "_last_leaf_summary_model", "")
@@ -2265,94 +2709,26 @@ class LCMEngine(
         focus_topic: Optional[str] = None,
         deadline: Optional[float] = None,
     ) -> tuple[List[Dict[str, Any]], int, str, int, int]:
-        attempt_chunk = list(initial_chunk)
-        budget = self._foreground_call_budget()
-        max_attempts = 3
-        attempt_number = 0
-
-        while attempt_chunk and attempt_number < max_attempts:
-            attempt_number += 1
-            source_tokens = count_messages_tokens(attempt_chunk)
-            serialized, clipped = self._serialize_messages_with_clip(attempt_chunk)
-            token_budget = self._leaf_target_tokens(source_tokens)
-            logger.info(  # #611 recorder: the serialized summariser input of this leaf call
-                "LCM leaf summary input: input_tokens=%d source_tokens=%d messages=%d",
-                count_tokens(serialized), source_tokens, len(attempt_chunk),
-            )
-
-            # #751: a size refusal is excused only when a smaller chunk can still be tried
-            rescue_chunk = (
-                self._next_leaf_rescue_chunk(attempt_chunk, source_tokens, final=attempt_number + 1 >= max_attempts)
-                if attempt_number < max_attempts else []
-            )
-            can_rescue = bool(rescue_chunk) and len(rescue_chunk) < len(attempt_chunk)
-            try:
-                timeout_seconds = self._config.summary_timeout_ms / 1000
-                if budget is not None:  # #605: the chain caps each attempt; refuse here before any work
-                    budget.admit(self._primary_summary_route())
-                elif deadline is not None:
-                    remaining_seconds = deadline - time.monotonic()
-                    if remaining_seconds < _THRESHOLD_FULL_SWEEP_MIN_CALL_SECONDS:
-                        raise SweepBudgetExhausted("threshold full sweep time budget exhausted")
-                    timeout_seconds = min(timeout_seconds, remaining_seconds)
-                provenance: dict[str, str] = {}
-                summary_text, level = summarize_with_escalation(
-                    text=serialized,
-                    source_tokens=source_tokens,
-                    token_budget=token_budget,
-                    depth=0,
-                    model=self._config.summary_model,
-                    fallback_models=self._config.summary_fallback_models,
-                    reasoning_effort=self._config.summary_reasoning_effort,
-                    circuit_breaker=self._summary_circuit_breaker,
-                    spend_guard=self._summary_spend_guard,
-                    timeout=timeout_seconds,
-                    l2_budget_ratio=self._config.l2_budget_ratio,
-                    l3_truncate_tokens=self._config.l3_truncate_tokens,
-                    focus_topic=focus_topic or "",
-                    custom_instructions=self._config.custom_instructions,
-                    prompt_version=getattr(self._config, "summary_prompt_version", 1),
-                    provenance=provenance,
-                    **({"budget": budget} if budget is not None else
-                       {"deadline": deadline} if deadline is not None else {}),  # #666/#605: every attempt
-                    verbatim_small_source=not clipped,  # #605 F2; #947: clipped input is not whole
-                    # #751: a refusal for size reaches the rescue below; without a smaller chunk it counts as before
-                    context_length_rescue=can_rescue,
-                )
-                if level == 3 and provenance.get("context_length_error") and summary_text != serialized and can_rescue:
-                    logger.warning(
-                        "LCM leaf summarization retrying with smaller oldest chunk after a context-length "
-                        "refusal (attempt %d/%d, %d→%d messages)",
-                        attempt_number, max_attempts, len(attempt_chunk), len(rescue_chunk),
-                    )
-                    attempt_chunk = rescue_chunk
-                    continue
-                self._last_leaf_summary_model = provenance.get("model", "")
-                self._last_leaf_content_filter_error = bool(provenance.get("content_filter_error"))
-                # #652: no fragment; #947: a clipped source returned unchanged by the level-3 fallback is a fragment too
-                self._last_leaf_level_3_verbatim = level == 3 and not clipped and summary_text == serialized
-                return attempt_chunk, source_tokens, summary_text, level, attempt_number
-            except Exception as exc:
-                if isinstance(exc, SweepBudgetExhausted):
-                    raise  # a smaller chunk cannot get the time back
-                if attempt_number >= max_attempts or not self._is_retry_worthy_leaf_summary_error(exc):
-                    raise
-                smaller_chunk = self._next_leaf_rescue_chunk(
-                    attempt_chunk, source_tokens, final=attempt_number + 1 >= max_attempts
-                )
-                if not smaller_chunk or len(smaller_chunk) >= len(attempt_chunk):
-                    raise
-                logger.warning(
-                    "LCM leaf summarization retrying with smaller oldest chunk after retry-worthy failure: %s (attempt %d/%d, %d→%d messages)",
-                    exc,
-                    attempt_number,
-                    max_attempts,
-                    len(attempt_chunk),
-                    len(smaller_chunk),
-                )
-                attempt_chunk = smaller_chunk
-
-        raise RuntimeError("adaptive leaf rescue exhausted without a valid chunk")
+        """The foreground leaf summariser: the live values in, the provenance written back (#441, #652)."""
+        result = summarize_leaf_chunk_with_rescue(
+            initial_chunk,
+            config=self._config,
+            focus_topic=focus_topic,
+            circuit_breaker=self._summary_circuit_breaker,
+            spend_guard=self._summary_spend_guard,
+            serialize=self._serialize_messages_with_clip,
+            leaf_target_tokens=self._leaf_target_tokens,
+            next_rescue_chunk=self._next_leaf_rescue_chunk,
+            primary_route=self._primary_summary_route,
+            retry_worthy=self._is_retry_worthy_leaf_summary_error,
+            budget=self._foreground_call_budget(),
+            deadline=deadline,
+            admit_rescue=getattr(self, "_leaf_rescue_admit", None),
+        )
+        self._last_leaf_summary_model = result.model
+        self._last_leaf_content_filter_error = result.content_filter_error
+        self._last_leaf_level_3_verbatim = result.level_3_verbatim
+        return result.chunk, result.source_tokens, result.summary, result.level, result.attempts
 
     # -- ContextEngine optional methods ------------------------------------
 
@@ -2426,7 +2802,7 @@ class LCMEngine(
         one pass queued per database, and the pass runs the backfill core under
         its lease on a private connection.
         """
-        if not getattr(self._config, "embeddings_enabled", False):
+        if self._embedding_maintenance_retired or not getattr(self._config, "embeddings_enabled", False):
             return
         try:
             raw_database_path = str(self._dag.db_path)
@@ -2473,6 +2849,19 @@ class LCMEngine(
                 exc_info=True,
             )
 
+    def _rearm_embedding_maintenance(self) -> None:
+        self._embedding_maintenance_retired = False
+
+    def _retire_embedding_maintenance(self, wait: bool) -> None:
+        self._embedding_maintenance_retired = True
+        try:
+            _EMBEDDING_MAINTENANCE_SCHEDULER.retire_owner(
+                self._embedding_maintenance_owner,
+                timeout=_EMBEDDING_RETIRE_TIMEOUT_S if wait else 0,
+            )
+        except Exception:
+            logger.warning("LCM could not retire background incremental embedding", exc_info=True)
+
     def drain_embedding_maintenance(self, timeout: float | None = None) -> bool:
         """Wait for embedding passes scheduled by this engine (tests and diagnostics)."""
         return _EMBEDDING_MAINTENANCE_SCHEDULER.drain_owner(
@@ -2494,6 +2883,7 @@ class LCMEngine(
         conversation_id: str | None = None,
     ) -> None:
         state = self._lifecycle.bind_session(session_id, conversation_id=conversation_id)
+        self._rearm_embedding_maintenance()
         if getattr(self, "_survival_overhead_observation", None) is not None and \
                 self._survival_overhead_observation[0] != state.conversation_id:
             self._survival_overhead_observation = None
@@ -2881,6 +3271,7 @@ class LCMEngine(
         observed = int(observed_tokens or 0)
         if observed < self.threshold_tokens:
             self._note_fresh_tail_pressure_relieved()
+            self.__dict__.get("_zero_leaf_streaks", {}).pop(self._hold_conversation_key(), None)  # #1162
             return False
         boundary = self._fresh_tail_boundary(messages)
         leading_anchor_count = self._leading_anchor_count(messages)
@@ -3516,6 +3907,9 @@ class LCMEngine(
                 frontier,
             )
         self._last_compacted_store_id = frontier
+        if self._embedding_maintenance_retired:
+            self._rearm_embedding_maintenance()
+            self._schedule_embedding_maintenance()
         logger.info(
             "LCM re-bound %s after an unadopted compaction commit or another engine's end (frontier=%d)",
             self._session_id, frontier,
@@ -3557,6 +3951,17 @@ class LCMEngine(
         self._apply_session_start_metadata(session_id, kwargs)
         self._last_compacted_store_id = int(state.current_frontier_store_id or 0)
         proof = self._compress_commit_proof
+        if (
+            proof
+            and proof.get("stub_first")
+            and proof.get("stub_first_compress_call") == self._compress_calls  # the call whose list was committed
+            and proof.get("session_id") == session_id
+            and proof.get("conversation_id") == self._conversation_id
+            and not (proof.get("published") or proof.get("native") or proof.get("recovery") or proof.get("filtered"))
+        ):
+            # #1116: Hermes fires this boundary only after it committed the compression, so the stub-first list
+            # compress() handed it is the host's now: its proof becomes durable, as the rotation re-key does.
+            self._persist_compress_commit_proof(proof, last_store_id=proof.get("stub_first_last_store_id"))
         cursor_proven = bool(
             proof
             and proof.get("session_id") == session_id
@@ -3580,6 +3985,9 @@ class LCMEngine(
             self._last_compacted_store_id,
             self._ingest_cursor if cursor_proven else "reconcile",
         )
+        if self._embedding_maintenance_retired:
+            self._rearm_embedding_maintenance()
+            self._schedule_embedding_maintenance()
         return True
 
     def _continue_compression_boundary(
@@ -3926,7 +4334,7 @@ class LCMEngine(
                     emission["scope"] = {**(emission.get("scope") or {}), "session_id": session_id}
             commit_proof["input"] = None
             if (commit_proof.get("published") or commit_proof.get("native") or commit_proof.get("recovery")
-                    or commit_proof.get("filtered")):
+                    or commit_proof.get("filtered") or commit_proof.get("stub_first")):
                 self._persist_compress_commit_proof(commit_proof)
         elif can_reassign:
             # No transferred commit proof (proof creation failed, an end that
@@ -4042,28 +4450,28 @@ class LCMEngine(
                 and old_session_id not in self._auxiliary_direct_end_guard_session_ids
                 and new_session_auxiliary_parent != old_session_id
             )
-        if self._host_fallback_compressor is not None and (
-            self._host_fallback_session_id != session_id or requested_platform != self._session_platform
-        ) and not (
-            pre_reset_preserve_ambiguous_no_frame_old_session
-            and self._host_fallback_session_id == old_session_id
-        ):
-            compressor = self._host_fallback_compressor
-            fallback_session_id = self._host_fallback_session_id or previous_session_id
-            on_session_end = getattr(compressor, "on_session_end", None)
-            if callable(on_session_end) and fallback_session_id:
-                try:
-                    on_session_end(fallback_session_id, [])
-                except Exception:
-                    logger.debug("LCM host fallback compressor session-start reset failed", exc_info=True)
-            on_session_reset = getattr(compressor, "on_session_reset", None)
-            if callable(on_session_reset):
-                try:
-                    on_session_reset()
-                except Exception:
-                    logger.debug("LCM host fallback compressor reset failed", exc_info=True)
-            self._host_fallback_compressor = None
-            self._host_fallback_session_id = ""
+        for state in self._host_fallback_states():
+            if state.get("_host_fallback_compressor") is not None and (
+                state.get("_host_fallback_session_id", "") != session_id or requested_platform != self._session_platform
+            ) and not (
+                pre_reset_preserve_ambiguous_no_frame_old_session
+                and state.get("_host_fallback_session_id", "") == old_session_id
+            ):
+                compressor = state.get("_host_fallback_compressor")
+                fallback_session_id = state.get("_host_fallback_session_id", "") or previous_session_id
+                on_session_end = getattr(compressor, "on_session_end", None)
+                if callable(on_session_end) and fallback_session_id:
+                    try:
+                        on_session_end(fallback_session_id, [])
+                    except Exception:
+                        logger.debug("LCM host fallback compressor session-start reset failed", exc_info=True)
+                on_session_reset = getattr(compressor, "on_session_reset", None)
+                if callable(on_session_reset):
+                    try:
+                        on_session_reset()
+                    except Exception:
+                        logger.debug("LCM host fallback compressor reset failed", exc_info=True)
+                self._clear_host_fallback_state(state)
         if (
             boundary_reason == "compression"
             and old_session_id
@@ -4158,7 +4566,6 @@ class LCMEngine(
                         old_session_id == self._session_id
                         or preserve_ambiguous_no_frame_old_session
                     ),
-                    preserve_old_foreground_marker=old_session_is_suppressed_foreground,
                 )
                 logger.info(
                     "LCM auxiliary session %s compressed to %s — keeping boundary stateless",
@@ -4543,6 +4950,18 @@ class LCMEngine(
                 self._session_id,
             )
             return
+        # Only this path ends the foreground binding. Same-id bypass callbacks
+        # above can leave it serving, so session-id equality alone is insufficient.
+        try:
+            self._finalize_foreground_session_end_unlocked(session_id, messages)
+        finally:
+            self._retire_embedding_maintenance(wait=False)
+
+    def _finalize_foreground_session_end_unlocked(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+    ) -> None:
         proof = getattr(self, "_compress_commit_proof", None)
         if (
             proof
@@ -4574,6 +4993,8 @@ class LCMEngine(
                 session_id,
             )
             return
+        unflushed = max(0, len(messages) - self._ingest_cursor)
+        ingest_finished = False
         try:
             with _temporary_sqlite_busy_timeout(
                 [
@@ -4595,18 +5016,21 @@ class LCMEngine(
                         messages,
                         allow_session_end_replay_proof=is_current_session_full_history_end,
                     )
+                    ingest_finished = True
                 except KeyboardInterrupt:
                     logger.warning(
                         "LCM session-end raw-message ingest interrupted; "
-                        "final messages may be absent from the plugin-local store"
+                        "final messages may be absent from the plugin-local store unflushed=%d",
+                        unflushed,
                     )
                     return
                 except Exception as exc:
                     if _is_sqlite_locked_error(exc):
                         logger.warning(
                             "LCM session-end raw-message ingest skipped due to SQLite lock after short wait; "
-                            "final messages may be absent from the plugin-local store: %s",
+                            "final messages may be absent from the plugin-local store: %s unflushed=%d",
                             exc,
+                            unflushed,
                         )
                         return
                     raise
@@ -4645,13 +5069,17 @@ class LCMEngine(
                 # helper writes only when session_id == self._session_id).
                 self._remember_session_end_replay_snapshot(session_id, messages)
         except KeyboardInterrupt:
-            logger.warning("LCM session-end ingest/finalize interrupted before bounded flush completed")
+            logger.warning(
+                "LCM session-end ingest/finalize interrupted before bounded flush completed%s",
+                f" unflushed={unflushed}" if not ingest_finished else "",
+            )
             return
         except Exception as exc:
             if _is_sqlite_locked_error(exc):
                 logger.warning(
-                    "LCM session-end ingest/finalize skipped due to SQLite lock before bounded flush: %s",
+                    "LCM session-end ingest/finalize skipped due to SQLite lock before bounded flush: %s%s",
                     exc,
+                    f" unflushed={unflushed}" if not ingest_finished else "",
                 )
                 return
             raise
@@ -4663,16 +5091,16 @@ class LCMEngine(
             self._on_session_reset_unlocked()
 
     def _on_session_reset_unlocked(self) -> None:
-        if self._host_fallback_compressor is not None:
-            compressor = self._host_fallback_compressor
-            on_session_reset = getattr(compressor, "on_session_reset", None)
-            if callable(on_session_reset):
-                try:
-                    on_session_reset()
-                except Exception:
-                    logger.debug("LCM host fallback compressor reset failed", exc_info=True)
-            self._host_fallback_compressor = None
-            self._host_fallback_session_id = ""
+        for state in self._host_fallback_states():
+            if state.get("_host_fallback_compressor") is not None:
+                compressor = state.get("_host_fallback_compressor")
+                on_session_reset = getattr(compressor, "on_session_reset", None)
+                if callable(on_session_reset):
+                    try:
+                        on_session_reset()
+                    except Exception:
+                        logger.debug("LCM host fallback compressor reset failed", exc_info=True)
+                self._clear_host_fallback_state(state)
         self._pending_reset_session_id = self._session_id
         self._pending_reset_conversation_id = self._conversation_id
         self._pending_reset_frontier_store_id = self._last_compacted_store_id
@@ -4908,23 +5336,7 @@ class LCMEngine(
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         disabled = self._omitted_tool_names()
-        schemas = [
-            LCM_GREP,
-            LCM_RECALL,
-            LCM_QUERY_STATE,
-            LCM_COMPUTE,
-            LCM_COMPILE_EVIDENCE,
-            LCM_EVIDENCE_PACK,
-            LCM_RETRIEVE,
-            LCM_RECENT,
-            LCM_LOAD_SESSION,
-            LCM_DESCRIBE,
-            LCM_EXPAND,
-            LCM_EXPAND_QUERY,
-            LCM_STATUS,
-            LCM_INSPECT,
-            LCM_DOCTOR,
-        ]
+        schemas = [spec.schema for spec in TOOL_REGISTRY]
         if disabled:
             return [s for s in schemas if s.get("name") not in disabled]
         return schemas
@@ -4932,10 +5344,9 @@ class LCMEngine(
     def _omitted_tool_names(self) -> set[str]:
         """Hide explicitly disabled and flag-dormant tools on both host paths."""
         omitted = self._disabled_tool_names()
-        if not self._config.assertions_enabled:
-            omitted.add("lcm_query_state")
-        if not self._config.adaptive_retrieval_enabled:
-            omitted.add("lcm_retrieve")
+        for spec in TOOL_REGISTRY:
+            if spec.dormant_unless and not getattr(self._config, spec.dormant_unless):
+                omitted.add(spec.name)
         return omitted
 
     @staticmethod
@@ -4945,10 +5356,7 @@ class LCMEngine(
         Disabled tools are excluded from the injected context-engine schemas
         AND refused in handle_tool_call, so they cost zero tokens per turn.
         """
-        raw = os.environ.get("LCM_DISABLED_TOOLS", "")
-        if not raw:
-            return set()
-        return {part.strip() for part in raw.split(",") if part.strip()}
+        return _disabled_tool_names()
 
     def handle_tool_call(self, name: str, args: Dict[str, Any], **kwargs) -> str:
         if name in self._disabled_tool_names():
@@ -4970,21 +5378,7 @@ class LCMEngine(
                     self._record_ingest_failure("tool-call ingest", e)
 
         handlers = {
-            "lcm_grep": lcm_tools.lcm_grep,
-            "lcm_recall": lcm_tools.lcm_recall,
-            "lcm_query_state": lcm_tools.lcm_query_state,
-            "lcm_compute": lcm_tools.lcm_compute,
-            "lcm_compile_evidence": lcm_tools.lcm_compile_evidence,
-            "lcm_evidence_pack": lcm_tools.lcm_evidence_pack,
-            "lcm_retrieve": lcm_tools.lcm_retrieve,
-            "lcm_recent": lcm_tools.lcm_recent,
-            "lcm_load_session": lcm_tools.lcm_load_session,
-            "lcm_describe": lcm_tools.lcm_describe,
-            "lcm_expand": lcm_tools.lcm_expand,
-            "lcm_expand_query": lcm_tools.lcm_expand_query,
-            "lcm_status": lcm_tools.lcm_status,
-            "lcm_inspect": lcm_tools.lcm_inspect,
-            "lcm_doctor": lcm_tools.lcm_doctor,
+            spec.name: getattr(lcm_tools, spec.handler_name) for spec in TOOL_REGISTRY
         }
         handler = handlers.get(name)
         if handler:
@@ -5069,12 +5463,15 @@ class LCMEngine(
             "effective_context_length_cap": self.effective_context_length_cap,
             "effective_context_length_reason": self.effective_context_length_reason,
             "threshold_tokens": self.threshold_tokens,
-            "last_compression_status": self._last_compression_status,
-            "last_compression_noop_reason": self._last_compression_noop_reason,
+            "last_compression_status": self.last_compression_status,
+            "last_compression_noop_reason": self.last_compression_noop_reason,
             "last_survival_fit": dict(self._last_survival_fit) if self._last_survival_fit else None,
             "threshold_full_sweep": dict(self._last_threshold_full_sweep),
             "last_stub_first_exit": dict(self._last_stub_first_exit) if self._last_stub_first_exit else None,
             "no_progress_hold": self._no_progress_hold_status(),
+            **({"background_leaf_prep": leaf_prep.status()}  # #787 D-13; absent while off
+               if getattr(self._config, "background_leaf_prep_enabled", False) else {}),
+            "zero_leaf_streak": self._zero_leaf_streak_status(),
             "ingest_failure_count": self._ingest_failure_count,
             "consecutive_ingest_failures": self._consecutive_ingest_failures,
             "last_ingest_error": self._last_ingest_error,
@@ -5326,7 +5723,7 @@ class LCMEngine(
             return
         try:
             self._ingest_cursor_needs_reconcile = (
-                self._store.get_session_count(self._session_id) > 0
+                self._store.has_session_messages(self._session_id)
                 # An empty rotation child resumed after a restart still has to
                 # re-index the host's post-compaction list (#483, C7), from a
                 # commit proof or a carried native recovery proof.
@@ -5432,7 +5829,7 @@ class LCMEngine(
         has_externalized_placeholder = self._content_has_externalized_placeholder_ref(content)
         mapped_from_active_placeholder = False
         if store_id is None:
-            store_id = self._current_compress_store_ids_by_message_id.get(id(msg))
+            store_id = self._compress_run.store_ids_by_message_id.get(id(msg))
             mapped_from_active_placeholder = has_externalized_placeholder and store_id is not None
         if store_id is None:
             return False
@@ -5509,9 +5906,11 @@ class LCMEngine(
         cached: List[Dict[str, Any]],
         fresh: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        """#772: a stub and its payload share an identity, so the cache would resurrect a host-held stub."""
+        """#772: a stub and its payload share an identity, so the cache would resurrect a host-held stub.
+        #773: the host's pruned-tool placeholder shares its stored row's identity too, so the host keeps it."""
         def is_stub(message: Dict[str, Any]) -> bool:
-            return is_externalized_placeholder(text_content_for_pattern_matching(message.get("content")) or "")
+            text = text_content_for_pattern_matching(message.get("content")) or ""
+            return is_externalized_placeholder(text) or text == _HERMES_PRUNED_TOOL_PLACEHOLDER
 
         current = [
             fresh[idx]
@@ -5994,17 +6393,15 @@ class LCMEngine(
         scan_start = 0 if self._ingest_cursor_needs_reconcile else cursor
         ignored_original_messages = [False] * n
         if self._compiled_ignore_message_patterns:
-            previous_store_id_map = self._current_compress_store_ids_by_message_id
-            self._current_compress_store_ids_by_message_id = self._get_store_id_map_for_messages(messages)
-            try:
+            store_id_scope = self._compress_run.preserve_store_ids()
+            self._compress_run.store_ids_by_message_id = self._get_store_id_map_for_messages(messages)
+            with store_id_scope:
                 for idx in range(scan_start, n):
                     mapped_ignore = self._mapped_stored_row_matches_ignore_message_patterns(messages[idx])
                     ignored_original_messages[idx] = (
                         self._matches_ignore_message_patterns(messages[idx])
                         or mapped_ignore
                     )
-            finally:
-                self._current_compress_store_ids_by_message_id = previous_store_id_map
         externalize_messages = [False] * n
         prefer_existing_externalized = [False] * n
         for idx in range(scan_start, n):
@@ -6099,8 +6496,8 @@ class LCMEngine(
                                    if identity != cached_source_identities[idx]), None)
             try:
                 if reconciled_existing_session and cursor > 0:
-                    for store_id, stamp in self._identity_anchor_backfill_prefix(messages, reconcile_messages, cursor):
-                        self._store.backfill_observed_at(store_id, stamp)
+                    self._store.backfill_observed_at_many(
+                        self._identity_anchor_backfill_prefix(messages, reconcile_messages, cursor))
                 anchor_plan = self._identity_anchor_prematch(messages, reconcile_messages, cursor, audit_from)
                 anchor_plan["replayed"] -= replayed_tool_segment_indexes
                 self._identity_anchor_version_rewind(messages, anchor_plan)
@@ -6170,7 +6567,7 @@ class LCMEngine(
         empty_session_placeholder_ordinals: dict[str, set[int]] = {}
         if not compression_boundary_ingest_pending and self._session_id:
             try:
-                if self._store.get_session_count(self._session_id) == 0:
+                if not self._store.has_session_messages(self._session_id):
                     empty_session_placeholder_budget = self._load_generated_ignored_placeholder_hash_counts()
                     empty_session_placeholder_ordinals = self._load_generated_ignored_placeholder_hash_ordinals()
             except Exception:
@@ -6540,6 +6937,7 @@ class LCMEngine(
         messages: List[Dict[str, Any]],
         *,
         timeout_seconds: Optional[float] = None,
+        deadline: Optional[float] = None,
     ) -> None:
         """Best-effort extraction of decisions before compaction."""
         try:
@@ -6549,16 +6947,20 @@ class LCMEngine(
                 base = self._hermes_home or os.path.expanduser("~/.hermes")
                 output_path = os.path.join(base, "lcm-extractions")
             extraction_model = self._config.extraction_model or self._config.summary_model
+            timeout = timeout_seconds if timeout_seconds is not None else self._config.summary_timeout_ms / 1000
+            if deadline is not None:
+                timeout = min(timeout_seconds or self._config.summary_timeout_ms / 1000, deadline - time.monotonic())
+                if timeout < 1.0:
+                    logger.debug(
+                        "Pre-compaction extraction skipped: less than 1s remains after reserving the next summary call"
+                    )
+                    return
             extract_before_compaction(
                 serialized_messages=serialized,
                 output_path=output_path,
                 session_id=self._session_id or "",
                 model=extraction_model,
-                timeout=(
-                    timeout_seconds
-                    if timeout_seconds is not None
-                    else self._config.summary_timeout_ms / 1000
-                ),
+                timeout=timeout,
             )
         except Exception as e:
             logger.warning("Pre-compaction extraction failed (non-blocking): %s", e)
@@ -6783,91 +7185,22 @@ class LCMEngine(
 
     def _serialize_messages_with_clip(
         self, messages: List[Dict[str, Any]], session_id: Optional[str] = None,
+        budget_tokens: Optional[int] = None,
     ) -> Tuple[str, bool]:
         """Serialize messages into labeled text for the summarizer.
 
         *session_id* names the session that owns the rows; it defaults to the
         bound session. A large tool result is externalized under that session.
-        Message texts, tool arguments and previews share leaf_chunk_tokens (#611).
+        Message texts, tool arguments and previews share budget_tokens (#611),
+        defaulting to leaf_chunk_tokens when omitted.
         """
-        parts: List[List[Any]] = []  # per message: literal strings and indexes into texts
-        texts: List[str] = []
-        kinds: List[str] = []
-
-        def text(value: str, kind: str = "message") -> int:
-            texts.append(value)
-            kinds.append(kind)
-            return len(texts) - 1
-
-        matched_tool_ids = _matched_tool_call_ids(messages)
-        tool_result_names = _tool_result_names(messages)
-        for index, msg in enumerate(messages):
-            role = msg.get("role", "unknown")
-            content = redact_sensitive_value(
-                msg.get("content") or "",
-                self._config,
-                parse_json_strings=False,
-            )
-            if role == "tool":
-                tool_id = str(msg.get("tool_call_id") or "").strip()
-                externalized = maybe_externalize_tool_output(
-                    content,
-                    tool_call_id=tool_id,
-                    session_id=self._session_id if session_id is None else session_id,
-                    config=self._config,
-                    hermes_home=self._hermes_home,
-                    tool_name=str(msg.get("tool_name") or tool_result_names.get(index, "")),
-                )
-                if externalized:
-                    preview = externalized_preview(sanitize_pre_compaction_content(content))
-                    parts.append([f"[TOOL RESULT {tool_id}]: " + externalized["placeholder"], text(preview, "preview")])
-                else:
-                    parts.append([f"[TOOL RESULT {tool_id}]: ", text(sanitize_pre_compaction_content(content))])
-                continue
-
-            content = sanitize_pre_compaction_content(content)
-
-            if role == "assistant":
-                # The host's in-memory chat history may set tool_calls to None for
-                # shape uniformity; stored rows never can (MessageStore.to_openai_msg
-                # drops the key when the value is falsy). Treat any falsy value as
-                # "no tool calls" rather than iterating it.
-                tool_calls = msg.get("tool_calls") or []
-                matched_tool_calls = [
-                    tc for tc in tool_calls
-                    if not _tool_call_id(tc) or _tool_call_id(tc) in matched_tool_ids
-                ]
-                if _is_synthetic_assistant_noise(content):
-                    if not matched_tool_calls:
-                        continue
-                    content = ""
-                part: List[Any] = ["[ASSISTANT]: ", text(content)]
-                if matched_tool_calls:
-                    part.append("\n[Tool calls:\n")
-                    first = True
-                    for tc in matched_tool_calls:
-                        if isinstance(tc, dict):
-                            fn = tc.get("function", {})
-                            name = fn.get("name", "?")
-                            args = fn.get("arguments", "")
-                            args = redact_sensitive_value(
-                                args,
-                                self._config,
-                                parse_json_strings=True,
-                            )
-                            args = sanitize_pre_compaction_tool_arguments(args)
-                            part += [("" if first else "\n") + f"  {name}(", text(args, "arguments"), ")"]
-                            first = False
-                    part.append("\n]")
-                parts.append(part)
-                continue
-
-            parts.append([f"[{role.upper()}]: ", text(content)])
-
-        clipped_texts = clip_to_budget(texts, self._config.leaf_chunk_tokens, kinds)
-        clipped = any(before != after for before, after in zip(texts, clipped_texts))
-        texts = clipped_texts
-        return "\n\n".join("".join(texts[x] if isinstance(x, int) else x for x in part) for part in parts), clipped
+        return _serialize_leaf_input(
+            messages,
+            config=self._config,
+            hermes_home=self._hermes_home,
+            session_id=self._session_id if session_id is None else session_id,
+            budget_tokens=budget_tokens,
+        )
 
     # -- Internal: tool-pair sanitization ------------------------------------
 
@@ -6877,6 +7210,7 @@ class LCMEngine(
         *,
         insert_missing_tool_stubs: bool = True,
         merge_adjacent_assistants: bool = True,
+        generated_rows: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """Drop unsafe assistant-only noise, then repair tool sequencing.
 
@@ -6894,7 +7228,10 @@ class LCMEngine(
         cleaned: list[Dict[str, Any]] = []
         dropped_assistant_messages = 0
         stripped_assistant_messages = 0
+        generated_ids = {id(row) for row in generated_rows or []}
+        cleaned_generated = []
         for msg in messages:
+            generated = id(msg) in generated_ids
             msg = self._sanitize_active_preserved_objective_message(msg)
             if msg.get("role") == "assistant":
                 cleaned_msg = _clean_active_assistant_message(msg)
@@ -6904,8 +7241,12 @@ class LCMEngine(
                 if cleaned_msg is not msg:
                     stripped_assistant_messages += 1
                 cleaned.append(cleaned_msg)
+                if generated:
+                    cleaned_generated.append(cleaned_msg)
                 continue
             cleaned.append(msg)
+            if generated:
+                cleaned_generated.append(msg)
 
         if dropped_assistant_messages:
             logger.info(
@@ -6922,12 +7263,15 @@ class LCMEngine(
             cleaned,
             insert_missing_tool_stubs=insert_missing_tool_stubs,
         )
+        if generated_rows is not None:
+            # Follow cleanup copies without giving a carrier the generated row's identity.
+            generated_rows[:] = cleaned_generated
         if not merge_adjacent_assistants:
             return paired
         # Merge any assistant rows left adjacent once tool rows were dropped —
         # emit an alternation-clean active context so downstream loads don't
         # have to repair it and the persisted message count matches replay.
-        return _merge_adjacent_assistant_messages(paired)
+        return _merge_adjacent_assistant_messages(paired, generated_rows=generated_rows)
 
     @staticmethod
     def _active_tool_stub_content(original_content: Any, placeholder: str) -> Any:
@@ -7172,50 +7516,11 @@ class LCMEngine(
         duplicate, out-of-order, and orphan tool results are dropped; missing
         direct results get synthetic stubs.
         """
-        sanitized: List[Dict[str, Any]] = []
-        dropped_tool_results = 0
-        inserted_stub_results = 0
-
-        i = 0
-        while i < len(messages):
-            msg = messages[i]
-
-            if msg.get("role") == "tool":
-                dropped_tool_results += 1
-                i += 1
-                continue
-
-            sanitized.append(msg)
-
-            if msg.get("role") == "assistant":
-                expected_ids = [
-                    call_id
-                    for call_id in (_tool_call_id(tool_call) for tool_call in (msg.get("tool_calls") or []))
-                    if call_id
-                ]
-
-                for expected_id in expected_ids:
-                    matched_direct_result = False
-                    while i + 1 < len(messages) and messages[i + 1].get("role") == "tool":
-                        next_msg = messages[i + 1]
-                        next_id = str(next_msg.get("tool_call_id") or "").strip()
-                        if next_id == expected_id:
-                            sanitized.append(next_msg)
-                            i += 1
-                            matched_direct_result = True
-                            break
-                        dropped_tool_results += 1
-                        i += 1
-
-                    if not matched_direct_result and insert_missing_tool_stubs:
-                        sanitized.append(self._missing_tool_result_stub(expected_id))
-                        inserted_stub_results += 1
-
-                while i + 1 < len(messages) and messages[i + 1].get("role") == "tool":
-                    dropped_tool_results += 1
-                    i += 1
-
-            i += 1
+        sanitized, dropped_tool_results, inserted_stub_results = repair_tool_pairs(
+            messages,
+            stub=self._missing_tool_result_stub,
+            insert_missing_tool_stubs=insert_missing_tool_stubs,
+        )
 
         if dropped_tool_results:
             logger.info(
@@ -7600,6 +7905,13 @@ class LCMEngine(
     ) -> Dict[str, Any]:
         """Fold generated context into a same-role tail without losing metadata."""
         merged = message.copy()
+        hide_keys = _model_only_display_metadata_keys()
+        if hide_keys & set(merged.get("display_metadata") or {}):
+            metadata = {key: value for key, value in merged["display_metadata"].items() if key not in hide_keys}
+            if metadata:
+                merged["display_metadata"] = metadata
+            else:
+                merged.pop("display_metadata", None)
         content = message.get("content")
         if isinstance(content, list):
             merged["content"] = [
@@ -7951,9 +8263,11 @@ class LCMEngine(
         retained_user_message: Optional[Dict[str, Any]] = None,
         stub_over_cap_tool_results: bool = False,
         persist: bool = True,
+        _reply_rejected: tuple = (),
     ) -> List[Dict[str, Any]]:
         """Build the active context from DAG summaries + fresh tail. ``persist=False`` (#671: the stub-first
         trial) writes nothing: no payload file, fold lineage, snapshot digest or emission candidates, no recall.
+        ``_reply_rejected``: #1162 E steps already rejected for this assembly (internal re-entry only).
 
         Structure:
           [leading anchors: system and, when proven, the sole real user]
@@ -8006,6 +8320,7 @@ class LCMEngine(
         anchor_part: Optional[str] = None
         anchor_candidates: List[str] = []
         summary_budget = None
+        kept_reply = None
         if assembly_cap is not None:
             used = count_messages_tokens(result)
             kept_tail_reversed: list[Dict[str, Any]] = []
@@ -8019,102 +8334,84 @@ class LCMEngine(
                 # it. The final assembled result is merged downstream.
                 merge_adjacent_assistants=False,
             )
-            skipped_tail_gap = False
-            # #636 (forced recovery only): newest-first tool rows since the last kept
-            # row, over-cap ones replaced by a bounded stub, kept only with their call.
-            pending_results: list[Dict[str, Any]] = []
-            result_names = _tool_result_names(tail_for_selection) if stub_over_cap_tool_results else {}
-            for index in range(len(tail_for_selection) - 1, -1, -1):
-                msg = tail_for_selection[index]
-                msg_tokens = count_message_tokens(msg)
-                pending_tokens = count_messages_tokens(pending_results) if pending_results else 0
-                if stub_over_cap_tool_results and msg.get("role") == "assistant":
-                    call_ids = [_tool_call_id(tc) for tc in (msg.get("tool_calls") or [])]
-                    result_ids = {str(r.get("tool_call_id") or "").strip() for r in pending_results}
-                    # Reserve precisely the plain stubs inserted by the final sanitizer.
-                    msg_tokens += count_messages_tokens([
-                        self._missing_tool_result_stub(call_id)
-                        for call_id in call_ids if call_id and call_id not in result_ids
-                    ])
-                    if (
-                        used + tail_token_total + pending_tokens + msg_tokens > assembly_cap
-                        and pending_results
-                        and result_ids <= set(call_ids)
-                    ):
-                        # A rich ref is useful only if its call survives the budget.
-                        pending_results = [
-                            carry_identity(r, self._missing_tool_result_stub(str(r.get("tool_call_id") or "").strip()),
-                                           ("message_uid", "_tool_call_uid"))
-                            if is_externalized_placeholder(normalize_content_value(r.get("content")) or "")
-                            else r
-                            for r in pending_results
-                        ]
-                        pending_tokens = count_messages_tokens(pending_results)
-                own_results_start: Optional[int] = None
-                if not stub_over_cap_tool_results and msg.get("role") == "assistant" and msg.get("tool_calls"):
-                    # The final sanitizer inserts a plain stub for each call whose result is not
-                    # in this turn's own result group (the tool rows right after it). Reserve them
-                    # too, or a full summary budget overflows after sanitizing and the over-cap
-                    # pass drops the preserved objective first (#1048).
-                    own_results_start = len(kept_tail_reversed)
-                    while own_results_start and kept_tail_reversed[own_results_start - 1].get("role") == "tool":
-                        own_results_start -= 1
-                    # Count, don't collapse: the sanitizer pairs each call occurrence separately.
-                    unmatched_results = Counter(
-                        str(r.get("tool_call_id") or "").strip()
-                        for r in kept_tail_reversed[own_results_start:]
-                    )
-                    missing_ids = []
-                    for call_id in (_tool_call_id(tc) for tc in msg["tool_calls"]):
-                        if not call_id:
+            if not stub_over_cap_tool_results:
+                selection = select_tail(
+                    tail_for_selection, assembly_cap, used, count_message_tokens,
+                    count_messages_tokens=count_messages_tokens,
+                    missing_tool_result_stub=self._missing_tool_result_stub,
+                    is_budget_droppable_tail_message=self._is_budget_droppable_tail_message,
+                )
+                tail_selected = [tail_for_selection[i] for i in selection.indexes]
+                tail_token_total = selection.charged_tokens
+            else:
+                skipped_tail_gap = False
+                # #636 (forced recovery only): newest-first tool rows since the last kept
+                # row, over-cap ones replaced by a bounded stub, kept only with their call.
+                pending_results: list[Dict[str, Any]] = []
+                result_names = _tool_result_names(tail_for_selection) if stub_over_cap_tool_results else {}
+                for index in range(len(tail_for_selection) - 1, -1, -1):
+                    msg = tail_for_selection[index]
+                    msg_tokens = count_message_tokens(msg)
+                    pending_tokens = count_messages_tokens(pending_results) if pending_results else 0
+                    if stub_over_cap_tool_results and msg.get("role") == "assistant":
+                        call_ids = [_tool_call_id(tc) for tc in (msg.get("tool_calls") or [])]
+                        result_ids = {str(r.get("tool_call_id") or "").strip() for r in pending_results}
+                        # Reserve precisely the plain stubs inserted by the final sanitizer.
+                        msg_tokens += count_messages_tokens([
+                            self._missing_tool_result_stub(call_id)
+                            for call_id in call_ids if call_id and call_id not in result_ids
+                        ])
+                        if (
+                            used + tail_token_total + pending_tokens + msg_tokens > assembly_cap
+                            and pending_results
+                            and result_ids <= set(call_ids)
+                        ):
+                            # A rich ref is useful only if its call survives the budget.
+                            pending_results = [
+                                carry_identity(r, self._missing_tool_result_stub(str(r.get("tool_call_id") or "").strip()),
+                                               ("message_uid", "_tool_call_uid"))
+                                if is_externalized_placeholder(normalize_content_value(r.get("content")) or "")
+                                else r
+                                for r in pending_results
+                            ]
+                            pending_tokens = count_messages_tokens(pending_results)
+                    if used + tail_token_total + pending_tokens + msg_tokens > assembly_cap:
+                        if (
+                            stub_over_cap_tool_results
+                            and msg.get("role") == "tool"
+                            and not skipped_tail_gap
+                            and self._is_budget_droppable_tail_message(msg)
+                        ):
+                            pending_results.append(self._over_cap_tool_result_stub(msg, result_names.get(index, "")))
                             continue
-                        if unmatched_results[call_id]:
-                            unmatched_results[call_id] -= 1
-                        else:
-                            missing_ids.append(call_id)
-                    if missing_ids:
-                        msg_tokens += count_messages_tokens(
-                            [self._missing_tool_result_stub(call_id) for call_id in missing_ids])
-                if used + tail_token_total + pending_tokens + msg_tokens > assembly_cap:
-                    if own_results_start is not None and own_results_start < len(kept_tail_reversed):
-                        # The turn is rejected: its kept results would be orphans the final
-                        # sanitizer drops, so stop charging them to the tail budget.
-                        tail_token_total -= sum(count_message_tokens(r) for r in kept_tail_reversed[own_results_start:])
-                        del kept_tail_reversed[own_results_start:]
-                    if (
-                        stub_over_cap_tool_results
-                        and msg.get("role") == "tool"
-                        and not skipped_tail_gap
-                        and self._is_budget_droppable_tail_message(msg)
-                    ):
-                        pending_results.append(self._over_cap_tool_result_stub(msg, result_names.get(index, "")))
-                        continue
-                    if self._is_budget_droppable_tail_message(msg):
-                        skipped_tail_gap = True
-                        continue
-                    break
-                if skipped_tail_gap:
-                    break
-                if stub_over_cap_tool_results and msg.get("role") == "tool":
-                    # Queue even fitting results so the call sees its whole result set.
-                    pending_results.append(msg)
-                    continue
-                if pending_results:
-                    call_ids = {_tool_call_id(tc) for tc in (msg.get("tool_calls") or [])}
-                    if msg.get("role") == "tool":
+                        if self._is_budget_droppable_tail_message(msg):
+                            skipped_tail_gap = True
+                            continue
+                        break
+                    if skipped_tail_gap:
+                        break
+                    if stub_over_cap_tool_results and msg.get("role") == "tool":
+                        # Queue even fitting results so the call sees its whole result set.
                         pending_results.append(msg)
                         continue
-                    if msg.get("role") != "assistant" or not {
-                        str(r.get("tool_call_id") or "").strip() for r in pending_results
-                    } <= call_ids:
-                        break
-                    kept_tail_reversed.extend(pending_results)
-                    tail_token_total += pending_tokens
-                    pending_results = []
-                kept_tail_reversed.append(msg)
-                tail_token_total += msg_tokens
-            tail_selected = list(reversed(kept_tail_reversed))
+                    if pending_results:
+                        call_ids = {_tool_call_id(tc) for tc in (msg.get("tool_calls") or [])}
+                        if msg.get("role") == "tool":
+                            pending_results.append(msg)
+                            continue
+                        if msg.get("role") != "assistant" or not {
+                            str(r.get("tool_call_id") or "").strip() for r in pending_results
+                        } <= call_ids:
+                            break
+                        kept_tail_reversed.extend(pending_results)
+                        tail_token_total += pending_tokens
+                        pending_results = []
+                    kept_tail_reversed.append(msg)
+                    tail_token_total += msg_tokens
+                tail_selected = list(reversed(kept_tail_reversed))
             summary_budget = max(0, assembly_cap - used - tail_token_total)
+            tail_selected, summary_budget, kept_reply = self._keep_newest_reply(
+                tail_messages, anchor_source, tail_for_selection, tail_selected, summary_budget, _reply_rejected)
         if anchor_source is not None:
             anchor_candidates = self._latest_user_context_anchor_candidates(anchor_source, tail_selected)
             anchor_part = anchor_candidates[0] if anchor_candidates else None
@@ -8183,15 +8480,13 @@ class LCMEngine(
                 # Measure without externalizing preserved-objective payloads.
                 # Tool-pair repair still reserves any missing-result stubs.
                 measurement_tail = self._sanitize_tool_pairs(list(tail_selected))
-                # The quarter-window floor relies on a later survival fit; without one, use the true remainder.
-                default_budget = max(
-                    ceiling - overhead - count_messages_tokens(result)
-                    - max(count_messages_tokens(tail_selected),
-                          count_messages_tokens(measurement_tail))
-                    # Reserve recall only when its builder can return a row (recall and embeddings on, budget > 0).
-                    - (max(0, int(self._config.proactive_recall_budget_tokens or 0))
-                       if self._config.proactive_recall_enabled and self._config.embeddings_enabled else 0),
-                    ceiling // 4 if self._config.survival_fit else 0,
+                default_budget = default_prefix_budget(
+                    ceiling=ceiling, overhead=overhead, leading_tokens=count_messages_tokens(result),
+                    tail_tokens=count_messages_tokens(tail_selected),
+                    repaired_tail_tokens=count_messages_tokens(measurement_tail),
+                    recall_budget_tokens=self._config.proactive_recall_budget_tokens,
+                    proactive_recall_enabled=self._config.proactive_recall_enabled,
+                    embeddings_enabled=self._config.embeddings_enabled, survival_fit=self._config.survival_fit,
                 )
                 full_prefix = {"role": summary_role, "content": "\n\n---\n\n".join(summary_parts)}
                 if count_message_tokens(full_prefix) > default_budget:
@@ -8209,32 +8504,12 @@ class LCMEngine(
                             }) <= summary_budget:
                                 summary_parts[0] = anchor_part = candidate
                                 break
-            anchor_exempt = (
-                summary_budget is not None and assembly_cap is None and self._config.survival_fit
-                and part_keys[0] == (-1, None) and count_message_tokens({
-                    "role": summary_role, "content": strip_injected_context_blocks(summary_parts[0]),
-                }) > summary_budget
-            )
-            kept_indexes = list(range(len(summary_parts)))
-            if anchor_exempt:
-                summary_parts[0] = strip_injected_context_blocks(summary_parts[0])
-                kept_indexes = [0]
-            elif summary_budget is not None:
-                # #653: within a depth the newest parts are kept first; kept parts render in the order above.
-                kept_indexes = []
-                for index in sorted(range(len(summary_parts)), key=lambda i: (part_keys[i][0], -i)):
-                    candidate = "\n\n---\n\n".join(
-                        strip_injected_context_blocks(summary_parts[i])
-                        if part_keys[i] == (-1, None) and count_message_tokens({
-                            "role": summary_role, "content": summary_parts[i],
-                        }) > summary_budget else summary_parts[i]
-                        for i in sorted(kept_indexes + [index]))
-                    candidate_msg = {"role": summary_role, "content": candidate}
-                    if count_message_tokens(candidate_msg) > summary_budget:
-                        continue
-                    kept_indexes.append(index)
-                kept_indexes.sort()
-            selected_parts = [summary_parts[i] for i in kept_indexes]
+            selection = select_prefix(summary_parts, PrefixBudgetFacts(
+                part_keys=part_keys, summary_role=summary_role, summary_budget=summary_budget,
+                assembly_cap=assembly_cap, survival_fit=self._config.survival_fit,
+                count_message_tokens=count_message_tokens,
+            ))
+            kept_indexes, selected_parts = selection.kept_indexes, selection.selected_parts
             active_summary_node_ids.update(
                 part_keys[i][1] for i in kept_indexes if part_keys[i][1] is not None)
             if selected_parts:
@@ -8364,24 +8639,26 @@ class LCMEngine(
                                          proactive_msg, generated_context_row, tail_selected)
         result.extend(tail_selected)
 
+        generated_rows = [row for row in result if any(row is source for source in
+                          (summary_message, proactive_msg, generated_context_row))]
         # ── Active-context cleanup / tool-pair guardrail ──
         # Drop assistant turns that carry only blank/internal structured content,
         # then ensure provider-valid tool-call/result sequencing.
-        result = self._sanitize_active_context_messages(result)
+        result = self._sanitize_active_context_messages(result, generated_rows=generated_rows)
         if leading_msg is None:
             while result and result[0].get("role") in {"assistant", "tool"}:
                 result = result[1:]
         if (
             assembly_cap is not None
             and anchor_part is not None
-            and count_messages_tokens(result) > assembly_cap
+            and count_messages_tokens(result) > assembly_cap + (kept_reply or {}).get("tokens", 0)
         ):
             if any(_PRESERVED_OBJECTIVE_CONTEXT_PREFIX in (normalize_content_value(m.get("content")) or "")
                    for m in result):
                 logger.warning(
                     "LCM assembly: %d token(s) over the cap after sanitizing; dropping the preserved user "
                     "objective from the active context as a last resort (the store keeps it)",
-                    count_messages_tokens(result) - assembly_cap,
+                    count_messages_tokens(result) - assembly_cap - (kept_reply or {}).get("tokens", 0),
                 )
             trimmed_result: list[Dict[str, Any]] = []
             for msg in result:
@@ -8397,7 +8674,26 @@ class LCMEngine(
                     trimmed = msg.copy()
                     trimmed["content"] = "\n\n---\n\n".join(parts)
                     trimmed_result.append(trimmed)
-            result = self._sanitize_active_context_messages(trimmed_result)
+                    generated_rows = [trimmed if row is msg else row
+                                      for row in generated_rows]
+            result = self._sanitize_active_context_messages(trimmed_result, generated_rows=generated_rows)
+        if kept_reply is not None and (why := self._kept_reply_rejection(
+                result, kept_reply, kept_reply["objective"] and bool(anchor_candidates),
+                ([system_msg] if system_msg is not None else []) + ([retained_user_message] if retained_user_message
+                                                                     is not None else []) + list(anchor_source))):
+            return self._assemble_context(  # #1162 E: the next step, or the base output with the residual log
+                system_msg, tail_messages, assembly_cap_override, include_lcm_note, retained_user_message,
+                stub_over_cap_tool_results, persist, (*kept_reply["rejected"], f"step{kept_reply['step']}={why}"))
+
+        # Stamp only final standalone generated occurrences, never a same-text host row.
+        # Explicit carriers and assistant merges with human text are not generated rows.
+        # Measurement candidates above never receive display metadata.
+        key = _model_only_display_metadata_key() if generated_rows else None
+        if key is not None:
+            generated_ids = {id(row) for row in generated_rows}
+            for row in result:
+                if id(row) in generated_ids:
+                    row["display_metadata"] = {**(row.get("display_metadata") or {}), key: True}
         if not persist:
             return result
 
@@ -8421,6 +8717,7 @@ class LCMEngine(
         # assembled by this engine. Ingested input is not trusted replay proof.
         self._remember_compacted_active_replay_snapshot(result)
         self._pending_emission_candidates = emission_candidates
+        self._kept_reply_mark = (result, kept_reply["tokens"]) if kept_reply is not None else None
         return result
 
     def _mint_assembled_engine_uids(self, result, candidates, summary_message, carried_tail, recall_row,
@@ -8450,6 +8747,69 @@ class LCMEngine(
             uid = next((row.get("message_uid") for row, *_spec in generated if row is candidate.get("row")), None)
             if uid is not None:
                 candidate["engine_uid"] = uid
+
+    def _keep_newest_reply(self, tail_messages, anchor_source, selection, kept, room, rejected):
+        """#1162 E: a capped selection that keeps rows stored after an uncovered newest visible reply A but drops A
+        makes Hermes re-add A behind them (its reply anchor binds the last text twin of A's follower), and leaf
+        selection then stops before A's view slot on every pass. Step 1 extends the kept suffix back to A when the
+        gap after A fits the summary room; step 2 (after any step-1 rejection) puts A right before the first kept
+        user row, hiding only raw stored occurrences (never a fold, carrier or scaffold, though the store-id map
+        resolves a registered fold to its source). Step 1 keeps room for the preserved objective the
+        base view would carry. Returns (tail, room, reply or None); ``rejected`` lists the steps already rejected."""
+        start = len(selection) - len(kept)  # the selector keeps a contiguous newest suffix
+        a = next((i for i in range(len(selection) - 1, -1, -1) if _visible_reply_text(selection[i])), None)
+        text = next((t for m in reversed(tail_messages) if (t := _visible_reply_text(m))), "")
+        if a is None or not kept or a >= start or _visible_reply_text(selection[a]) != text:
+            return kept, room, None
+        ids = self._get_store_id_map_for_messages(selection)
+        reply_id = int(ids.get(id(selection[a])) or 0)
+        if reply_id <= int(self._last_compacted_store_id or 0):
+            return kept, room, None
+        objective = next((tokens for c in self._latest_user_context_anchor_candidates(anchor_source, kept) if (
+            tokens := count_message_tokens({"role": "user", "content": strip_injected_context_blocks(c)})) <= room), 0)
+        reply = {"store_id": reply_id, "text": text, "tokens": count_message_tokens(selection[a]),
+                 "rejected": rejected, "objective": objective > 0}
+        if not rejected:
+            gap = count_messages_tokens(self._sanitize_tool_pairs(list(selection[a + 1:start])))
+            if gap + objective <= room:
+                return selection[a:start] + kept, room - gap, {**reply, "step": 1}
+            reply["rejected"] = rejected = ("step1=room",)
+        if len(rejected) == 1:
+            u = next((i for i, m in enumerate(kept) if m.get("role") == "user"), None)
+            if u is not None and all(int(ids.get(id(m)) or 0) > 0 and not self._is_registered_folded_tail_message(m)
+                                     and self._generated_context_carrier_remainder(m) is None
+                                     and not self._is_replayed_context_scaffold_message(m) for m in kept[:u]):
+                return [selection[a], *kept[u:]], room + count_messages_tokens(kept[:u]), {**reply, "step": 2}
+            rejected = (*rejected, "step2=no_user_row" if u is None else "step2=not_raw_row")
+        logger.info("LCM assembly: reply_keep=residual store_id=%d (%s); returning the base view",
+                    reply_id, ", ".join(rejected))
+        return kept, room, None
+
+    def _kept_reply_rejection(self, result, reply, objective_due, host_input) -> str:
+        """#1162 E on the finished result: '' when it keeps a leading user row and any pending preserved objective,
+        does not outgrow the host input (Hermes refuses only on '>'), and shows a host-visible twin of A before
+        every kept row stored after A; else the reason."""
+        first = next((m for m in result if m.get("role") != "system"), {})
+        twin = next((i for i, m in enumerate(result) if _visible_reply_text(m) == reply["text"]), None)
+        if first.get("role") != "user":
+            return "leading_row"
+        if objective_due and not any(
+                _PRESERVED_OBJECTIVE_CONTEXT_PREFIX in (normalize_content_value(m.get("content")) or "") for m in result):
+            return "objective"
+        if count_messages_tokens(result) > count_messages_tokens(host_input):
+            return "growth"
+        host_result, host_before = _host_estimate(result), _host_estimate(host_input)
+        if host_result is not None and host_before is not None and host_result > host_before:
+            return "growth"
+        ids = self._get_store_id_map_for_messages(result)
+        if twin is None or any(int(ids.get(id(m)) or 0) > reply["store_id"] for m in result[:twin]):
+            return "postcondition"
+        return ""
+
+    def _kept_reply_tokens(self, compressed) -> int:
+        """#1162 E: tokens of the reply the assembly that returned ``compressed`` kept over its cap (else 0)."""
+        mark = getattr(self, "_kept_reply_mark", None)
+        return mark[1] if mark is not None and mark[0] is compressed else 0
 
     @staticmethod
     def _missing_tool_result_stub(tool_call_id: str) -> Dict[str, Any]:
@@ -8536,7 +8896,8 @@ class LCMEngine(
         if effective_cap is None:
             self._last_overflow_recovery_failed = False
         else:
-            self._last_overflow_recovery_failed = count_messages_tokens(compressed) > effective_cap
+            self._last_overflow_recovery_failed = (
+                count_messages_tokens(compressed) > effective_cap + self._kept_reply_tokens(compressed))
             if self._last_overflow_recovery_failed:
                 logger.warning(
                     "LCM overflow recovery could not get under cap=%d; returning best-effort context (%d tokens)",
@@ -8598,26 +8959,16 @@ class LCMEngine(
         - max_assembly_tokens: explicit hard cap
         - reserve_tokens_floor: keep headroom inside context_length
         """
-        caps: list[int] = []
-
-        if self._config.max_assembly_tokens > 0:
-            caps.append(self._config.max_assembly_tokens)
-
-        if self.context_length > 0 and self._config.reserve_tokens_floor > 0:
-            reserve_cap = self.context_length - self._config.reserve_tokens_floor
-            if reserve_cap > 0:
-                caps.append(reserve_cap)
-            else:
-                logger.warning(
-                    "LCM reserve_tokens_floor=%d disables reserve-based assembly cap because context_length=%d",
-                    self._config.reserve_tokens_floor,
-                    self.context_length,
-                )
-
-        if not caps:
-            return None
-
-        return max(1, min(caps))
+        cap, reserve_floor_disabled = assembly_token_cap(
+            self.context_length, self._config.max_assembly_tokens, self._config.reserve_tokens_floor,
+        )
+        if reserve_floor_disabled:
+            logger.warning(
+                "LCM reserve_tokens_floor=%d disables reserve-based assembly cap because context_length=%d",
+                self._config.reserve_tokens_floor,
+                self.context_length,
+            )
+        return cap
 
     # -- Internal: helpers -------------------------------------------------
 
@@ -8955,8 +9306,10 @@ class LCMEngine(
 
         Read-only by default (``apply=False``). Returns a preview describing
         what would change. When ``apply=True``, advances the lifecycle frontier
-        marker past the pre-tail raw messages so they are no longer replayed
-        into active context on subsequent bootstrap. Raw messages remain in
+        marker past the pre-tail raw messages. This prevents replay into active
+        context on subsequent bootstrap only on hosts that rebuild the context
+        from the store. Hermes reloads its own transcript, so
+        ``/lcm rotate apply`` refuses there (#1141). Raw messages remain in
         the SQLite store and are recoverable through ``lcm_load_session`` and
         ``lcm_expand`` — the lossless raw recovery contract is preserved.
 
@@ -8966,9 +9319,9 @@ class LCMEngine(
 
         - The **persisted lifecycle frontier**
           (``lifecycle_state.current_frontier_store_id``) is the
-          bootstrap signal — on next session start, raw rows at or
-          below it are not replayed into the active context. Rotate
-          advances this marker.
+          bootstrap signal — on hosts that rebuild context from the
+          store, raw rows at or below it are not replayed into the
+          active context on next session start. Rotate advances this marker.
         - The **in-process source-mapping marker**
           (``self._last_compacted_store_id``) tracks raw rows that the
           *current process* has already moved into summary DAG nodes.
@@ -8980,8 +9333,8 @@ class LCMEngine(
           the same process can still summarize them with correct
           ``source_ids`` lineage. On next process start,
           ``_bind_lifecycle_state`` reads the persisted frontier into
-          the in-process marker — at that point the active context is
-          being built from scratch, so the contract holds.
+          the in-process marker. That contract holds only when the host
+          rebuilds the active context from the store, unlike Hermes.
 
         Refusal/no-op reason codes (returned as ``reason``):
 
@@ -9170,6 +9523,8 @@ class LCMEngine(
             self._stable_use_closed = True
 
     def _shutdown_unlocked(self):
+        self._discard_prepared_leaves()
+        self._retire_embedding_maintenance(wait=True)
         cleanup = [
             self._unregister_active_engine_binding,
             *(
