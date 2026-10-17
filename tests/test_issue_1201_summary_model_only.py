@@ -108,6 +108,54 @@ print(json.dumps(results))
 """
 
 
+def _real_merge(rows, tmp_path):
+    if not os.environ.get("LCM_REAL_HERMES_SRC"):
+        pytest.skip("no real Hermes source supplied")
+    home = tmp_path / "merge-home"
+    home.mkdir(exist_ok=True)
+    probe = """
+import json, os, sys
+sys.path.insert(0, os.environ["LCM_REAL_HERMES_SRC"])
+from agent.agent_runtime_helpers import _merge_consecutive_users
+merged, repairs = _merge_consecutive_users(json.load(sys.stdin))
+print(json.dumps(dict(merged=merged, repairs=repairs)))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", probe], input=json.dumps(rows), capture_output=True,
+        text=True, timeout=60, check=False,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "HERMES_HOME": str(home),
+             "PYTHONPATH": os.environ["LCM_REAL_HERMES_SRC"],
+             "LCM_REAL_HERMES_SRC": os.environ["LCM_REAL_HERMES_SRC"],
+             "PYTHONDONTWRITEBYTECODE": "1", "HERMES_DISABLE_LAZY_INSTALLS": "1"},
+    )
+    assert completed.returncode == 0, completed.stderr[-4000:]
+    return json.loads(completed.stdout.strip().splitlines()[-1])
+
+
+@pytest.mark.parametrize("human", [False, True], ids=["generated-only", "absorbs-human"])
+def test_r3_generated_merge_group_display(engine, monkeypatch, tmp_path, human):
+    _seed(engine)
+    monkeypatch.setattr(engine, "_build_proactive_recall_message", lambda *a: {
+        "role": "user", "content": "<relevant-memories>Retrieved context.</relevant-memories>",
+        "display_metadata": {"origin": "recall"},
+    })
+    tail = [{"role": "assistant", "content": "A human-visible reply."},
+            {"role": "user", "content": "Newest human request."}]
+    if human:
+        tail.insert(0, {"role": "user", "content": "Human prompt absorbed by the group."})
+    before = deepcopy(tail)
+    output = engine._assemble_context(None, tail, persist=True)
+    assert _summary_rows(output) == [output[0]]
+    assert "relevant-memories" in output[1]["content"]
+    result = _real_merge(output, tmp_path)
+    merged = result["merged"]
+    assert result["repairs"] == (2 if human else 1)
+    assert bool(merged[0].get("display_metadata", {}).get("model_only")) is not human
+    visible = [row for row in merged if not row.get("display_metadata", {}).get("model_only")]
+    assert any("Human prompt absorbed" in row["content"] for row in visible) is human
+    assert tail == before
+
+
 @pytest.mark.skipif(not os.environ.get("LCM_REAL_HERMES_SRC"), reason="no real Hermes source supplied")
 @pytest.mark.parametrize("key", [None, "model_only", "host_model_only"])
 def test_issue_1370_real_host_merge_keeps_current_user_prompt_visible(engine, monkeypatch, tmp_path, key):
@@ -178,7 +226,8 @@ def test_issue_1370_nonmergeable_follower_keeps_summary_stamp(engine, monkeypatc
 
 
 @pytest.mark.parametrize("key", ["model_only", "host_model_only"])
-def test_r2_survival_fit_stamps_standalone_summary(engine, monkeypatch, key):
+@pytest.mark.parametrize("path", ["direct", "normal-compress", "exception-compress"])
+def test_r2_survival_fit_stamps_standalone_summary(engine, monkeypatch, tmp_path, key, path):
     _host(monkeypatch, key)
     _seed(engine)
     tail = [{"role": "user", "content": "Older request. " + "detail " * 200},
@@ -193,16 +242,31 @@ def test_r2_survival_fit_stamps_standalone_summary(engine, monkeypatch, key):
     budget = count_messages_tokens([{"role": "user", "content": summary}, *tail[-2:]])
     engine._ingest_cursor = len(incoming)
     engine._ingest_cursor_needs_reconcile = False
-    fitted = engine._survival_fit(incoming, incoming, 0, "recovery_attempt:test", request_cap=budget)
+    if path == "direct":
+        fitted = engine._survival_fit(incoming, incoming, 0, "recovery_attempt:test", request_cap=budget)
+    else:
+        monkeypatch.setattr(engine, "_survival_fit_args", lambda *a, **k: {
+            "reason": "recovery_attempt:test", "request_cap": budget})
+        def compress_impl(*a, **k):
+            if path == "exception-compress":
+                raise RuntimeError("synthetic compaction failure")
+            return incoming
+        monkeypatch.setattr(engine, "_compress_impl", compress_impl)
+        fitted = engine.compress(incoming, current_tokens=0, force=True)
     assert fitted is not incoming and fitted[0]["content"] == summary
-    assert fitted[0].get("display_metadata") == {key: True}
     assert fitted[1:] == tail[-2:]
+    merged = _real_merge(fitted, tmp_path)
+    assert merged["repairs"] == 1
+    visible = [row for row in merged["merged"] if not row.get("display_metadata", {}).get(key)]
+    assert any("Newest human request." in row["content"] for row in visible)
+    assert key not in fitted[0].get("display_metadata", {})
     assert all(key not in row.get("display_metadata", {}) for row in fitted[1:])
     assert "display_metadata" not in incoming[0]  # a carrier holds human text
     metadata = {"origin": "survival", key: False}
     row = {"role": "user", "content": summary, "display_metadata": metadata}
     engine._survival_summary_identity(row, summary, None, "survival_summary")
-    assert row["display_metadata"] == {"origin": "survival", key: True}
+    # Identity formation no longer decides display before the final group exists.
+    assert row["display_metadata"] == metadata
     assert metadata == {"origin": "survival", key: False}
     carrier = {"role": "user", "content": summary + "\n\nHuman request."}
     engine._survival_summary_identity(carrier, summary, None, "carrier")
