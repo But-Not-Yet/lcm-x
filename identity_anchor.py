@@ -223,20 +223,24 @@ class IdentityAnchorMixin:
             memo[store_id] = {form[1] for form in forms if not _lossy(form)}
         return memo[store_id]
 
-    def _identity_anchor_prematch(self, messages, identity_messages, cursor: int, audit_from: Optional[int] = None) -> Dict[str, Any]:
+    def _identity_anchor_prematch(self, messages, identity_messages, cursor: int, audit_from: Optional[int] = None,
+                                  *, accepted_prefix: int = 0) -> Dict[str, Any]:
         """Rows at or after ``cursor`` recognised as replays of stored occurrences, plus the R3
         remainders to store, the relations to record and the R5 backfills. ``audit_from``: the host
         changed its list before the cursor from there (a positional cursor no longer proves those rows
         stored): a stamped row -- or an unstamped user row (#633) -- there that no stored occurrence
-        explains moves ``plan["cursor"]`` back."""
+        explains moves ``plan["cursor"]`` back. ``accepted_prefix`` is the compaction boundary
+        already verified in this ingest call, even if the cached pre-compaction list differs."""
+        accepted_prefix = max(0, min(accepted_prefix, cursor, len(messages)))
         plan: Dict[str, Any] = {"replayed": set(), "remainders": {}, "relations": [], "carry": [], "backfill": [],
-                                "cursor": cursor}
+                                "cursor": cursor, "accepted_prefix": accepted_prefix}
         self._identity_anchor_text_memo: dict[int, set[str]] = {}
         n = len(messages)
         start = cursor if audit_from is None else max(0, min(audit_from, cursor))
         rewritten = self._identity_anchor_rewritten(messages, cursor)
         if rewritten:  # R6: a rewritten host object is examined like a new row (a merge survivor, ...)
             start = min(start, min(rewritten))
+        start = max(start, accepted_prefix)
         if not identity_anchor_enabled() or not self._session_id or start >= n:
             return plan
         stamps = {}
@@ -360,10 +364,10 @@ class IdentityAnchorMixin:
 
     def _identity_anchor_audit(self, messages, identity_messages, cursor, start, stamps, identity_at, consumed, plan) -> None:
         """Rows in ``[start, cursor)`` of a list the host changed before the cursor: a stamped host row,
-        or an unstamped user row the host inserted there (#633: a /steer row; by content alone), that
+        or an unstamped user row the host inserted there (#633: a /steer row), that
         no stored occurrence explains (key, witness, alias, or a stored copy of its content -- up to
-        edge whitespace, under another stamp or none -- in the tail of this session or a verified
-        ancestor, each copy used once) and no ignore pattern drops was never stored. The cursor moves back
+        edge whitespace, with the same stamp or a canonical host-uid binding for a NULL stamp --
+        in the tail of this session or a verified ancestor, each copy used once) and no ignore pattern drops was never stored. The cursor moves back
         to the first such row; every other row of that range stays a replay (today's positional proof)."""
         from .reconcile import _proof_user_identity
 
@@ -373,6 +377,30 @@ class IdentityAnchorMixin:
             for row in self._store.get_session_tail(session, limit=span):
                 if int(row["store_id"]) not in consumed:
                     held[_proof_user_identity(self._message_replay_identity(row, stored_row=True))].append(row)
+        bindings = None
+
+        def bound_null(idx, row):
+            # #1403: content (even unique content) cannot identify a NULL-stamp occurrence.
+            # Read only existing canonical host bindings in this verified home/lineage.
+            from .host_uid import _valid_uid
+
+            nonlocal bindings
+            uid = messages[idx].get("message_uid")
+            if not _valid_uid(uid):
+                return False
+            if bindings is None:
+                bindings = {}
+                try:
+                    lineage, _problem = self._host_uid_lineage_key()
+                    if lineage is not None:
+                        uids = {m.get("message_uid") for m in messages[start:cursor]
+                                if _valid_uid(m.get("message_uid"))}
+                        bindings = self._store.host_uid_bindings_for(lineage, uids, ("canonical",))
+                except Exception as exc:
+                    # Do not let the outer pre-match fallback restore an unproven cursor.
+                    logger.warning("LCM audit uid proof unavailable (%s); retaining unproven rows", type(exc).__name__)
+            return (int(row["store_id"]), "canonical") in bindings.get(uid, ())
+
         missed, deferred, audited = [], [], set()
         inserted = None
         for idx in range(start, cursor):
@@ -401,6 +429,10 @@ class IdentityAnchorMixin:
                 plan.setdefault("matched", {})[idx] = [ws]  # host-uid shadow only
                 plan.setdefault("ws", []).append((ws, identity_messages[idx]))
                 continue
+            # #1328: equal content at a different known stamp is a different occurrence.
+            # A NULL copy needs independent occurrence proof before consumption or unique backfill.
+            copies = [row for row in copies if row.get("observed_at") == stamps[idx]
+                      or row.get("observed_at") is None and bound_null(idx, row)]
             if copies:
                 consumed.add(int(copies[0]["store_id"]))
                 plan.setdefault("matched", {})[idx] = [copies[0]]  # host-uid shadow only
@@ -420,7 +452,8 @@ class IdentityAnchorMixin:
                         or self._matches_ignore_message_patterns(messages[idx])):
                     continue
                 key = _proof_user_identity(identity)
-                copies = [row for row in held.get(key, ()) if int(row["store_id"]) not in consumed]
+                copies = [row for row in held.get(key, ()) if int(row["store_id"]) not in consumed
+                          and (row.get("observed_at") is not None or bound_null(idx, row))]
                 if len(copies) > reserved[key]:
                     consumed.add(int(copies[-1]["store_id"]))
                     plan.setdefault("matched", {})[idx] = [copies[-1]]  # host-uid shadow only
@@ -847,7 +880,7 @@ class IdentityAnchorMixin:
                 index += 1
 
     def _identity_anchor_backfill_prefix(self, messages, identity_messages, cursor: int) -> list:
-        """R5 NULL backfill for the reconciled prefix: a stamped row whose occurrence-bound mapped row
+        """R5 NULL backfill for a reconciled or same-call accepted compaction prefix: a stamped row whose occurrence-bound mapped row
         (#488 mapper) has ``observed_at`` NULL and the exact identity, when no other mapped NULL row shares
         that identity and no stored row already holds it at that stamp."""
         pairs = [(idx, _normalize_observed_at(messages[idx].get("timestamp"))) for idx in range(min(cursor, len(messages)))]
@@ -1104,7 +1137,7 @@ class IdentityAnchorMixin:
         proof)."""
         cursor = plan["cursor"]
         rewritten = [idx for idx in self._identity_anchor_rewritten(messages, cursor)
-                     if idx not in plan.get("explained", ())]
+                     if idx >= plan.get("accepted_prefix", 0) and idx not in plan.get("explained", ())]
         if not rewritten:
             return
         for idx in rewritten:  # a rewound row is a new store now; the host-uid shadow sees it via its store id
