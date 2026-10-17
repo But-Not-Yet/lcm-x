@@ -107,8 +107,6 @@ def resolve_fresh_tail_boundary(
             used += message_tokens
         start = token_start
 
-    # SEEDED REGRESSION (temporary): protect nothing, so the newest turn can be compacted.
-    start = message_count
     group_start = _assistant_group_start(messages, start)
     tool_group_extended = group_start < start
     start = group_start
