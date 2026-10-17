@@ -48,7 +48,7 @@ from .reconcile import (
     _proof_user_identity,
 )
 from .sanitize import _contains_sensitive_redaction
-from .sqlite_util import _is_sqlite_locked_error
+from .sqlite_util import PhaseSqlTrace, _is_sqlite_locked_error
 from .survival_fit import _RECOVERY_THRESHOLD_SHARE
 from .tokens import count_message_tokens, count_messages_tokens, count_tokens
 
@@ -589,6 +589,9 @@ class CompactionMixin:
             thread_context.foreground_budget = budget
         returned = None
         try:
+            budget.pre_leaf = PhaseSqlTrace()  # #1127: timed until the first leaf call, or the stop before one
+            budget.pre_leaf.install([(self._store, "_conn"), (self._store, "_write_lock"), (self._dag, "_conn"),
+                                     (self._dag, "_db_lock"), (self._lifecycle, "_conn"), (self._lifecycle, "_lock")])
             self._pending_emission_candidates = []
             self._survival_fit_emission = None
             self._compress_occurrences = None
@@ -664,10 +667,11 @@ class CompactionMixin:
             self._compress_occurrences = None
             self._last_compression_status = "error"
             self._last_compression_noop_reason = ""
+            self._survival_fit_reason = f"exception:{type(exc).__name__}"
             if isinstance(exc, Exception):  # #582: an over-window list survives the failure, fitted
                 try:
                     self._store.rollback_pending_write()
-                    reason = f"exception:{type(exc).__name__}"
+                    reason = self._survival_fit_reason
                     fitted = self._survival_fit(messages, messages, current_tokens, after_exception=True,
                                                 **self._survival_fit_args(messages, current_tokens, reason,
                                                                           bypass_cooldown))
@@ -683,6 +687,7 @@ class CompactionMixin:
                     return fitted
             raise
         finally:
+            self._end_pre_leaf_phase(budget, "stopped")
             self._last_compress_leaves = (self._hold_conversation_key(), budget.leaves)
             self._compress_forced_overflow = False
             self._foreground_budget = None
@@ -738,6 +743,33 @@ class CompactionMixin:
                     pending.pop(uid, None)
             self._finish_foreground_budget(budget, returned)
 
+    def _pre_leaf_span(self, name: str, started: float) -> None:
+        trace = getattr(self._foreground_budget, "pre_leaf", None)
+        if trace is not None:
+            trace.spans[name] = trace.spans.get(name, 0.0) + time.monotonic() - started
+
+    def _end_pre_leaf_phase(self, budget: ForegroundBudget, reached: str) -> None:
+        """#1127: one WARNING when the pre-leaf phase ran past the hard bound: its timed steps, the spans the steps
+        do not time, the seconds neither accounts for, and this thread's lock waits and slow SQL statements."""
+        trace, budget.pre_leaf = budget.pre_leaf, None
+        if trace is None:
+            return
+        trace.uninstall()
+        total = time.monotonic() - budget.t0
+        if total <= budget.hard:
+            return
+        spans = trace.spans
+        spans.setdefault("pre_loop", total)  # the phase ended before the leaf loop
+        accounted = spans["pre_loop"] + sum(trace.steps.values()) + spans.get("extraction", 0.0)
+        logger.warning(
+            "LCM pre-leaf phase ran past the hard bound: total=%.1fs (budget %gs) reached=%s; steps: %s; spans: %s "
+            "lock_wait=%.1fs; unaccounted=%.1fs; slow_sql=%d/%.1fs slowest=%.1fs \"%s\"",
+            total, budget.hard, reached, ", ".join(f"{step}={sec:.1f}s" for step, sec in trace.steps.items()) or "none",
+            " ".join(f"{name}={spans.get(name, 0.0):.1f}s" for name in ("pre_loop", "ingest", "condensation", "extraction")),
+            trace.lock_wait, max(0.0, total - accounted), trace.slow_count, trace.slow_seconds, trace.slowest,
+            trace.slowest_sql,
+        )
+
     def _new_foreground_budget(self) -> ForegroundBudget:
         soft, hard = self._foreground_budget_seconds()
         return ForegroundBudget(soft=soft, hard=hard, configured_timeout=self._config.summary_timeout_ms / 1000,
@@ -772,13 +804,14 @@ class CompactionMixin:
             if exited:  # #671: the free cuts reached the target before any model call
                 reason = "stub_first_exit"
             logger.info("LCM compaction stop: reason=%s leaves=%d progress=%s elapsed=%.1fs pre=%.1fs calls=%.1fs "
-                        "finalize=%.1fs backlog_tokens=%d%s%s%s", reason, budget.leaves, budget.progress or "none", elapsed,
+                        "finalize=%.1fs backlog_tokens=%d%s%s%s%s", reason, budget.leaves, budget.progress or "none", elapsed,
                         pre, calls, finalize,
                         self._raw_backlog_tokens(result) if isinstance(result, list) and not bypassed else 0,
                         f" host={budget.host:.1f}s" if budget.host > 0 else "",
                         " tokens_before={tokens_before} tokens_after={tokens_after} target={target_tokens} "
                         "backlog_rows={backlog_rows}".format(**exited) if exited else "",
-                        " blocked=store_id:%d,role:%s,kind:%s" % blocked[:3] if blocked else "")  # #1162: the row
+                        " blocked=store_id:%d,role:%s,kind:%s" % blocked[:3] if blocked else "",  # #1162: the row
+                        f" failure={self._survival_fit_reason}" if reason == "error" and self._survival_fit_reason else "")
         except Exception:
             logger.debug("LCM compaction stop line failed", exc_info=True)
         if self._bypasses_lcm_context_management():
@@ -1138,13 +1171,17 @@ class CompactionMixin:
     ) -> Optional[List[Dict[str, Any]]]:
         """#671: the list the leaf path returns when no leaf runs (summary prefix, externalized placeholders, the
         aged stub tier), assembled without a model call, when the survival fit's host measure puts it at or under
-        min(threshold - leaf chunk, 0.95 x threshold); else None and the compaction goes on as before. No row is
+        min(threshold - leaf chunk, 0.95 x threshold), lowered to int(ratio x threshold) by a set
+        ``stub_first_exit_target_ratio``; else None and the compaction goes on as before. No row is
         deleted: the rows no leaf summarised stay stored and are recorded as backlog."""
         if not (self._config.large_output_active_replay_stubbing_enabled
                 and self._config.large_output_externalization_enabled):
             return None
         threshold = int(self.threshold_tokens or 0)
         target = min(threshold - int(self._config.leaf_chunk_tokens), int(threshold * _RECOVERY_THRESHOLD_SHARE))
+        ratio = getattr(self._config, "stub_first_exit_target_ratio", 0.0)
+        if 0 < ratio <= 1:  # 0 (unset) keeps the built-in target; a ratio only ever lowers it
+            target = min(target, int(threshold * ratio))
         if target <= 0:
             return None
         leading = self._leading_anchor_count(working_messages)
@@ -1419,7 +1456,11 @@ class CompactionMixin:
         # Step 1: Ingest new messages into the immutable store. Work from a
         # replay-safe view so quarantined assistant loops do not enter summaries
         # or provider context after the durable row has been written.
-        working_messages = self._ingest_messages(messages)
+        span_started = time.monotonic()
+        try:
+            working_messages = self._ingest_messages(messages)
+        finally:  # #1127: ingest and reconcile, untimed by the sweep steps; a raised lock wait is theirs too
+            self._pre_leaf_span("ingest", span_started)
         # #488: project the complete admitted list ONCE; subset consumers read a row's occurrence
         # here. Only a row at exactly one position is registered (F6): a copy or an aliased row
         # is unproven (full identity).
@@ -1639,6 +1680,7 @@ class CompactionMixin:
             and self._summary_route_available()
         ):
             budget.leaf_reserve = budget.estimate(self._primary_summary_route())
+            span_started = time.monotonic()
             try:
                 pre_leaf_condensation_passes, pre_leaf_condensation_reason = (
                     self._run_threshold_sweep_condensation(
@@ -1662,6 +1704,7 @@ class CompactionMixin:
                 )
             finally:
                 budget.leaf_reserve = 0.0
+                self._pre_leaf_span("condensation", span_started)
             max_leaf_passes -= pre_leaf_condensation_passes
         if threshold_full_sweep_active:
             self._last_threshold_full_sweep.update(
@@ -1672,6 +1715,9 @@ class CompactionMixin:
             )
 
         no_call_only, refused_input, unattributed_leaf_refused = False, None, False
+        self._pre_leaf_span("pre_loop", budget.t0)
+        if budget.pre_leaf is not None:
+            budget.pre_leaf.steps = sweep_step_seconds
         while leaf_passes < max_leaf_passes:
             if threshold_full_sweep_active and time.monotonic() >= sweep_deadline:
                 sweep_stop_reason = "time_budget_exhausted"
@@ -2098,7 +2144,11 @@ class CompactionMixin:
                             extraction_deadline, budget.t0 + budget.soft - est - _EXTRACTION_HEADROOM_SECONDS
                         )
                     extraction_deadline = min(extraction_deadline, sweep_deadline)
-                    self._run_pre_compaction_extraction(summary_input_chunk, deadline=extraction_deadline)
+                    span_started = time.monotonic()
+                    try:
+                        self._run_pre_compaction_extraction(summary_input_chunk, deadline=extraction_deadline)
+                    finally:
+                        self._pre_leaf_span("extraction", span_started)
                 if bool(
                     getattr(
                         self._config,
@@ -2108,6 +2158,7 @@ class CompactionMixin:
                 ):
                     self._schedule_pre_compaction_assertions(summary_input_chunk)
 
+                self._end_pre_leaf_phase(budget, "first_leaf")
                 step_started = time.monotonic() if threshold_full_sweep_active else 0.0
                 self._last_leaf_level_3_verbatim = False
                 self._last_leaf_content_filter_error = False
@@ -2292,6 +2343,7 @@ class CompactionMixin:
             leaf_compacted_this_turn, no_call_only, refused_input = True, False, None
             budget.progress, budget.leaves = budget.progress or "leaf", budget.leaves + 1
             self._sweep_budget_hold_until = 0.0  # #608: a stored leaf ends the hold
+            self._hung_summary_strike, self._sweep_budget_hold_turn_paced = None, False
             self._no_progress_hold, self._no_progress_candidate = None, False  # #651: hidden-only leaves too
             leaf_passes += 1
             level3_leaves += _level == 3
@@ -2365,6 +2417,7 @@ class CompactionMixin:
                     if not (deferred_maintenance_active and critical_budget_pressure):
                         break
 
+        self._end_pre_leaf_phase(budget, "leaf" if leaf_compacted_this_turn else "stopped")
         if no_call_only:  # #628: this pass stored no leaf while every route is refused
             sweep_stop_reason, sweep_raw_drained = "summary_route_unavailable", False
             # review of #723: and returns the list it started with (no scaffold or ignored-backlog edit of its own)
@@ -2387,7 +2440,12 @@ class CompactionMixin:
             )
             if not leaf_compacted_this_turn:
                 noop_reason = "summary route unavailable"
-                self._start_sweep_budget_hold(seconds_left)
+                self._start_sweep_budget_hold(seconds_left, turn_paced=(
+                    self._sweep_budget_hold_turn_paced
+                    and self._sweep_budget_hold_active()
+                    and self._hung_summary_strike is not None
+                    and self._hung_summary_strike[0] == self._hold_conversation_key()
+                ))
         elif sweep_stop_reason == "summary_result_rejected":
             warn_rejected()
             if not leaf_compacted_this_turn:
@@ -2405,6 +2463,11 @@ class CompactionMixin:
                     ", ".join(f"{step}={seconds:.1f}s" for step, seconds in sweep_step_seconds.items()),
                 )
                 if not force_overflow and pre_leaf_condensation_passes == 0:  # #909: stored condensation is progress
+                    first_hang = budget.hung_route is not None and (
+                        self._hung_summary_strike is None
+                        or self._hung_summary_strike[0] != self._hold_conversation_key())
+                    if first_hang:
+                        self._hung_summary_strike = (self._hold_conversation_key(), budget.hung_route)
                     if self._hung_summary_route_has_fallback(budget):
                         self._no_progress_candidate = False  # let the next automatic pass try the fallback
                         logger.info(
@@ -2412,7 +2475,9 @@ class CompactionMixin:
                             "fallback route available", budget.hung_route,
                         )
                     else:
-                        self._start_sweep_budget_hold()
+                        if first_hang:
+                            self._no_progress_candidate = False
+                        self._start_sweep_budget_hold(turn_paced=first_hang)
             self._refresh_raw_backlog_debt(
                 working_messages,
                 observed_tokens=observed_prompt_tokens,

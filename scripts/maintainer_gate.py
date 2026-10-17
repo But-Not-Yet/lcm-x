@@ -19,7 +19,11 @@ REQUIRED_CI_CHECK_PAIRS = (
     ("test (3.13)", 15368),
     ("test (3.14)", 15368),
 )
-REQUIRED_CHECK_PAIRS = REQUIRED_CI_CHECK_PAIRS
+# Required on the PR head only. The Differential workflow runs on pull requests (plus nightly and on dispatch),
+# not on pushes to main. Strict mode makes the PR's merge-ref run cover the merged tree, so post-merge
+# verification checks the CI pairs above on the merge commit.
+REQUIRED_PR_ONLY_CHECK_PAIRS = (("differential", 15368),)
+REQUIRED_CHECK_PAIRS = REQUIRED_CI_CHECK_PAIRS + REQUIRED_PR_ONLY_CHECK_PAIRS
 # Changed-path risk map for the land-pr review obligation. It is a readiness hint
 # only: it names the review lanes land-pr requires and never fails readiness.
 REVIEW_POLICY_FILES = {
