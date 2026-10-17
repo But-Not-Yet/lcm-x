@@ -226,8 +226,8 @@ def _hermes_config_path() -> Path:
     return home / "config.yaml"
 
 
-def _load_hermes_config_yaml() -> dict[str, Any]:
-    cfg_path = _hermes_config_path()
+def _load_hermes_config_yaml(cfg_path: Path | None = None) -> dict[str, Any]:
+    cfg_path = _hermes_config_path() if cfg_path is None else cfg_path
     try:
         text = cfg_path.read_text()
     except Exception:
@@ -449,6 +449,17 @@ def _hermes_auxiliary_compression_timeout_ms_with_source(default: int) -> tuple[
         return int(float(value) * 1000), "config_yaml:auxiliary.compression.timeout"
     except Exception:
         return default, "default"
+
+
+def hermes_auxiliary_compression_max_concurrency(hermes_home: str = "") -> int | None:
+    """#787: the profile's auxiliary.compression.max_concurrency; None when unset or not a number."""
+    path = Path(hermes_home) / "config.yaml" if hermes_home else None
+    try:
+        compression = (_load_hermes_config_yaml(path).get("auxiliary") or {}).get("compression") or {}
+        value = compression.get("max_concurrency") if isinstance(compression, dict) else None
+        return None if value is None or isinstance(value, bool) else int(value)
+    except Exception:
+        return None
 
 
 def _lcm_config_string_with_source(env_name: str, yaml_key: str, default: str) -> tuple[str, str]:
@@ -717,6 +728,9 @@ ENV_FIELD_SPECS: tuple[_EnvFieldSpec, ...] = (
     _EnvFieldSpec("rollup_aggregate_max_tokens", "LCM_ROLLUP_AGGREGATE_MAX_TOKENS", int),
     _EnvFieldSpec("rollup_builds_per_pass", "LCM_ROLLUP_BUILDS_PER_PASS", int),
     _EnvFieldSpec("rollup_maintenance_budget_ms", "LCM_ROLLUP_MAINTENANCE_BUDGET_MS", int),
+    _EnvFieldSpec("background_leaf_prep_enabled", "LCM_BACKGROUND_LEAF_PREP_ENABLED", bool),
+    _EnvFieldSpec("background_leaf_prep_max_calls", "LCM_BACKGROUND_LEAF_PREP_MAX_CALLS", int),
+    _EnvFieldSpec("background_leaf_prep_window_s", "LCM_BACKGROUND_LEAF_PREP_WINDOW_S", float),
 )
 
 _PARSER_BY_TYPE = {
@@ -1171,6 +1185,11 @@ class LCMConfig:
     # Summariser prompt version (#646): 1 = original prompts and 2x output
     # ceiling; 2 = v2 prompts, focus directives in the policy, 3x ceiling.
     summary_prompt_version: int = 1
+    # #787 slice 1: prepare leaf summaries off-turn and publish them at the threshold crossing (default off).
+    background_leaf_prep_enabled: bool = False
+    # #787: the background preparation's own spend guard: at most this many summariser calls per window.
+    background_leaf_prep_max_calls: int = 8
+    background_leaf_prep_window_s: float = 600.0
     # #671 stub-first exit: a share of the threshold that lowers the exit's target to
     # min(threshold - leaf chunk, 0.95 x threshold, int(ratio x threshold)); 0 = the built-in target.
     stub_first_exit_target_ratio: float = 0.0
