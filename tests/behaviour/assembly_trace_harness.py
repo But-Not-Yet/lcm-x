@@ -33,13 +33,19 @@ from typing import Any, cast
 
 import pytest
 
-if __name__ == "__main__" and "--repo" in sys.argv:
-    selected = Path(sys.argv[sys.argv.index("--repo") + 1]).resolve()
+if __name__ == "__main__":
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--repo")
+    pre_args, _ = pre_parser.parse_known_args()
+    if pre_args.repo == "":
+        pre_parser.error("argument --repo: expected a non-empty path")
+    selected = Path(pre_args.repo).resolve() if pre_args.repo is not None else Path(__file__).resolve().parents[2]
     package = ModuleType("hermes_lcm")
     package.__path__ = [str(selected)]
     sys.modules["hermes_lcm"] = package
 
 import tests.conftest  # noqa: F401
+from tests.phase0_hygiene import product_env_keys
 from tests.harness import engine_context, pin_char_counter
 
 engine_module: Any = importlib.import_module("hermes_lcm.engine")
@@ -146,7 +152,7 @@ class Canonical:
             return {f.name: self.value(getattr(value, f.name), f.name) for f in dataclasses.fields(value)}
         if isinstance(value, dict):
             if key == 'store_ids_by_message_id':
-                return {f'mapped-{i}': self.value(v) for i, v in enumerate(value.values())}
+                return {self.objects[k] if isinstance(k, int) else k: self.value(v) for k, v in value.items()}
             return {(self.objects.get(k, str(k)) if isinstance(k, int) else self.text(str(k))): self.value(v, str(k))
                     for k, v in value.items()}
         if isinstance(value, (list, tuple)):
@@ -484,6 +490,7 @@ def observe(case: Scenario, root: Path) -> Trace:
             events.extend(f'before {name} ' + canonical.compact(value) for name, value in initial.items())
             # Code objects are the qualified observer identity, never co_name.
             target = inspect.unwrap(engine_module.LCMEngine._assemble_context).__code__
+            store_map = engine_module.LCMEngine._get_store_id_map_for_messages.__code__
             cleanup = engine_module.LCMEngine._sanitize_active_context_messages.__code__
             visibility = engine_module._stamp_generated_model_only.__code__
             counters = {engine_module.count_message_tokens.__code__, engine_module.count_messages_tokens.__code__,
@@ -499,6 +506,9 @@ def observe(case: Scenario, root: Path) -> Trace:
             def profile(frame: FrameType, event: str, arg: Any) -> None:
                 nonlocal entries
                 code = frame.f_code
+                if code is store_map and event == 'call':
+                    for row in frame.f_locals['messages']:
+                        canonical.alias(row)
                 if code is target and event == 'call':
                     entries += 1
                     events.append('assembly enter rejected=' + canonical.compact(frame.f_locals.get('_reply_rejected')))
@@ -612,14 +622,21 @@ def first_difference(expected: Trace, actual: Trace) -> str | None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--repo', type=Path, required=True)
-    parser.add_argument('--out', type=Path, required=True)
-    args = parser.parse_args()
-    with tempfile.TemporaryDirectory(prefix='assembly-trace-') as directory:
-        result = {case.name: observe(case, Path(directory).resolve() / case.name) for case in SCENARIOS}
-    args.out.write_text(json.dumps(result, sort_keys=True, indent=0) + '\n')
-    print(f'Wrote {len(result)} assembly scenarios')
+    environment = dict(os.environ)
+    try:
+        parser = argparse.ArgumentParser(description=__doc__)
+        parser.add_argument('--repo', type=Path, required=True)
+        parser.add_argument('--out', type=Path, required=True)
+        args = parser.parse_args()
+        for key in product_env_keys(ROOT) | product_env_keys(args.repo.resolve()):
+            os.environ.pop(key, None)
+        with tempfile.TemporaryDirectory(prefix='assembly-trace-') as directory:
+            result = {case.name: observe(case, Path(directory).resolve() / case.name) for case in SCENARIOS}
+        args.out.write_text(json.dumps(result, sort_keys=True, indent=0) + '\n')
+        print(f'Wrote {len(result)} assembly scenarios')
+    finally:
+        os.environ.clear()
+        os.environ.update(environment)
 
 
 if __name__ == '__main__':
