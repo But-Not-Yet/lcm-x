@@ -200,3 +200,10 @@ def test_new_observers_reach_their_product_paths(name: str, template: str) -> No
         assert before != after, "preparation must actually promote or reject a cached leaf"
     if name.startswith("unattributed-"):
         assert any(event.startswith("attr _unattributed_leaf_warned=") for event in events)
+
+
+def test_fixture_scenario_inventory() -> None:
+    names = [case.name for case in SCENARIOS]
+    assert len(names) == len(set(names)), "Scenario names must be unique.\n" + TRACE_GUIDANCE
+    assert set(json.loads(GOLDEN.read_text())) == set(names), (
+        "Scenario inventory differs; update SCENARIOS and the fixture scenario keys together.\n" + TRACE_GUIDANCE)
