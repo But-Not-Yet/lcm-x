@@ -786,7 +786,7 @@ def register(ctx):
             def _ingest_and_note(active_engine):
                 # The turn ended whether or not its ingest succeeded (#597).
                 try:
-                    return active_engine.ingest(history)
+                    ingested = active_engine.ingest(history)
                 finally:
                     try:
                         note = getattr(active_engine, "note_turn_complete", None)
@@ -794,6 +794,11 @@ def register(ctx):
                             note()
                     except Exception as exc:
                         logger.debug("LCM post_llm_call turn-complete notification error: %s", exc)
+                # #787 (default off): only an enqueue runs here; the preparation runs off-turn.
+                prepare = getattr(active_engine, "_prepare_leaves_after_turn", None)
+                if callable(prepare) and not kwargs.get("interrupted"):
+                    prepare(history)
+                return ingested
 
             def _bind_and_ingest(active_engine):
                 # The host-supplied engine or genuinely cold plugin prototype
