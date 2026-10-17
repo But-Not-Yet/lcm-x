@@ -223,20 +223,24 @@ class IdentityAnchorMixin:
             memo[store_id] = {form[1] for form in forms if not _lossy(form)}
         return memo[store_id]
 
-    def _identity_anchor_prematch(self, messages, identity_messages, cursor: int, audit_from: Optional[int] = None) -> Dict[str, Any]:
+    def _identity_anchor_prematch(self, messages, identity_messages, cursor: int, audit_from: Optional[int] = None,
+                                  *, accepted_prefix: int = 0) -> Dict[str, Any]:
         """Rows at or after ``cursor`` recognised as replays of stored occurrences, plus the R3
         remainders to store, the relations to record and the R5 backfills. ``audit_from``: the host
         changed its list before the cursor from there (a positional cursor no longer proves those rows
         stored): a stamped row -- or an unstamped user row (#633) -- there that no stored occurrence
-        explains moves ``plan["cursor"]`` back."""
+        explains moves ``plan["cursor"]`` back. ``accepted_prefix`` is the compaction boundary
+        already verified in this ingest call, even if the cached pre-compaction list differs."""
+        accepted_prefix = max(0, min(accepted_prefix, cursor, len(messages)))
         plan: Dict[str, Any] = {"replayed": set(), "remainders": {}, "relations": [], "carry": [], "backfill": [],
-                                "cursor": cursor}
+                                "cursor": cursor, "accepted_prefix": accepted_prefix}
         self._identity_anchor_text_memo: dict[int, set[str]] = {}
         n = len(messages)
         start = cursor if audit_from is None else max(0, min(audit_from, cursor))
         rewritten = self._identity_anchor_rewritten(messages, cursor)
         if rewritten:  # R6: a rewritten host object is examined like a new row (a merge survivor, ...)
             start = min(start, min(rewritten))
+        start = max(start, accepted_prefix)
         if not identity_anchor_enabled() or not self._session_id or start >= n:
             return plan
         stamps = {}
@@ -876,7 +880,7 @@ class IdentityAnchorMixin:
                 index += 1
 
     def _identity_anchor_backfill_prefix(self, messages, identity_messages, cursor: int) -> list:
-        """R5 NULL backfill for the reconciled prefix: a stamped row whose occurrence-bound mapped row
+        """R5 NULL backfill for a reconciled or same-call accepted compaction prefix: a stamped row whose occurrence-bound mapped row
         (#488 mapper) has ``observed_at`` NULL and the exact identity, when no other mapped NULL row shares
         that identity and no stored row already holds it at that stamp."""
         pairs = [(idx, _normalize_observed_at(messages[idx].get("timestamp"))) for idx in range(min(cursor, len(messages)))]
@@ -1133,7 +1137,7 @@ class IdentityAnchorMixin:
         proof)."""
         cursor = plan["cursor"]
         rewritten = [idx for idx in self._identity_anchor_rewritten(messages, cursor)
-                     if idx not in plan.get("explained", ())]
+                     if idx >= plan.get("accepted_prefix", 0) and idx not in plan.get("explained", ())]
         if not rewritten:
             return
         for idx in rewritten:  # a rewound row is a new store now; the host-uid shadow sees it via its store id

@@ -6,7 +6,7 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
-- Fix: an unstamped stored copy needs a recorded canonical host-UID binding before a changed-prefix audit can consume it, preserving fresh repeated turns after proof loss. (#1403)
+- Fix: carry an accepted compaction prefix through the same ingest without auditing it against the stale cached list; outside that prefix, an unstamped stored copy needs a recorded canonical host-UID binding before a changed-prefix audit can consume it, preserving fresh repeated turns after proof loss. (#1403)
 - Fix: a repeat hung summary retry, including forced overflow, keeps its circuit open at turn end; a first hang after a stored leaf or condensation in the same sweep still gets the one turn-end retry. (#1369, #1096)
 - Fix: preserve a fresh repeated user message with a distinct timestamp after recompression, replay, or rotation loses the commit proof. (#1328)
 - Config: `LCM_STUB_FIRST_EXIT_TARGET_RATIO` (default `0`, env only) lowers the stub-first exit's target to min(threshold - `LCM_LEAF_CHUNK_TOKENS`, 0.95 x threshold, int(ratio x threshold)); stub cuts that stay over it take the leaf path as before. With a large window the built-in target leaves a long live list (712,500 tokens at a 750,000-token threshold); `0.2` exits only at 150,000 or under. `0` keeps today's target; a negative value, a value over `1` or a non-number keeps it with a config warning. `lcm_status` `last_stub_first_exit` and the `LCM compaction stop:` line show the applied target, and `lcm_status` `config` shows the ratio. Unset, compaction is unchanged. (#1193, #671)
