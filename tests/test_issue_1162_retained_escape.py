@@ -118,7 +118,7 @@ def _reorder(tmp_path, sweep):
 
 
 def _restore(tmp_path, sweep):
-    """The host rewrites an older tool output in place (Hermes' salvage text, #773): the ingest stores it and the
+    """The host replaces an older tool output with new, non-salvage content: the ingest stores it and the
     unstamped rows after it again at the END, and the oldest host row binds to a newer store id."""
     engine = _engine(tmp_path, sweep, fresh_tail_count=4, leaf_chunk_tokens=400)
     view = [row for i in range(1, 13) for row in _turn(f"T{i}", 100.0 * i, tool=True)]
@@ -126,7 +126,7 @@ def _restore(tmp_path, sweep):
     engine.note_turn_complete()
     engine._no_progress_hold = None
     tools = [m for m in view if m.get("role") == "tool"]
-    tools[0]["content"] = "[Old tool output cleared to save context space]"
+    tools[0]["content"] = "[Host replaced this tool output with genuinely new content]"
     return engine, view + _turn("T13", 1300.0, tool=True)
 
 
