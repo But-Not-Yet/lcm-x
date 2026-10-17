@@ -15,6 +15,15 @@ and the candidate did not. Four of those were side effects of an earlier fix. Th
   (`scripts/maintainer_gate.py` `TURN_PATH_FILES`), `tests/differential/` or `.github/workflows/differential.yml`, the full
   differential runs and any unexplained red fails the check. Otherwise the job passes after the relevance step.
 
+## Escaped regressions become permanent checks
+- A fix for a regression that escaped to an rc, a GA or a user, on the turn path (assembly, ingest, compaction, reconcile), adds a
+  permanent check in the same PR, in addition to its unit test: a `tests/differential` case (a pinned shape or a generated family) or an
+  invariant under `tests/invariants`. The check is red on the code before the fix and green after, and the PR body cites both runs.
+- A fix confined to a pure helper, with no turn-path behaviour, keeps the unit test only.
+- Why: of the 222 fixes merged in the 60 days to 2026-10-17, 168 are guarded today only by a unit test, and the differential
+  and invariant suites would catch 3 and 0 of them. A unit test pins the reported shape; the differential and invariants also
+  cover its neighbours, which is where the v0.27.0 respins came from.
+
 ## Sibling sweep
 After any Phase B finding, sweep the whole sibling shape family before the next rc, not only the reported shape: role × tool
 topology (parallel batch, sequential pairs, mixed) × row size (around 256 tokens and the 1,200/2,400-character projection
