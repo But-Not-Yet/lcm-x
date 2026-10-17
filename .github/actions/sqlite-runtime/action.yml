@@ -31,12 +31,13 @@ runs:
         echo "$SQLITE_SHA256  amalgamation.zip" | sha256sum -c -
         unzip -q -o amalgamation.zip
         src="$(find . -maxdepth 2 -name sqlite3.c -print -quit)"
+        # Same feature options as the runtime's bundled SQLite (python-build-standalone):
+        # compare `pragma compile_options` on a runtime interpreter before changing them.
         gcc -O2 -fPIC -shared \
           -DSQLITE_ENABLE_FTS3 -DSQLITE_ENABLE_FTS3_PARENTHESIS -DSQLITE_ENABLE_FTS4 \
-          -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_JSON1 -DSQLITE_THREADSAFE=1 \
-          -DSQLITE_ENABLE_COLUMN_METADATA -DSQLITE_ENABLE_UNLOCK_NOTIFY \
-          -DSQLITE_ENABLE_DBSTAT_VTAB -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_STAT4 \
-          -DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_MAX_VARIABLE_NUMBER=250000 \
+          -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_GEOPOLY \
+          -DSQLITE_ENABLE_DBSTAT_VTAB -DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_ENABLE_PERCENTILE \
+          -DSQLITE_DEFAULT_RECURSIVE_TRIGGERS=1 -DSQLITE_THREADSAFE=1 \
           -Wl,-soname,libsqlite3.so.0 \
           -o "$dir/libsqlite3.so.0" "$src" -lpthread -ldl -lm
         export LD_LIBRARY_PATH="$dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -48,6 +49,8 @@ runs:
 
         want = os.environ["SQLITE_VERSION"]
         print("python", sys.version.split()[0], "sqlite", sqlite3.sqlite_version)
+        options = sqlite3.connect(":memory:").execute("pragma compile_options").fetchall()
+        print("compile_options", " ".join(row[0] for row in options))
         if sqlite3.sqlite_version != want:
             sys.exit(f"loaded SQLite {sqlite3.sqlite_version}, expected {want}")
         PY
