@@ -95,6 +95,9 @@ jobs:
       - name: Install test dependencies
         run: pip install pytest==9.1.1 numpy
 
+      - name: Use the runtime SQLite library
+        uses: ./.github/actions/sqlite-runtime
+
       - name: Stub hermes-agent ABC
         run: |
           mkdir -p agent
