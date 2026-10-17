@@ -8635,7 +8635,6 @@ class LCMEngine(
         kept_reply = None
         if assembly_cap is not None:
             used = count_messages_tokens(result)
-            kept_tail_reversed: list[Dict[str, Any]] = []
             tail_token_total = 0
             tail_for_selection = self._sanitize_active_context_messages(
                 assembly_tail_messages,
@@ -8656,71 +8655,8 @@ class LCMEngine(
                 tail_selected = [tail_for_selection[i] for i in selection.indexes]
                 tail_token_total = selection.charged_tokens
             else:
-                skipped_tail_gap = False
-                # #636 (forced recovery only): newest-first tool rows since the last kept
-                # row, over-cap ones replaced by a bounded stub, kept only with their call.
-                pending_results: list[Dict[str, Any]] = []
-                result_names = _tool_result_names(tail_for_selection) if stub_over_cap_tool_results else {}
-                for index in range(len(tail_for_selection) - 1, -1, -1):
-                    msg = tail_for_selection[index]
-                    msg_tokens = count_message_tokens(msg)
-                    pending_tokens = count_messages_tokens(pending_results) if pending_results else 0
-                    if stub_over_cap_tool_results and msg.get("role") == "assistant":
-                        call_ids = [_tool_call_id(tc) for tc in (msg.get("tool_calls") or [])]
-                        result_ids = {str(r.get("tool_call_id") or "").strip() for r in pending_results}
-                        # Reserve precisely the plain stubs inserted by the final sanitizer.
-                        msg_tokens += count_messages_tokens([
-                            self._missing_tool_result_stub(call_id)
-                            for call_id in call_ids if call_id and call_id not in result_ids
-                        ])
-                        if (
-                            used + tail_token_total + pending_tokens + msg_tokens > assembly_cap
-                            and pending_results
-                            and result_ids <= set(call_ids)
-                        ):
-                            # A rich ref is useful only if its call survives the budget.
-                            pending_results = [
-                                carry_identity(r, self._missing_tool_result_stub(str(r.get("tool_call_id") or "").strip()),
-                                               ("message_uid", "_tool_call_uid"))
-                                if is_externalized_placeholder(normalize_content_value(r.get("content")) or "")
-                                else r
-                                for r in pending_results
-                            ]
-                            pending_tokens = count_messages_tokens(pending_results)
-                    if used + tail_token_total + pending_tokens + msg_tokens > assembly_cap:
-                        if (
-                            stub_over_cap_tool_results
-                            and msg.get("role") == "tool"
-                            and not skipped_tail_gap
-                            and self._is_budget_droppable_tail_message(msg)
-                        ):
-                            pending_results.append(self._over_cap_tool_result_stub(msg, result_names.get(index, "")))
-                            continue
-                        if self._is_budget_droppable_tail_message(msg):
-                            skipped_tail_gap = True
-                            continue
-                        break
-                    if skipped_tail_gap:
-                        break
-                    if stub_over_cap_tool_results and msg.get("role") == "tool":
-                        # Queue even fitting results so the call sees its whole result set.
-                        pending_results.append(msg)
-                        continue
-                    if pending_results:
-                        call_ids = {_tool_call_id(tc) for tc in (msg.get("tool_calls") or [])}
-                        if msg.get("role") == "tool":
-                            pending_results.append(msg)
-                            continue
-                        if msg.get("role") != "assistant" or not {
-                            str(r.get("tool_call_id") or "").strip() for r in pending_results
-                        } <= call_ids:
-                            break
-                        kept_tail_reversed.extend(pending_results)
-                        tail_token_total += pending_tokens
-                        pending_results = []
-                    kept_tail_reversed.append(msg)
-                    tail_token_total += msg_tokens
-                tail_selected = list(reversed(kept_tail_reversed))
+                tail_selected, tail_token_total = self._select_tail_forced_recovery(
+                    tail_for_selection, assembly_cap, used, stub_over_cap_tool_results)
             summary_budget = max(0, assembly_cap - used - tail_token_total)
             tail_selected, summary_budget, kept_reply = self._keep_newest_reply(
                 tail_messages, anchor_source, tail_for_selection, tail_selected, summary_budget, _reply_rejected)
@@ -8776,46 +8712,9 @@ class LCMEngine(
         retained_generated_context_parts: list[str] = []
         summary_message: Optional[Dict[str, Any]] = None
         if summary_parts:
-            if (
-                summary_budget is None
-                and (ceiling := self._survival_ceiling()) is not None
-            ):
-                # #930: bound only the prefix; keep the tail and every stored node.
-                # Use the pre-compaction input for overhead, not the shortened tail.
-                overhead_source = ([system_msg] if system_msg is not None else [])
-                if retained_user_msg is not None:
-                    overhead_source.append(retained_user_msg)
-                overhead_source.extend(anchor_source)
-                overhead = self._survival_assembly_overhead(
-                    overhead_source, max(int(self.last_prompt_tokens or 0), self._last_gate_tokens)
-                )
-                # Measure without externalizing preserved-objective payloads.
-                # Tool-pair repair still reserves any missing-result stubs.
-                measurement_tail = self._sanitize_tool_pairs(list(tail_selected))
-                default_budget = default_prefix_budget(
-                    ceiling=ceiling, overhead=overhead, leading_tokens=count_messages_tokens(result),
-                    tail_tokens=count_messages_tokens(tail_selected),
-                    repaired_tail_tokens=count_messages_tokens(measurement_tail),
-                    recall_budget_tokens=self._config.proactive_recall_budget_tokens,
-                    proactive_recall_enabled=self._config.proactive_recall_enabled,
-                    embeddings_enabled=self._config.embeddings_enabled, survival_fit=self._config.survival_fit,
-                )
-                full_prefix = {"role": summary_role, "content": "\n\n---\n\n".join(summary_parts)}
-                if count_message_tokens(full_prefix) > default_budget:
-                    summary_budget = default_budget
-                    if part_keys[0] == (-1, None) and count_message_tokens({
-                        "role": summary_role, "content": strip_injected_context_blocks(summary_parts[0]),
-                    }) > summary_budget:
-                        for candidate_index, candidate in enumerate(anchor_candidates[1:], start=1):
-                            if candidate_index >= 2:
-                                candidate = self._build_preserved_objective_summary_part({
-                                    "role": "user", "content": candidate[len(_PRESERVED_OBJECTIVE_CONTEXT_PREFIX) + 1:],
-                                })
-                            if count_message_tokens({
-                                "role": summary_role, "content": strip_injected_context_blocks(candidate),
-                            }) <= summary_budget:
-                                summary_parts[0] = anchor_part = candidate
-                                break
+            summary_budget, anchor_part = self._resolve_survival_prefix_budget(
+                system_msg, retained_user_msg, anchor_source, tail_selected, result,
+                summary_role, summary_parts, part_keys, anchor_candidates, summary_budget, anchor_part)
             selection = select_prefix(summary_parts, PrefixBudgetFacts(
                 part_keys=part_keys, summary_role=summary_role, summary_budget=summary_budget,
                 assembly_cap=assembly_cap, survival_fit=self._config.survival_fit,
@@ -9026,6 +8925,124 @@ class LCMEngine(
         self._pending_emission_candidates = emission_candidates
         self._kept_reply_mark = (result, kept_reply["tokens"]) if kept_reply is not None else None
         return result
+
+    def _select_tail_forced_recovery(self, tail_for_selection, assembly_cap, used,
+                                   stub_over_cap_tool_results) -> tuple[list[Dict[str, Any]], int]:
+        """#636 forced recovery: newest-first tool rows, over-cap results stubbed, kept only with their call."""
+        kept_tail_reversed: list[Dict[str, Any]] = []
+        tail_token_total = 0
+        skipped_tail_gap = False
+        # #636 (forced recovery only): newest-first tool rows since the last kept
+        # row, over-cap ones replaced by a bounded stub, kept only with their call.
+        pending_results: list[Dict[str, Any]] = []
+        result_names = _tool_result_names(tail_for_selection) if stub_over_cap_tool_results else {}
+        for index in range(len(tail_for_selection) - 1, -1, -1):
+            msg = tail_for_selection[index]
+            msg_tokens = count_message_tokens(msg)
+            pending_tokens = count_messages_tokens(pending_results) if pending_results else 0
+            if stub_over_cap_tool_results and msg.get("role") == "assistant":
+                call_ids = [_tool_call_id(tc) for tc in (msg.get("tool_calls") or [])]
+                result_ids = {str(r.get("tool_call_id") or "").strip() for r in pending_results}
+                # Reserve precisely the plain stubs inserted by the final sanitizer.
+                msg_tokens += count_messages_tokens([
+                    self._missing_tool_result_stub(call_id)
+                    for call_id in call_ids if call_id and call_id not in result_ids
+                ])
+                if (
+                    used + tail_token_total + pending_tokens + msg_tokens > assembly_cap
+                    and pending_results
+                    and result_ids <= set(call_ids)
+                ):
+                    # A rich ref is useful only if its call survives the budget.
+                    pending_results = [
+                        carry_identity(r, self._missing_tool_result_stub(str(r.get("tool_call_id") or "").strip()),
+                                       ("message_uid", "_tool_call_uid"))
+                        if is_externalized_placeholder(normalize_content_value(r.get("content")) or "")
+                        else r
+                        for r in pending_results
+                    ]
+                    pending_tokens = count_messages_tokens(pending_results)
+            if used + tail_token_total + pending_tokens + msg_tokens > assembly_cap:
+                if (
+                    stub_over_cap_tool_results
+                    and msg.get("role") == "tool"
+                    and not skipped_tail_gap
+                    and self._is_budget_droppable_tail_message(msg)
+                ):
+                    pending_results.append(self._over_cap_tool_result_stub(msg, result_names.get(index, "")))
+                    continue
+                if self._is_budget_droppable_tail_message(msg):
+                    skipped_tail_gap = True
+                    continue
+                break
+            if skipped_tail_gap:
+                break
+            if stub_over_cap_tool_results and msg.get("role") == "tool":
+                # Queue even fitting results so the call sees its whole result set.
+                pending_results.append(msg)
+                continue
+            if pending_results:
+                call_ids = {_tool_call_id(tc) for tc in (msg.get("tool_calls") or [])}
+                if msg.get("role") == "tool":
+                    pending_results.append(msg)
+                    continue
+                if msg.get("role") != "assistant" or not {
+                    str(r.get("tool_call_id") or "").strip() for r in pending_results
+                } <= call_ids:
+                    break
+                kept_tail_reversed.extend(pending_results)
+                tail_token_total += pending_tokens
+                pending_results = []
+            kept_tail_reversed.append(msg)
+            tail_token_total += msg_tokens
+        tail_selected = list(reversed(kept_tail_reversed))
+        return tail_selected, tail_token_total
+
+    def _resolve_survival_prefix_budget(
+        self, system_msg, retained_user_msg, anchor_source, tail_selected, result,
+        summary_role, summary_parts, part_keys, anchor_candidates, summary_budget, anchor_part,
+    ) -> tuple[Optional[int], Optional[str]]:
+        if (
+            summary_budget is None
+            and (ceiling := self._survival_ceiling()) is not None
+        ):
+            # #930: bound only the prefix; keep the tail and every stored node.
+            # Use the pre-compaction input for overhead, not the shortened tail.
+            overhead_source = ([system_msg] if system_msg is not None else [])
+            if retained_user_msg is not None:
+                overhead_source.append(retained_user_msg)
+            overhead_source.extend(anchor_source)
+            overhead = self._survival_assembly_overhead(
+                overhead_source, max(int(self.last_prompt_tokens or 0), self._last_gate_tokens)
+            )
+            # Measure without externalizing preserved-objective payloads.
+            # Tool-pair repair still reserves any missing-result stubs.
+            measurement_tail = self._sanitize_tool_pairs(list(tail_selected))
+            default_budget = default_prefix_budget(
+                ceiling=ceiling, overhead=overhead, leading_tokens=count_messages_tokens(result),
+                tail_tokens=count_messages_tokens(tail_selected),
+                repaired_tail_tokens=count_messages_tokens(measurement_tail),
+                recall_budget_tokens=self._config.proactive_recall_budget_tokens,
+                proactive_recall_enabled=self._config.proactive_recall_enabled,
+                embeddings_enabled=self._config.embeddings_enabled, survival_fit=self._config.survival_fit,
+            )
+            full_prefix = {"role": summary_role, "content": "\n\n---\n\n".join(summary_parts)}
+            if count_message_tokens(full_prefix) > default_budget:
+                summary_budget = default_budget
+                if part_keys[0] == (-1, None) and count_message_tokens({
+                    "role": summary_role, "content": strip_injected_context_blocks(summary_parts[0]),
+                }) > summary_budget:
+                    for candidate_index, candidate in enumerate(anchor_candidates[1:], start=1):
+                        if candidate_index >= 2:
+                            candidate = self._build_preserved_objective_summary_part({
+                                "role": "user", "content": candidate[len(_PRESERVED_OBJECTIVE_CONTEXT_PREFIX) + 1:],
+                            })
+                        if count_message_tokens({
+                            "role": summary_role, "content": strip_injected_context_blocks(candidate),
+                        }) <= summary_budget:
+                            summary_parts[0] = anchor_part = candidate
+                            break
+        return summary_budget, anchor_part
 
     def _mint_assembled_engine_uids(self, result, candidates, summary_message, carried_tail, recall_row,
                                     context_row, tail_selected) -> None:
