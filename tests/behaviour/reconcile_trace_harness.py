@@ -618,13 +618,13 @@ def first_difference(expected: Trace, actual: Trace) -> str | None:
 def main() -> None:
     environment = dict(os.environ)
     try:
-        for key in product_env_keys(ROOT):
-            os.environ.pop(key, None)
         parser = argparse.ArgumentParser(description=__doc__)
         parser.add_argument("--regenerate", action="store_true")
         parser.add_argument("--repo", type=Path, default=ROOT)
         parser.add_argument("--out", type=Path)
         args = parser.parse_args()
+        for key in product_env_keys(ROOT) | product_env_keys(args.repo.resolve()):
+            os.environ.pop(key, None)
         if not args.regenerate and args.out is None:
             parser.error("pass --out or explicitly --regenerate")
         assert Path(reconcile.__file__).resolve() == args.repo.resolve() / "reconcile.py", "wrong product tree"

@@ -624,12 +624,12 @@ def first_difference(expected: Trace, actual: Trace) -> str | None:
 def main() -> None:
     environment = dict(os.environ)
     try:
-        for key in product_env_keys(ROOT):
-            os.environ.pop(key, None)
         parser = argparse.ArgumentParser(description=__doc__)
         parser.add_argument('--repo', type=Path, required=True)
         parser.add_argument('--out', type=Path, required=True)
         args = parser.parse_args()
+        for key in product_env_keys(ROOT) | product_env_keys(args.repo.resolve()):
+            os.environ.pop(key, None)
         with tempfile.TemporaryDirectory(prefix='assembly-trace-') as directory:
             result = {case.name: observe(case, Path(directory).resolve() / case.name) for case in SCENARIOS}
         args.out.write_text(json.dumps(result, sort_keys=True, indent=0) + '\n')
