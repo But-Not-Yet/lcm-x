@@ -28,7 +28,9 @@ _DEFAULT_RECALL_ARM_WEIGHTS: dict[str, float] = {
 }
 
 
-def _parse_arm_weights(raw: str, defaults: dict[str, float]) -> dict[str, float]:
+def _parse_arm_weights(
+    raw: str, defaults: dict[str, float], *, warnings: list[str] | None = None,
+) -> dict[str, float]:
     """Leniently parse ``arm=weight`` pairs (e.g. ``fts=0.5,summary=1.0``).
 
     Unknown arm names, malformed pairs, and non-finite/non-numeric weights are
@@ -38,21 +40,29 @@ def _parse_arm_weights(raw: str, defaults: dict[str, float]) -> dict[str, float]
     A negative weight is invalid -- it would invert RRF rank-monotonicity (a
     rank-1 hit scoring below a rank-2 hit) -- so it is rejected and the arm keeps
     its default with a logged warning. ``0.0`` is legal and cleanly drops the arm.
+    The optional warning sink reports dropped pairs without changing the result.
     """
     weights = dict(defaults)
+    dropped = []
     for part in raw.split(","):
         part = part.strip()
-        if not part or "=" not in part:
+        if not part:
+            continue
+        if "=" not in part:
+            dropped.append(part)
             continue
         name, _, value = part.partition("=")
         name = name.strip().lower()
         if name not in defaults:
+            dropped.append(part)
             continue
         try:
             parsed = float(value.strip())
         except (TypeError, ValueError):
+            dropped.append(part)
             continue
         if parsed != parsed or parsed in (float("inf"), float("-inf")):
+            dropped.append(part)
             continue
         if parsed < 0.0:
             logger.warning(
@@ -62,41 +72,72 @@ def _parse_arm_weights(raw: str, defaults: dict[str, float]) -> dict[str, float]
                 name,
                 defaults[name],
             )
+            dropped.append(part)
             continue
         weights[name] = parsed
+    _warn_dropped_env_items(warnings, "LCM_RECALL_ARM_WEIGHTS", dropped, weights)
     return weights
 
 
-def _parse_int_env(key: str, default: int) -> int:
+def _warn_dropped_env_items(
+    warnings: list[str] | None, key: str, dropped: list[str], value: Any,
+) -> None:
+    if warnings is not None and dropped:
+        items = ", ".join(repr(item)[:40] for item in dropped)
+        warnings.append(f"invalid env {key}: ignored items [{items}]; using {value!r}")
+
+
+def _warn_invalid_env(warnings: list[str] | None, key: str, raw: str, value: Any) -> None:
+    if warnings is not None and raw.strip():
+        warnings.append(f"invalid env {key}={repr(raw)[:40]} ignored; using {value!r}")
+
+
+def _parse_int_env(key: str, default: int, *, warnings: list[str] | None = None) -> int:
     raw = os.environ.get(key)
     if raw is None:
         return default
     try:
         return int(raw)
     except (TypeError, ValueError):
+        _warn_invalid_env(warnings, key, raw, default)
         return default
 
 
-def _parse_float_env(key: str, default: float) -> float:
+def _parse_float_env(key: str, default: float, *, warnings: list[str] | None = None) -> float:
     raw = os.environ.get(key)
     if raw is None:
         return default
     try:
         return float(raw)
     except (TypeError, ValueError):
+        _warn_invalid_env(warnings, key, raw, default)
         return default
 
 
-def _parse_bool_env(key: str, default: bool) -> bool:
+def _parse_bool_env(
+    key: str, default: bool, *, unknown: bool | None = None,
+    true_values: tuple[str, ...] = ("1", "true", "yes", "on"),
+    false_values: tuple[str, ...] = ("0", "false", "no", "off"),
+    warnings: list[str] | None = None,
+) -> bool:
+    """Read on every call; unknown (including blank) keeps default unless specified."""
     raw = os.environ.get(key)
     if raw is None:
         return default
     normalized = raw.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
+    if normalized in true_values:
         return True
-    if normalized in {"0", "false", "no", "off"}:
+    if normalized in false_values:
         return False
-    return default
+    value = default if unknown is None else unknown
+    if warnings is not None:
+        _warn_invalid_env(warnings, key, raw, value)
+    return value
+
+
+def _disabled_tool_names() -> set[str]:
+    """Tools disabled via LCM_DISABLED_TOOLS (comma-separated lcm_* names)."""
+    return set(_parse_pattern_list(os.environ.get("LCM_DISABLED_TOOLS", "")))
 
 
 def _parse_str_env(key: str, default):
@@ -309,26 +350,36 @@ def _is_valid_context_threshold(value: float) -> bool:
     )
 
 
-def _parse_model_thresholds_env(raw: str) -> dict[str, float]:
+def _parse_model_thresholds_env(raw: str, *, warnings: list[str] | None = None) -> dict[str, float]:
     """Parse ``LCM_MODEL_THRESHOLDS`` env var.
 
-    Format: ``"glm-5.2:0.70,glm-5.2-1M:0.25"``
+    Format: ``"glm-5.2:0.70,glm-5.2-1M:0.25"``. An optional warning sink
+    reports dropped pairs; callers without it retain the dictionary-only result.
     """
     result: dict[str, float] = {}
+    dropped = []
     for pair in raw.split(","):
         pair = pair.strip()
+        if not pair:
+            continue
         if ":" not in pair:
+            dropped.append(pair)
             continue
         key, _, val = pair.rpartition(":")
         key = key.strip()
         if not key:
+            dropped.append(pair)
             continue
         try:
             threshold = float(val.strip())
         except ValueError:
+            dropped.append(pair)
             continue
         if _is_valid_context_threshold(threshold):
             result[key] = threshold
+        else:
+            dropped.append(pair)
+    _warn_dropped_env_items(warnings, "LCM_MODEL_THRESHOLDS", dropped, result)
     return result
 
 
@@ -458,6 +509,64 @@ def _hermes_codex_gpt55_autoraise_with_source(default: bool) -> tuple[bool, str]
         return (not _config_bool_disabled(value)), "config_yaml:compression.codex_gpt55_autoraise"
     except Exception:
         return default, "default"
+
+
+# Diagnostic bounds only: (minimum, maximum, minimum inclusive). Maximum is
+# inclusive when present. Consumers retain their existing clamping/use rules.
+_ENV_RANGES = {
+    "context_threshold": (0.0, 1.0, False),
+    "survival_reserve": (0.0, 0.9, True),
+    "leaf_chunk_tokens": (1, None, True),
+    "summary_timeout_ms": (0, None, False),
+}
+
+
+def _warn_env_range(name: str, value: Any, warnings: list[str]) -> None:
+    if name not in _ENV_RANGES:
+        return
+    minimum, maximum, inclusive = _ENV_RANGES[name]
+    if (value >= minimum if inclusive else value > minimum) and (maximum is None or value <= maximum):
+        return
+    key = f"LCM_{name.upper()}"
+    raw = os.environ[key]
+    bounds = f"{'>=' if inclusive else '>'} {minimum}"
+    if maximum is not None:
+        bounds += f" and <= {maximum}"
+    effect = f"using {value!r} unchanged"
+    if name == "survival_reserve":
+        effect += f"; survival reserve clamped to {min(maximum, max(minimum, value))!r}"
+    elif name == "leaf_chunk_tokens":
+        effect += f"; treated as {minimum} for leaf sizing"
+    elif name == "summary_timeout_ms":
+        effect += "; summary calls receive a timeout of <=0 s; only pre-compaction extraction is floored at 0.001 s"
+    warnings.append(f"out-of-range env {key}={repr(raw)[:40]} (must be {bounds}); {effect}")
+
+
+_ENV_CHOICES = {
+    "embedding_provider": (
+        ("voyage", "voyageai", "ollama", "fastembed", "fast-embed", "openai-compatible", "openai", "siliconflow"),
+        str.lower, "provider resolution raises ProviderUnavailable when requested",
+    ),
+    "preanswer_evidence_mode": (
+        ("off", "legacy_selective", "requirements_v1"), str.casefold, "ignored; using 'off'",
+    ),
+    "embedding_storage_dtype": (("float32", "int8"), str.lower, "ignored; using 'float32'"),
+}
+
+# Deprecation/removal versions shared by the loader and generated reference.
+ENV_FIELD_DEPRECATIONS: dict[str, tuple[str, str]] = {
+    "cache_friendly_condensation_enabled": ("v0.28.0", "v0.29.0"),
+    "large_output_transcript_gc_enabled": ("v0.28.0", "v0.29.0"),
+}
+
+
+def _warn_env_choice(name: str, raw: str, warnings: list[str]) -> None:
+    if name not in _ENV_CHOICES or not raw.strip():
+        return
+    choices, normalize, effect = _ENV_CHOICES[name]
+    if normalize(raw.strip()) not in choices:
+        key = f"LCM_{name.upper()}"
+        warnings.append(f"unsupported env {key}={repr(raw)[:40]}; accepted {choices!r}; {effect}")
 
 
 @dataclass(frozen=True)
@@ -722,7 +831,9 @@ class LCMConfig:
     l3_truncate_tokens: int = 512
 
     # -- Assembly guardrails ---
-    # Hard cap for the assembled active context (0 = disabled)
+    # Hard cap for the assembled active context (0 = disabled). Exception (#1162): keep the newest visible
+    # assistant reply beyond the cap when it would otherwise be dropped before being summarised.
+    # Hermes re-adds that reply after compaction anyway; keeping it here puts it in the right place.
     max_assembly_tokens: int = 0
     # Reserve this many tokens from the model context window before assembly
     # (0 = disabled). Effective cap becomes context_length - reserve_tokens_floor.
@@ -1070,6 +1181,8 @@ class LCMConfig:
             config_sources[field] = source
             if warning:
                 config_source_warnings.append(warning)
+            elif source == f"env:LCM_{field.upper()}":
+                _warn_env_range(field, getattr(c, field), config_source_warnings)
 
         c.ignored_config_yaml_lcm_keys = _ignored_lcm_config_yaml_keys()
 
@@ -1115,8 +1228,14 @@ class LCMConfig:
             # Only the minimum was set, above the default maximum: the minimum is the offending key.
             _record("leaf_target_min_tokens", "default",
                     f"invalid env LCM_LEAF_TARGET_MIN_TOKENS={c.leaf_target_min_tokens!r} ignored "
-                    f"(must be <= leaf_target_max_tokens={c.leaf_target_max_tokens})")
+                    f"(must be <= leaf_target_max_tokens={c.leaf_target_max_tokens}; "
+                    "set LCM_LEAF_TARGET_MAX_TOKENS to raise the maximum)")
             c.leaf_target_min_tokens = LCMConfig.leaf_target_min_tokens
+        if (config_sources.get("leaf_target_ratio") == "env:LCM_LEAF_TARGET_RATIO"
+                and c.leaf_target_min_tokens == c.leaf_target_max_tokens):
+            config_source_warnings.append(
+                "LCM_LEAF_TARGET_RATIO has no effect while the minimum equals the maximum; "
+                "set LCM_LEAF_TARGET_MAX_TOKENS")
         context_default, context_source, floor_warning = _hermes_compression_threshold_with_source_and_warning(
             c.context_threshold
         )
@@ -1134,7 +1253,9 @@ class LCMConfig:
         c.model_thresholds = _load_model_thresholds_from_yaml()
         _raw_env_thresholds = os.environ.get("LCM_MODEL_THRESHOLDS")
         if _raw_env_thresholds is not None:
-            c.model_thresholds = _parse_model_thresholds_env(_raw_env_thresholds)
+            c.model_thresholds = _parse_model_thresholds_env(
+                _raw_env_thresholds, warnings=config_source_warnings
+            )
         c.codex_gpt55_autoraise_enabled, source = _hermes_codex_gpt55_autoraise_with_source(
             c.codex_gpt55_autoraise_enabled
         )
@@ -1184,7 +1305,23 @@ class LCMConfig:
             if spec.name in _SOURCE_TRACKED_ENV_FIELDS:
                 continue
             parser = _PARSER_BY_TYPE[spec.py_type]
-            setattr(c, spec.name, parser(spec.env_key, getattr(c, spec.name)))
+            default = getattr(c, spec.name)
+            warning_count = len(config_source_warnings)
+            if spec.py_type is str:
+                value = parser(spec.env_key, default)
+                if spec.env_key in os.environ:
+                    _warn_env_choice(spec.name, value, config_source_warnings)
+            else:
+                value = parser(spec.env_key, default, warnings=config_source_warnings)
+                if os.environ.get(spec.env_key, "").strip() and len(config_source_warnings) == warning_count:
+                    _warn_env_range(spec.name, value, config_source_warnings)
+            setattr(c, spec.name, value)
+            if value is True and spec.name in ENV_FIELD_DEPRECATIONS:
+                _since, removal = ENV_FIELD_DEPRECATIONS[spec.name]
+                config_source_warnings.append(
+                    f"deprecated: {spec.env_key} is set; this experiment is removed in {removal} (#1246). "
+                    "Until then it behaves as before."
+                )
 
         # Pattern-list overrides carry a source sidecar and stay explicit.
         raw_sensitive_patterns = os.environ.get("LCM_SENSITIVE_PATTERNS")
@@ -1200,12 +1337,15 @@ class LCMConfig:
             try:
                 c.empty_lifecycle_gc_max_age_hours = float(raw_max_age)
             except (TypeError, ValueError):
-                pass
+                _warn_invalid_env(
+                    config_source_warnings, "LCM_EMPTY_LIFECYCLE_GC_MAX_AGE_HOURS",
+                    raw_max_age, c.empty_lifecycle_gc_max_age_hours,
+                )
 
         raw_arm_weights = os.environ.get("LCM_RECALL_ARM_WEIGHTS")
         if raw_arm_weights is not None:
             c.recall_arm_weights = _parse_arm_weights(
-                raw_arm_weights, _DEFAULT_RECALL_ARM_WEIGHTS
+                raw_arm_weights, _DEFAULT_RECALL_ARM_WEIGHTS, warnings=config_source_warnings
             )
 
         raw_ignore = os.environ.get("LCM_IGNORE_SESSION_PATTERNS")

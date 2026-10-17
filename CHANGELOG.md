@@ -6,7 +6,20 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
+- Fix: E2 canonical uid copy evidence never excludes user rows; sync the shadow-mode copy-exclusion docs. (#1124, #1146)
+- Fix: repeated tool groups are excluded whole or kept whole; E1 preserves occurrences with their own uid binding. (#1146, #1154)
+- Fix: proven hidden re-ingest copies no longer consume leaf input or count as hidden backlog. Exclusion requires an earlier owned byte-equal twin that an existing summary or the same leaf covers, tool-call identity or canonical host-uid evidence, and a non-lossy identity. The publication transaction rechecks each copy's bytes, ownership and twin coverage. Stored rows, ingest behavior and the schema are unchanged. (#1124)
+- Fix: `/lcm rotate apply` is refused on Hermes because it reloads its own transcript after a restart; use `/compress here N` to summarise everything except the most recent N messages. (#1141)
+- Fix: when chunk vectors carry a stale embedding identity, `lcm_doctor` now advises `/lcm embed backfill --corpus chunks --apply --confirm-raw-text` (or `--corpus both --apply --confirm-raw-text` when summaries are stale too) for cloud providers. Repeat the backfill apply only while `remaining` is above 0 and each run lowers it. Stop on `status: partial`, `status: error`, or `status: failed`, or if `remaining` stops falling, and inspect the warnings, errors, and detail output. The summary-only command is unchanged; its advice gains only the repeat guidance. (#896)
 - Diagnostic: a compaction whose pre-leaf phase (from `compress()` entry to the first leaf call, or the stop before one) runs past the hard bound logs one WARNING, `LCM pre-leaf phase ran past the hard bound`, with the total, the timed sweep steps, the untimed spans (before the leaf loop, ingest and reconcile, pre-leaf condensation, extraction), the engine's lock waits, the unaccounted seconds, and the count and seconds of its own SQL statements that took 1 s or more with the first 40 characters of the slowest one's SQL template (no parameters, no content). The statement timing is installed only for that phase. (#1127)
+### Deprecated
+
+- `LCM_CACHE_FRIENDLY_CONDENSATION_ENABLED` and `LCM_LARGE_OUTPUT_TRANSCRIPT_GC_ENABLED` are deprecated in v0.28.0 and will be removed in v0.29.0 (#1246). Enabling either adds one `config_source_warnings` entry shown by `/lcm status`, `lcm_status` and the `lcm_doctor` configuration check; behavior is unchanged until removal.
+- Fix: a summary route that hangs for the whole foreground budget window opens its circuit immediately, so the next compaction can use a fallback route. Partial-window budget cuts still leave the circuit closed. (#1137)
+- Fix: deadline-guarded vector reads retain the pooled store's matrix caches, so repeated KNN calls reuse unchanged matrices. (#1206)
+- Fix: non-sweep admission uses the working leaf size, and oversized indivisible leaves retry with the existing 8,000-token input clip. Leaf target defaults remain fixed at 2,000 tokens; ratio-only settings pinned by equal MIN and MAX warn, and the min-only reset warning names `LCM_LEAF_TARGET_MAX_TOKENS`. (#1134, #1132, #1138)
+- Change: bounded session-end raw-flush warnings report the pre-attempt pending message count as `unflushed=N`, without message content; resume recovery and the never-resumed tail window are pinned by tests. No retry or timeout change. (#1160)
+- Fix: a stub-first exit (#671) that the host adopts now writes the durable commit proof for the list it returns, so a cold rebind (gateway restart, resume) no longer stores the summary head as a new raw row and then stops every compaction on "leaf would end before an unresolved retained occurrence". The exit no longer gives a carrier head (summary plus the first user row) a second copy of the summary prefix. On the upgrade restart, a store that already holds a proof left stale this way reconciles as a store with no proof does, for the LCM-emitted head only. A store that an earlier cold bind already wedged is not repaired. (#1116, #671)
 
 ## v0.27.0 (summary quality)
 
