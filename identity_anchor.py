@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sqlite3
 from collections import Counter, defaultdict
 from difflib import SequenceMatcher
@@ -42,6 +41,7 @@ from .recognition_matching import (
     _reserve_shown as _reserve_shown,
     _reroute_for_null as _reroute_for_null,
 )
+from .config import _parse_bool_env
 from .fresh_tail import tool_group_safe_end
 from .message_content import normalize_content_value, text_content_for_pattern_matching
 from .store import _normalize_observed_at
@@ -57,7 +57,7 @@ _CARRIER_LEDGER_CAP = 256  # #1000: carrier emission keys remembered as seen / r
 
 
 def identity_anchor_enabled() -> bool:
-    return (os.environ.get("LCM_IDENTITY_ANCHOR") or "").strip().lower() not in {"0", "false", "no", "off"}
+    return _parse_bool_env("LCM_IDENTITY_ANCHOR", True, unknown=True, true_values=())
 
 
 class IdentityAnchorMixin:
@@ -323,7 +323,7 @@ class IdentityAnchorMixin:
         """Rows in ``[start, cursor)`` of a list the host changed before the cursor: a stamped host row,
         or an unstamped user row the host inserted there (#633: a /steer row; by content alone), that
         no stored occurrence explains (key, witness, alias, or a stored copy of its content -- up to
-        edge whitespace, under another stamp or none -- in the tail of this session or a verified
+        edge whitespace, with the same stamp or none -- in the tail of this session or a verified
         ancestor, each copy used once) and no ignore pattern drops was never stored. The cursor moves back
         to the first such row; every other row of that range stays a replay (today's positional proof)."""
         from .reconcile import _proof_user_identity
@@ -362,6 +362,9 @@ class IdentityAnchorMixin:
                 plan.setdefault("matched", {})[idx] = [ws]  # host-uid shadow only
                 plan.setdefault("ws", []).append((ws, identity_messages[idx]))
                 continue
+            # #1328: equal content at a different known stamp is a different occurrence.
+            # Keep legacy unstamped copies eligible for the existing unique backfill.
+            copies = [row for row in copies if row.get("observed_at") in (None, stamps[idx])]
             if copies:
                 consumed.add(int(copies[0]["store_id"]))
                 plan.setdefault("matched", {})[idx] = [copies[0]]  # host-uid shadow only
@@ -845,7 +848,7 @@ class IdentityAnchorMixin:
     # -- R4: coverage bound to the summarizer input ----------------------------
 
     def _identity_anchor_summary_input(self, chunk, full_map, view=(), raw_chunk=(), budget=None,
-                                       accounted_ids=()) -> Optional[list]:
+                                       accounted_ids=(), copy_lookup=None) -> Optional[list]:
         """The summarizer input for ``chunk`` built TOGETHER with what each input row may claim:
         ``[(input_row, [store_id, ...]), ...]``, ``[]`` (no leaf can start), or None (today's input).
         - A live composite LCM recorded (R2 witness) claims its constituents: their text is in it.
@@ -933,7 +936,8 @@ class IdentityAnchorMixin:
         if budget is None:
             budget = count_messages_tokens(chunk)
         return self._store_complete_input(chunk, claims, full_map, view, raw_chunk, frontier, carry,
-                                          max(budget, count_messages_tokens(chunk)), accounted_ids)
+                                          max(budget, count_messages_tokens(chunk)), accounted_ids,
+                                          copy_lookup=copy_lookup)
 
     def _identity_anchor_view_key(self, message) -> Optional[tuple]:
         """A view row's occurrence key ``(stamp, form)`` as the ingest site keys it; None for LCM's own scaffold
@@ -996,7 +1000,7 @@ class IdentityAnchorMixin:
           row it re-flushed later before it): coverage would skip that occurrence. The chunk takes it."""
         if not chunk or len(chunk) >= len(candidates) or not identity_anchor_enabled():
             return chunk
-        full_map, self._identity_anchor_text_memo = self._current_compress_store_ids_by_message_id or {}, {}
+        full_map, self._identity_anchor_text_memo = self._compress_run.store_ids_by_message_id or {}, {}
         end = len(chunk)
         if all(self._identity_anchor_covered_view(message, full_map) for message in chunk):
             while end < len(candidates) and self._identity_anchor_covered_view(candidates[end], full_map):
@@ -1032,8 +1036,7 @@ class IdentityAnchorMixin:
             self._store.add_message_relations(groups)
         for row, message in plan.get("ws", ()) if remainder_ids is None else ():
             self._record_ws_host_rewrite(row, message)
-        for store_id, stamp in plan["backfill"] if remainder_ids is None else ():
-            self._store.backfill_observed_at(store_id, stamp)
+        self._store.backfill_observed_at_many(plan["backfill"] if remainder_ids is None else ())
         if remainder_ids is None and plan["carry"]:
             self._register_identity_anchor_carry(plan["carry"])
 

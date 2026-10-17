@@ -73,6 +73,10 @@ export LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUBBING_ENABLED=true
 # outside the fresh tail are stubbed from 2000 tokens (0 = the first-sight value)
 # export LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUB_THRESHOLD_TOKENS=10000
 # export LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUB_AGED_THRESHOLD_TOKENS=2000
+# An automatic compaction that these stubs alone bring under its target returns
+# with no summary call (#671); a share of the threshold lowers that target
+# (0 = the built-in min(threshold - leaf chunk, 0.95 x threshold))
+# export LCM_STUB_FIRST_EXIT_TARGET_RATIO=0.2
 
 # Default 24000: caps the protected fresh tail by tokens. Prevents one giant
 # recent tool result from pinning the whole budget; while LCM_FRESH_TAIL_COUNT
