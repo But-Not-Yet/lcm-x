@@ -28,12 +28,18 @@ class BypassMixin:
         """Capture admission once; an ended child must not become MAIN mid-call."""
         context = self._thread_context
         outer = getattr(context, "bypass_compression_binding", None)
-        with self._auxiliary_session_lock:
-            bypassed = self._bypasses_lcm_context_management()
-            if bypassed:
-                child_id = self._thread_context_session_id()
-                state = vars(context) if child_id else self.__dict__
-                context.bypass_compression_binding = (state, child_id or self._session_id or "(unknown)")
+        if outer is not None:
+            bypassed = True
+        else:
+            with self._auxiliary_session_lock:
+                bypassed = self._bypasses_lcm_context_management()
+                if bypassed:
+                    child_id = self._thread_context_session_id()
+                    state = vars(context) if child_id else self.__dict__
+                    context.bypass_compression_binding = (
+                        state, child_id or self._session_id or "(unknown)",
+                        self._auxiliary_session_generations.get(child_id),
+                    )
         try:
             yield bypassed
         finally:
@@ -100,7 +106,11 @@ class BypassMixin:
     def _publish_host_fallback_compressor(self, state: dict, session_id: str, compressor: Any) -> bool:
         # Publication and child deactivation share the same existing lock/registry.
         with self._auxiliary_session_lock:
-            live = state is self.__dict__ or not session_id or session_id in self._auxiliary_session_ids
+            binding = getattr(self._thread_context, "bypass_compression_binding", None)
+            live = state is self.__dict__ or not session_id or (
+                session_id in self._auxiliary_session_ids
+                and (binding is None or self._auxiliary_session_generations.get(session_id) == binding[2])
+            )
             self._clear_host_fallback_state(state)
             if live:
                 state["_host_fallback_compressor"] = compressor
