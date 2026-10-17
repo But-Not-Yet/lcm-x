@@ -6887,7 +6887,8 @@ def lcm_doctor(args: Dict[str, Any], **kwargs) -> str:
 
     # 7. Context pressure
     if engine.context_length > 0:
-        usage_pct = round(engine.last_prompt_tokens / engine.context_length * 100, 1) if engine.context_length else 0
+        used_tokens = max(int(engine.last_prompt_tokens or 0), int(getattr(engine, "_last_gate_tokens", 0) or 0))
+        usage_pct = round(used_tokens / engine.context_length * 100, 1) if engine.context_length else 0
         runtime_threshold = float(getattr(engine, "context_threshold", c.context_threshold))
         threshold_pct = round(runtime_threshold * 100, 1)
         checks.append({
