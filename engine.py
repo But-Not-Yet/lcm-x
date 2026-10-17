@@ -188,7 +188,7 @@ def _model_only_display_metadata_keys() -> frozenset:
 
 
 def _host_will_merge_user_rows(previous: Dict[str, Any], following: Any) -> bool:
-    """Mirror Hermes' merge predicate before stamping a generated row model-only."""
+    """Conservatively mirror pinned Hermes before stamping a row model-only."""
     if (previous.get("role") != "user" or not isinstance(following, dict)
             or following.get("role") != "user"):
         return False
@@ -201,17 +201,12 @@ def _host_will_merge_user_rows(previous: Dict[str, Any], following: Any) -> bool
         from agent.prompt_builder import STEER_DISPLAY_KIND
     except (ImportError, AttributeError):
         STEER_DISPLAY_KIND = "steer"
-    try:
-        from hermes_state import SessionDB
-        json_prefix = SessionDB._CONTENT_JSON_PREFIX
-    except (ImportError, AttributeError):
-        json_prefix = "\x00json:"
     return (
         (split_user_originated_turn is None or split_user_originated_turn(previous)[0] is None)
         and previous.get("display_kind") != STEER_DISPLAY_KIND
-        and all(isinstance(row.get("content", ""), str)
-                and not row.get("content", "").startswith(json_prefix)
-                for row in (previous, following))
+        # Hermes 0.21.5 merges JSON-sentinel strings too. Predicting a merge on
+        # newer hosts only leaves generated context visible; it cannot hide users.
+        and all(isinstance(row.get("content", ""), str) for row in (previous, following))
     )
 
 
