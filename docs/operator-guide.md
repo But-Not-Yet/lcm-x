@@ -420,6 +420,7 @@ Useful environment variables:
 | `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUBBING_ENABLED` | `true` | Replace token-heavy textual tool results with recoverable externalized refs in active replay; current-turn ingest is immediate and historical assembly respects the protected fresh tail; requires large-output externalization |
 | `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUB_THRESHOLD_TOKENS` | `10000` | First-sight threshold: a new tool result over this many tokens is stubbed at ingest |
 | `LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUB_AGED_THRESHOLD_TOKENS` | `2000` | Aged tier: at a compaction, a tool result outside the fresh tail is stubbed from this many tokens (`0` = the first-sight threshold; never above it) |
+| `LCM_STUB_FIRST_EXIT_TARGET_RATIO` | `0` | Lowers the stub-first exit's target (#671) to min(built-in, int(ratio x threshold)); `0` keeps the built-in min(threshold - `LCM_LEAF_CHUNK_TOKENS`, 0.95 x threshold); `>= 0` and `<= 1`, else the built-in target with a config warning |
 | `LCM_LARGE_OUTPUT_TRANSCRIPT_GC_ENABLED` | `false` | Rewrite already-externalized summarized tool rows to compact placeholders; deprecated since v0.28.0, removed in v0.29.0 (#1246). Enabling it adds a config warning; behavior is unchanged until removal |
 | `LCM_CRITICAL_BUDGET_PRESSURE_RATIO` | `0.0` | Disabled at `0.0`; when set, permits critical-pressure bypasses for bounded deferred catch-up and cache-friendly follow-on condensation only |
 | `LCM_SURVIVAL_FIT` | `true` | When compaction cannot bring the returned list under the model window (a publication failure, a sweep deadline, a lock), drop the oldest whole user turns from live context until it fits; an oversized newest turn gets a bounded projection. Nothing is deleted: the rows stay stored and reachable with `lcm_grep` / `lcm_load_session`. Logs `LCM survival fit applied`, warns the user once, and `/lcm doctor` reports `survival_fit` |
@@ -502,6 +503,15 @@ circuit immediately (#1137). That window is the smaller of the configured summar
 foreground budget minus the finalize and leaf reserves. It logs one WARNING per opening naming the route
 and saying it used the whole window. The current compaction still stops on its budget; a fallback route
 can run on the next compaction. A cut after receiving only a partial window leaves the circuit unchanged.
+When no other route is usable, the first hang since the conversation's last stored leaf holds automatic
+compaction until foreground turn end, with a 600 s backstop (#1096). At turn end only that conversation's
+hung circuit is released for one ordinary retry; bypassed sessions cannot release it. A second hang keeps
+the 600 s sweep and no-progress holds. Without turn-end notifications the backstop applies as before.
+A hang waived because a fallback route was usable also counts as the conversation's first hang, so a
+later sole-route hang before a leaf is stored takes the 600 s path. On a first hang, `lcm_status` shows
+the sweep hold but no no-progress hold; the 600 s backstop applies to the sweep hold.
+A stored leaf or conversation/session reset clears the strike. Other circuit errors and hold reasons,
+forced overflow and survival-ceiling exemptions are unchanged. INFO logs name the route at arm and release.
 
 When a leaf's own level 1 and level 2 results are rejected and the survival fit can keep the request under the
 window, the compaction writes no leaf and no node for it and keeps its rows for a later pass (#652). A level 3
@@ -916,7 +926,9 @@ What the main knobs do:
   plugin cannot interrupt a step that is already running (a store step, the
   host's stream read between two chunks, assembly, the fit), so a compaction can
   still end past the hard bound; the INFO line `LCM compaction stop:` gives the
-  reason, the leaves and the seconds before, during and after the calls. A call
+  reason, the leaves and the seconds before, during and after the calls. With
+  `reason=error`, a trailing `failure=` field names the cause when known, such as
+  `publication_invariant_conflict` or `exception:RuntimeError` (one token). A call
   cut by the budget is not a summary-route failure, and a compaction uses one
   spend-guard slot however many calls it makes; rollups count on their own guard.
   The same budget covers a compaction with the sweep off, a manual `/compress`, a
@@ -1079,9 +1091,22 @@ no condensation and no summariser call. The rows no leaf summarised stay stored 
 are recorded as raw backlog; the stop reason `stub_first_exit` is a partial stop in
 `lcm_status` (`last_stub_first_exit`, and the threshold sweep record when the sweep is
 on), the doctor and the `LCM compaction stop:` line, with the tokens before and after,
-the target and the backlog rows left. Recovery attempts, forced overflow and calls
+the target and the backlog rows left. On error stops, `reason=error` stays unchanged
+and a trailing `failure=` field names the known cause (#1180). Recovery attempts, forced overflow and calls
 below the threshold never take this exit; when the cuts miss the target the
 compaction runs as before.
+
+`LCM_STUB_FIRST_EXIT_TARGET_RATIO` (default `0`, env only) lowers that target to a
+share of the threshold: the exit is taken only when the list is at or under
+min(threshold - `LCM_LEAF_CHUNK_TOKENS`, 0.95 x threshold, int(ratio x threshold)),
+and cuts that stay over it take the leaf path as before. `0` keeps the built-in
+target and a value of 0.95 or more changes nothing; a negative value, a value over
+`1` or a non-number keeps the built-in target with a config warning. The target in
+`last_stub_first_exit` and on the stop line is the one applied. It matters on a large
+window: with a 750,000-token threshold the built-in target is 712,500, so an exit can
+leave a live list of 600,000 tokens that reaches the threshold again soon, while `0.2`
+takes the exit only at 150,000 tokens or under. The share follows the active model's
+threshold, so a smaller window gets a smaller target and takes the leaf path more often.
 
 `lcm_grep` keeps history-only behavior by default. Operators and agents may opt
 into bounded active-session payload search with
