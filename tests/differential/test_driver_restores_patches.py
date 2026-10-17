@@ -8,6 +8,21 @@ from typing import Any
 import pytest
 
 
+def _package_modules() -> dict[str, ModuleType]:
+    return {name: module for name, module in sys.modules.items()
+            if name == "hermes_lcm" or name.startswith("hermes_lcm.")}
+
+
+@pytest.fixture(autouse=True)
+def restore_package_imports():
+    """load_tree rebinds the hermes_lcm package; later tests resolve dotted paths through it."""
+    saved = _package_modules()
+    yield
+    for name in set(_package_modules()) - set(saved):
+        del sys.modules[name]
+    sys.modules.update(saved)
+
+
 def bindings() -> list[tuple[ModuleType, str, Any]]:
     result = []
     for name, module in list(sys.modules.items()):
