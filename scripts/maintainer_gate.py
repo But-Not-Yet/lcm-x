@@ -31,6 +31,19 @@ MEMORY_MIGRATION_FILES = {
     "scripts/backfill_externalized_tool_outputs.py",
     "scripts/import_lossless_claw.py",
 }
+# Modules that shape the request sent to the model or the per-turn stored record:
+# assembly, compaction, survival fit, ingest/re-ingest identity, the summary route and
+# the host compress contract (docs/process/turn-path-probe-packet.md). Reachability
+# alone does not qualify: storage, commands, config, tools and opt-in pre-answer
+# modules keep only lcm-memory-preservation.
+TURN_PATH_FILES = {
+    "__init__.py", "aux_session.py", "bypass.py", "codex_routing.py", "compaction.py",
+    "dag.py", "engine.py", "escalation.py", "externalize.py", "extraction.py", "fresh_tail.py",
+    "host_uid.py", "host_uid_emit.py", "identity_anchor.py", "ingest_protection.py",
+    "lifecycle_state.py", "message_analysis.py", "message_content.py", "placeholder_ledger.py",
+    "prefix_matching.py", "reconcile.py", "sanitize.py", "store_complete.py",
+    "summary_input_clip.py", "survival_fit.py", "tokens.py",
+}
 FINDING_GATE_CLASSES = {"MERGE_BLOCKING", "RELEASE_BLOCKING", "NON_BLOCKING"}
 TERMINAL_FINDING_DISPOSITIONS = {
     "FIXED_NOW",
@@ -180,6 +193,8 @@ def _named_risks(paths: list[str]) -> list[str]:
         for path in paths
     ):
         risks.append("lcm-memory-preservation")
+    if any(path in TURN_PATH_FILES for path in paths):
+        risks.append("turn-path")
     return risks
 
 
@@ -193,13 +208,20 @@ def review_lanes_hint(changed_files: Any) -> dict[str, Any]:
             "required_review_lanes": ["acceptance", "adversarial"],
         }
     risks = _named_risks(paths)
-    return {
+    hint = {
         "changed_files": "supplied",
         "named_risks": risks,
         "required_review_lanes": (
             ["acceptance", "adversarial"] if risks else ["acceptance"]
         ),
     }
+    if "turn-path" in risks:
+        hint["turn_path_probe_packet"] = [
+            "Consumer enumeration: rg call sites for every changed helper and effects on each consumer.",
+            "Previous-GA differential row: tests/differential (opt-in).",
+            "Sibling shapes: neighbouring windows, row roles, and recovery paths.",
+        ]
+    return hint
 
 
 def _landing_authorization_gate(data: dict[str, Any], head_sha: str) -> list[str]:

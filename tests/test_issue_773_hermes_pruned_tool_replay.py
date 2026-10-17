@@ -364,22 +364,27 @@ def test_the_same_tool_name_wins_over_a_nameless_twin(make_engine):  # noqa: F81
 @pytest.mark.parametrize("held", ["none", "unrelated"])
 def test_the_cursor_search_hashes_prefixes_only_for_a_held_native_recovery_digest(make_engine, monkeypatch, held):  # noqa: F811
     """A prefix can match a native-recovery proof only when the session holds one, so with none the
-    search skips the per-prefix digest. Behaviour-neutral: a held digest no prefix matches makes the
-    search hash every prefix, and the ingest stores the same single row and hands back the same list."""
+    streaming prefix pass (#1090) skips native-recovery digests. Behaviour-neutral: a held digest no
+    prefix matches makes the pass digest every prefix, and the ingest stores the same single row and
+    hands back the same list."""
     engine, view = _restarted(make_engine)
     if held == "unrelated":
         engine._remember_native_recovery_replay_snapshot_digest("0" * 64)
     assert bool(engine._load_native_recovery_replay_snapshot_digests()) == (held == "unrelated")
     hashed = []
-    digest = type(engine)._native_recovery_replay_snapshot_digest
-    monkeypatch.setattr(type(engine), "_native_recovery_replay_snapshot_digest",
-                        lambda self, messages: hashed.append(len(messages)) or digest(self, messages))
+    prefix_digests = type(engine)._replay_snapshot_prefix_digests
+
+    def recording(self, messages, **kwargs):
+        hashed.append(kwargs.get("native_recovery", False))
+        return prefix_digests(self, messages, **kwargs)
+
+    monkeypatch.setattr(type(engine), "_replay_snapshot_prefix_digests", recording)
     host = hermes_salvage(view) + [{"role": "user", "content": "again"}]
     before = len(stored(engine))
 
     replay = engine._ingest_messages(host)
 
-    assert bool(hashed) == (held == "unrelated")
+    assert any(hashed) == (held == "unrelated")
     assert [row["content"] for row in stored(engine)[before:]] == ["again"]
     assert [m.get("content") for m in replay] == [m.get("content") for m in host]
 
