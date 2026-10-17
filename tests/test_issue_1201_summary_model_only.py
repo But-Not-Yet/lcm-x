@@ -147,13 +147,15 @@ def test_r3_generated_merge_group_display(engine, monkeypatch, tmp_path, human):
     output = engine._assemble_context(None, tail, persist=True)
     assert _summary_rows(output) == [output[0]]
     assert "relevant-memories" in output[1]["content"]
+    assert all(bool(row.get("display_metadata", {}).get("model_only")) is not human
+               for row in output[:2])
+    assert tail == before
     result = _real_merge(output, tmp_path)
     merged = result["merged"]
     assert result["repairs"] == (2 if human else 1)
     assert bool(merged[0].get("display_metadata", {}).get("model_only")) is not human
     visible = [row for row in merged if not row.get("display_metadata", {}).get("model_only")]
     assert any("Human prompt absorbed" in row["content"] for row in visible) is human
-    assert tail == before
 
 
 @pytest.mark.skipif(not os.environ.get("LCM_REAL_HERMES_SRC"), reason="no real Hermes source supplied")
@@ -255,10 +257,6 @@ def test_r2_survival_fit_stamps_standalone_summary(engine, monkeypatch, tmp_path
         fitted = engine.compress(incoming, current_tokens=0, force=True)
     assert fitted is not incoming and fitted[0]["content"] == summary
     assert fitted[1:] == tail[-2:]
-    merged = _real_merge(fitted, tmp_path)
-    assert merged["repairs"] == 1
-    visible = [row for row in merged["merged"] if not row.get("display_metadata", {}).get(key)]
-    assert any("Newest human request." in row["content"] for row in visible)
     assert key not in fitted[0].get("display_metadata", {})
     assert all(key not in row.get("display_metadata", {}) for row in fitted[1:])
     assert "display_metadata" not in incoming[0]  # a carrier holds human text
@@ -275,6 +273,10 @@ def test_r2_survival_fit_stamps_standalone_summary(engine, monkeypatch, tmp_path
     unsupported = {"role": "user", "content": summary}
     engine._survival_summary_identity(unsupported, summary, None, "survival_summary")
     assert "display_metadata" not in unsupported
+    merged = _real_merge(fitted, tmp_path)
+    assert merged["repairs"] == 1
+    visible = [row for row in merged["merged"] if not row.get("display_metadata", {}).get(key)]
+    assert any("Newest human request." in row["content"] for row in visible)
 
 
 @pytest.mark.parametrize("key", ["model_only", "host_model_only"])
