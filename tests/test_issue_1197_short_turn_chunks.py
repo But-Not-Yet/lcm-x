@@ -254,3 +254,64 @@ def test_revision_gapfill_and_partial_boundaries_both_finish(store):
     )}
     assert actual == {chunk.chunk_id for chunk in expected}  # Requires both boundary rows.
     assert len(provider.texts) == len(expected) - 2  # Never replay committed boundary chunks.
+
+
+@pytest.mark.parametrize("boundary", ["high", "low"])
+def test_revision_gapfill_with_inflight_only_boundary(store, boundary):
+    _, vectors, identity, provider = store
+    boundary_id = 3 if boundary == "high" else 1
+    content = "".join(
+        f"Boundary fact {index} records the grey cat beside the window. "
+        for index in range(240)
+    )
+    rows = [
+        (1, "user", content if boundary_id == 1 else "Old low boundary. " * 60),
+        (2, "user", FACT),
+        (3, "assistant", content if boundary_id == 3 else "Old high boundary. " * 60),
+    ]
+    vectors.connection.executemany("INSERT INTO messages(store_id, role, content) VALUES(?, ?, ?)", rows)
+    chunks = [chunk for row in rows for chunk in chunking.chunk_message(*row, policy="conversational")]
+    boundary_chunks = [chunk for chunk in chunks if chunk.store_id == boundary_id]
+    assert len(boundary_chunks) >= 3
+    for chunk in chunks:
+        if chunk.store_id not in (2, boundary_id):
+            vectors.record_chunk_embedding(
+                chunk.chunk_id, "model-a", [1.0, 0.0], store_id=chunk.store_id,
+                chunk_index=chunk.chunk_index, char_start=chunk.char_start,
+                char_end=chunk.char_end, token_estimate=chunk.token_estimate, identity=identity,
+            )
+    uncertain_id = f"{boundary_id}:0"
+    command._ensure_inflight_table(vectors.connection)
+    vectors.connection.execute(
+        "INSERT INTO lcm_embedding_backfill_inflight(embedded_id, identity_hash, state) "
+        "VALUES(?, ?, 'uncertain')", (uncertain_id, identity.identity_hash),
+    )
+    assert revision(store) is None
+    assert command._chunk_policy_revision(vectors.connection, identity.identity_hash) == 1
+    _, documents, _ = command._chunk_pending_rows(
+        vectors.connection, identity.identity_hash, "conversational", 100, incremental=True,
+    )
+    ids = [document[0] for document in documents]
+    assert len(ids) == len(set(ids)), ids
+    assert uncertain_id not in ids
+    run(store)  # The real automatic pass must reserve its candidates without error.
+    for _ in range(len(chunks) + 2):
+        if revision(store) == chunking.CHUNK_POLICY_REVISION:
+            break
+        run(store)
+    assert revision(store) == chunking.CHUNK_POLICY_REVISION
+    actual = {row[0] for row in vectors.connection.execute(
+        "SELECT chunk_id FROM lcm_chunk_meta WHERE identity_hash = ?", (identity.identity_hash,),
+    )}
+    assert actual == {chunk.chunk_id for chunk in chunks} - {uncertain_id}
+    expected_texts = [
+        chunk.text for chunk in chunks
+        if chunk.store_id in (2, boundary_id) and chunk.chunk_id != uncertain_id
+    ]
+    assert sorted(provider.texts) == sorted(expected_texts)
+    assert boundary_chunks[0].text not in provider.texts
+    inflight = vectors.connection.execute(
+        "SELECT embedded_id, state FROM lcm_embedding_backfill_inflight WHERE identity_hash = ?",
+        (identity.identity_hash,),
+    ).fetchall()
+    assert [tuple(row) for row in inflight] == [(uncertain_id, "uncertain")]
