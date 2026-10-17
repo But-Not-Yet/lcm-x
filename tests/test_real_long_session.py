@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from tests.real_long_session_probe import assert_ordered_tail, canonical
+from tests.real_long_session_probe import assert_ordered_tail, assert_restored_history, canonical
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -68,6 +68,9 @@ def test_real_long_session(tmp_path: Path) -> None:
         (evidence / f"host-{first}.log").write_text(completed.stdout + completed.stderr)
         assert completed.returncode == 0, completed.stdout[-2000:] + completed.stderr[-5000:]
         phases.append(json.loads((evidence / f"phase-{first}.json").read_text()))
+        if first == 1:
+            terminal = json.loads((evidence / "terminal-history.json").read_text())
+            assert terminal["history"] and terminal["tail"] == terminal["history"][-8:]
     combined = {key: [row for phase in phases for row in phase[key]]
                 for key in ("checkpoints", "turns", "compactions")}
     out.write_text(json.dumps(combined, indent=2) + "\n")
@@ -102,3 +105,13 @@ def test_ordered_tail_canonicalizes_tool_argument_json() -> None:
     assert_ordered_tail([call('{"path":"record.txt"}')], protected)
     with pytest.raises(AssertionError, match="ordered fresh tail changed"):
         assert_ordered_tail([call('{"path":"other.txt"}')], protected)
+
+
+def test_restored_history_rejects_missing_or_reordered_rows() -> None:
+    history = [{"role": "user", "content": "inventory"}, {"role": "assistant", "content": "noted"}]
+    terminal = [canonical(m) for m in history]
+    assert_restored_history(history, terminal)
+    with pytest.raises(AssertionError, match="restored history changed"):
+        assert_restored_history(history[:-1], terminal)
+    with pytest.raises(AssertionError, match="restored history changed"):
+        assert_restored_history(list(reversed(history)), terminal)

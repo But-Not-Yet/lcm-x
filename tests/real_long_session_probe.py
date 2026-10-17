@@ -60,6 +60,10 @@ def assert_ordered_tail(messages: list[dict[str, Any]], protected: list[str],
     assert emitted == protected, "I2 assembly: ordered fresh tail changed"
 
 
+def assert_restored_history(messages: list[dict[str, Any]], terminal: list[str]) -> None:
+    assert [canonical(m) for m in messages] == terminal, "I5 continuity: restored history changed"
+
+
 def paired(messages: list[dict[str, Any]]) -> None:
     pending: set[str] = set()
     for message in messages:
@@ -157,6 +161,9 @@ def run(first: int, last: int, out: Path) -> None:
     home = Path(os.environ["HERMES_HOME"])
     ledger_path = out / "ledger.json"
     ledger: list[dict[str, Any]] = json.loads(ledger_path.read_text()) if first > 1 else []
+    terminal_path = out / "terminal-history.json"
+    terminal = json.loads(terminal_path.read_text()) if first > 1 else None
+    resume_request_checked = False
     turn = first
     issued = False
     failures: list[str] = []
@@ -196,7 +203,7 @@ def run(first: int, last: int, out: Path) -> None:
     original_serve = provider.serve
 
     def serve(handler: Any, body: dict[str, Any], api: str) -> None:
-        nonlocal pending_tail
+        nonlocal pending_tail, resume_request_checked
         if fake.role_of(body.get("model", "")) == "main":
             messages = body["messages"]
             try:
@@ -206,6 +213,17 @@ def run(first: int, last: int, out: Path) -> None:
                 assert any(OBJECTIVE in str(m.get("content") or "") for m in messages), \
                     f"I2 assembly at turn {turn}: objective missing"
                 paired(messages)
+                if terminal is not None and not resume_request_checked:
+                    # The leading system prompt is host-owned. Before answering
+                    # the first new user turn, the entire restored conversation
+                    # must still precede it, unchanged and in order.
+                    assert canonical(messages[-1]) == canonical({"role": "user", "content": user_text(first)}), \
+                        "I5 continuity: first request newest user changed"
+                    restored = messages[-len(terminal["history"]) - 1:-1]
+                    (out / "resume-request.json").write_text(json.dumps(restored, indent=2))
+                    assert_restored_history(restored, terminal["history"])
+                    assert_ordered_tail(restored, terminal["tail"])
+                    resume_request_checked = True
                 if pending_tail is not None:
                     # The provider must receive the very same emitted suffix,
                     # including any verified summary carrier at position zero.
@@ -235,6 +253,10 @@ def run(first: int, last: int, out: Path) -> None:
     state = importlib.import_module("hermes_state").SessionDB(db_path=home / "state.db")
     # Same durable history reader used by ACP SessionManager._restore, in a NEW process.
     history = state.get_messages_as_conversation("long-session", repair_alternation=True) if first > 1 else []
+    if terminal is not None:
+        (out / "restored-history.json").write_text(json.dumps(history, indent=2))
+        assert_restored_history(history, terminal["history"])
+        assert_ordered_tail(history, terminal["tail"])
     model_tools: Any = importlib.import_module("model_tools")
     dispatch = model_tools.handle_function_call
 
@@ -295,6 +317,7 @@ def run(first: int, last: int, out: Path) -> None:
             history = result["messages"]
             assert not failures, failures[0] if failures else ""
             if turn == first and first > 1:
+                assert resume_request_checked, "I5 continuity: first provider request was not checked"
                 after = stored(home, engine)
                 assert [(r["store_id"], canonical(r)) for r in after[:len(before)]] == [
                     (r["store_id"], canonical(r)) for r in before], "I5 cursor: old stored ids changed"
@@ -306,6 +329,9 @@ def run(first: int, last: int, out: Path) -> None:
         if last == 300:
             assert checks[-1]["max_depth"] >= 1, "I4 DAG: no condensation above leaf level"
             assert list((home / "lcm_externalized").rglob("*.json")), "I3 recall: no large outputs externalized"
+        if last == 150:
+            terminal_path.write_text(json.dumps({"history": [canonical(m) for m in history],
+                                                 "tail": [canonical(m) for m in history[-TAIL:]]}, indent=2))
     finally:
         (out / f"phase-{first}.json").write_text(json.dumps({"checkpoints": checks, "turns": timings,
                                                           "compactions": compactions, "tails": tails}, indent=2))
