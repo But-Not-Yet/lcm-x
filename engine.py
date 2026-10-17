@@ -768,6 +768,8 @@ class LCMEngine(
         # #618: it holds only the conversation it was armed for.
         self._sweep_budget_hold_until: float = 0.0
         self._sweep_budget_hold_conversation = ""
+        self._sweep_budget_hold_turn_paced = False
+        self._hung_summary_strike: Optional[tuple[str, str]] = None
         # #651: (monotonic until, reason) after an automatic threshold pass made no progress or
         # the host refused one. #597: a progress refusal also ends at turn end.
         self._no_progress_hold: Optional[tuple[float, str]] = None
@@ -1674,10 +1676,14 @@ class LCMEngine(
         self._last_boundary_skip_time = 0
         return False
 
-    def _start_sweep_budget_hold(self, seconds: Optional[float] = None) -> None:
+    def _start_sweep_budget_hold(self, seconds: Optional[float] = None, *, turn_paced: bool = False) -> None:
         hold = _SWEEP_BUDGET_HOLD_SECONDS if seconds is None else min(_SWEEP_BUDGET_HOLD_SECONDS, max(1.0, seconds))
         self._sweep_budget_hold_until = time.monotonic() + hold
         self._sweep_budget_hold_conversation = self._hold_conversation_key()  # #618
+        if turn_paced and not self._sweep_budget_hold_turn_paced:
+            logger.info("LCM hung summary hold armed until turn end (cap %.0fs): %s",
+                        hold, self._hung_summary_strike[1])
+        self._sweep_budget_hold_turn_paced = turn_paced
 
     def _hold_conversation_key(self) -> str:
         """#618: the conversation a #608 hold belongs to."""
@@ -1807,6 +1813,15 @@ class LCMEngine(
         """#597/#922/#904: end turn-paced holds at the end of a foreground turn of this engine (never a
         bypassed auxiliary/stateless call); cheap, fail-soft host notification."""
         try:
+            if (self._sweep_budget_hold_turn_paced and self._hung_summary_strike is not None
+                    and self._hung_summary_strike[0] == self._hold_conversation_key()
+                    and self._sweep_budget_hold_conversation == self._hold_conversation_key()
+                    and self._sweep_budget_hold_active()
+                    and not self._bypasses_lcm_context_management()):
+                route = self._hung_summary_strike[1]
+                self._sweep_budget_hold_until, self._sweep_budget_hold_turn_paced = 0.0, False
+                self._summary_circuit_breaker.release_hang(route)
+                logger.info("LCM hung summary hold released at turn end: %s", route)
             hold = self._no_progress_hold
             if (hold is not None and hold[1] in _TURN_END_HOLD_REASONS
                     and not self._bypasses_lcm_context_management()):
