@@ -42,11 +42,11 @@ MEMORY_MIGRATION_FILES = {
 # modules keep only lcm-memory-preservation.
 TURN_PATH_FILES = {
     "__init__.py", "aux_session.py", "bypass.py", "codex_routing.py", "compaction.py",
-    "dag.py", "engine.py", "escalation.py", "externalize.py", "extraction.py", "fresh_tail.py",
-    "host_uid.py", "host_uid_emit.py", "identity_anchor.py", "ingest_protection.py",
-    "lifecycle_state.py", "message_analysis.py", "message_content.py", "placeholder_ledger.py",
-    "prefix_matching.py", "reconcile.py", "sanitize.py", "store_complete.py",
-    "summary_input_clip.py", "survival_fit.py", "tokens.py",
+    "dag.py", "emission_projection.py", "engine.py", "escalation.py", "externalize.py",
+    "extraction.py", "fresh_tail.py", "host_uid.py", "host_uid_emit.py", "identity_anchor.py",
+    "ingest_protection.py", "lifecycle_state.py", "message_analysis.py", "message_content.py",
+    "placeholder_ledger.py", "prefix_matching.py", "recognition_matching.py", "reconcile.py",
+    "sanitize.py", "store_complete.py", "summary_input_clip.py", "survival_fit.py", "tokens.py",
 }
 FINDING_GATE_CLASSES = {"MERGE_BLOCKING", "RELEASE_BLOCKING", "NON_BLOCKING"}
 TERMINAL_FINDING_DISPOSITIONS = {
