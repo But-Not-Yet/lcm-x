@@ -40,12 +40,13 @@ def test_run_case_restores_bindings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exit_path: str,
 ) -> None:
     driver = import_module("tests.differential.driver")
+    modules, missing = driver.load_tree(Path(__file__).resolve().parents[2])
+    # Snapshot after loading, so modules load_tree imports for the first time are checked too.
     originals = bindings()
     assert originals
     # Keep a red regression from contaminating the tests following it.
     for module, attr, original in originals:
         monkeypatch.setattr(module, attr, original)
-    modules, missing = driver.load_tree(Path(__file__).resolve().parents[2])
     case: dict[str, Any] = dict(
         id="binding-restoration", layer="projection", summarizer="healthy", window=32768,
         limit=1000, overrides={}, fixture_summarizer=True,
