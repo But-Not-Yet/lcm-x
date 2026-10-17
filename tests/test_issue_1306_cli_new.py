@@ -40,7 +40,8 @@ def turn(history, text):
 
 
 @pytest.mark.parametrize("gateway", [False, True], ids=["cli", "gateway"])
-def test_new_stores_all_turns_under_new_session(engine, gateway):
+def test_new_stores_all_turns_under_new_session(engine, gateway, caplog):
+    caplog.set_level(logging.DEBUG, logger="hermes_lcm")
     before = []
     for text in ("before-one", "before-two"):
         turn(before, text)
@@ -71,7 +72,24 @@ def test_new_stores_all_turns_under_new_session(engine, gateway):
     expected = [("old", row["role"], row["content"]) for row in before]
     for text in ("alpha", "beta", "gamma"):
         expected.extend([("new", "user", text), ("new", "assistant", f"answer {text}")])
-    assert rows == expected
+    assert rows == expected, (
+        f"ingest cursor={engine._ingest_cursor}; "
+        f"commit proof held={engine._compress_commit_proof is not None}; "
+        f"consulted={(engine._compress_commit_proof or {}).get('consulted')!r}; "
+        f"_ingest_cursor_needs_reconcile={engine._ingest_cursor_needs_reconcile}\n"
+        f"bound_session_id={engine.bound_session_id!r}; "
+        f"current_session_id={engine.current_session_id!r}; "
+        f"ignored={engine._session_ignored}; stateless={engine._session_stateless}; "
+        f"thread_stateless={engine._thread_context_stateless()}\n"
+        f"_last_ingest_reconciliation={engine._last_ingest_reconciliation!r}\n"
+        "Last 40 hermes_lcm log records (all levels):\n" + "\n".join(
+            f"{record.levelname} {record.name}:{record.lineno} {record.getMessage()}"
+            for record in [
+                record for record in caplog.records
+                if (record.name == "hermes_lcm" or record.name.startswith("hermes_lcm."))
+            ][-40:]
+        )
+    )
     # Duplicate reset-time notifications cannot reset a live cursor/counter.
     cursor, count = engine._ingest_cursor, engine.compression_count
     engine.bind_session_state(None, "new")
