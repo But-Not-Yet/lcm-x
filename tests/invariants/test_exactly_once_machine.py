@@ -657,9 +657,6 @@ def repeated_user_after_proof_loss(proof_lost, proof, host, occurrences, user):
                     and row.get("timestamp") != user.get("timestamp") for row in occurrences))
 
 
-KNOWN_OPEN[1328] = repeated_user_after_proof_loss
-
-
 class RestartMachine(RotationMachine):
     """Restart from the host's durable view, never the interrupted live list.
 
@@ -764,12 +761,6 @@ class RestartMachine(RotationMachine):
         is_retry = retry and retry_resend_1179(self.host, user)
         if is_retry and not self.include_known_open and KNOWN_OPEN[1179](self.host, user):
             return
-        proof_lost = (self.proof_lost_view is not None
-                      and self.proof_lost_view == self.host)
-        if (not self.include_known_open and not is_retry
-                and KNOWN_OPEN[1328](proof_lost, self.engine._compress_commit_proof,
-                                    self.host, self.occurrences, user)):
-            return  # exclude this trajectory before delivery, never an oracle failure
         self.proof_lost_view = None
         if is_retry:
             self.host = self.host[:-2]

@@ -106,10 +106,14 @@ def _show(trace) -> str:
                      f"| noop={t['reason']!r}" for t in trace)
 
 
-def _reorder(tmp_path, sweep):
-    """#581 test (c) shape: user row R is stored early; the host shows it at the END of its list."""
+def _reorder(tmp_path, sweep, *, bound=True):
+    """#581 test (c): R moves to the END; #1403 requires proof that it is the same occurrence."""
+    if bound:
+        from tests.test_host_uid_shadow import _state_db
+
+        _state_db(tmp_path, [("S", None, None)])
     engine = _engine(tmp_path, sweep, fresh_tail_count=1, leaf_chunk_tokens=1)
-    r = {"role": "user", "content": "[R] retained occurrence" + PAD}
+    r = {"role": "user", "content": "[R] retained occurrence" + PAD, "message_uid": "retained-r"}
     stored = [*_turn("T1", 100.0), r, *[row for i in range(2, 6) for row in _turn(f"T{i}", 100.0 * i)]]
     engine.ingest(stored)
     view = [m for m in stored if m is not r] + [dict(r)]
@@ -118,7 +122,7 @@ def _reorder(tmp_path, sweep):
 
 
 def _restore(tmp_path, sweep):
-    """The host rewrites an older tool output in place (Hermes' salvage text, #773): the ingest stores it and the
+    """The host replaces an older tool output with new, non-salvage content: the ingest stores it and the
     unstamped rows after it again at the END, and the oldest host row binds to a newer store id."""
     engine = _engine(tmp_path, sweep, fresh_tail_count=4, leaf_chunk_tokens=400)
     view = [row for i in range(1, 13) for row in _turn(f"T{i}", 100.0 * i, tool=True)]
@@ -126,7 +130,7 @@ def _restore(tmp_path, sweep):
     engine.note_turn_complete()
     engine._no_progress_hold = None
     tools = [m for m in view if m.get("role") == "tool"]
-    tools[0]["content"] = "[Old tool output cleared to save context space]"
+    tools[0]["content"] = "[Host replaced this tool output with genuinely new content]"
     return engine, view + _turn("T13", 1300.0, tool=True)
 
 
@@ -140,6 +144,20 @@ def _r_id(engine) -> int:
 
 SCENARIOS = pytest.mark.parametrize("name", ["reorder", "restore"])
 SWEEP = pytest.mark.parametrize("sweep", [True, False], ids=["sweep_on", "sweep_off"])
+
+
+def test_unbound_reorder_keeps_one_copy_across_compactions(tmp_path, summaries, lines):
+    """#1403: without occurrence proof, keep a copy once, not once per later compaction/audit."""
+    engine, view = _reorder(tmp_path, False, bound=False)
+    try:
+        before = len(_rows(engine))
+        engine.ingest(view)
+        assert len(_rows(engine)) == before + 1
+        _passes(engine, view, 3, lines)
+        assert len(_rows(engine)) == before + 1
+        assert sum(row["content"].startswith("[R] retained") for row in _rows(engine)) == 2
+    finally:
+        engine.shutdown()
 
 
 # -- observability ---------------------------------------------------------------------------------------------

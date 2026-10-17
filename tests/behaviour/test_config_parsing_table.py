@@ -51,6 +51,7 @@ CONFIG_ROWS = (
     ('large_output_externalization_enabled', 'LCM_LARGE_OUTPUT_EXTERNALIZATION_ENABLED', 'bool', True),
     ('large_output_active_replay_stubbing_enabled', 'LCM_LARGE_OUTPUT_ACTIVE_REPLAY_STUBBING_ENABLED', 'bool', True),
     ('large_output_transcript_gc_enabled', 'LCM_LARGE_OUTPUT_TRANSCRIPT_GC_ENABLED', 'bool', False),
+    ('stub_first_exit_target_ratio', 'LCM_STUB_FIRST_EXIT_TARGET_RATIO', 'float', 0.0),
     ('native_recovery', 'LCM_NATIVE_RECOVERY', 'bool', False),
     ('survival_fit', 'LCM_SURVIVAL_FIT', 'bool', True),
     ('embeddings_enabled', 'LCM_EMBEDDINGS_ENABLED', 'bool', False),
@@ -64,6 +65,7 @@ CONFIG_ROWS = (
     ('doctor_clean_apply_enabled', 'LCM_DOCTOR_CLEAN_APPLY_ENABLED', 'bool', False),
     ('empty_lifecycle_gc_enabled', 'LCM_EMPTY_LIFECYCLE_GC_ENABLED', 'bool', True),
     ('temporal_rollups_enabled', 'LCM_TEMPORAL_ROLLUPS_ENABLED', 'bool', True),
+    ('background_leaf_prep_enabled', 'LCM_BACKGROUND_LEAF_PREP_ENABLED', 'bool', False),
     # config._parse_float_env -> LCMConfig.from_env (construction time).
     ('critical_budget_pressure_ratio', 'LCM_CRITICAL_BUDGET_PRESSURE_RATIO', 'float', 0.0),
     ('foreground_soft_seconds', 'LCM_FOREGROUND_SOFT_SECONDS', 'float', 60.0),
@@ -79,6 +81,7 @@ CONFIG_ROWS = (
     ('embedding_backfill_timeout_s', 'LCM_EMBEDDING_BACKFILL_TIMEOUT_S', 'float', 120.0),
     ('embedding_query_spend_window_seconds', 'LCM_EMBEDDING_QUERY_SPEND_WINDOW_SECONDS', 'float', 60.0),
     ('embedding_query_spend_backoff_seconds', 'LCM_EMBEDDING_QUERY_SPEND_BACKOFF_SECONDS', 'float', 60.0),
+    ('background_leaf_prep_window_s', 'LCM_BACKGROUND_LEAF_PREP_WINDOW_S', 'float', 600.0),
     # config._parse_float_env_with_source -> LCMConfig.from_env (construction time).
     ('leaf_target_ratio', 'LCM_LEAF_TARGET_RATIO', 'float', 0.2),
     ('context_threshold', 'LCM_CONTEXT_THRESHOLD', 'float', 0.75),
@@ -120,6 +123,7 @@ CONFIG_ROWS = (
     ('rollup_aggregate_max_tokens', 'LCM_ROLLUP_AGGREGATE_MAX_TOKENS', 'int', 20000),
     ('rollup_builds_per_pass', 'LCM_ROLLUP_BUILDS_PER_PASS', 'int', 2),
     ('rollup_maintenance_budget_ms', 'LCM_ROLLUP_MAINTENANCE_BUDGET_MS', 'int', 5000),
+    ('background_leaf_prep_max_calls', 'LCM_BACKGROUND_LEAF_PREP_MAX_CALLS', 'int', 8),
     # config._parse_int_env_with_source -> LCMConfig.from_env (construction time).
     ('fresh_tail_count', 'LCM_FRESH_TAIL_COUNT', 'int', 24),
     ('fresh_tail_max_tokens', 'LCM_FRESH_TAIL_MAX_TOKENS', 'int', 24000),
@@ -164,13 +168,14 @@ EXTRA_CONFIG_ROWS = (
     ("ignore_message_patterns", "LCM_IGNORE_MESSAGE_PATTERNS", "list", []),
 )
 
-# from_env has validation after the primitive reader for these five fields.
+# from_env has validation after the primitive reader for these six fields.
 SPECIAL = {
     "fresh_tail_max_tokens": (D, D, D, D, 1, 0, D, D, D, D, D, D, D, 0, D, HUGE),
     "leaf_target_ratio": (D, D, D, D, 1.0, D, D, D, D, D, D, D, D, D, 0.5, D),
     "leaf_target_min_tokens": (D, D, D, D, 1, D, D, D, D, D, D, D, D, D, D, D),
     "leaf_target_max_tokens": (D, D, D, D, D, D, D, D, D, D, D, D, D, D, D, HUGE),
     "summary_prompt_version": (1,) * 16,
+    "stub_first_exit_target_ratio": (D, D, D, D, 1.0, 0.0, D, D, D, D, D, D, D, D, 0.5, D),
 }
 
 

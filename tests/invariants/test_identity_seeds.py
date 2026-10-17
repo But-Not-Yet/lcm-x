@@ -428,8 +428,8 @@ def test_repeated_recovery_preserves_user_source(recoveries):
 
 @pytest.mark.parametrize("first_text", [
     pytest.param("alpha", id="distinct-source-control"),
-    pytest.param("βeta", id="equal-source-warm", marks=pytest.mark.xfail(
-        strict=True, reason=REPROJECTED_USER, raises=ReprojectedUserStored)),
+    # #1403: the accepted compaction prefix keeps the warm ingest from re-storing the projected user.
+    pytest.param("βeta", id="equal-source-warm"),
 ])
 def test_recovery_reprojection_warm_ingest(first_text):
     machine = RecoveryMachine()
@@ -664,9 +664,7 @@ def test_cli_reset_classifier_rejects_other_mismatches(corruption, monkeypatch):
 
 
 @pytest.mark.parametrize("start", [
-    pytest.param(False, id="bare-new", marks=pytest.mark.xfail(
-        strict=True, reason="#1306: CLI /new keeps LCM bound to the ended session",
-        raises=CliResetReplayStored)),
+    pytest.param(False, id="bare-new"),
     pytest.param(True, id="explicit-start-control"),
 ])
 def test_cli_new_post_llm_compress_replay(start, caplog, monkeypatch):
@@ -727,33 +725,28 @@ def test_cli_new_post_llm_compress_replay(start, caplog, monkeypatch):
             connection.execute("INSERT INTO sessions VALUES (?, NULL, NULL)", (new,))
         machine.host = []
         machine.engine.on_session_reset()
+        # Hermes reset_session_state also offers the new id through this
+        # optional callback, even when its bare reset omits on_session_start.
+        bind = getattr(machine.engine, "bind_session_state", None)
+        if not start and callable(bind):
+            bind(None, new)
         if start:
             machine.engine.on_session_start(new, platform="cli", context_length=8192)
         caplog.clear()
         for text in ("alpha", "beta"):
             turn(new, text)
-        if not start:
-            assert "resident_engine_conflict" in caplog.text
-            assert machine.engine._store.connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 4
+        assert "resident_engine_conflict" not in caplog.text
         previous = deepcopy(machine.host)
         compressed = machine.engine.compress(machine.host, current_tokens=machine.engine.threshold_tokens + 1,
                                              force=True)
-        if start:
-            assert machine.engine._last_compression_status == "compacted"
-            assert compressed != previous
-            machine.engine.on_session_end(new, previous)
-            machine.engine.on_session_start(new, platform="cli", boundary_reason="compression", old_session_id=new)
-            machine.host = compressed
-        else:
-            assert machine.engine._last_compression_status == "error"
-            assert machine.engine._survival_fit_reason == "lifecycle_binding_changed"
-            assert compressed == previous
-            assert machine.host == previous
-            # Real CLI sees unchanged output and skips both boundary hooks.
+        assert machine.engine._last_compression_status == "compacted"
+        assert compressed != previous
+        machine.engine.on_session_end(new, previous)
+        machine.engine.on_session_start(new, platform="cli", boundary_reason="compression", old_session_id=new)
+        machine.host = compressed
         caplog.clear()
         turn(new, "gamma")
-        if not start:
-            assert "resident_engine_conflict" in caplog.text
+        assert "resident_engine_conflict" not in caplog.text
         stored = {}
         for conversation in ledgers:
             cursor = machine.engine._store.connection.execute(
@@ -842,8 +835,6 @@ class RecompressionUserCollapsed(AssertionError):
     """Only #1328's second repeated user missing, with every other row ordered."""
 
 
-@pytest.mark.xfail(strict=True, reason="#1328: no-progress recompression drops a fresh repeated user",
-                   raises=RecompressionUserCollapsed)
 def test_restart_repeated_user_1328():
     """Engine API seed; the CLI refuses manual compression under four rows."""
     from tests.invariants.test_exactly_once_machine import RestartMachine
@@ -882,8 +873,31 @@ class ReplayUserCollapsed(AssertionError):
     """Only #1328's final repeated user missing after an unchanged replay."""
 
 
-@pytest.mark.xfail(strict=True, reason="#1328: unchanged replay consumes the fresh repeated user's proof",
-                   raises=ReplayUserCollapsed)
+def test_restart_rotation_repeated_user_1328():
+    """A rejected no-progress rotation loses the proof before a fresh repeat."""
+    from tests.invariants.test_exactly_once_machine import RestartMachine
+
+    machine = RestartMachine()
+    machine.include_known_open = True
+    try:
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        machine.cold_resume()
+        machine.exactly_once()
+        machine.compress()
+        assert machine.engine._compress_commit_proof
+        previous = deepcopy(machine.host)
+        machine.rotate()
+        assert machine.host == previous
+        assert machine.engine._compress_commit_proof is None
+        machine.exactly_once()
+        machine.new_turn("alpha", False, 0, False, "lookup")
+        assert len(machine.occurrences) == 6
+        assert machine.occurrences[0]["timestamp"] != machine.occurrences[-2]["timestamp"]
+        machine.exactly_once()
+    finally:
+        machine.teardown()
+
+
 def test_restart_replay_user_1328():
     """Engine API seed; the CLI refuses manual compression under four rows."""
     from tests.invariants.test_exactly_once_machine import RestartMachine
@@ -925,8 +939,6 @@ class ReplayToolTailUserCollapsed(AssertionError):
     """Only the final repeated user missing from the nine-row tool-tail trace."""
 
 
-@pytest.mark.xfail(strict=True, reason="#1328: tool-tail replay consumes the fresh repeated user's proof",
-                   raises=ReplayToolTailUserCollapsed)
 def test_restart_replay_tool_tail_user_1328():
     """T(alpha), T(next prompt with two tools), compress, replay, T(alpha)."""
     from tests.invariants.test_exactly_once_machine import RestartMachine
@@ -967,12 +979,12 @@ def test_restart_replay_tool_tail_user_1328():
 @given(case=st.sampled_from(("known-open", "distinct-text", "no-compress", "one-compress", "four-row", "tool-tail")),
        cold=st.booleans())
 def test_restart_recompression_generated_controls(case, cold):
-    """Passing neighbors bypass guards; known-open inputs skip delivery."""
-    from tests.invariants.test_exactly_once_machine import KNOWN_OPEN, RestartMachine
+    """The former #1328 triggers and their neighbors all deliver the fresh turn."""
+    from tests.invariants.test_exactly_once_machine import RestartMachine, repeated_user_after_proof_loss
 
     machine = RestartMachine()
     known_open = case == "known-open"
-    machine.include_known_open = not known_open
+    machine.include_known_open = True
     try:
         machine.new_turn("alpha", False, 0, False, "lookup")
         if cold:
@@ -994,10 +1006,10 @@ def test_restart_recompression_generated_controls(case, cold):
         delivered = len(machine.occurrences)
         text = "alpha 2" if case == "distinct-text" else "alpha"
         user = dict(role="user", content=text, timestamp=float(machine.sequence + 1))
-        assert bool(KNOWN_OPEN[1328](machine.proof_lost_view == machine.host,
+        assert bool(repeated_user_after_proof_loss(machine.proof_lost_view == machine.host,
                     machine.engine._compress_commit_proof, machine.host, machine.occurrences, user)) == known_open
         machine.new_turn(text, False, 0, False, "lookup")
-        assert len(machine.occurrences) == delivered + (0 if known_open else 2)
+        assert len(machine.occurrences) == delivered + 2
         machine.exactly_once()
     finally:
         machine.teardown()
@@ -1007,12 +1019,12 @@ def test_restart_recompression_generated_controls(case, cold):
 @given(case=st.sampled_from(("known-open", "no-compress", "new-turn", "distinct-text", "tool-tail", "four-row")),
        cold=st.booleans())
 def test_restart_replay_generated_controls(case, cold):
-    """Replay neighbors bypass guards; equal-identity triggers skip delivery."""
-    from tests.invariants.test_exactly_once_machine import KNOWN_OPEN, RestartMachine
+    """Replay neighbors and equal-identity triggers all deliver the fresh turn."""
+    from tests.invariants.test_exactly_once_machine import RestartMachine, repeated_user_after_proof_loss
 
     machine = RestartMachine()
     known_open = case in ("known-open", "tool-tail")
-    machine.include_known_open = not known_open
+    machine.include_known_open = True
     try:
         machine.new_turn("alpha", False, 0, False, "lookup")
         if cold:
@@ -1041,10 +1053,10 @@ def test_restart_replay_generated_controls(case, cold):
         delivered = len(machine.occurrences)
         text = "alpha 2" if case == "distinct-text" else "alpha"
         user = dict(role="user", content=text, timestamp=float(machine.sequence + 1))
-        assert bool(KNOWN_OPEN[1328](machine.proof_lost_view == machine.host,
+        assert bool(repeated_user_after_proof_loss(machine.proof_lost_view == machine.host,
                     machine.engine._compress_commit_proof, machine.host, machine.occurrences, user)) == known_open
         machine.new_turn(text, False, 0, False, "lookup")
-        assert len(machine.occurrences) == delivered + (0 if known_open else 2)
+        assert len(machine.occurrences) == delivered + 2
         machine.exactly_once()
     finally:
         machine.teardown()
