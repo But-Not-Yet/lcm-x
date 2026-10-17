@@ -22,10 +22,10 @@ import hashlib
 import json
 import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 from .externalize import (
     extract_externalized_ref,
@@ -529,6 +529,35 @@ def _todo_annotation_span(content: str, start: int) -> int:
             open_item = not _TODO_ITEM_END_RE.search(line)
         end += 1 + len(line)
     return end
+
+
+@dataclass(eq=False, repr=False)
+class _TailReplayRun:
+    """Stack-local inputs and prepared identities for one tail replay scan."""
+
+    messages: List[Dict[str, Any]]
+    stored_tail: list[tuple[str, str, str, str, str]]
+    stored_tail_rows: list[Dict[str, Any]] | None
+    allow_session_end_replay_proof: bool
+    active_lineage_identities: dict[int, tuple[str, str, str, str, str]] = field(init=False)
+    occurrence_by_id: dict[int, tuple[EmissionProjectionEntry, tuple[str, str, str, str, str] | None]] = field(init=False)
+    v4: bool = field(init=False)
+    scaffold_ids: set[int] = field(init=False)
+    objective_ids: set[int] = field(init=False)
+    active_identity: Callable[[Dict[str, Any]], tuple[str, str, str, str, str]] = field(init=False)
+    pruned_source_ids: set[int] = field(init=False)
+    sanitized_replay_tail: list[tuple[str, str, str, str, str]] = field(init=False)
+    effective_session_count: int = field(init=False)
+    sanitized_tail_collapsed: bool = field(init=False)
+    effective_fresh_tail_count: int = field(init=False)
+    engine_snapshot_digests: set[str] = field(init=False)
+    native_recovery_snapshot_digests: set[str] = field(init=False)
+    session_end_snapshot_digests: set[str] = field(init=False)
+    stored_tool_identities: set[tuple[str, str, str, str, str]] = field(init=False)
+    durable_replay_identities: set[tuple[str, str, str, str, str]] = field(init=False)
+    native_prefix_digests: dict[int, str] = field(init=False)
+    engine_prefix_digests: dict[int, str] = field(init=False)
+    session_end_prefix_digests: dict[int, str] = field(init=False)
 
 
 class ReconcileMixin:
@@ -1717,17 +1746,12 @@ class ReconcileMixin:
                 sanitized_tail.append(cleaned_identity)
         return sanitized_tail
 
-    def _find_reconciled_cursor_for_store_tail(
-        self,
-        messages: List[Dict[str, Any]],
-        stored_tail: list[tuple[str, str, str, str, str]],
-        *,
-        stored_tail_rows: list[Dict[str, Any]] | None = None,
-        allow_empty_prefix: bool,
-        session_count: int,
-        raw_session_count: int,
-        allow_session_end_replay_proof: bool = False,
-    ) -> int | None:
+    def _prepare_tail_replay_run(self, run: _TailReplayRun) -> None:
+        messages = run.messages
+        stored_tail = run.stored_tail
+        stored_tail_rows = run.stored_tail_rows
+        allow_session_end_replay_proof = run.allow_session_end_replay_proof
+
         # One projection over the complete list (#488), by position: one object per position (F6).
         seen: set = set()
         messages = [dict(m) if id(m) in seen or seen.add(id(m)) else m for m in messages]
@@ -1847,6 +1871,67 @@ class ReconcileMixin:
                 session_end=bool(session_end_snapshot_digests),
             )
         )
+
+        run.messages = messages
+        run.active_lineage_identities = active_lineage_identities
+        run.occurrence_by_id = occurrence_by_id
+        run.v4 = v4
+        run.scaffold_ids = scaffold_ids
+        run.objective_ids = objective_ids
+        run.active_identity = active_identity
+        run.pruned_source_ids = pruned_source_ids
+        run.sanitized_replay_tail = sanitized_replay_tail
+        run.effective_session_count = effective_session_count
+        run.sanitized_tail_collapsed = sanitized_tail_collapsed
+        run.effective_fresh_tail_count = effective_fresh_tail_count
+        run.engine_snapshot_digests = engine_snapshot_digests
+        run.native_recovery_snapshot_digests = native_recovery_snapshot_digests
+        run.session_end_snapshot_digests = session_end_snapshot_digests
+        run.stored_tool_identities = stored_tool_identities
+        run.durable_replay_identities = durable_replay_identities
+        run.native_prefix_digests = native_prefix_digests
+        run.engine_prefix_digests = engine_prefix_digests
+        run.session_end_prefix_digests = session_end_prefix_digests
+
+
+    def _find_reconciled_cursor_for_store_tail(
+        self,
+        messages: List[Dict[str, Any]],
+        stored_tail: list[tuple[str, str, str, str, str]],
+        *,
+        stored_tail_rows: list[Dict[str, Any]] | None = None,
+        allow_empty_prefix: bool,
+        session_count: int,
+        raw_session_count: int,
+        allow_session_end_replay_proof: bool = False,
+    ) -> int | None:
+        run = _TailReplayRun(
+            messages=messages,
+            stored_tail=stored_tail,
+            stored_tail_rows=stored_tail_rows,
+            allow_session_end_replay_proof=allow_session_end_replay_proof,
+        )
+        self._prepare_tail_replay_run(run)
+        messages = run.messages
+        active_lineage_identities = run.active_lineage_identities
+        occurrence_by_id = run.occurrence_by_id
+        v4 = run.v4
+        scaffold_ids = run.scaffold_ids
+        objective_ids = run.objective_ids
+        active_identity = run.active_identity
+        pruned_source_ids = run.pruned_source_ids
+        sanitized_replay_tail = run.sanitized_replay_tail
+        effective_session_count = run.effective_session_count
+        sanitized_tail_collapsed = run.sanitized_tail_collapsed
+        effective_fresh_tail_count = run.effective_fresh_tail_count
+        engine_snapshot_digests = run.engine_snapshot_digests
+        native_recovery_snapshot_digests = run.native_recovery_snapshot_digests
+        session_end_snapshot_digests = run.session_end_snapshot_digests
+        stored_tool_identities = run.stored_tool_identities
+        durable_replay_identities = run.durable_replay_identities
+        native_prefix_digests = run.native_prefix_digests
+        engine_prefix_digests = run.engine_prefix_digests
+        session_end_prefix_digests = run.session_end_prefix_digests
         empty_prefix_cursor: int | None = None
         for cursor in range(len(messages), -1, -1):
             candidate_messages = messages[:cursor]
