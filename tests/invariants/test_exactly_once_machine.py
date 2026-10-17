@@ -107,7 +107,7 @@ def cold_stale_proof(stale_proof, operation):
     return operation == "cold_resume" and stale_proof
 
 
-KNOWN_OPEN = {1179: retry_resend_1179, 1286: cold_stale_proof}
+KNOWN_OPEN = {1286: cold_stale_proof}
 
 REPROJECTED_USER = "#503: repeated recovery fit maps a projected user to an older equal-text source"
 
@@ -203,9 +203,6 @@ class ExactlyOnceMachine(RuleBasedStateMachine):
         if retry and len(self.host) >= 4 and self.host[-2]["role"] == "user":
             user["content"] = deepcopy(self.host[-2]["content"])
         is_retry = retry and retry_resend_1179(self.host, user)
-        if is_retry and not self.include_known_open:
-            if KNOWN_OPEN[1179](self.host, user):
-                return  # exclude this input shape, never an observed oracle failure
         if is_retry:
             self.host = self.host[:-2]
         batch = [user]
@@ -762,8 +759,6 @@ class RestartMachine(RotationMachine):
         if retry and len(self.host) >= 4 and self.host[-2]["role"] == "user":
             user["content"] = deepcopy(self.host[-2]["content"])
         is_retry = retry and retry_resend_1179(self.host, user)
-        if is_retry and not self.include_known_open and KNOWN_OPEN[1179](self.host, user):
-            return
         proof_lost = (self.proof_lost_view is not None
                       and self.proof_lost_view == self.host)
         if (not self.include_known_open and not is_retry

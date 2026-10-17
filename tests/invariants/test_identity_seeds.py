@@ -27,8 +27,7 @@ class RetryDiscoveryMachine(ExactlyOnceMachine):
 
     @rule(text=st.sampled_from(("alpha", "same text")), structured=st.booleans(), retry=st.booleans())
     def new_turn(self, text, structured, retry):
-        # The open issue's seed is a plain retry. Tool retries have a separate
-        # deterministic xfail below so a broader failure cannot hide in this one.
+        # Plain retries and tool retries both retain every occurrence.
         super().new_turn(text, structured, 0, retry, "lookup")
 
     @invariant()
@@ -44,12 +43,10 @@ class RetryDiscoveryMachine(ExactlyOnceMachine):
             raise
 
 
-@pytest.mark.xfail(strict=True, reason="#1179: retry loses a new equal-text user occurrence", raises=RetryCollapse)
 def test_machine_discovers_retry_1179():
     run_state_machine_as_test(RetryDiscoveryMachine, settings=PROFILE)
 
 
-@pytest.mark.xfail(strict=True, reason="#1179: retry loses a new equal-text user occurrence", raises=RetryCollapse)
 def test_retry_1179():
     machine = RetryDiscoveryMachine()
     try:
@@ -66,8 +63,6 @@ class RetryToolCollapse(AssertionError):
     """The #1179 retry shape also loses the assistant call before its result."""
 
 
-@pytest.mark.xfail(strict=True, reason="#1179-shaped retry also skips its first assistant tool call",
-                   raises=RetryToolCollapse)
 def test_retry_1179_with_tool_call():
     machine = RetryDiscoveryMachine()
     try:
@@ -83,6 +78,105 @@ def test_retry_1179_with_tool_call():
             if actual == expected[:index] + expected[index + 2:]:
                 raise RetryToolCollapse(str(error)) from error
             raise
+    finally:
+        machine.teardown()
+
+
+@pytest.mark.parametrize("anchor", [False, True])
+@pytest.mark.parametrize("tool", [False, True])
+@pytest.mark.parametrize("entry", ["ingest", "compress"])
+@pytest.mark.parametrize("metadata,fresh", [
+    ("new-both", True), ("new-stamp", True), ("new-uid", True),
+    ("same", False), ("missing-old", False), ("missing-new", False),
+    ("unstamped", False),
+])
+def test_retry_prefix_occurrence_metadata_1179(anchor, tool, entry, metadata, fresh):
+    """The prefix proof respects known conflicts and keeps legacy unknowns."""
+    machine = ExactlyOnceMachine()
+    machine.patch.setenv("LCM_IDENTITY_ANCHOR", str(int(anchor)))
+    try:
+        original = [machine.stamp(dict(role=role, content=text)) for role, text in
+                    [("user", "alpha"), ("assistant", "first"),
+                     ("user", "same text"), ("assistant", "old answer")]]
+        retry = deepcopy(original[2])
+        if metadata in ("new-both", "new-stamp"):
+            retry["timestamp"] = 50.0
+        if metadata in ("new-both", "new-uid"):
+            retry["message_uid"] = "retry-occurrence"
+        for row in ([original[2]] if metadata == "missing-old" else
+                    [retry] if metadata == "missing-new" else
+                    [original[2], retry] if metadata == "unstamped" else []):
+            row.pop("timestamp", None)
+            row.pop("message_uid", None)
+        machine.engine.ingest(original)
+        host = deepcopy(original[:2]) + [retry]
+        if entry == "compress":
+            machine.engine.compress(host, current_tokens=1)
+        else:
+            machine.engine.ingest(host)
+        assert_occurrences(original + ([retry] if fresh else []), machine.rows())
+        if not fresh:
+            machine.engine.ingest(deepcopy(host))
+            assert_occurrences(original, machine.rows())
+            return
+        suffix = []
+        if tool:
+            suffix = [machine.stamp(dict(role="assistant", content="calling", tool_calls=[
+                dict(id="retry-call", type="function", function=dict(name="lookup", arguments="{}"))])),
+                machine.stamp(dict(role="tool", content="result", tool_call_id="retry-call"))]
+        suffix.append(machine.stamp(dict(role="assistant", content="new answer")))
+        host.extend(suffix)
+        expected = original + ([retry] if fresh else []) + suffix
+        machine.engine.ingest(host)
+        assert_occurrences(expected, machine.rows())
+        machine.engine.ingest(deepcopy(host))
+        assert_occurrences(expected, machine.rows())
+        # A fully stamped retry also replays after a cold start without repair.
+        if metadata == "new-both" and anchor:
+            machine.engine.shutdown()
+            machine.engine = machine.start_engine()
+            machine.engine.ingest(deepcopy(host))
+            assert_occurrences(expected, machine.rows())
+    finally:
+        machine.teardown()
+
+
+@pytest.mark.parametrize("anchor", [False, True])
+@pytest.mark.parametrize("metadata,fresh", [
+    ("new-both", True), ("new-stamp", True), ("new-uid", True),
+    ("same", False), ("missing-old", False), ("missing-new", False),
+])
+def test_compacted_prefix_occurrence_metadata_1179(anchor, metadata, fresh):
+    """A real compaction's output prefix must not hide replacement occurrences."""
+    machine = ExactlyOnceMachine()
+    machine.patch.setenv("LCM_IDENTITY_ANCHOR", str(int(anchor)))
+    try:
+        if metadata == "missing-old":
+            machine.patch.setattr(machine, "stamp", lambda row: dict(row))
+        for text in ("alpha", "same text"):
+            machine.new_turn(text, False, 0, False, "lookup")
+        machine.compress()
+        assert machine.engine._last_compression_status == "compacted"
+        assert machine.engine._compress_commit_proof
+        assert [identity(row) for row in machine.host[-2:]] == [
+            identity(row) for row in machine.occurrences[-2:]]
+        if metadata == "missing-old":
+            assert all(row.get("timestamp") is None and row.get("message_uid") is None
+                       for row in machine.host[-2:])
+        host = deepcopy(machine.host)
+        for index, row in enumerate(host[-2:]):
+            if metadata in ("new-both", "new-stamp", "missing-old"):
+                row["timestamp"] = 50.0 + index
+            if metadata in ("new-both", "new-uid", "missing-old"):
+                row["message_uid"] = f"compacted-retry-{index}"
+            if metadata == "missing-new":
+                row.pop("timestamp", None)
+                row.pop("message_uid", None)
+        expected = machine.occurrences + (host[-2:] if fresh else [])
+        machine.engine.ingest(host)
+        assert_occurrences(expected, machine.rows())
+        machine.engine.ingest(deepcopy(host))
+        assert_occurrences(expected, machine.rows())
     finally:
         machine.teardown()
 
