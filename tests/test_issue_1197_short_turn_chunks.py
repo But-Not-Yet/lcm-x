@@ -199,10 +199,33 @@ def test_t2_manual_backfill_and_full_policy_stamp_revision(store):
 
 def test_t2_full_policy_never_fills_old_range(store):
     seed_old(store)
-    _, _, _, provider = store
+    _, vectors, identity, provider = store
     run(store, policy="full")
-    assert revision(store) == 2
+    assert revision(store) is None  # Full skips the old gaps, so it cannot certify their revision.
     assert provider.texts == ["new fact", "history fact"]
+    assert command._chunk_backlog_estimate(vectors.connection, identity.identity_hash, "full") == "0"
+    assert command._chunk_backlog_estimate(
+        vectors.connection, identity.identity_hash, "conversational"
+    ) == "3 (gap-fill)"
+
+
+def test_full_pass_preserves_later_conversational_gapfill(store):
+    seed_old(store)
+    _, vectors, identity, provider = store
+    assert command._chunk_policy_revision(vectors.connection, identity.identity_hash) == 1
+    run(store, policy="full")
+    for _ in range(12):
+        if run(store)["embedded"] == 0 and revision(store) == 2:
+            break
+    assert provider.texts.count(FACT) == 1
+    assert vectors.connection.execute(
+        "SELECT COUNT(*) FROM lcm_chunk_meta WHERE chunk_id = '3:0' AND identity_hash = ?",
+        (identity.identity_hash,),
+    ).fetchone()[0] == 1
+    assert revision(store) == 2
+    before = list(provider.texts)
+    assert run(store)["embedded"] == 0
+    assert provider.texts == before
 
 
 def test_t3_uncertain_gap_is_not_automatically_replayed(store):

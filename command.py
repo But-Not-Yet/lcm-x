@@ -4379,7 +4379,7 @@ def _chunk_frontier_rows(
     history_limit = _CHUNK_HISTORY_SCAN_MESSAGES if history_limit is None else history_limit
     policy = normalize_content_policy(policy)
     revision = _chunk_policy_revision(conn, identity_hash)
-    if record_progress and identity_hash and (policy == "full" or revision >= CHUNK_POLICY_REVISION):
+    if record_progress and identity_hash and revision >= CHUNK_POLICY_REVISION:
         _record_chunk_policy_revision(conn, identity_hash)
     eligible = ""
     if normalize_content_policy(policy) == "conversational":
