@@ -5,6 +5,10 @@ Two runner modes in `run.py`: `background-prep-off-replay` (G1), and
 fresh stores, and identical per-seed input. Only the summary provider is stubbed.
 The real engine, escalation, worker, chunking, fences and publication run.
 Hermes source is imported read-only; plugin registration is skipped.
+Both product and host checkouts must be clean, including untracked files. The
+protocol binds the host Git SHA and context-engine hash. Token estimation is
+pinned before product consumers import their token helpers. Cells execute the
+captured instrument copy, including its replay and scoring modules.
 Use Python 3.11 or newer (the product's CI minimum).
 
 ```sh
@@ -54,8 +58,11 @@ The denominator excludes condensations and non-crossing passes; per-seed rates
 are reported only. No-crossing runs cannot pass observability/rate checks.
 Active unsummarized rows above the frontier count as covered only when their
 exact raw identity is present in the live view, including verified carrier remainders.
+Live coverage matches role/content because carrier projections may omit timestamps;
+ordered stored-versus-expected identity independently requires the persisted timestamp.
 Missing storage, duplicate storage/IDs, duplicate leaf coverage, dangling sources,
-changed identity or chronology also fail. Leaf ancestry condensations are not
+changed identity (role, content, or persisted host `observed_at` timestamp) or
+chronology also fail. Leaf ancestry condensations are not
 counted as a second covering of their sources.
 
 Recorded only: nearest-rank p90 visible wait and share of turns waiting >=1s,
@@ -69,7 +76,9 @@ material/reader); D7 remains separate and its thresholds are not applied.
 
 After both smokes pass, invoke G2 at the approved main SHA with
 `--freeze-reference --gap-seconds 60 --seeds 1 2 3 --jobs 6`. It refuses another product
-SHA and writes a read-only `REFERENCE.json` only after a passing complete run.
+SHA and writes a read-only `REFERENCE.json` only after a passing complete run
+and successful result-card validation. Recorded card commands use the repo-relative
+runner path and placeholders for local path arguments.
 `--jobs N` runs N cells at once, each in its own process and store; it is part of the
 protocol, so a candidate must use the same value. If the projected wall time from gaps
 alone (63 gaps per cell, `ceil(cells / jobs)` waves) exceeds three hours, it writes

@@ -37,6 +37,7 @@ def protocol(args):
                 settings=SETTINGS, gap_seconds=args.gap_seconds, real_route=args.real_route,
                 summary_model=args.summary_model, zero_gap_idle_sync=args.gap_seconds == 0, jobs=args.jobs,
                 workload_hashes={str(s): digest(workload(s)) for s in args.seeds},
+                host_sha=git(args.hermes_source, "rev-parse", "HEAD"),
                 host_context_sha256=hashlib.sha256((args.hermes_source / "agent/context_engine.py").read_bytes()).hexdigest())
 
 
@@ -89,7 +90,20 @@ def card(args, root, summary):
     def call(*words):
         subprocess.run(tool + list(map(str, words)), check=True, stdout=subprocess.DEVNULL)
 
-    command = shlex.join([sys.executable, str(HERE / "run.py"), *sys.argv[1:]])
+    path_flags = {"--out": "<out>", "--product-source": "<product>", "--hermes-source": "<hermes>",
+                  "--reference": "<reference>", "--card-tool": "<card-tool>", "--rescore": "<out>"}
+    recorded, pending = [], None
+    for word in sys.argv[1:]:
+        flag, equals, _ = word.partition("=")
+        if pending:
+            recorded.append(pending)
+            pending = None
+        elif flag in path_flags:
+            recorded.append(flag + "=" + path_flags[flag] if equals else flag)
+            pending = None if equals else path_flags[flag]
+        else:
+            recorded.append(word)
+    command = shlex.join(["python3", "bench/instruments/compaction_probe/bgprep/run.py", *recorded])
     rescore = "python3 instrument/run.py --rescore ."
     call("init", root, "--project", "lcm-x", "--kind", "acceptance", "--owner-lane", "bgprep-instrument",
          "--code-dir", args.product_source, "--claim-class", "advisory", "--command", command)
@@ -146,6 +160,9 @@ def main():
     args.out, args.product_source, args.hermes_source = (p.resolve() for p in (args.out, args.product_source, args.hermes_source))
     if git(args.product_source, "rev-parse", "HEAD") != args.product_sha:
         raise ValueError("product HEAD does not match pinned SHA")
+    for name, source in (("product", args.product_source), ("host", args.hermes_source)):
+        if git(source, "status", "--porcelain", "--untracked-files=normal"):
+            parser.error(f"{name} checkout is dirty")
     if args.cell:
         run_cell(args, args.out, args.cell[0], int(args.cell[1]))
         return 0
@@ -177,7 +194,7 @@ def main():
     shutil.copytree(HERE, args.out / "instrument", ignore=shutil.ignore_patterns("__pycache__"))
     meta = dict(runner=args.runner, seeds=args.seeds, smoke=args.smoke, freeze_reference=args.freeze_reference,
                 product_sha=args.product_sha, protocol=current_protocol,
-                host_sha=git(args.hermes_source, "rev-parse", "HEAD"))
+                host_sha=current_protocol["host_sha"])
     dump(args.out / "run.json", meta)
     if args.reference:
         shutil.copyfile(args.reference, args.out / "reference-input.json")
@@ -199,7 +216,7 @@ def main():
         for arm in ("off", "on"):
             root = args.out / f"{arm}-{seed}"
             root.mkdir()
-            cmd = [sys.executable, "-B", str(HERE / "run.py"), args.runner, "--out", str(root),
+            cmd = [sys.executable, "-B", str(args.out / "instrument" / "run.py"), args.runner, "--out", str(root),
                    "--product-source", str(args.product_source), "--product-sha", args.product_sha,
                    "--hermes-source", str(args.hermes_source), "--gap-seconds", str(args.gap_seconds),
                    "--cell", arm, str(seed), "--summary-model", args.summary_model]
@@ -220,12 +237,12 @@ def main():
     dump(args.out / "run.json", meta)
     summary = summarize(args.out)
     dump(args.out / "summary.json", summary)
+    card(args, args.out, summary)
     if args.freeze_reference and summary["verdict"] == "PASS":
         dump(args.out / "REFERENCE.json", dict(product_sha=BASE, seeds=args.seeds, protocol=meta["protocol"],
              pooled_on=summary["pooled_on"], wall_s=meta["wall_s"],
              per_seed={str(s): summary["cells"][f"on-{s}"]["promotion"] for s in args.seeds}))
         (args.out / "REFERENCE.json").chmod(0o444)
-    card(args, args.out, summary)
     print(json.dumps({k: v for k, v in summary.items() if k != "cells"}, indent=2))
     return 1 if summary["verdict"] == "FAIL" else 0
 

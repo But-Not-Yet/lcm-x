@@ -13,9 +13,11 @@ def coverage(probe):
     live = Counter(probe["active_view"])
     tail = []
     for row in rows:
-        if row["store_id"] > probe["frontier"] and live[row["identity"]]:
+        # Active projections/carrier remainders may omit timestamps; storage identity may not.
+        active_identity = row.get("active_identity", row["identity"])
+        if row["store_id"] > probe["frontier"] and live[active_identity]:
             tail.append(row["store_id"])
-            live[row["identity"]] -= 1
+            live[active_identity] -= 1
     lost = [r["store_id"] for r in rows if r["store_id"] not in tail and not covered[r["store_id"]]]
     return {
         "lost": len(lost), "lost_ids": lost, "active_tail_ids": tail,
