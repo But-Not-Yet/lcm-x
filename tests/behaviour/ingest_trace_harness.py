@@ -23,7 +23,7 @@ from functools import lru_cache, partial
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Iterator, cast
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 
 import pytest
 
@@ -42,7 +42,7 @@ import tests.conftest  # noqa: E402, F401
 from tests.behaviour.frontier_observer import legacy_frontier_fields, observed_attribute  # noqa: E402
 from tests.behaviour.reconcile_trace_harness import (  # noqa: E402
     Canonical, LiteralPattern, NOTE, Scenario as ReplayScenario, encoded, fingerprint,
-    first_difference as first_difference, install_clock, rows, seed_proof,
+    first_difference as first_difference, install_clock as install_replay_clock, rows, seed_proof,
 )
 from tests.harness import ScriptedSummarizer, engine_context, pin_char_counter  # noqa: E402
 from tests.phase0_hygiene import product_env_keys  # noqa: E402
@@ -240,6 +240,9 @@ class IngestCanonical(Canonical):
     def __init__(self, root: Path, messages: list[Message]) -> None:
         super().__init__(root, messages)
         self.path_hashes: dict[str, str] = {}
+        # Labels outlive individual snapshots. Keep their objects alive too, so
+        # a later placeholder cannot inherit a freed object's address/label.
+        self.retained_messages = {id(row): row for row in messages}
 
     def text(self, text: str, *, identity: bool = False) -> str:
         # Host occurrence UIDs are evidence, including UUID-shaped values.
@@ -271,6 +274,7 @@ def snapshot(engine: Any, canonical: IngestCanonical) -> dict[str, Any]:
         if isinstance(value, dict):
             if "role" in value and "content" in value:
                 canonical.identities.setdefault(id(value), f"retained-message-{len(canonical.identities)}")
+                canonical.retained_messages[id(value)] = value
             for child in value.values():
                 register(child)
         elif isinstance(value, (list, tuple)):
@@ -292,7 +296,8 @@ def snapshot(engine: Any, canonical: IngestCanonical) -> dict[str, Any]:
         state[name] = canonical.value(value, name)
     conn = engine._store._conn
     # Exact durable rows, including relation IDs, observed_at/source, UID bindings,
-    # scaffold/carry/proof metadata. FTS is already represented by ordered SQL.
+    # scaffold/carry/proof metadata. Searchability is observed via the store API,
+    # separately from this snapshot; SQLite FTS internals stay excluded.
     tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
     state["tables"] = {name: canonical.value([tuple(row) for row in conn.execute(f'SELECT * FROM "{name}" ORDER BY 1')])
                        for name in tables if not name.startswith(("messages_fts", "sqlite_"))}
@@ -316,7 +321,39 @@ class Logs(logging.Handler):
                             self.canonical.text(str(record.msg)), self.canonical.value(record.args)]))
 
 
-def prepare(engine: Any, case: Scenario, root: Path) -> list[Message]:
+def reopen(engine: Any, root: Path, engines: ExitStack) -> Any:
+    config = engine._config
+    engine.shutdown()
+    fresh = engine_module.LCMEngine(config=config, hermes_home=str(root / "home"))
+    engines.callback(fresh.shutdown)
+    fresh.on_session_start("S", conversation_id="trace-conversation", context_length=200000)
+    return fresh
+
+
+def search_observation(engine: Any, incoming: list[Message]) -> list[Any]:
+    """Search input and durable message bytes through the product retrieval API."""
+    stored = engine._store.get_session_messages("S")
+    if engine._session_id and engine._session_id != "S":
+        stored += engine._store.get_session_messages(engine._session_id)
+    queries = sorted({row["content"] for row in [*incoming, *stored]
+                      if isinstance(row.get("content"), str) and row["content"].strip()})
+    return [[query, sorted(([hit["store_id"], hit["session_id"], hit["content"]]
+                            for hit in engine._store.search(query, conversation_id="trace-conversation", limit=10000)),
+                           key=lambda hit: hit[0])] for query in queries]
+
+
+def install_clock(patch: pytest.MonkeyPatch) -> None:
+    install_replay_clock(patch)
+    clock = engine_module.time
+    # ForegroundBudget lives in escalation, while its consumer's deadline lives
+    # in compaction. Both must use the same clock, as must survival/SQL timings.
+    for name in ("escalation", "survival_fit", "sqlite_util"):
+        module = importlib.import_module("hermes_lcm." + name)
+        patch.setattr(module, "time", clock)
+    patch.setattr(importlib.import_module("hermes_lcm.sqlite_util"), "_monotonic", clock.monotonic)
+
+
+def prepare(engine: Any, case: Scenario, root: Path, engines: ExitStack) -> tuple[Any, list[Message]]:
     replay = ReplayScenario(case.name, shape=case.shape, count=case.stored)
     original = rows(replay, root)
     if case.shape == "uid":
@@ -344,10 +381,7 @@ def prepare(engine: Any, case: Scenario, root: Path) -> list[Message]:
         engine._ingest_messages(original)
     elif original:
         engine._store.append_batch("S", original, source="cli", conversation_id="trace-conversation")
-        config = engine._config
-        engine.shutdown()
-        engine.__init__(config=config, hermes_home=str(root / "home"))
-        engine.on_session_start("S", conversation_id="trace-conversation", context_length=200000)
+        engine = reopen(engine, root, engines)
     if case.proof in {"output", "native", "consumed"}:
         proof: dict[str, Any] = {"session_id": "S", "conversation_id": "trace-conversation", "consulted": False,
                  "output": [engine._proof_replay_identity(m, strip_carrier=False) for m in incoming],
@@ -540,7 +574,7 @@ def prepare(engine: Any, case: Scenario, root: Path) -> list[Message]:
         engine._session_ignored = True
     elif case.variant == "stateless":
         engine._session_stateless = True
-    return incoming
+    return engine, incoming
 
 
 @contextmanager
@@ -642,14 +676,15 @@ def observe(case: Scenario, root: Path, *, payloads: list[str] | None = None) ->
         if case.shape == "ignored":
             settings["ignore_message_patterns"] = ["IGNORE THIS ROW"]
         if case.shape == "uid":
-            with sqlite3.connect(root / "state.db") as host:
+            (root / "home").mkdir(exist_ok=True)
+            with sqlite3.connect(root / "home" / "state.db") as host:
                 host.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, parent_session_id TEXT, "
                              "end_reason TEXT, source TEXT, model_config TEXT)")
                 host.execute("INSERT INTO sessions VALUES ('S', NULL, NULL, 'cli', NULL)")
-        with context(root, window=200000, conversation_id="trace-conversation", **settings) as engine:
+        with context(root, window=200000, conversation_id="trace-conversation", **settings) as engine, ExitStack() as engines:
             if case.shape == "ignored":
                 engine._compiled_ignore_message_patterns = [LiteralPattern()]
-            incoming = prepare(engine, case, root)
+            engine, incoming = prepare(engine, case, root, engines)
             if case.shape == "ignored":
                 engine._compiled_ignore_message_patterns = [LiteralPattern()]
             canonical = IngestCanonical(root, incoming)
@@ -772,6 +807,7 @@ def observe(case: Scenario, root: Path, *, payloads: list[str] | None = None) ->
                 if before.get(name) != value:
                     emit("attr " + name, value)
             emit("state-after", after)
+            emit("search-after", search_observation(engine, incoming))
             emit("input-after", incoming)
             emit("aliases-after", aliases(incoming, incoming))
             # Deferred effects are checked by another real ingest and a cold
@@ -784,10 +820,7 @@ def observe(case: Scenario, root: Path, *, payloads: list[str] | None = None) ->
             except Exception as exc:
                 emit("next-raise", [type(exc).__name__, str(exc)])
             emit("next-state", snapshot(engine, canonical))
-            config = engine._config
-            engine.shutdown()
-            engine.__init__(config=config, hermes_home=str(root / "home"))
-            engine.on_session_start("S", conversation_id="trace-conversation", context_length=200000)
+            engine = reopen(engine, root, engines)
             if case.shape == "ignored":
                 engine._compiled_ignore_message_patterns = [LiteralPattern()]
             try:

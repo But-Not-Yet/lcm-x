@@ -73,13 +73,14 @@
 "attr _last_active_replay_source_identities [[\"user\",\"fresh\",\"\",\"\",\"\"],[\"user\",\"fresh\",\"\",\"\",\"\"]]",
 "attr tables sha12/len=c0a79acad645/1120",
 "state-after sha12/len=51311acdb0f6/8960",
+"search-after [[\"fresh\",[[1,\"S\",\"fresh\"],[2,\"S\",\"fresh\"]]]]",
 "input-after [{\"content\":\"fresh\",\"role\":\"user\"},{\"content\":\"fresh\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0,1],[0,1]],\"output-is-input\":true,\"outputs\":[[0,1],[0,1]]}",
 "next-return [{\"content\":\"fresh\",\"role\":\"user\"},{\"content\":\"fresh\",\"role\":\"user\"}]",
 "next-aliases {\"inputs\":[[0,1],[0,1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=51311acdb0f6/8960",
 "cold-return [{\"content\":\"fresh\",\"role\":\"user\"},{\"content\":\"fresh\",\"role\":\"user\"}]",
-"cold-state sha12/len=c078b024cbf2/8918"
+"cold-state sha12/len=c3df865f31ea/8867"
 ],
 "admission-empty": [
 "input-before []",
@@ -94,6 +95,7 @@
 "attr _host_rewrite_watch {}",
 "attr _identity_anchor_text_memo {}",
 "state-after sha12/len=1ea9deb3c625/8310",
+"search-after []",
 "input-after []",
 "aliases-after {\"inputs\":[],\"output-is-input\":true,\"outputs\":[]}",
 "next-return []",
@@ -166,13 +168,14 @@
 "attr _last_active_replay_source_identities [[\"user\",\"fresh\",\"\",\"\",\"\"]]",
 "attr tables sha12/len=17c6c64df5d8/1015",
 "state-after sha12/len=47ac35399dcd/8680",
+"search-after [[\"fresh\",[[1,\"S\",\"fresh\"]]]]",
 "input-after [{\"content\":\"fresh\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=47ac35399dcd/8680",
 "cold-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
-"cold-state sha12/len=a53c364e309e/8941"
+"cold-state sha12/len=93c0579c4e04/8902"
 ],
 "admission-ignored": [
 "input-before [{\"content\":\"fresh\",\"role\":\"user\"}]",
@@ -182,6 +185,7 @@
 "return-0 [{\"content\":\"fresh\",\"role\":\"user\"}]",
 "aliases-0 {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "state-after sha12/len=3896520fdd51/8348",
+"search-after [[\"fresh\",[]]]",
 "input-after [{\"content\":\"fresh\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
@@ -198,6 +202,7 @@
 "return-0 [{\"content\":\"fresh\",\"role\":\"user\"}]",
 "aliases-0 {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "state-after sha12/len=10d7dc6c24c0/8348",
+"search-after [[\"fresh\",[]]]",
 "input-after [{\"content\":\"fresh\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
@@ -214,6 +219,7 @@
 "return-0 [{\"content\":\"fresh\",\"role\":\"user\"}]",
 "aliases-0 {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "state-after sha12/len=1028446e87f3/8348",
+"search-after [[\"fresh\",[]]]",
 "input-after [{\"content\":\"fresh\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
@@ -230,13 +236,14 @@
 "return-0 sha12/len=a2801b378fca/263",
 "aliases-0 {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "state-after sha12/len=61a9fdade9b2/9676",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=61a9fdade9b2/9676",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=9c9d970ec22a/9532"
+"cold-state sha12/len=2b63c39b89ee/9532"
 ],
 "anchor-remainder": [
 "input-before sha12/len=17c4bd30e618/438",
@@ -354,13 +361,14 @@
 "attr _last_active_replay_source_identities sha12/len=fdd8b8f91df7/282",
 "attr tables sha12/len=abbd6727882e/1997",
 "state-after sha12/len=5a6bf2d44968/11133",
+"search-after sha12/len=9c64ee15de15/802",
 "input-after sha12/len=17c4bd30e618/438",
 "aliases-after sha12/len=5cc29f7d8099/95",
 "next-return sha12/len=17c4bd30e618/438",
 "next-aliases sha12/len=176862c7acc1/90",
 "next-state sha12/len=c6833b8a1072/11091",
 "cold-return sha12/len=17c4bd30e618/438",
-"cold-state sha12/len=e0cfca264dfc/10601"
+"cold-state sha12/len=f1d58150f997/10456"
 ],
 "anchor-stamp-new-uid": [
 "input-before sha12/len=2a3d3a1bac02/296",
@@ -444,13 +452,14 @@
 "attr _last_active_replay_messages sha12/len=2a3d3a1bac02/296",
 "attr tables sha12/len=a8eb2988434d/1701",
 "state-after sha12/len=4b034ed3844a/10308",
+"search-after sha12/len=cf515f2ac03c/633",
 "input-after sha12/len=2a3d3a1bac02/296",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=2a3d3a1bac02/296",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=4b034ed3844a/10308",
 "cold-return sha12/len=2a3d3a1bac02/296",
-"cold-state sha12/len=5be2228c8793/10018"
+"cold-state sha12/len=5d69133931b0/9891"
 ],
 "anchor-stamp-replay": [
 "input-before sha12/len=a2801b378fca/263",
@@ -462,13 +471,14 @@
 "return-0 sha12/len=a2801b378fca/263",
 "aliases-0 {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "state-after sha12/len=47f5c7ad287e/9761",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=47f5c7ad287e/9761",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=96999d5752b6/9634"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "anchor-version": [
 "input-before sha12/len=36d5d169adc1/393",
@@ -558,13 +568,14 @@
 "attr _last_active_replay_source_identities sha12/len=ce49e7ea4337/237",
 "attr tables sha12/len=8975d36aba2d/1974",
 "state-after sha12/len=152c5dd4d2be/10743",
+"search-after sha12/len=20a2940a323a/709",
 "input-after sha12/len=36d5d169adc1/393",
 "aliases-after sha12/len=5cc29f7d8099/95",
 "next-return sha12/len=36d5d169adc1/393",
 "next-aliases sha12/len=176862c7acc1/90",
 "next-state sha12/len=152c5dd4d2be/10743",
 "cold-return sha12/len=36d5d169adc1/393",
-"cold-state sha12/len=1f0bbaf107ec/10474"
+"cold-state sha12/len=25a52b176854/10268"
 ],
 "boundary-exhausted-other-digest": [
 "input-before sha12/len=f3a3f0b3ce5b/391",
@@ -701,13 +712,14 @@
 "attr _last_active_replay_source_identities sha12/len=055c0ef4d8fb/375",
 "attr tables sha12/len=de8ca97ab99f/1516",
 "state-after sha12/len=87f214e541e7/9994",
+"search-after sha12/len=2758e7aa0caa/681",
 "input-after sha12/len=f3a3f0b3ce5b/391",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=f3a3f0b3ce5b/391",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=87f214e541e7/9994",
 "cold-return sha12/len=f3a3f0b3ce5b/391",
-"cold-state sha12/len=3432d528b90e/9886"
+"cold-state sha12/len=c5073b9e4fa2/9912"
 ],
 "boundary-stored-counts-mixed": [
 "input-before sha12/len=289542eea95a/632",
@@ -870,13 +882,14 @@
 "attr _last_active_replay_source_identities sha12/len=838f9460a0da/600",
 "attr tables sha12/len=ad2fe236e5f2/1900",
 "state-after sha12/len=d0a57d4b8aa1/10796",
+"search-after sha12/len=23b90c801a8d/737",
 "input-after sha12/len=289542eea95a/632",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=289542eea95a/632",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=d0a57d4b8aa1/10796",
 "cold-return sha12/len=289542eea95a/632",
-"cold-state sha12/len=79bf7f1ea823/10794"
+"cold-state sha12/len=6a867f36c9d2/10770"
 ],
 "boundary-two-digests": [
 "input-before sha12/len=0c248a5886e1/1171",
@@ -1071,13 +1084,14 @@
 "attr _last_active_replay_source_identities sha12/len=0ce49643457a/1123",
 "attr tables sha12/len=de563bd24b19/2584",
 "state-after sha12/len=7663ac4a7bde/12373",
+"search-after sha12/len=6014133048f2/1369",
 "input-after sha12/len=0c248a5886e1/1171",
 "aliases-after sha12/len=5d43f2bcd3d4/119",
 "next-return sha12/len=0c248a5886e1/1171",
 "next-aliases sha12/len=79cf032c539d/102",
 "next-state sha12/len=7663ac4a7bde/12373",
 "cold-return sha12/len=0c248a5886e1/1171",
-"cold-state sha12/len=edfa1281bf53/12483"
+"cold-state sha12/len=3a141619acd6/12508"
 ],
 "cache-absent": [
 "input-before sha12/len=a2801b378fca/263",
@@ -1103,13 +1117,14 @@
 "attr _last_active_replay_messages sha12/len=a2801b378fca/263",
 "attr _last_active_replay_source_identities sha12/len=dd9a3c2074d8/159",
 "state-after sha12/len=47f5c7ad287e/9761",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=47f5c7ad287e/9761",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=96999d5752b6/9634"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "cache-divergent-cache": [
 "input-before sha12/len=468b33749374/263",
@@ -1192,13 +1207,14 @@
 "attr _last_active_replay_source_identities sha12/len=ddca5ebf570f/159",
 "attr tables sha12/len=871eb74af87d/1632",
 "state-after sha12/len=5e88362e7cd4/10093",
+"search-after sha12/len=ed526f782f4b/575",
 "input-after sha12/len=468b33749374/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=468b33749374/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5e88362e7cd4/10093",
 "cold-return sha12/len=468b33749374/263",
-"cold-state sha12/len=41761a11b292/9836"
+"cold-state sha12/len=cc6fd8f0ce56/9709"
 ],
 "cache-empty-delta": [
 "input-before sha12/len=a2801b378fca/263",
@@ -1210,13 +1226,14 @@
 "return-0 sha12/len=a2801b378fca/263",
 "aliases-0 {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "state-after sha12/len=47f5c7ad287e/9761",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=47f5c7ad287e/9761",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=96999d5752b6/9634"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "cache-new-stamp": [
 "input-before sha12/len=26edc68f71dd/263",
@@ -1293,13 +1310,14 @@
 "attr _last_active_replay_messages sha12/len=26edc68f71dd/263",
 "attr tables sha12/len=f6ecc0dc353d/1633",
 "state-after sha12/len=c2e6885446f4/10085",
+"search-after sha12/len=cf515f2ac03c/633",
 "input-after sha12/len=26edc68f71dd/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=26edc68f71dd/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=c2e6885446f4/10085",
 "cold-return sha12/len=26edc68f71dd/263",
-"cold-state sha12/len=bbe807561459/9828"
+"cold-state sha12/len=828a105212e5/9701"
 ],
 "cache-new-uid": [
 "input-before sha12/len=2a3d3a1bac02/296",
@@ -1383,13 +1401,14 @@
 "attr _last_active_replay_messages sha12/len=2a3d3a1bac02/296",
 "attr tables sha12/len=a8eb2988434d/1701",
 "state-after sha12/len=4b034ed3844a/10308",
+"search-after sha12/len=cf515f2ac03c/633",
 "input-after sha12/len=2a3d3a1bac02/296",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=2a3d3a1bac02/296",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=4b034ed3844a/10308",
 "cold-return sha12/len=2a3d3a1bac02/296",
-"cold-state sha12/len=5be2228c8793/10018"
+"cold-state sha12/len=5d69133931b0/9891"
 ],
 "cache-rewrite": [
 "input-before sha12/len=b941c9d1e1af/309",
@@ -1440,13 +1459,14 @@
 "attr _last_active_replay_source_identities sha12/len=fc1cb9a2c35f/197",
 "attr tables sha12/len=559c36d370c6/1612",
 "state-after sha12/len=c2547c8606d5/10125",
+"search-after sha12/len=6375910bc14d/577",
 "input-after sha12/len=b941c9d1e1af/309",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=b941c9d1e1af/309",
 "next-aliases sha12/len=62674f2353cd/83",
 "next-state sha12/len=c2547c8606d5/10125",
 "cold-return sha12/len=b941c9d1e1af/309",
-"cold-state sha12/len=63f5dcf0ac13/9896"
+"cold-state sha12/len=f0907ebec8fb/9769"
 ],
 "cache-short-cache": [
 "input-before sha12/len=a2801b378fca/263",
@@ -1472,13 +1492,14 @@
 "attr _last_active_replay_messages sha12/len=a2801b378fca/263",
 "attr _last_active_replay_source_identities sha12/len=dd9a3c2074d8/159",
 "state-after sha12/len=47f5c7ad287e/9761",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=47f5c7ad287e/9761",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=96999d5752b6/9634"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "durable-end-allow-end": [
 "input-before sha12/len=a2801b378fca/263",
@@ -1645,13 +1666,14 @@
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=036af1e083b7/1468",
 "state-after sha12/len=195103fe0464/9532",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=195103fe0464/9532",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=ecb746b35c41/9532"
+"cold-state sha12/len=195103fe0464/9532"
 ],
 "durable-end-delta": [
 "input-before sha12/len=eb6a778b0b83/319",
@@ -1871,13 +1893,14 @@
 "attr _last_ingest_reconciliation sha12/len=d63c66382c70/148",
 "attr tables sha12/len=18765f99561d/1625",
 "state-after sha12/len=e711ab984530/9897",
+"search-after sha12/len=52a835628361/561",
 "input-after sha12/len=eb6a778b0b83/319",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=eb6a778b0b83/319",
 "next-aliases sha12/len=62674f2353cd/83",
 "next-state sha12/len=e711ab984530/9897",
 "cold-return sha12/len=eb6a778b0b83/319",
-"cold-state sha12/len=6c3c2755b269/9802"
+"cold-state sha12/len=ce2c5982a07d/9784"
 ],
 "durable-end-full": [
 "input-before sha12/len=a2801b378fca/263",
@@ -2041,13 +2064,14 @@
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=036af1e083b7/1468",
 "state-after sha12/len=195103fe0464/9532",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=195103fe0464/9532",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=ecb746b35c41/9532"
+"cold-state sha12/len=195103fe0464/9532"
 ],
 "durable-end-new-uid": [
 "input-before sha12/len=2a3d3a1bac02/296",
@@ -2220,13 +2244,14 @@
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=24df685bafd8/1536",
 "state-after sha12/len=26a0fa4628a4/9713",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=2a3d3a1bac02/296",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=2a3d3a1bac02/296",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=26a0fa4628a4/9713",
 "cold-return sha12/len=2a3d3a1bac02/296",
-"cold-state sha12/len=867470b3538b/9713"
+"cold-state sha12/len=69a135b6bb3c/9713"
 ],
 "durable-metadata-conflict": [
 "input-before sha12/len=26edc68f71dd/263",
@@ -2491,13 +2516,14 @@
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=13b5cb4bc204/2844",
 "state-after sha12/len=5e3fd8e6cc4d/11049",
+"search-after sha12/len=cf515f2ac03c/633",
 "input-after sha12/len=26edc68f71dd/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=26edc68f71dd/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5e3fd8e6cc4d/11049",
 "cold-return sha12/len=26edc68f71dd/263",
-"cold-state sha12/len=9cc14f3d7ab5/10936"
+"cold-state sha12/len=0e3f40e8e7b7/10912"
 ],
 "durable-v2-allow-end": [
 "input-before sha12/len=a2801b378fca/263",
@@ -2765,13 +2791,14 @@
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=8533cd3f3940/2679",
 "state-after sha12/len=977af5ee48a1/10743",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=977af5ee48a1/10743",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=3227e52576bf/10743"
+"cold-state sha12/len=977af5ee48a1/10743"
 ],
 "durable-v2-delta": [
 "input-before sha12/len=eb6a778b0b83/319",
@@ -3105,13 +3132,14 @@
 "attr _last_ingest_reconciliation sha12/len=d63c66382c70/148",
 "attr tables sha12/len=7bdb70a64059/2836",
 "state-after sha12/len=b024485f4f36/11108",
+"search-after sha12/len=52a835628361/561",
 "input-after sha12/len=eb6a778b0b83/319",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=eb6a778b0b83/319",
 "next-aliases sha12/len=62674f2353cd/83",
 "next-state sha12/len=b024485f4f36/11108",
 "cold-return sha12/len=eb6a778b0b83/319",
-"cold-state sha12/len=ecac0d9d7152/11013"
+"cold-state sha12/len=f1d2cfe0698e/10995"
 ],
 "durable-v2-full": [
 "input-before sha12/len=a2801b378fca/263",
@@ -3376,13 +3404,14 @@
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=8533cd3f3940/2679",
 "state-after sha12/len=977af5ee48a1/10743",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=977af5ee48a1/10743",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=3227e52576bf/10743"
+"cold-state sha12/len=977af5ee48a1/10743"
 ],
 "durable-v2-new-uid": [
 "input-before sha12/len=2a3d3a1bac02/296",
@@ -3656,13 +3685,14 @@
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=bed4a5c42462/2747",
 "state-after sha12/len=ba7b45d28e78/10924",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=2a3d3a1bac02/296",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=2a3d3a1bac02/296",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=ba7b45d28e78/10924",
 "cold-return sha12/len=2a3d3a1bac02/296",
-"cold-state sha12/len=6061128e9ddb/10924"
+"cold-state sha12/len=12285b3770b5/10924"
 ],
 "durable-v3-allow-end": [
 "input-before sha12/len=a2801b378fca/263",
@@ -3930,13 +3960,14 @@
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=881c0e3051b3/2679",
 "state-after sha12/len=137eb959097a/10743",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=137eb959097a/10743",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=36294c5f32d8/10743"
+"cold-state sha12/len=137eb959097a/10743"
 ],
 "durable-v3-delta": [
 "input-before sha12/len=eb6a778b0b83/319",
@@ -4270,13 +4301,14 @@
 "attr _last_ingest_reconciliation sha12/len=d63c66382c70/148",
 "attr tables sha12/len=0119ae496120/2836",
 "state-after sha12/len=155b0cfc4bd0/11108",
+"search-after sha12/len=52a835628361/561",
 "input-after sha12/len=eb6a778b0b83/319",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=eb6a778b0b83/319",
 "next-aliases sha12/len=62674f2353cd/83",
 "next-state sha12/len=155b0cfc4bd0/11108",
 "cold-return sha12/len=eb6a778b0b83/319",
-"cold-state sha12/len=599670100a27/11013"
+"cold-state sha12/len=495e34abb24f/10995"
 ],
 "durable-v3-full": [
 "input-before sha12/len=a2801b378fca/263",
@@ -4541,13 +4573,14 @@
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=881c0e3051b3/2679",
 "state-after sha12/len=137eb959097a/10743",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=137eb959097a/10743",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=36294c5f32d8/10743"
+"cold-state sha12/len=137eb959097a/10743"
 ],
 "durable-v3-new-uid": [
 "input-before sha12/len=2a3d3a1bac02/296",
@@ -4821,13 +4854,14 @@
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=718dd534cba5/2747",
 "state-after sha12/len=63f746764877/10924",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=2a3d3a1bac02/296",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=2a3d3a1bac02/296",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=63f746764877/10924",
 "cold-return sha12/len=2a3d3a1bac02/296",
-"cold-state sha12/len=9b0f7cdba64c/10924"
+"cold-state sha12/len=f945a5beb803/10924"
 ],
 "durable-v4-allow-end": [
 "input-before sha12/len=a2801b378fca/263",
@@ -5095,13 +5129,14 @@
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=7bf381374654/2717",
 "state-after sha12/len=d1834e40dd0f/10781",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=d1834e40dd0f/10781",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=db3e45d1480e/10781"
+"cold-state sha12/len=d1834e40dd0f/10781"
 ],
 "durable-v4-delta": [
 "input-before sha12/len=eb6a778b0b83/319",
@@ -5435,13 +5470,14 @@
 "attr _last_ingest_reconciliation sha12/len=d63c66382c70/148",
 "attr tables sha12/len=267d7ab99784/2874",
 "state-after sha12/len=8bdc6f1629ce/11146",
+"search-after sha12/len=52a835628361/561",
 "input-after sha12/len=eb6a778b0b83/319",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=eb6a778b0b83/319",
 "next-aliases sha12/len=62674f2353cd/83",
 "next-state sha12/len=8bdc6f1629ce/11146",
 "cold-return sha12/len=eb6a778b0b83/319",
-"cold-state sha12/len=d8b3d2b9f7c7/11051"
+"cold-state sha12/len=30a9a771dfff/11033"
 ],
 "durable-v4-full": [
 "input-before sha12/len=a2801b378fca/263",
@@ -5706,13 +5742,14 @@
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=7bf381374654/2717",
 "state-after sha12/len=d1834e40dd0f/10781",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=d1834e40dd0f/10781",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=db3e45d1480e/10781"
+"cold-state sha12/len=d1834e40dd0f/10781"
 ],
 "durable-v4-new-uid": [
 "input-before sha12/len=2a3d3a1bac02/296",
@@ -5986,13 +6023,14 @@
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=04c7ce64e5d2/2785",
 "state-after sha12/len=b93b9d41cdd8/10962",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=2a3d3a1bac02/296",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=2a3d3a1bac02/296",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=b93b9d41cdd8/10962",
 "cold-return sha12/len=2a3d3a1bac02/296",
-"cold-state sha12/len=39a7fc6ff288/10962"
+"cold-state sha12/len=2ef83cbb4665/10962"
 ],
 "empty-all-ordinals": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -6128,13 +6166,14 @@
 "attr _last_active_replay_source_identities sha12/len=f64ae3388db7/562",
 "attr tables sha12/len=3fb3d0810faf/1300",
 "state-after sha12/len=5589ed863bfe/9943",
+"search-after sha12/len=8cc5e2d0a1aa/341",
 "input-after sha12/len=59d2b38c58d1/586",
 "aliases-after {\"inputs\":[[0],[1],[2]],\"output-is-input\":true,\"outputs\":[[0],[1],[2]]}",
 "next-return sha12/len=59d2b38c58d1/586",
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=5589ed863bfe/9943",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=043f424d477f/10818"
+"cold-state sha12/len=68ced3b29c41/10818"
 ],
 "empty-child-placeholder-prefix": [
 "input-before sha12/len=84a2b0acfd8c/444",
@@ -6267,13 +6306,14 @@
 "attr _last_active_replay_source_identities sha12/len=abca516c9847/420",
 "attr tables sha12/len=58687c3dd14c/1297",
 "state-after sha12/len=7cf9aa6e8503/9656",
+"search-after sha12/len=ee669d1ebf88/371",
 "input-after sha12/len=84a2b0acfd8c/444",
 "aliases-after {\"inputs\":[[0],[1],[2]],\"output-is-input\":true,\"outputs\":[[0],[1],[2]]}",
 "next-return sha12/len=84a2b0acfd8c/444",
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=7cf9aa6e8503/9656",
 "cold-return sha12/len=84a2b0acfd8c/444",
-"cold-state sha12/len=d4efc8125035/10392"
+"cold-state sha12/len=b218acdf52e5/10392"
 ],
 "ignored-changed": [
 "input-before sha12/len=7b916b76500b/262",
@@ -6578,13 +6618,14 @@
 "attr _last_ingest_reconciliation sha12/len=fb21d44b3bfe/152",
 "attr tables sha12/len=48bf74ba4cb1/1751",
 "state-after sha12/len=fdbe88c781dc/10627",
+"search-after sha12/len=c27aec47be85/489",
 "input-after sha12/len=7b916b76500b/262",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=6a06b8679e18/390",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=f34958903b6b/10390",
 "cold-return sha12/len=6a06b8679e18/390",
-"cold-state sha12/len=6ad3a4c870a7/10505"
+"cold-state sha12/len=2a45a931dfcf/10481"
 ],
 "ignored-delta": [
 "input-before sha12/len=8c74f6e4ae92/318",
@@ -6956,13 +6997,14 @@
 "attr _last_ingest_reconciliation sha12/len=d1297ec21b2b/148",
 "attr tables sha12/len=546bc59c864a/1744",
 "state-after sha12/len=e6ced0d0ded8/10674",
+"search-after sha12/len=763c681674c8/475",
 "input-after sha12/len=8c74f6e4ae92/318",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=144f2697bb1e/446",
 "next-aliases sha12/len=62674f2353cd/83",
 "next-state sha12/len=db124d8cbf1a/10439",
 "cold-return sha12/len=144f2697bb1e/446",
-"cold-state sha12/len=e52c928adb3e/10574"
+"cold-state sha12/len=cffb6fbd89ce/10556"
 ],
 "ignored-full": [
 "input-before sha12/len=e8f650f485dd/262",
@@ -7266,13 +7308,14 @@
 "attr _last_ingest_reconciliation sha12/len=966c4ff89fcc/148",
 "attr tables sha12/len=c744e535cc47/1587",
 "state-after sha12/len=3b26192599a7/10300",
+"search-after sha12/len=278f6a5a92a6/439",
 "input-after sha12/len=e8f650f485dd/262",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=52568ee1000d/390",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=d2cd227a940c/10063",
 "cold-return sha12/len=52568ee1000d/390",
-"cold-state sha12/len=ab1edd61c873/10304"
+"cold-state sha12/len=0c88b642d3a2/10304"
 ],
 "ignored-new": [
 "input-before [{\"content\":\"new request\",\"role\":\"user\"}]",
@@ -7416,13 +7459,14 @@
 "attr _last_ingest_reconciliation sha12/len=67e4b3d43daa/152",
 "attr tables sha12/len=4350865ec5ef/1582",
 "state-after sha12/len=5aae181b5c69/9459",
+"search-after sha12/len=3bbef4ec8131/479",
 "input-after [{\"content\":\"new request\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"new request\",\"role\":\"user\"}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=3fd473dfc91a/9468",
 "cold-return [{\"content\":\"new request\",\"role\":\"user\"}]",
-"cold-state sha12/len=bb2102955ad9/9628"
+"cold-state sha12/len=df4b56f91dd0/9583"
 ],
 "ignored-prefix": [
 "input-before sha12/len=10a913c998cf/131",
@@ -7663,13 +7707,14 @@
 "attr _last_ingest_reconciliation sha12/len=c52283c19293/152",
 "attr tables sha12/len=d39ba2e479a3/1610",
 "state-after sha12/len=9d06521bee0d/10117",
+"search-after sha12/len=278f6a5a92a6/439",
 "input-after sha12/len=10a913c998cf/131",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=7f0fbcc7ce53/259",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=2eef4b1fe03b/9880",
 "cold-return sha12/len=7f0fbcc7ce53/259",
-"cold-state sha12/len=57aa8dac3fad/10117"
+"cold-state sha12/len=af29097ca2b7/10117"
 ],
 "ignored-rewrite": [
 "input-before sha12/len=3d5a2864acb3/308",
@@ -8022,13 +8067,14 @@
 "attr _last_ingest_reconciliation sha12/len=d1297ec21b2b/148",
 "attr tables sha12/len=ffccee2d5bd4/1708",
 "state-after sha12/len=f8ea058ff192/10649",
+"search-after sha12/len=d4ddd75ba60c/491",
 "input-after sha12/len=3d5a2864acb3/308",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=e662fa5d0c23/436",
 "next-aliases sha12/len=62674f2353cd/83",
 "next-state sha12/len=fb0da9adf197/10414",
 "cold-return sha12/len=e662fa5d0c23/436",
-"cold-state sha12/len=96fe1f564110/10543"
+"cold-state sha12/len=d1d3e26c57ee/10518"
 ],
 "ignored-suffix": [
 "input-before sha12/len=cf421a34acd1/132",
@@ -8189,13 +8235,14 @@
 "attr _last_ingest_reconciliation sha12/len=b5ac092efa95/152",
 "attr tables sha12/len=b59f6aae07f7/1490",
 "state-after sha12/len=5fadaf6dc026/9394",
+"search-after sha12/len=278f6a5a92a6/439",
 "input-after sha12/len=cf421a34acd1/132",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=cf421a34acd1/132",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=5fadaf6dc026/9394",
 "cold-return sha12/len=cf421a34acd1/132",
-"cold-state sha12/len=05797fc0bb7c/9394"
+"cold-state sha12/len=5fadaf6dc026/9394"
 ],
 "ignored-warm": [
 "input-before sha12/len=e8f650f485dd/262",
@@ -8248,13 +8295,14 @@
 "attr _generated_ignored_active_replay_placeholder_message_ids [\"retained-message-11\"]",
 "attr _generated_ignored_active_replay_placeholder_messages sha12/len=1420c157c523/218",
 "state-after sha12/len=e12245a288f5/10169",
+"search-after sha12/len=984b8ee7b0d0/336",
 "input-after sha12/len=e8f650f485dd/262",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=52568ee1000d/390",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=fbebe9d85778/10169",
 "cold-return sha12/len=52568ee1000d/390",
-"cold-state sha12/len=0aab3a567233/10262"
+"cold-state sha12/len=5a60e2715d1d/10189"
 ],
 "marker-changed": [
 "input-before sha12/len=9e9abe7ae73c/450",
@@ -8423,13 +8471,14 @@
 "attr _last_ingest_reconciliation sha12/len=f8eced835a98/152",
 "attr tables sha12/len=0badb81dd3c9/2355",
 "state-after sha12/len=973f3df08a8b/10929",
+"search-after sha12/len=ec2f048cafdf/4026",
 "input-after sha12/len=9e9abe7ae73c/450",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=9e9abe7ae73c/450",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=973f3df08a8b/10929",
 "cold-return sha12/len=9e9abe7ae73c/450",
-"cold-state sha12/len=a4540496a356/11247"
+"cold-state sha12/len=7246841bfc7b/11197"
 ],
 "marker-delta": [
 "input-before sha12/len=150ecba943d7/506",
@@ -8612,13 +8661,14 @@
 "attr _last_ingest_reconciliation sha12/len=ee7bd3e5c381/152",
 "attr tables sha12/len=5efea3a7f082/2348",
 "state-after sha12/len=7f216dddec0a/10980",
+"search-after sha12/len=4a132f0be9c7/4012",
 "input-after sha12/len=150ecba943d7/506",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=150ecba943d7/506",
 "next-aliases sha12/len=62674f2353cd/83",
 "next-state sha12/len=7f216dddec0a/10980",
 "cold-return sha12/len=150ecba943d7/506",
-"cold-state sha12/len=3f45c966d999/11320"
+"cold-state sha12/len=e170e0b70115/11276"
 ],
 "marker-full": [
 "input-before sha12/len=beef8adb65d7/450",
@@ -8774,13 +8824,14 @@
 "attr _last_ingest_reconciliation sha12/len=f8eced835a98/152",
 "attr tables sha12/len=603590b35608/2214",
 "state-after sha12/len=f90cc170e766/10612",
+"search-after sha12/len=6a13b227909d/3976",
 "input-after sha12/len=beef8adb65d7/450",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=beef8adb65d7/450",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=f90cc170e766/10612",
 "cold-return sha12/len=beef8adb65d7/450",
-"cold-state sha12/len=3aade4c80cbb/11047"
+"cold-state sha12/len=70db255d9aa1/11047"
 ],
 "marker-new": [
 "input-before [{\"content\":\"new request\",\"role\":\"user\"}]",
@@ -8891,13 +8942,14 @@
 "attr _last_ingest_reconciliation sha12/len=776359dcd07c/152",
 "attr tables sha12/len=1e7954d9d318/1871",
 "state-after sha12/len=d444b607cd37/9685",
+"search-after sha12/len=5950f80603e9/1929",
 "input-after [{\"content\":\"new request\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"new request\",\"role\":\"user\"}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=d444b607cd37/9685",
 "cold-return [{\"content\":\"new request\",\"role\":\"user\"}]",
-"cold-state sha12/len=bdbe9cd1526d/9845"
+"cold-state sha12/len=09914c22e170/9800"
 ],
 "marker-prefix": [
 "input-before sha12/len=3cf04c6f21e8/132",
@@ -9019,13 +9071,14 @@
 "attr _last_ingest_reconciliation sha12/len=431cfd995d1f/152",
 "attr tables sha12/len=c700ecffeac4/1779",
 "state-after sha12/len=7f6eb3bcc185/9628",
+"search-after sha12/len=0691974eaeec/1889",
 "input-after sha12/len=3cf04c6f21e8/132",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=3cf04c6f21e8/132",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=7f6eb3bcc185/9628",
 "cold-return sha12/len=3cf04c6f21e8/132",
-"cold-state sha12/len=ef8c25254fd5/9628"
+"cold-state sha12/len=7f6eb3bcc185/9628"
 ],
 "marker-rewrite": [
 "input-before sha12/len=f26ed003c6e1/496",
@@ -9200,13 +9253,14 @@
 "attr _last_ingest_reconciliation sha12/len=ee7bd3e5c381/152",
 "attr tables sha12/len=ff420f61e7df/2335",
 "state-after sha12/len=99362fad4a66/10978",
+"search-after sha12/len=c1f1c4f87f7a/4028",
 "input-after sha12/len=f26ed003c6e1/496",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=f26ed003c6e1/496",
 "next-aliases sha12/len=62674f2353cd/83",
 "next-state sha12/len=99362fad4a66/10978",
 "cold-return sha12/len=f26ed003c6e1/496",
-"cold-state sha12/len=f8c1dacf1207/11586"
+"cold-state sha12/len=a06c0e41da2b/11534"
 ],
 "marker-suffix": [
 "input-before sha12/len=12362e28feda/319",
@@ -9344,13 +9398,14 @@
 "attr _last_ingest_reconciliation sha12/len=431cfd995d1f/152",
 "attr tables sha12/len=603590b35608/2214",
 "state-after sha12/len=1c867282fc5e/10393",
+"search-after sha12/len=6a13b227909d/3976",
 "input-after sha12/len=12362e28feda/319",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=12362e28feda/319",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=1c867282fc5e/10393",
 "cold-return sha12/len=12362e28feda/319",
-"cold-state sha12/len=f188c1bfb01d/10828"
+"cold-state sha12/len=8b7d80756fc6/10828"
 ],
 "marker-warm": [
 "input-before sha12/len=beef8adb65d7/450",
@@ -9362,13 +9417,14 @@
 "return-0 sha12/len=beef8adb65d7/450",
 "aliases-0 {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "state-after sha12/len=b181a19fbeed/10405",
+"search-after sha12/len=2a721f6c8b37/2396",
 "input-after sha12/len=beef8adb65d7/450",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=beef8adb65d7/450",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=b181a19fbeed/10405",
 "cold-return sha12/len=beef8adb65d7/450",
-"cold-state sha12/len=5ebd3a57f5ab/10717"
+"cold-state sha12/len=9c9fcb1fbf9a/10616"
 ],
 "opaque-raw-stub-assistant-1": [
 "input-before sha12/len=5d84bac833f1/133",
@@ -9431,13 +9487,14 @@
 "attr _last_active_replay_source_identities sha12/len=513b75ac8179/125",
 "attr tables sha12/len=e885a481a1b7/1114",
 "state-after sha12/len=a25d14e4fb2a/8862",
+"search-after sha12/len=6a83cdbae596/215",
 "input-after sha12/len=5d84bac833f1/133",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=5d84bac833f1/133",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=a25d14e4fb2a/8862",
 "cold-return sha12/len=5d84bac833f1/133",
-"cold-state sha12/len=ccdbcbc69b1c/8971"
+"cold-state sha12/len=f009c808b09d/8997"
 ],
 "opaque-raw-stub-assistant-2": [
 "input-before sha12/len=75073efb42bb/265",
@@ -9507,13 +9564,14 @@
 "attr _last_active_replay_source_identities sha12/len=6d59daf3c92d/249",
 "attr tables sha12/len=cacf46c22c35/1318",
 "state-after sha12/len=2396113b4a39/9322",
+"search-after sha12/len=69258aa6e0bc/324",
 "input-after sha12/len=75073efb42bb/265",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=75073efb42bb/265",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=2396113b4a39/9322",
 "cold-return sha12/len=75073efb42bb/265",
-"cold-state sha12/len=ddc6f059e00d/9431"
+"cold-state sha12/len=8d648f64b2f1/9457"
 ],
 "opaque-raw-stub-tool-1": [
 "input-before sha12/len=090cd507464b/123",
@@ -9576,13 +9634,14 @@
 "attr _last_active_replay_source_identities sha12/len=4dc8b785beea/115",
 "attr tables sha12/len=f881225854b4/1104",
 "state-after sha12/len=8ef4cad8090d/8832",
+"search-after sha12/len=a11506d60d12/205",
 "input-after sha12/len=090cd507464b/123",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=090cd507464b/123",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=8ef4cad8090d/8832",
 "cold-return sha12/len=090cd507464b/123",
-"cold-state sha12/len=b59cbbba901e/8941"
+"cold-state sha12/len=0fa4507a62f5/8967"
 ],
 "opaque-raw-stub-tool-2": [
 "input-before sha12/len=4e46855bd4f5/245",
@@ -9652,13 +9711,14 @@
 "attr _last_active_replay_source_identities sha12/len=1a2aacd970a1/229",
 "attr tables sha12/len=93a9101c3bc0/1298",
 "state-after sha12/len=e1e05534b158/9262",
+"search-after sha12/len=70960ddfb2d7/309",
 "input-after sha12/len=4e46855bd4f5/245",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=4e46855bd4f5/245",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=e1e05534b158/9262",
 "cold-return sha12/len=4e46855bd4f5/245",
-"cold-state sha12/len=6b0e31627436/9371"
+"cold-state sha12/len=3f0062164fb1/9397"
 ],
 "opaque-raw-stub-user-1": [
 "input-before sha12/len=d88159f3f4d9/123",
@@ -9724,13 +9784,14 @@
 "attr _last_active_replay_source_identities sha12/len=f3f3f4a6397c/115",
 "attr tables sha12/len=94905aa13108/1104",
 "state-after sha12/len=01acc723398a/9297",
+"search-after sha12/len=652e3e66e312/205",
 "input-after sha12/len=d88159f3f4d9/123",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=d88159f3f4d9/123",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=01acc723398a/9297",
 "cold-return sha12/len=d88159f3f4d9/123",
-"cold-state sha12/len=27f5de543219/9067"
+"cold-state sha12/len=8df842d98b29/8967"
 ],
 "opaque-raw-stub-user-2": [
 "input-before sha12/len=b5879a00fe77/245",
@@ -9806,13 +9867,14 @@
 "attr _last_active_replay_source_identities sha12/len=9270b9618bcb/229",
 "attr tables sha12/len=ae5af81eefbd/1298",
 "state-after sha12/len=345e877a359d/10194",
+"search-after sha12/len=7d209bd8ead1/309",
 "input-after sha12/len=b5879a00fe77/245",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=b5879a00fe77/245",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=345e877a359d/10194",
 "cold-return sha12/len=b5879a00fe77/245",
-"cold-state sha12/len=67526ba2b4da/9624"
+"cold-state sha12/len=c0d0792870b5/9397"
 ],
 "placeholder-0-1-all": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -9954,13 +10016,14 @@
 "attr _last_active_replay_source_identities sha12/len=f64ae3388db7/562",
 "attr tables sha12/len=f1d817ddd09a/1564",
 "state-after sha12/len=228eb70a3751/10207",
+"search-after sha12/len=63920109e1e7/513",
 "input-after sha12/len=59d2b38c58d1/586",
 "aliases-after {\"inputs\":[[0],[1],[2]],\"output-is-input\":true,\"outputs\":[[0],[1],[2]]}",
 "next-return sha12/len=59d2b38c58d1/586",
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=822bf56de6f2/11085"
+"cold-state sha12/len=8d709463dc1a/11085"
 ],
 "placeholder-0-1-generated": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -10085,13 +10148,14 @@
 "attr _last_active_replay_source_identities sha12/len=cc115d4f055a/188",
 "attr tables sha12/len=46ccbb0894cf/1249",
 "state-after sha12/len=b746feaa34f8/9345",
+"search-after sha12/len=8cc5e2d0a1aa/341",
 "input-after sha12/len=eaab59862cf6/196",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=eaab59862cf6/196",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=b746feaa34f8/9345",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=5af6b02be682/9512"
+"cold-state sha12/len=64e59a1560bd/9512"
 ],
 "placeholder-0-1-mixed": [
 "input-before sha12/len=289542eea95a/632",
@@ -10260,13 +10324,14 @@
 "attr _last_active_replay_source_identities sha12/len=838f9460a0da/600",
 "attr tables sha12/len=ad2fe236e5f2/1900",
 "state-after sha12/len=d0a57d4b8aa1/10796",
+"search-after sha12/len=23b90c801a8d/737",
 "input-after sha12/len=289542eea95a/632",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=289542eea95a/632",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=d0a57d4b8aa1/10796",
 "cold-return sha12/len=289542eea95a/632",
-"cold-state sha12/len=79bf7f1ea823/10794"
+"cold-state sha12/len=6a867f36c9d2/10770"
 ],
 "placeholder-0-1-single": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -10390,13 +10455,14 @@
 "attr _last_active_replay_source_identities sha12/len=cc115d4f055a/188",
 "attr tables sha12/len=46ccbb0894cf/1249",
 "state-after sha12/len=26c64b6bf3a3/9128",
+"search-after sha12/len=8cc5e2d0a1aa/341",
 "input-after sha12/len=eaab59862cf6/196",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=eaab59862cf6/196",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=26c64b6bf3a3/9128",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=5af6b02be682/9512"
+"cold-state sha12/len=64e59a1560bd/9512"
 ],
 "placeholder-0-1-stored-counts": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -10539,13 +10605,14 @@
 "attr _last_active_replay_source_identities sha12/len=f64ae3388db7/562",
 "attr tables sha12/len=f1d817ddd09a/1564",
 "state-after sha12/len=228eb70a3751/10207",
+"search-after sha12/len=63920109e1e7/513",
 "input-after sha12/len=59d2b38c58d1/586",
 "aliases-after {\"inputs\":[[0],[1],[2]],\"output-is-input\":true,\"outputs\":[[0],[1],[2]]}",
 "next-return sha12/len=59d2b38c58d1/586",
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=822bf56de6f2/11085"
+"cold-state sha12/len=8d709463dc1a/11085"
 ],
 "placeholder-0-1-summary": [
 "input-before sha12/len=9a6211db2471/291",
@@ -10689,13 +10756,14 @@
 "attr _last_active_replay_source_identities sha12/len=8810d21a2b32/275",
 "attr tables sha12/len=d79b3bdb4069/1507",
 "state-after sha12/len=a0d982cb571c/9933",
+"search-after sha12/len=2b1fecf75b5a/491",
 "input-after sha12/len=9a6211db2471/291",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=9a6211db2471/291",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=a0d982cb571c/9933",
 "cold-return sha12/len=9a6211db2471/291",
-"cold-state sha12/len=effc66545a0b/9784"
+"cold-state sha12/len=65a3f07964be/9711"
 ],
 "placeholder-0-2-all": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -10840,13 +10908,14 @@
 "attr _last_active_replay_source_identities sha12/len=f64ae3388db7/562",
 "attr tables sha12/len=f1d817ddd09a/1564",
 "state-after sha12/len=228eb70a3751/10207",
+"search-after sha12/len=63920109e1e7/513",
 "input-after sha12/len=59d2b38c58d1/586",
 "aliases-after {\"inputs\":[[0],[1],[2]],\"output-is-input\":true,\"outputs\":[[0],[1],[2]]}",
 "next-return sha12/len=59d2b38c58d1/586",
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=822bf56de6f2/11085"
+"cold-state sha12/len=8d709463dc1a/11085"
 ],
 "placeholder-0-2-generated": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -10971,13 +11040,14 @@
 "attr _last_active_replay_source_identities sha12/len=cc115d4f055a/188",
 "attr tables sha12/len=46ccbb0894cf/1249",
 "state-after sha12/len=b746feaa34f8/9345",
+"search-after sha12/len=8cc5e2d0a1aa/341",
 "input-after sha12/len=eaab59862cf6/196",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=eaab59862cf6/196",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=b746feaa34f8/9345",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=5af6b02be682/9512"
+"cold-state sha12/len=64e59a1560bd/9512"
 ],
 "placeholder-0-2-mixed": [
 "input-before sha12/len=289542eea95a/632",
@@ -11141,13 +11211,14 @@
 "attr _last_active_replay_source_identities sha12/len=838f9460a0da/600",
 "attr tables sha12/len=cfad5fc3a25f/1681",
 "state-after sha12/len=409c115043bf/10577",
+"search-after sha12/len=c16862961505/565",
 "input-after sha12/len=289542eea95a/632",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=289542eea95a/632",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=409c115043bf/10577",
 "cold-return sha12/len=289542eea95a/632",
-"cold-state sha12/len=7a3190898237/10798"
+"cold-state sha12/len=8ef98db6102f/10748"
 ],
 "placeholder-0-2-single": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -11271,13 +11342,14 @@
 "attr _last_active_replay_source_identities sha12/len=cc115d4f055a/188",
 "attr tables sha12/len=46ccbb0894cf/1249",
 "state-after sha12/len=26c64b6bf3a3/9128",
+"search-after sha12/len=8cc5e2d0a1aa/341",
 "input-after sha12/len=eaab59862cf6/196",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=eaab59862cf6/196",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=26c64b6bf3a3/9128",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=5af6b02be682/9512"
+"cold-state sha12/len=64e59a1560bd/9512"
 ],
 "placeholder-0-2-stored-counts": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -11423,13 +11495,14 @@
 "attr _last_active_replay_source_identities sha12/len=f64ae3388db7/562",
 "attr tables sha12/len=f1d817ddd09a/1564",
 "state-after sha12/len=228eb70a3751/10207",
+"search-after sha12/len=63920109e1e7/513",
 "input-after sha12/len=59d2b38c58d1/586",
 "aliases-after {\"inputs\":[[0],[1],[2]],\"output-is-input\":true,\"outputs\":[[0],[1],[2]]}",
 "next-return sha12/len=59d2b38c58d1/586",
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=822bf56de6f2/11085"
+"cold-state sha12/len=8d709463dc1a/11085"
 ],
 "placeholder-0-2-summary": [
 "input-before sha12/len=9a6211db2471/291",
@@ -11573,13 +11646,14 @@
 "attr _last_active_replay_source_identities sha12/len=8810d21a2b32/275",
 "attr tables sha12/len=d79b3bdb4069/1507",
 "state-after sha12/len=a0d982cb571c/9933",
+"search-after sha12/len=2b1fecf75b5a/491",
 "input-after sha12/len=9a6211db2471/291",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=9a6211db2471/291",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=a0d982cb571c/9933",
 "cold-return sha12/len=9a6211db2471/291",
-"cold-state sha12/len=effc66545a0b/9784"
+"cold-state sha12/len=65a3f07964be/9711"
 ],
 "placeholder-1-1-all": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -11714,13 +11788,14 @@
 "attr _last_active_replay_source_identities sha12/len=f64ae3388db7/562",
 "attr tables sha12/len=f1d817ddd09a/1564",
 "state-after sha12/len=228eb70a3751/10207",
+"search-after sha12/len=63920109e1e7/513",
 "input-after sha12/len=59d2b38c58d1/586",
 "aliases-after {\"inputs\":[[0],[1],[2]],\"output-is-input\":true,\"outputs\":[[0],[1],[2]]}",
 "next-return sha12/len=59d2b38c58d1/586",
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=822bf56de6f2/11085"
+"cold-state sha12/len=8d709463dc1a/11085"
 ],
 "placeholder-1-1-generated": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -11815,13 +11890,14 @@
 "attr _last_active_replay_source_identities sha12/len=cc115d4f055a/188",
 "attr tables sha12/len=33205d5d153b/1031",
 "state-after sha12/len=01d4c0025866/9153",
+"search-after sha12/len=46823bcb443b/170",
 "input-after sha12/len=eaab59862cf6/196",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=eaab59862cf6/196",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=01d4c0025866/9153",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=01bc4304889e/9129"
+"cold-state sha12/len=e3d62a2c9012/9129"
 ],
 "placeholder-1-1-mixed": [
 "input-before sha12/len=289542eea95a/632",
@@ -11983,13 +12059,14 @@
 "attr _last_active_replay_source_identities sha12/len=838f9460a0da/600",
 "attr tables sha12/len=ad2fe236e5f2/1900",
 "state-after sha12/len=d0a57d4b8aa1/10796",
+"search-after sha12/len=23b90c801a8d/737",
 "input-after sha12/len=289542eea95a/632",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=289542eea95a/632",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=d0a57d4b8aa1/10796",
 "cold-return sha12/len=289542eea95a/632",
-"cold-state sha12/len=79bf7f1ea823/10794"
+"cold-state sha12/len=6a867f36c9d2/10770"
 ],
 "placeholder-1-1-single": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -12106,13 +12183,14 @@
 "attr _last_active_replay_source_identities sha12/len=cc115d4f055a/188",
 "attr tables sha12/len=46ccbb0894cf/1249",
 "state-after sha12/len=26c64b6bf3a3/9128",
+"search-after sha12/len=8cc5e2d0a1aa/341",
 "input-after sha12/len=eaab59862cf6/196",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=eaab59862cf6/196",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=26c64b6bf3a3/9128",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=5af6b02be682/9512"
+"cold-state sha12/len=64e59a1560bd/9512"
 ],
 "placeholder-1-1-stored-counts": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -12248,13 +12326,14 @@
 "attr _last_active_replay_source_identities sha12/len=f64ae3388db7/562",
 "attr tables sha12/len=f1d817ddd09a/1564",
 "state-after sha12/len=228eb70a3751/10207",
+"search-after sha12/len=63920109e1e7/513",
 "input-after sha12/len=59d2b38c58d1/586",
 "aliases-after {\"inputs\":[[0],[1],[2]],\"output-is-input\":true,\"outputs\":[[0],[1],[2]]}",
 "next-return sha12/len=59d2b38c58d1/586",
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=822bf56de6f2/11085"
+"cold-state sha12/len=8d709463dc1a/11085"
 ],
 "placeholder-1-1-summary": [
 "input-before sha12/len=9a6211db2471/291",
@@ -12383,13 +12462,14 @@
 "attr _last_active_replay_source_identities sha12/len=8810d21a2b32/275",
 "attr tables sha12/len=323b553498c6/1288",
 "state-after sha12/len=f57e3f5527a1/9714",
+"search-after sha12/len=6725ac1f00ba/320",
 "input-after sha12/len=9a6211db2471/291",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=9a6211db2471/291",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=f57e3f5527a1/9714",
 "cold-return sha12/len=9a6211db2471/291",
-"cold-state sha12/len=5f0faf4e7ed2/9565"
+"cold-state sha12/len=60fd55002b97/9492"
 ],
 "placeholder-1-2-all": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -12527,13 +12607,14 @@
 "attr _last_active_replay_source_identities sha12/len=f64ae3388db7/562",
 "attr tables sha12/len=f1d817ddd09a/1564",
 "state-after sha12/len=228eb70a3751/10207",
+"search-after sha12/len=63920109e1e7/513",
 "input-after sha12/len=59d2b38c58d1/586",
 "aliases-after {\"inputs\":[[0],[1],[2]],\"output-is-input\":true,\"outputs\":[[0],[1],[2]]}",
 "next-return sha12/len=59d2b38c58d1/586",
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=822bf56de6f2/11085"
+"cold-state sha12/len=8d709463dc1a/11085"
 ],
 "placeholder-1-2-generated": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -12631,13 +12712,14 @@
 "attr _last_active_replay_source_identities sha12/len=cc115d4f055a/188",
 "attr tables sha12/len=33205d5d153b/1031",
 "state-after sha12/len=01d4c0025866/9153",
+"search-after sha12/len=46823bcb443b/170",
 "input-after sha12/len=eaab59862cf6/196",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=eaab59862cf6/196",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=01d4c0025866/9153",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=01bc4304889e/9129"
+"cold-state sha12/len=e3d62a2c9012/9129"
 ],
 "placeholder-1-2-mixed": [
 "input-before sha12/len=289542eea95a/632",
@@ -12794,13 +12876,14 @@
 "attr _last_active_replay_source_identities sha12/len=838f9460a0da/600",
 "attr tables sha12/len=cfad5fc3a25f/1681",
 "state-after sha12/len=409c115043bf/10577",
+"search-after sha12/len=c16862961505/565",
 "input-after sha12/len=289542eea95a/632",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=289542eea95a/632",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=409c115043bf/10577",
 "cold-return sha12/len=289542eea95a/632",
-"cold-state sha12/len=7a3190898237/10798"
+"cold-state sha12/len=8ef98db6102f/10748"
 ],
 "placeholder-1-2-single": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -12917,13 +13000,14 @@
 "attr _last_active_replay_source_identities sha12/len=cc115d4f055a/188",
 "attr tables sha12/len=46ccbb0894cf/1249",
 "state-after sha12/len=26c64b6bf3a3/9128",
+"search-after sha12/len=8cc5e2d0a1aa/341",
 "input-after sha12/len=eaab59862cf6/196",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=eaab59862cf6/196",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=26c64b6bf3a3/9128",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=5af6b02be682/9512"
+"cold-state sha12/len=64e59a1560bd/9512"
 ],
 "placeholder-1-2-stored-counts": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -13062,13 +13146,14 @@
 "attr _last_active_replay_source_identities sha12/len=f64ae3388db7/562",
 "attr tables sha12/len=f1d817ddd09a/1564",
 "state-after sha12/len=228eb70a3751/10207",
+"search-after sha12/len=63920109e1e7/513",
 "input-after sha12/len=59d2b38c58d1/586",
 "aliases-after {\"inputs\":[[0],[1],[2]],\"output-is-input\":true,\"outputs\":[[0],[1],[2]]}",
 "next-return sha12/len=59d2b38c58d1/586",
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=822bf56de6f2/11085"
+"cold-state sha12/len=8d709463dc1a/11085"
 ],
 "placeholder-1-2-summary": [
 "input-before sha12/len=9a6211db2471/291",
@@ -13205,13 +13290,14 @@
 "attr _last_active_replay_source_identities sha12/len=8810d21a2b32/275",
 "attr tables sha12/len=d79b3bdb4069/1507",
 "state-after sha12/len=a0d982cb571c/9933",
+"search-after sha12/len=2b1fecf75b5a/491",
 "input-after sha12/len=9a6211db2471/291",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=9a6211db2471/291",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=a0d982cb571c/9933",
 "cold-return sha12/len=9a6211db2471/291",
-"cold-state sha12/len=effc66545a0b/9784"
+"cold-state sha12/len=65a3f07964be/9711"
 ],
 "placeholder-2-1-all": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -13346,13 +13432,14 @@
 "attr _last_active_replay_source_identities sha12/len=f64ae3388db7/562",
 "attr tables sha12/len=f1d817ddd09a/1564",
 "state-after sha12/len=228eb70a3751/10207",
+"search-after sha12/len=63920109e1e7/513",
 "input-after sha12/len=59d2b38c58d1/586",
 "aliases-after {\"inputs\":[[0],[1],[2]],\"output-is-input\":true,\"outputs\":[[0],[1],[2]]}",
 "next-return sha12/len=59d2b38c58d1/586",
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=822bf56de6f2/11085"
+"cold-state sha12/len=8d709463dc1a/11085"
 ],
 "placeholder-2-1-generated": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -13447,13 +13534,14 @@
 "attr _last_active_replay_source_identities sha12/len=cc115d4f055a/188",
 "attr tables sha12/len=33205d5d153b/1031",
 "state-after sha12/len=01d4c0025866/9153",
+"search-after sha12/len=46823bcb443b/170",
 "input-after sha12/len=eaab59862cf6/196",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=eaab59862cf6/196",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=01d4c0025866/9153",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=01bc4304889e/9129"
+"cold-state sha12/len=e3d62a2c9012/9129"
 ],
 "placeholder-2-1-mixed": [
 "input-before sha12/len=289542eea95a/632",
@@ -13615,13 +13703,14 @@
 "attr _last_active_replay_source_identities sha12/len=838f9460a0da/600",
 "attr tables sha12/len=ad2fe236e5f2/1900",
 "state-after sha12/len=d0a57d4b8aa1/10796",
+"search-after sha12/len=23b90c801a8d/737",
 "input-after sha12/len=289542eea95a/632",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=289542eea95a/632",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=d0a57d4b8aa1/10796",
 "cold-return sha12/len=289542eea95a/632",
-"cold-state sha12/len=79bf7f1ea823/10794"
+"cold-state sha12/len=6a867f36c9d2/10770"
 ],
 "placeholder-2-1-single": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -13738,13 +13827,14 @@
 "attr _last_active_replay_source_identities sha12/len=cc115d4f055a/188",
 "attr tables sha12/len=46ccbb0894cf/1249",
 "state-after sha12/len=26c64b6bf3a3/9128",
+"search-after sha12/len=8cc5e2d0a1aa/341",
 "input-after sha12/len=eaab59862cf6/196",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=eaab59862cf6/196",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=26c64b6bf3a3/9128",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=5af6b02be682/9512"
+"cold-state sha12/len=64e59a1560bd/9512"
 ],
 "placeholder-2-1-stored-counts": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -13880,13 +13970,14 @@
 "attr _last_active_replay_source_identities sha12/len=f64ae3388db7/562",
 "attr tables sha12/len=f1d817ddd09a/1564",
 "state-after sha12/len=228eb70a3751/10207",
+"search-after sha12/len=63920109e1e7/513",
 "input-after sha12/len=59d2b38c58d1/586",
 "aliases-after {\"inputs\":[[0],[1],[2]],\"output-is-input\":true,\"outputs\":[[0],[1],[2]]}",
 "next-return sha12/len=59d2b38c58d1/586",
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=822bf56de6f2/11085"
+"cold-state sha12/len=8d709463dc1a/11085"
 ],
 "placeholder-2-1-summary": [
 "input-before sha12/len=9a6211db2471/291",
@@ -14015,13 +14106,14 @@
 "attr _last_active_replay_source_identities sha12/len=8810d21a2b32/275",
 "attr tables sha12/len=323b553498c6/1288",
 "state-after sha12/len=f57e3f5527a1/9714",
+"search-after sha12/len=6725ac1f00ba/320",
 "input-after sha12/len=9a6211db2471/291",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=9a6211db2471/291",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=f57e3f5527a1/9714",
 "cold-return sha12/len=9a6211db2471/291",
-"cold-state sha12/len=5f0faf4e7ed2/9565"
+"cold-state sha12/len=60fd55002b97/9492"
 ],
 "placeholder-2-2-all": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -14159,13 +14251,14 @@
 "attr _last_active_replay_source_identities sha12/len=f64ae3388db7/562",
 "attr tables sha12/len=f1d817ddd09a/1564",
 "state-after sha12/len=228eb70a3751/10207",
+"search-after sha12/len=63920109e1e7/513",
 "input-after sha12/len=59d2b38c58d1/586",
 "aliases-after {\"inputs\":[[0],[1],[2]],\"output-is-input\":true,\"outputs\":[[0],[1],[2]]}",
 "next-return sha12/len=59d2b38c58d1/586",
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=822bf56de6f2/11085"
+"cold-state sha12/len=8d709463dc1a/11085"
 ],
 "placeholder-2-2-generated": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -14263,13 +14356,14 @@
 "attr _last_active_replay_source_identities sha12/len=cc115d4f055a/188",
 "attr tables sha12/len=33205d5d153b/1031",
 "state-after sha12/len=01d4c0025866/9153",
+"search-after sha12/len=46823bcb443b/170",
 "input-after sha12/len=eaab59862cf6/196",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=eaab59862cf6/196",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=01d4c0025866/9153",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=01bc4304889e/9129"
+"cold-state sha12/len=e3d62a2c9012/9129"
 ],
 "placeholder-2-2-mixed": [
 "input-before sha12/len=289542eea95a/632",
@@ -14426,13 +14520,14 @@
 "attr _last_active_replay_source_identities sha12/len=838f9460a0da/600",
 "attr tables sha12/len=cfad5fc3a25f/1681",
 "state-after sha12/len=409c115043bf/10577",
+"search-after sha12/len=c16862961505/565",
 "input-after sha12/len=289542eea95a/632",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=289542eea95a/632",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=409c115043bf/10577",
 "cold-return sha12/len=289542eea95a/632",
-"cold-state sha12/len=7a3190898237/10798"
+"cold-state sha12/len=8ef98db6102f/10748"
 ],
 "placeholder-2-2-single": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -14549,13 +14644,14 @@
 "attr _last_active_replay_source_identities sha12/len=cc115d4f055a/188",
 "attr tables sha12/len=46ccbb0894cf/1249",
 "state-after sha12/len=26c64b6bf3a3/9128",
+"search-after sha12/len=8cc5e2d0a1aa/341",
 "input-after sha12/len=eaab59862cf6/196",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=eaab59862cf6/196",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=26c64b6bf3a3/9128",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=5af6b02be682/9512"
+"cold-state sha12/len=64e59a1560bd/9512"
 ],
 "placeholder-2-2-stored-counts": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -14694,13 +14790,14 @@
 "attr _last_active_replay_source_identities sha12/len=f64ae3388db7/562",
 "attr tables sha12/len=f1d817ddd09a/1564",
 "state-after sha12/len=228eb70a3751/10207",
+"search-after sha12/len=63920109e1e7/513",
 "input-after sha12/len=59d2b38c58d1/586",
 "aliases-after {\"inputs\":[[0],[1],[2]],\"output-is-input\":true,\"outputs\":[[0],[1],[2]]}",
 "next-return sha12/len=59d2b38c58d1/586",
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=822bf56de6f2/11085"
+"cold-state sha12/len=8d709463dc1a/11085"
 ],
 "placeholder-2-2-summary": [
 "input-before sha12/len=9a6211db2471/291",
@@ -14837,13 +14934,14 @@
 "attr _last_active_replay_source_identities sha12/len=8810d21a2b32/275",
 "attr tables sha12/len=d79b3bdb4069/1507",
 "state-after sha12/len=a0d982cb571c/9933",
+"search-after sha12/len=2b1fecf75b5a/491",
 "input-after sha12/len=9a6211db2471/291",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=9a6211db2471/291",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=a0d982cb571c/9933",
 "cold-return sha12/len=9a6211db2471/291",
-"cold-state sha12/len=effc66545a0b/9784"
+"cold-state sha12/len=65a3f07964be/9711"
 ],
 "proof-consumed-consulted": [
 "input-before sha12/len=a2801b378fca/263",
@@ -14855,13 +14953,14 @@
 "return-0 sha12/len=a2801b378fca/263",
 "aliases-0 {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "state-after sha12/len=e2c268682633/11004",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=e2c268682633/11004",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=96999d5752b6/9634"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "proof-consumed-divergent": [
 "input-before sha12/len=4d2eb06dc995/258",
@@ -15021,13 +15120,14 @@
 "attr _last_ingest_reconciliation sha12/len=f8eced835a98/152",
 "attr tables sha12/len=405d04a27b8f/1627",
 "state-after sha12/len=eec47cddd1d8/11417",
+"search-after sha12/len=4563867939fd/565",
 "input-after sha12/len=4d2eb06dc995/258",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=4d2eb06dc995/258",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=eec47cddd1d8/11417",
 "cold-return sha12/len=4d2eb06dc995/258",
-"cold-state sha12/len=57527b4e3fd4/9816"
+"cold-state sha12/len=608bbf956048/9694"
 ],
 "proof-consumed-foreign-conversation": [
 "input-before sha12/len=a2801b378fca/263",
@@ -15039,13 +15139,14 @@
 "return-0 sha12/len=a2801b378fca/263",
 "aliases-0 {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "state-after sha12/len=bf8ac2aeb3da/11005",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=bf8ac2aeb3da/11005",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=96999d5752b6/9634"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "proof-consumed-foreign-session": [
 "input-before sha12/len=a2801b378fca/263",
@@ -15057,13 +15158,14 @@
 "return-0 sha12/len=a2801b378fca/263",
 "aliases-0 {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "state-after sha12/len=2bed6a59544b/11017",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=2bed6a59544b/11017",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=96999d5752b6/9634"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "proof-consumed-full": [
 "input-before sha12/len=a2801b378fca/263",
@@ -15124,13 +15226,14 @@
 "attr _compress_commit_proof null",
 "attr _host_rewrite_overrides {\"1\":null,\"3\":null}",
 "state-after sha12/len=5c384dfb09ae/9778",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5c384dfb09ae/9778",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=96999d5752b6/9634"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "proof-consumed-input": [
 "input-before sha12/len=a2801b378fca/263",
@@ -15191,13 +15294,14 @@
 "attr _compress_commit_proof null",
 "attr _host_rewrite_overrides {\"1\":null,\"3\":null}",
 "state-after sha12/len=5c384dfb09ae/9778",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5c384dfb09ae/9778",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=96999d5752b6/9634"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "proof-consumed-merge": [
 "input-before [{\"content\":\"left\\n\\nright\",\"role\":\"user\"}]",
@@ -15302,13 +15406,14 @@
 "attr _last_ingest_reconciliation sha12/len=776359dcd07c/152",
 "attr tables sha12/len=f5660be3fde1/1608",
 "state-after sha12/len=739dd00ab9c4/10287",
+"search-after sha12/len=1174ded22a2d/569",
 "input-after [{\"content\":\"left\\n\\nright\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"left\\n\\nright\",\"role\":\"user\"}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=739dd00ab9c4/10287",
 "cold-return [{\"content\":\"left\\n\\nright\",\"role\":\"user\"}]",
-"cold-state sha12/len=78a28d34f0b8/9700"
+"cold-state sha12/len=5e286d1d2ab0/9551"
 ],
 "proof-consumed-missing-metadata": [
 "input-before sha12/len=5758f8fd0855/245",
@@ -15369,13 +15474,14 @@
 "attr _compress_commit_proof null",
 "attr _host_rewrite_overrides {\"1\":null,\"3\":null}",
 "state-after sha12/len=5c384dfb09ae/9778",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=5758f8fd0855/245",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5c384dfb09ae/9778",
 "cold-return sha12/len=5758f8fd0855/245",
-"cold-state sha12/len=f4397ec84962/9616"
+"cold-state sha12/len=38c933383fd6/9541"
 ],
 "proof-consumed-new-stamp": [
 "input-before sha12/len=26edc68f71dd/263",
@@ -15453,13 +15559,14 @@
 "attr _last_active_replay_messages sha12/len=26edc68f71dd/263",
 "attr tables sha12/len=f6ecc0dc353d/1633",
 "state-after sha12/len=c2e6885446f4/10085",
+"search-after sha12/len=cf515f2ac03c/633",
 "input-after sha12/len=26edc68f71dd/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=26edc68f71dd/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=c2e6885446f4/10085",
 "cold-return sha12/len=26edc68f71dd/263",
-"cold-state sha12/len=bbe807561459/9828"
+"cold-state sha12/len=828a105212e5/9701"
 ],
 "proof-consumed-new-uid": [
 "input-before sha12/len=2a3d3a1bac02/296",
@@ -15544,13 +15651,14 @@
 "attr _last_active_replay_messages sha12/len=2a3d3a1bac02/296",
 "attr tables sha12/len=a8eb2988434d/1701",
 "state-after sha12/len=4b034ed3844a/10308",
+"search-after sha12/len=cf515f2ac03c/633",
 "input-after sha12/len=2a3d3a1bac02/296",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=2a3d3a1bac02/296",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=4b034ed3844a/10308",
 "cold-return sha12/len=2a3d3a1bac02/296",
-"cold-state sha12/len=5be2228c8793/10018"
+"cold-state sha12/len=5d69133931b0/9891"
 ],
 "proof-consumed-repair": [
 "input-before sha12/len=d708301caed4/195",
@@ -15676,13 +15784,14 @@
 "attr _last_active_replay_source_identities sha12/len=ae48f5abcac3/117",
 "attr _last_ingest_reconciliation sha12/len=b18d722ccf45/152",
 "state-after sha12/len=cd516e806a75/11126",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=d708301caed4/195",
 "aliases-after {\"inputs\":[[0],[1],[2]],\"output-is-input\":true,\"outputs\":[[0],[1],[2]]}",
 "next-return sha12/len=d708301caed4/195",
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=cd516e806a75/11126",
 "cold-return sha12/len=d708301caed4/195",
-"cold-state sha12/len=ceb30e046cd2/9529"
+"cold-state sha12/len=1be51bd8eb71/9453"
 ],
 "proof-consumed-short": [
 "input-before [{\"content\":\"row 0: العربية 🪷\",\"role\":\"user\",\"timestamp\":100.0}]",
@@ -15784,13 +15893,14 @@
 "attr _last_active_replay_source_identities [[\"user\",\"row 0: العربية 🪷\",\"\",\"\",\"\"]]",
 "attr _last_ingest_reconciliation sha12/len=776359dcd07c/152",
 "state-after sha12/len=4e601c7b4cb7/10808",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after [{\"content\":\"row 0: العربية 🪷\",\"role\":\"user\",\"timestamp\":100.0}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"row 0: العربية 🪷\",\"role\":\"user\",\"timestamp\":100.0}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=4e601c7b4cb7/10808",
 "cold-return [{\"content\":\"row 0: العربية 🪷\",\"role\":\"user\",\"timestamp\":100.0}]",
-"cold-state sha12/len=0b61f6e18c37/9309"
+"cold-state sha12/len=aae04dab2e7e/9234"
 ],
 "proof-consumed-zero": [
 "input-before sha12/len=a2801b378fca/263",
@@ -15845,13 +15955,14 @@
 "attr _host_uid_counters {\"skipped.no_uid\":8}",
 "attr _ingest_cursor 4",
 "state-after sha12/len=1bacf2ae32c2/11022",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=e3b75d97db07/9778",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=86b9f4813cbc/9635"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "proof-native-consulted": [
 "input-before sha12/len=a2801b378fca/263",
@@ -15863,13 +15974,14 @@
 "return-0 sha12/len=a2801b378fca/263",
 "aliases-0 {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "state-after sha12/len=09038e30d5c4/11004",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=09038e30d5c4/11004",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=96999d5752b6/9634"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "proof-native-divergent": [
 "input-before sha12/len=4d2eb06dc995/258",
@@ -16029,13 +16141,14 @@
 "attr _last_ingest_reconciliation sha12/len=f8eced835a98/152",
 "attr tables sha12/len=405d04a27b8f/1627",
 "state-after sha12/len=eb79a8d969b9/11417",
+"search-after sha12/len=4563867939fd/565",
 "input-after sha12/len=4d2eb06dc995/258",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=4d2eb06dc995/258",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=eb79a8d969b9/11417",
 "cold-return sha12/len=4d2eb06dc995/258",
-"cold-state sha12/len=57527b4e3fd4/9816"
+"cold-state sha12/len=608bbf956048/9694"
 ],
 "proof-native-foreign-conversation": [
 "input-before sha12/len=a2801b378fca/263",
@@ -16047,13 +16160,14 @@
 "return-0 sha12/len=a2801b378fca/263",
 "aliases-0 {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "state-after sha12/len=9bb107774e8a/11005",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=9bb107774e8a/11005",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=96999d5752b6/9634"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "proof-native-foreign-session": [
 "input-before sha12/len=a2801b378fca/263",
@@ -16065,13 +16179,14 @@
 "return-0 sha12/len=a2801b378fca/263",
 "aliases-0 {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "state-after sha12/len=dd388aad66fa/11017",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=dd388aad66fa/11017",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=96999d5752b6/9634"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "proof-native-full": [
 "input-before sha12/len=a2801b378fca/263",
@@ -16132,13 +16247,14 @@
 "attr _compress_commit_proof null",
 "attr _host_rewrite_overrides {\"1\":null,\"3\":null}",
 "state-after sha12/len=5c384dfb09ae/9778",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5c384dfb09ae/9778",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=96999d5752b6/9634"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "proof-native-input": [
 "input-before sha12/len=a2801b378fca/263",
@@ -16199,13 +16315,14 @@
 "attr _compress_commit_proof null",
 "attr _host_rewrite_overrides {\"1\":null,\"3\":null}",
 "state-after sha12/len=5c384dfb09ae/9778",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5c384dfb09ae/9778",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=96999d5752b6/9634"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "proof-native-lossy": [
 "input-before sha12/len=a2801b378fca/263",
@@ -16345,13 +16462,14 @@
 "attr _host_uid_counters {\"skipped.no_uid\":8}",
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "state-after sha12/len=eaf37ebad68d/11186",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=eaf37ebad68d/11186",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=86b9f4813cbc/9635"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "proof-native-merge": [
 "input-before [{\"content\":\"left\\n\\nright\",\"role\":\"user\"}]",
@@ -16456,13 +16574,14 @@
 "attr _last_ingest_reconciliation sha12/len=776359dcd07c/152",
 "attr tables sha12/len=f5660be3fde1/1608",
 "state-after sha12/len=c92e6fa744a5/10287",
+"search-after sha12/len=1174ded22a2d/569",
 "input-after [{\"content\":\"left\\n\\nright\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"left\\n\\nright\",\"role\":\"user\"}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=c92e6fa744a5/10287",
 "cold-return [{\"content\":\"left\\n\\nright\",\"role\":\"user\"}]",
-"cold-state sha12/len=78a28d34f0b8/9700"
+"cold-state sha12/len=5e286d1d2ab0/9551"
 ],
 "proof-native-missing-metadata": [
 "input-before sha12/len=5758f8fd0855/245",
@@ -16523,13 +16642,14 @@
 "attr _compress_commit_proof null",
 "attr _host_rewrite_overrides {\"1\":null,\"3\":null}",
 "state-after sha12/len=5c384dfb09ae/9778",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=5758f8fd0855/245",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5c384dfb09ae/9778",
 "cold-return sha12/len=5758f8fd0855/245",
-"cold-state sha12/len=f4397ec84962/9616"
+"cold-state sha12/len=38c933383fd6/9541"
 ],
 "proof-native-new-stamp": [
 "input-before sha12/len=26edc68f71dd/263",
@@ -16607,13 +16727,14 @@
 "attr _last_active_replay_messages sha12/len=26edc68f71dd/263",
 "attr tables sha12/len=f6ecc0dc353d/1633",
 "state-after sha12/len=c2e6885446f4/10085",
+"search-after sha12/len=cf515f2ac03c/633",
 "input-after sha12/len=26edc68f71dd/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=26edc68f71dd/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=c2e6885446f4/10085",
 "cold-return sha12/len=26edc68f71dd/263",
-"cold-state sha12/len=bbe807561459/9828"
+"cold-state sha12/len=828a105212e5/9701"
 ],
 "proof-native-new-uid": [
 "input-before sha12/len=2a3d3a1bac02/296",
@@ -16698,13 +16819,14 @@
 "attr _last_active_replay_messages sha12/len=2a3d3a1bac02/296",
 "attr tables sha12/len=a8eb2988434d/1701",
 "state-after sha12/len=4b034ed3844a/10308",
+"search-after sha12/len=cf515f2ac03c/633",
 "input-after sha12/len=2a3d3a1bac02/296",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=2a3d3a1bac02/296",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=4b034ed3844a/10308",
 "cold-return sha12/len=2a3d3a1bac02/296",
-"cold-state sha12/len=5be2228c8793/10018"
+"cold-state sha12/len=5d69133931b0/9891"
 ],
 "proof-native-remap": [
 "input-before sha12/len=22242b44a316/428",
@@ -16813,13 +16935,14 @@
 "attr _last_active_replay_messages sha12/len=22242b44a316/428",
 "attr _last_active_replay_source_identities sha12/len=06f977e54720/316",
 "state-after sha12/len=2e09fde4d23b/10100",
+"search-after sha12/len=a6da6cbeefdc/667",
 "input-after sha12/len=22242b44a316/428",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=22242b44a316/428",
 "next-aliases sha12/len=62674f2353cd/83",
 "next-state sha12/len=2e09fde4d23b/10100",
 "cold-return sha12/len=22242b44a316/428",
-"cold-state sha12/len=6323084474c2/9956"
+"cold-state sha12/len=a05ecaa779e9/9881"
 ],
 "proof-native-remap-new-stamp": [
 "input-before sha12/len=696275f18e66/428",
@@ -16931,13 +17054,14 @@
 "attr _last_active_replay_source_identities sha12/len=06f977e54720/316",
 "attr tables sha12/len=f6ecc0dc353d/1633",
 "state-after sha12/len=f2f01e710c1b/10407",
+"search-after sha12/len=907e9ad6b32a/775",
 "input-after sha12/len=696275f18e66/428",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=696275f18e66/428",
 "next-aliases sha12/len=62674f2353cd/83",
 "next-state sha12/len=f2f01e710c1b/10407",
 "cold-return sha12/len=696275f18e66/428",
-"cold-state sha12/len=95813be0a9f6/10153"
+"cold-state sha12/len=20b1942cf901/10026"
 ],
 "proof-native-repair": [
 "input-before sha12/len=d708301caed4/195",
@@ -17037,13 +17161,14 @@
 "attr _last_active_replay_messages sha12/len=d708301caed4/195",
 "attr _last_active_replay_source_identities sha12/len=ae48f5abcac3/117",
 "state-after sha12/len=ceaa4331417f/9668",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=d708301caed4/195",
 "aliases-after {\"inputs\":[[0],[1],[2]],\"output-is-input\":true,\"outputs\":[[0],[1],[2]]}",
 "next-return sha12/len=d708301caed4/195",
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=ceaa4331417f/9668",
 "cold-return sha12/len=d708301caed4/195",
-"cold-state sha12/len=a2d638e35263/9528"
+"cold-state sha12/len=1be51bd8eb71/9453"
 ],
 "proof-native-short": [
 "input-before [{\"content\":\"row 0: العربية 🪷\",\"role\":\"user\",\"timestamp\":100.0}]",
@@ -17145,13 +17270,14 @@
 "attr _last_active_replay_source_identities [[\"user\",\"row 0: العربية 🪷\",\"\",\"\",\"\"]]",
 "attr _last_ingest_reconciliation sha12/len=776359dcd07c/152",
 "state-after sha12/len=db4bbfc925c5/10808",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after [{\"content\":\"row 0: العربية 🪷\",\"role\":\"user\",\"timestamp\":100.0}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"row 0: العربية 🪷\",\"role\":\"user\",\"timestamp\":100.0}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=db4bbfc925c5/10808",
 "cold-return [{\"content\":\"row 0: العربية 🪷\",\"role\":\"user\",\"timestamp\":100.0}]",
-"cold-state sha12/len=0b61f6e18c37/9309"
+"cold-state sha12/len=aae04dab2e7e/9234"
 ],
 "proof-native-zero": [
 "input-before sha12/len=a2801b378fca/263",
@@ -17206,13 +17332,14 @@
 "attr _host_uid_counters {\"skipped.no_uid\":8}",
 "attr _ingest_cursor 4",
 "state-after sha12/len=5716ef8cf59c/11022",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=e3b75d97db07/9778",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=86b9f4813cbc/9635"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "proof-output-consulted": [
 "input-before sha12/len=a2801b378fca/263",
@@ -17224,13 +17351,14 @@
 "return-0 sha12/len=a2801b378fca/263",
 "aliases-0 {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "state-after sha12/len=b05f70bd1e08/11005",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=b05f70bd1e08/11005",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=96999d5752b6/9634"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "proof-output-divergent": [
 "input-before sha12/len=4d2eb06dc995/258",
@@ -17390,13 +17518,14 @@
 "attr _last_ingest_reconciliation sha12/len=f8eced835a98/152",
 "attr tables sha12/len=405d04a27b8f/1627",
 "state-after sha12/len=501b3d3beaba/11418",
+"search-after sha12/len=4563867939fd/565",
 "input-after sha12/len=4d2eb06dc995/258",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=4d2eb06dc995/258",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=501b3d3beaba/11418",
 "cold-return sha12/len=4d2eb06dc995/258",
-"cold-state sha12/len=57527b4e3fd4/9816"
+"cold-state sha12/len=608bbf956048/9694"
 ],
 "proof-output-foreign-conversation": [
 "input-before sha12/len=a2801b378fca/263",
@@ -17408,13 +17537,14 @@
 "return-0 sha12/len=a2801b378fca/263",
 "aliases-0 {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "state-after sha12/len=688f0745bb70/11006",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=688f0745bb70/11006",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=96999d5752b6/9634"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "proof-output-foreign-session": [
 "input-before sha12/len=a2801b378fca/263",
@@ -17426,13 +17556,14 @@
 "return-0 sha12/len=a2801b378fca/263",
 "aliases-0 {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "state-after sha12/len=3b425cab10e6/11018",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=3b425cab10e6/11018",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=96999d5752b6/9634"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "proof-output-full": [
 "input-before sha12/len=a2801b378fca/263",
@@ -17493,13 +17624,14 @@
 "attr _compress_commit_proof null",
 "attr _host_rewrite_overrides {\"1\":null,\"3\":null}",
 "state-after sha12/len=5c384dfb09ae/9778",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5c384dfb09ae/9778",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=96999d5752b6/9634"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "proof-output-input": [
 "input-before sha12/len=a2801b378fca/263",
@@ -17584,13 +17716,14 @@
 "attr _compress_commit_proof null",
 "attr _host_rewrite_overrides {\"1\":null,\"3\":null}",
 "state-after sha12/len=5c384dfb09ae/9778",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5c384dfb09ae/9778",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=96999d5752b6/9634"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "proof-output-merge": [
 "input-before [{\"content\":\"left\\n\\nright\",\"role\":\"user\"}]",
@@ -17695,13 +17828,14 @@
 "attr _last_ingest_reconciliation sha12/len=776359dcd07c/152",
 "attr tables sha12/len=f5660be3fde1/1608",
 "state-after sha12/len=8f735124be78/10288",
+"search-after sha12/len=1174ded22a2d/569",
 "input-after [{\"content\":\"left\\n\\nright\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"left\\n\\nright\",\"role\":\"user\"}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=8f735124be78/10288",
 "cold-return [{\"content\":\"left\\n\\nright\",\"role\":\"user\"}]",
-"cold-state sha12/len=78a28d34f0b8/9700"
+"cold-state sha12/len=5e286d1d2ab0/9551"
 ],
 "proof-output-missing-metadata": [
 "input-before sha12/len=5758f8fd0855/245",
@@ -17762,13 +17896,14 @@
 "attr _compress_commit_proof null",
 "attr _host_rewrite_overrides {\"1\":null,\"3\":null}",
 "state-after sha12/len=5c384dfb09ae/9778",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=5758f8fd0855/245",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5c384dfb09ae/9778",
 "cold-return sha12/len=5758f8fd0855/245",
-"cold-state sha12/len=f4397ec84962/9616"
+"cold-state sha12/len=38c933383fd6/9541"
 ],
 "proof-output-new-stamp": [
 "input-before sha12/len=26edc68f71dd/263",
@@ -17846,13 +17981,14 @@
 "attr _last_active_replay_messages sha12/len=26edc68f71dd/263",
 "attr tables sha12/len=f6ecc0dc353d/1633",
 "state-after sha12/len=c2e6885446f4/10085",
+"search-after sha12/len=cf515f2ac03c/633",
 "input-after sha12/len=26edc68f71dd/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=26edc68f71dd/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=c2e6885446f4/10085",
 "cold-return sha12/len=26edc68f71dd/263",
-"cold-state sha12/len=bbe807561459/9828"
+"cold-state sha12/len=828a105212e5/9701"
 ],
 "proof-output-new-uid": [
 "input-before sha12/len=2a3d3a1bac02/296",
@@ -17937,13 +18073,14 @@
 "attr _last_active_replay_messages sha12/len=2a3d3a1bac02/296",
 "attr tables sha12/len=a8eb2988434d/1701",
 "state-after sha12/len=4b034ed3844a/10308",
+"search-after sha12/len=cf515f2ac03c/633",
 "input-after sha12/len=2a3d3a1bac02/296",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=2a3d3a1bac02/296",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=4b034ed3844a/10308",
 "cold-return sha12/len=2a3d3a1bac02/296",
-"cold-state sha12/len=5be2228c8793/10018"
+"cold-state sha12/len=5d69133931b0/9891"
 ],
 "proof-output-repair": [
 "input-before sha12/len=d708301caed4/195",
@@ -18069,13 +18206,14 @@
 "attr _last_active_replay_source_identities sha12/len=ae48f5abcac3/117",
 "attr _last_ingest_reconciliation sha12/len=b18d722ccf45/152",
 "state-after sha12/len=75ac4e0c0767/11127",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=d708301caed4/195",
 "aliases-after {\"inputs\":[[0],[1],[2]],\"output-is-input\":true,\"outputs\":[[0],[1],[2]]}",
 "next-return sha12/len=d708301caed4/195",
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=75ac4e0c0767/11127",
 "cold-return sha12/len=d708301caed4/195",
-"cold-state sha12/len=ceb30e046cd2/9529"
+"cold-state sha12/len=1be51bd8eb71/9453"
 ],
 "proof-output-short": [
 "input-before [{\"content\":\"row 0: العربية 🪷\",\"role\":\"user\",\"timestamp\":100.0}]",
@@ -18177,13 +18315,14 @@
 "attr _last_active_replay_source_identities [[\"user\",\"row 0: العربية 🪷\",\"\",\"\",\"\"]]",
 "attr _last_ingest_reconciliation sha12/len=776359dcd07c/152",
 "state-after sha12/len=685716f0a15b/10809",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after [{\"content\":\"row 0: العربية 🪷\",\"role\":\"user\",\"timestamp\":100.0}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"row 0: العربية 🪷\",\"role\":\"user\",\"timestamp\":100.0}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=685716f0a15b/10809",
 "cold-return [{\"content\":\"row 0: العربية 🪷\",\"role\":\"user\",\"timestamp\":100.0}]",
-"cold-state sha12/len=0b61f6e18c37/9309"
+"cold-state sha12/len=aae04dab2e7e/9234"
 ],
 "proof-output-zero": [
 "input-before sha12/len=a2801b378fca/263",
@@ -18238,13 +18377,14 @@
 "attr _host_uid_counters {\"skipped.no_uid\":8}",
 "attr _ingest_cursor 4",
 "state-after sha12/len=644f22789648/11023",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=e3b75d97db07/9778",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=86b9f4813cbc/9635"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "reconcile-tool-after-new": [
 "input-before sha12/len=8b3016be9f12/440",
@@ -18429,13 +18569,14 @@
 "attr _last_ingest_reconciliation sha12/len=ee7bd3e5c381/152",
 "attr tables sha12/len=62025c860422/2135",
 "state-after sha12/len=3ea8072e3e4a/10703",
+"search-after sha12/len=8875068417af/204",
 "input-after sha12/len=8b3016be9f12/440",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=8b3016be9f12/440",
 "next-aliases sha12/len=62674f2353cd/83",
 "next-state sha12/len=3ea8072e3e4a/10703",
 "cold-return sha12/len=8b3016be9f12/440",
-"cold-state sha12/len=623867629721/11310"
+"cold-state sha12/len=1fddca36d082/11247"
 ],
 "repeated-equal-occurrences": [
 "input-before sha12/len=f8f4dee943fc/143",
@@ -18544,13 +18685,14 @@
 "attr _last_active_replay_source_identities [[\"user\",\"equal\",\"\",\"\",\"\"],[\"user\",\"equal\",\"\",\"\",\"\"]]",
 "attr tables sha12/len=83b993d47efe/1251",
 "state-after sha12/len=a6fd46d51529/9300",
+"search-after [[\"equal\",[[1,\"S\",\"equal\"],[2,\"S\",\"equal\"]]]]",
 "input-after sha12/len=f8f4dee943fc/143",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=f8f4dee943fc/143",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=a6fd46d51529/9300",
 "cold-return sha12/len=f8f4dee943fc/143",
-"cold-state sha12/len=065df6bfedbc/9201"
+"cold-state sha12/len=b0b06a72f4d9/9150"
 ],
 "repeated-tool-id": [
 "input-before sha12/len=7a68e9fd1efb/664",
@@ -18751,13 +18893,14 @@
 "attr _last_ingest_reconciliation sha12/len=9c17b3374330/152",
 "attr tables sha12/len=d985933d8638/2422",
 "state-after sha12/len=33e4ea9f5c2e/11173",
+"search-after sha12/len=cd3af62ccb34/194",
 "input-after sha12/len=7a68e9fd1efb/664",
 "aliases-after sha12/len=5cc29f7d8099/95",
 "next-return sha12/len=7a68e9fd1efb/664",
 "next-aliases sha12/len=176862c7acc1/90",
 "next-state sha12/len=33e4ea9f5c2e/11173",
 "cold-return sha12/len=7a68e9fd1efb/664",
-"cold-state sha12/len=d11f8e77f2ce/12007"
+"cold-state sha12/len=bbdf2db6d2d8/12006"
 ],
 "scaffold-metadata": [
 "input-before sha12/len=dc31772d7fff/96",
@@ -18824,13 +18967,14 @@
 "attr _last_active_replay_source_identities sha12/len=dcdf9c60d43e/88",
 "attr tables sha12/len=9a5e530f7cfb/1168",
 "state-after sha12/len=cd1da6f21e43/9199",
+"search-after sha12/len=12bbc3daec57/151",
 "input-after sha12/len=dc31772d7fff/96",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=dc31772d7fff/96",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=cd1da6f21e43/9199",
 "cold-return sha12/len=dc31772d7fff/96",
-"cold-state sha12/len=d0656748a4e9/9057"
+"cold-state sha12/len=3cd543b05ad4/8984"
 ],
 "sequence-compaction": [
 "input-before sha12/len=ee4c53fc4c3c/9960",
@@ -18946,13 +19090,14 @@
 "attr _last_active_replay_source_identities sha12/len=d2f3ba94b33c/9800",
 "attr tables sha12/len=7c575416bee8/53783",
 "state-after sha12/len=c48615f50f71/118319",
+"search-after sha12/len=0e5fb66338c6/35895",
 "input-after sha12/len=ee4c53fc4c3c/9960",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=ee4c53fc4c3c/9960",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=c48615f50f71/118319",
 "cold-return sha12/len=ee4c53fc4c3c/9960",
-"cold-state sha12/len=0b3c5bed91bb/104414"
+"cold-state sha12/len=adbe044b2af1/97269"
 ],
 "sequence-host-merge": [
 "input-before sha12/len=f92a5e4364d9/9893",
@@ -19083,13 +19228,14 @@
 "attr _last_active_replay_source_identities sha12/len=e2b22d07f52d/9783",
 "attr tables sha12/len=7c575416bee8/53783",
 "state-after sha12/len=8b05b54843f8/118255",
+"search-after sha12/len=725727584901/36458",
 "input-after sha12/len=f92a5e4364d9/9893",
 "aliases-after {\"inputs\":[[0],[1],[2]],\"output-is-input\":true,\"outputs\":[[0],[1],[2]]}",
 "next-return sha12/len=f92a5e4364d9/9893",
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=8b05b54843f8/118255",
 "cold-return sha12/len=f92a5e4364d9/9893",
-"cold-state sha12/len=0b73b64de12d/104330"
+"cold-state sha12/len=9b07f9cc1dcc/97185"
 ],
 "sequence-rewrite": [
 "input-before sha12/len=4299565a0cfa/9973",
@@ -19336,13 +19482,14 @@
 "attr _last_ingest_reconciliation sha12/len=142812585c60/157",
 "attr tables sha12/len=e1ec40c86bc1/54484",
 "state-after sha12/len=7337c010f898/145616",
+"search-after sha12/len=e4077b7e068f/37642",
 "input-after sha12/len=4299565a0cfa/9973",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=4299565a0cfa/9973",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=7337c010f898/145616",
 "cold-return sha12/len=4299565a0cfa/9973",
-"cold-state sha12/len=f0ba47936980/105230"
+"cold-state sha12/len=0a96bcb5a5da/98085"
 ],
 "sequence-rotation": [
 "input-before sha12/len=ee4c53fc4c3c/9960",
@@ -19454,13 +19601,14 @@
 "attr _last_active_replay_source_identities sha12/len=d2f3ba94b33c/9800",
 "attr tables sha12/len=841b74e3da6a/55876",
 "state-after sha12/len=26f89acfc808/104525",
+"search-after sha12/len=e4e40732cf53/35899",
 "input-after sha12/len=ee4c53fc4c3c/9960",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=ee4c53fc4c3c/9960",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=26f89acfc808/104525",
 "cold-return sha12/len=ee4c53fc4c3c/9960",
-"cold-state sha12/len=e28a6952ac52/91042"
+"cold-state sha12/len=c87a7873ea6b/83807"
 ],
 "sqlite-append": [
 "input-before [{\"content\":\"fresh\",\"role\":\"user\"}]",
@@ -19487,13 +19635,14 @@
 "attr _host_rewrite_watch {}",
 "attr _identity_anchor_text_memo {}",
 "state-after sha12/len=1ea9deb3c625/8310",
+"search-after [[\"fresh\",[]]]",
 "input-after [{\"content\":\"fresh\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=47ac35399dcd/8680",
 "cold-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
-"cold-state sha12/len=a53c364e309e/8941"
+"cold-state sha12/len=93c0579c4e04/8902"
 ],
 "sqlite-duplicate-tail": [
 "input-before [{\"content\":\"fresh\",\"role\":\"user\"}]",
@@ -19547,13 +19696,14 @@
 "attr _identity_anchor_text_memo {}",
 "attr _pending_session_tails sha12/len=6628a96b9b9b/237",
 "state-after sha12/len=0cd4791e6e35/8545",
+"search-after [[\"fresh\",[]]]",
 "input-after [{\"content\":\"fresh\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=8fc325463474/8915",
 "cold-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
-"cold-state sha12/len=a53c364e309e/8941"
+"cold-state sha12/len=93c0579c4e04/8902"
 ],
 "sqlite-durable": [
 "input-before sha12/len=a2801b378fca/263",
@@ -19741,13 +19891,14 @@
 "attr _last_active_replay_source_identities sha12/len=dd9a3c2074d8/159",
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "state-after sha12/len=d352507cba94/9412",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=e3c87c4d7868/9399",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=ecb746b35c41/9532"
+"cold-state sha12/len=195103fe0464/9532"
 ],
 "sqlite-locked": [
 "input-before [{\"content\":\"fresh\",\"role\":\"user\"}]",
@@ -19780,13 +19931,14 @@
 "attr _identity_anchor_text_memo {}",
 "attr _pending_session_tails sha12/len=6628a96b9b9b/237",
 "state-after sha12/len=0cd4791e6e35/8545",
+"search-after [[\"fresh\",[]]]",
 "input-after [{\"content\":\"fresh\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=8fc325463474/8915",
 "cold-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
-"cold-state sha12/len=a53c364e309e/8941"
+"cold-state sha12/len=93c0579c4e04/8902"
 ],
 "sqlite-metadata": [
 "input-before sha12/len=dc31772d7fff/96",
@@ -19825,13 +19977,14 @@
 "attr _host_rewrite_watch {}",
 "attr _identity_anchor_text_memo {}",
 "state-after sha12/len=1ea9deb3c625/8310",
+"search-after [[\"[Current user objective preserved from compacted history]\\ninspect\",[]]]",
 "input-after sha12/len=dc31772d7fff/96",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=dc31772d7fff/96",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=cd1da6f21e43/9199",
 "cold-return sha12/len=dc31772d7fff/96",
-"cold-state sha12/len=d0656748a4e9/9057"
+"cold-state sha12/len=3cd543b05ad4/8984"
 ],
 "sqlite-prematch": [
 "input-before sha12/len=468b33749374/263",
@@ -19859,13 +20012,14 @@
 "attr _last_active_replay_messages sha12/len=468b33749374/263",
 "attr _last_active_replay_source_identities sha12/len=ddca5ebf570f/159",
 "state-after sha12/len=68e84b3b5664/9761",
+"search-after sha12/len=a9feb5cc7d25/549",
 "input-after sha12/len=468b33749374/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=468b33749374/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=68e84b3b5664/9761",
 "cold-return sha12/len=468b33749374/263",
-"cold-state sha12/len=e8ef58fd67ef/9956"
+"cold-state sha12/len=758501b1ba92/9854"
 ],
 "sqlite-probe": [
 "input-before [{\"content\":\"fresh\",\"role\":\"user\"}]",
@@ -19925,13 +20079,14 @@
 "attr _last_active_replay_source_identities [[\"user\",\"fresh\",\"\",\"\",\"\"]]",
 "attr tables sha12/len=17c6c64df5d8/1015",
 "state-after sha12/len=47ac35399dcd/8680",
+"search-after [[\"fresh\",[[1,\"S\",\"fresh\"]]]]",
 "input-after [{\"content\":\"fresh\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=47ac35399dcd/8680",
 "cold-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
-"cold-state sha12/len=a53c364e309e/8941"
+"cold-state sha12/len=93c0579c4e04/8902"
 ],
 "sqlite-relation": [
 "input-before sha12/len=59e4a7a217ce/176",
@@ -20095,13 +20250,14 @@
 "attr _last_ingest_reconciliation sha12/len=c6a880bb4d73/152",
 "attr tables sha12/len=90de3bd8245f/1361",
 "state-after sha12/len=46779ce57c6b/9593",
+"search-after sha12/len=b9a3fc63803c/278",
 "input-after sha12/len=59e4a7a217ce/176",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=59e4a7a217ce/176",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=8b40329558a9/9551",
 "cold-return sha12/len=59e4a7a217ce/176",
-"cold-state sha12/len=0a1edf3d17a5/9472"
+"cold-state sha12/len=83217b9b8ee7/9472"
 ],
 "sqlite-snapshot": [
 "input-before [{\"content\":\"fresh\",\"role\":\"user\"}]",
@@ -20165,13 +20321,14 @@
 "attr _last_active_replay_source_identities [[\"user\",\"fresh\",\"\",\"\",\"\"]]",
 "attr tables sha12/len=08209b8cab97/1050",
 "state-after sha12/len=7f25bdc639ed/8716",
+"search-after [[\"fresh\",[[1,\"S\",\"fresh\"]]]]",
 "input-after [{\"content\":\"fresh\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=7f25bdc639ed/8716",
 "cold-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
-"cold-state sha12/len=c1ee04c97738/8938"
+"cold-state sha12/len=321bc83444c7/8938"
 ],
 "tool-segments-after-new": [
 "input-before sha12/len=f2e1af035d42/2925",
@@ -20433,13 +20590,14 @@
 "attr _last_ingest_reconciliation sha12/len=ab9044224e47/183",
 "attr tables sha12/len=86455375553e/4844",
 "state-after sha12/len=2265a0b02836/18133",
+"search-after sha12/len=dac1f63cc260/3805",
 "input-after sha12/len=f2e1af035d42/2925",
 "aliases-after sha12/len=7083c85f8122/127",
 "next-return sha12/len=f2e1af035d42/2925",
 "next-aliases sha12/len=1a461933e56f/118",
 "next-state sha12/len=2265a0b02836/18133",
 "cold-return sha12/len=f2e1af035d42/2925",
-"cold-state sha12/len=a9087700cd63/18404"
+"cold-state sha12/len=f86ef81e3019/18367"
 ],
 "tool-stub-host-held": [
 "input-before sha12/len=c1f012aaaae1/634",
@@ -20490,13 +20648,14 @@
 "attr _last_active_replay_source_identities sha12/len=ad1c4246f14b/3680",
 "attr tables sha12/len=3362d6d3237a/1718",
 "state-after sha12/len=ef0193b2f3f4/13624",
+"search-after sha12/len=dc8cd916ee05/1051",
 "input-after sha12/len=c1f012aaaae1/634",
 "aliases-after {\"inputs\":[[0],[1],[2]],\"output-is-input\":true,\"outputs\":[[0],[1],[2]]}",
 "next-return sha12/len=c1f012aaaae1/634",
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=ef0193b2f3f4/13624",
 "cold-return sha12/len=c1f012aaaae1/634",
-"cold-state sha12/len=26960a7417d6/13661"
+"cold-state sha12/len=2b2cbfe9f2ad/13650"
 ],
 "tool-stub-pair": [
 "input-before sha12/len=47a7fceec7d1/3707",
@@ -20566,13 +20725,14 @@
 "attr _last_active_replay_source_identities sha12/len=8dc72713bba0/3655",
 "attr tables sha12/len=57239ff9ebd8/1614",
 "state-after sha12/len=98df63e5ae98/13353",
+"search-after sha12/len=5ee9bbe3c15c/4641",
 "input-after sha12/len=47a7fceec7d1/3707",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=698ced44c74a/601",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=98df63e5ae98/13353",
 "cold-return sha12/len=47a7fceec7d1/3707",
-"cold-state sha12/len=d1fb4cca128d/16568"
+"cold-state sha12/len=e5921b675d40/16594"
 ],
 "tool-stub-recovery": [
 "input-before sha12/len=281ae148c616/2300",
@@ -20642,13 +20802,14 @@
 "attr _last_active_replay_source_identities sha12/len=daea9f4aa205/2274",
 "attr tables sha12/len=1308cda3bd41/1503",
 "state-after sha12/len=3235ae59395c/13560",
+"search-after sha12/len=30ff76f6f521/2639",
 "input-after sha12/len=281ae148c616/2300",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=281ae148c616/2300",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=3235ae59395c/13560",
 "cold-return sha12/len=281ae148c616/2300",
-"cold-state sha12/len=6efa50db763f/13669"
+"cold-state sha12/len=5d64612ebf8a/13695"
 ],
 "tool-stub-single": [
 "input-before sha12/len=f7bf31b76433/2154",
@@ -20711,13 +20872,14 @@
 "attr _last_active_replay_source_identities sha12/len=488dce710375/2128",
 "attr tables sha12/len=1407d1a953c7/1262",
 "state-after sha12/len=ac71f04bdf72/11174",
+"search-after sha12/len=9e98eb888e4c/2621",
 "input-after sha12/len=f7bf31b76433/2154",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=7775a84d3e5f/301",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=ac71f04bdf72/11174",
 "cold-return sha12/len=f7bf31b76433/2154",
-"cold-state sha12/len=a93fb6cbfaef/13136"
+"cold-state sha12/len=7c37b64a6ea5/13162"
 ],
 "tool-stub-warm": [
 "input-before sha12/len=8c35cfb6b347/2187",
@@ -20768,13 +20930,14 @@
 "attr _last_active_replay_source_identities sha12/len=b4538403d86a/2153",
 "attr tables sha12/len=450251c4bc10/1366",
 "state-after sha12/len=8bf595c638be/11445",
+"search-after sha12/len=3475b25da4c2/2647",
 "input-after sha12/len=8c35cfb6b347/2187",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=04267a9731a3/334",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=8bf595c638be/11445",
 "cold-return sha12/len=8c35cfb6b347/2187",
-"cold-state sha12/len=9c2473965669/13335"
+"cold-state sha12/len=77258be43f0a/13324"
 ],
 "tools-changed": [
 "input-before sha12/len=bc9745e4bbe6/392",
@@ -20953,13 +21116,14 @@
 "attr _last_ingest_reconciliation sha12/len=f8eced835a98/152",
 "attr tables sha12/len=caea611fba63/2143",
 "state-after sha12/len=61dc4ea7616e/10594",
+"search-after sha12/len=e33c055285f1/180",
 "input-after sha12/len=bc9745e4bbe6/392",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=bc9745e4bbe6/392",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=61dc4ea7616e/10594",
 "cold-return sha12/len=bc9745e4bbe6/392",
-"cold-state sha12/len=fda2f7fb3ff7/10887"
+"cold-state sha12/len=5c240d272327/10837"
 ],
 "tools-delta": [
 "input-before sha12/len=45b07bb21b0f/439",
@@ -21152,13 +21316,14 @@
 "attr _last_ingest_reconciliation sha12/len=ee7bd3e5c381/152",
 "attr tables sha12/len=05b0629773ec/2136",
 "state-after sha12/len=ed5f4ef9b5ad/10627",
+"search-after sha12/len=a2df4bce1337/166",
 "input-after sha12/len=45b07bb21b0f/439",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=45b07bb21b0f/439",
 "next-aliases sha12/len=62674f2353cd/83",
 "next-state sha12/len=ed5f4ef9b5ad/10627",
 "cold-return sha12/len=45b07bb21b0f/439",
-"cold-state sha12/len=80da7f79bde7/10942"
+"cold-state sha12/len=40ee03b603e5/10898"
 ],
 "tools-full": [
 "input-before sha12/len=3fefa8d9d036/383",
@@ -21324,13 +21489,14 @@
 "attr _last_ingest_reconciliation sha12/len=f8eced835a98/152",
 "attr tables sha12/len=c86fdc381cae/2002",
 "state-after sha12/len=f94d99603e20/10259",
+"search-after sha12/len=0558d47965ef/130",
 "input-after sha12/len=3fefa8d9d036/383",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=3fefa8d9d036/383",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=f94d99603e20/10259",
 "cold-return sha12/len=3fefa8d9d036/383",
-"cold-state sha12/len=b4112b741d72/10669"
+"cold-state sha12/len=24f8ddb097e9/10669"
 ],
 "tools-new": [
 "input-before [{\"content\":\"new request\",\"role\":\"user\"}]",
@@ -21441,13 +21607,14 @@
 "attr _last_ingest_reconciliation sha12/len=776359dcd07c/152",
 "attr tables sha12/len=945b1830d963/1684",
 "state-after sha12/len=ad2084314d9c/9498",
+"search-after sha12/len=fb0090bdba1c/145",
 "input-after [{\"content\":\"new request\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"new request\",\"role\":\"user\"}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=ad2084314d9c/9498",
 "cold-return [{\"content\":\"new request\",\"role\":\"user\"}]",
-"cold-state sha12/len=3e42611ff262/9658"
+"cold-state sha12/len=453aa1cc20c6/9613"
 ],
 "tools-prefix": [
 "input-before sha12/len=de04d1ab1131/225",
@@ -21569,13 +21736,14 @@
 "attr _last_ingest_reconciliation sha12/len=431cfd995d1f/152",
 "attr tables sha12/len=1e200d40ee29/1592",
 "state-after sha12/len=6bdbb956ccae/9639",
+"search-after sha12/len=a2c974e09af0/105",
 "input-after sha12/len=de04d1ab1131/225",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=de04d1ab1131/225",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=6bdbb956ccae/9639",
 "cold-return sha12/len=de04d1ab1131/225",
-"cold-state sha12/len=2cbdde9faf0f/9639"
+"cold-state sha12/len=6bdbb956ccae/9639"
 ],
 "tools-rewrite": [
 "input-before sha12/len=fb82cdec156f/429",
@@ -21760,13 +21928,14 @@
 "attr _last_ingest_reconciliation sha12/len=ee7bd3e5c381/152",
 "attr tables sha12/len=473c57ad892d/2123",
 "state-after sha12/len=cf482188c660/10625",
+"search-after sha12/len=31f356c0c73a/182",
 "input-after sha12/len=fb82cdec156f/429",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=fb82cdec156f/429",
 "next-aliases sha12/len=62674f2353cd/83",
 "next-state sha12/len=cf482188c660/10625",
 "cold-return sha12/len=fb82cdec156f/429",
-"cold-state sha12/len=c979639c92d6/11211"
+"cold-state sha12/len=728ea479ca8e/11159"
 ],
 "tools-suffix": [
 "input-before sha12/len=3de5ce6c7a5e/159",
@@ -21901,13 +22070,14 @@
 "attr _last_ingest_reconciliation sha12/len=431cfd995d1f/152",
 "attr tables sha12/len=08656f072763/1735",
 "state-after sha12/len=82627cd3774d/9576",
+"search-after sha12/len=99300e680112/130",
 "input-after sha12/len=3de5ce6c7a5e/159",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=3de5ce6c7a5e/159",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=82627cd3774d/9576",
 "cold-return sha12/len=3de5ce6c7a5e/159",
-"cold-state sha12/len=1ef06d1a5f80/9719"
+"cold-state sha12/len=4fcab2f51c25/9719"
 ],
 "tools-warm": [
 "input-before sha12/len=3fefa8d9d036/383",
@@ -21919,13 +22089,14 @@
 "return-0 sha12/len=3fefa8d9d036/383",
 "aliases-0 {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "state-after sha12/len=9f15d4ee1277/9869",
+"search-after sha12/len=a2c974e09af0/105",
 "input-after sha12/len=3fefa8d9d036/383",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=3fefa8d9d036/383",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=9f15d4ee1277/9869",
 "cold-return sha12/len=3fefa8d9d036/383",
-"cold-state sha12/len=acaf644a2537/10301"
+"cold-state sha12/len=e24d8d27eb90/10260"
 ],
 "turns-changed": [
 "input-before sha12/len=468b33749374/263",
@@ -22087,13 +22258,14 @@
 "attr _last_ingest_reconciliation sha12/len=f8eced835a98/152",
 "attr tables sha12/len=f5e6c48e957b/1632",
 "state-after sha12/len=1b471916f602/9850",
+"search-after sha12/len=ed526f782f4b/575",
 "input-after sha12/len=468b33749374/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=468b33749374/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=1b471916f602/9850",
 "cold-return sha12/len=468b33749374/263",
-"cold-state sha12/len=83809a37e805/9733"
+"cold-state sha12/len=aedcbec02a3b/9709"
 ],
 "turns-delta": [
 "input-before sha12/len=eb6a778b0b83/319",
@@ -22313,13 +22485,14 @@
 "attr _last_ingest_reconciliation sha12/len=d63c66382c70/148",
 "attr tables sha12/len=18765f99561d/1625",
 "state-after sha12/len=e711ab984530/9897",
+"search-after sha12/len=52a835628361/561",
 "input-after sha12/len=eb6a778b0b83/319",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=eb6a778b0b83/319",
 "next-aliases sha12/len=62674f2353cd/83",
 "next-state sha12/len=e711ab984530/9897",
 "cold-return sha12/len=eb6a778b0b83/319",
-"cold-state sha12/len=6c3c2755b269/9802"
+"cold-state sha12/len=ce2c5982a07d/9784"
 ],
 "turns-full": [
 "input-before sha12/len=a2801b378fca/263",
@@ -22483,13 +22656,14 @@
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=036af1e083b7/1468",
 "state-after sha12/len=195103fe0464/9532",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=195103fe0464/9532",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=ecb746b35c41/9532"
+"cold-state sha12/len=195103fe0464/9532"
 ],
 "turns-new": [
 "input-before [{\"content\":\"new request\",\"role\":\"user\"}]",
@@ -22600,13 +22774,14 @@
 "attr _last_ingest_reconciliation sha12/len=776359dcd07c/152",
 "attr tables sha12/len=d33ee472c746/1583",
 "state-after sha12/len=7fd773c19134/9397",
+"search-after sha12/len=5955ea353fc0/565",
 "input-after [{\"content\":\"new request\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"new request\",\"role\":\"user\"}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=7fd773c19134/9397",
 "cold-return [{\"content\":\"new request\",\"role\":\"user\"}]",
-"cold-state sha12/len=c237a7e3c156/9557"
+"cold-state sha12/len=53b7ae2c442a/9512"
 ],
 "turns-prefix": [
 "input-before sha12/len=3cf04c6f21e8/132",
@@ -22728,13 +22903,14 @@
 "attr _last_ingest_reconciliation sha12/len=431cfd995d1f/152",
 "attr tables sha12/len=ee116860a7fe/1491",
 "state-after sha12/len=ac21e2e823f8/9340",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=3cf04c6f21e8/132",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=3cf04c6f21e8/132",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=ac21e2e823f8/9340",
 "cold-return sha12/len=3cf04c6f21e8/132",
-"cold-state sha12/len=6b1f44db45cf/9340"
+"cold-state sha12/len=ac21e2e823f8/9340"
 ],
 "turns-rewrite": [
 "input-before sha12/len=b941c9d1e1af/309",
@@ -22935,13 +23111,14 @@
 "attr _last_ingest_reconciliation sha12/len=d63c66382c70/148",
 "attr tables sha12/len=a4a1946a4b11/1589",
 "state-after sha12/len=f195cd8d743a/9872",
+"search-after sha12/len=6375910bc14d/577",
 "input-after sha12/len=b941c9d1e1af/309",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=b941c9d1e1af/309",
 "next-aliases sha12/len=62674f2353cd/83",
 "next-state sha12/len=f195cd8d743a/9872",
 "cold-return sha12/len=b941c9d1e1af/309",
-"cold-state sha12/len=be1bd4360c95/9771"
+"cold-state sha12/len=05176cd6fd0d/9746"
 ],
 "turns-suffix": [
 "input-before sha12/len=cf421a34acd1/132",
@@ -23063,13 +23240,14 @@
 "attr _last_ingest_reconciliation sha12/len=431cfd995d1f/152",
 "attr tables sha12/len=ee116860a7fe/1491",
 "state-after sha12/len=9142c72b1092/9340",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=cf421a34acd1/132",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=cf421a34acd1/132",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=9142c72b1092/9340",
 "cold-return sha12/len=cf421a34acd1/132",
-"cold-state sha12/len=026ebaab7616/9340"
+"cold-state sha12/len=9142c72b1092/9340"
 ],
 "turns-warm": [
 "input-before sha12/len=a2801b378fca/263",
@@ -23081,13 +23259,14 @@
 "return-0 sha12/len=a2801b378fca/263",
 "aliases-0 {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "state-after sha12/len=47f5c7ad287e/9761",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=47f5c7ad287e/9761",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=96999d5752b6/9634"
+"cold-state sha12/len=1a2ab36f3437/9559"
 ],
 "uid-bindings-new": [
 "input-before [{\"content\":\"fresh\",\"message_uid\":\"host-uid-new\",\"role\":\"user\"}]",
@@ -23121,14 +23300,34 @@
 "store result _append_protected_batch [1]",
 "store backfill_observed_at_many [[[]],{}]",
 "store result backfill_observed_at_many 0",
+"store host_uid_bindings_for [[\"30d40ea85d1da1e4:S\",[\"host-uid-new\"]],{}]",
+"sql _store \"SELECT 1 FROM sqlite_master WHERE type='table' AND name='host_uid_bindings'\"",
+"store result host_uid_bindings_for {}",
+"store host_uid_bindings_for [[\"30d40ea85d1da1e4:S\",[\"host-uid-new\"],[\"engine\"]],{}]",
+"sql _store \"SELECT 1 FROM sqlite_master WHERE type='table' AND name='host_uid_bindings'\"",
+"store result host_uid_bindings_for {}",
+"sql _store \"SELECT 1 FROM sqlite_master WHERE type='table' AND name='host_uid_bindings'\"",
+"store add_host_uid_bindings [[\"30d40ea85d1da1e4:S\",[[1,\"host-uid-new\",\"canonical\",\"stored_new\"]]],{}]",
+"sql _store \"BEGIN IMMEDIATE\"",
+"sql _store sha12/len=d0b7c88ed93b/268",
+"sql _store sha12/len=76108a824263/122",
+"sql _store \"CREATE INDEX IF NOT EXISTS idx_host_uid_store ON host_uid_bindings(store_id)\"",
+"sql _store sha12/len=ca0ddbcd772d/92",
+"sql _store sha12/len=ef1bca874603/162",
+"sql _store sha12/len=13b7bd6b84ce/223",
+"sql _store \"COMMIT\"",
+"sql _store \"BEGIN IMMEDIATE\"",
+"sql _store sha12/len=c74976e756a9/364",
+"sql _store \"COMMIT\"",
+"store result add_host_uid_bindings null",
 "store update_metadata_json [[\"host_uid:counters\",\"<metadata-callback>\"],{}]",
 "sql _store \"BEGIN IMMEDIATE\"",
 "store read_metadata_json [[\"host_uid:counters\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'host_uid:counters'\"",
 "store result read_metadata_json null",
-"sql _store sha12/len=3e8d692f7231/163",
+"sql _store sha12/len=a0d93473820b/146",
 "sql _store \"COMMIT\"",
-"store result update_metadata_json {\"skipped.no_lineage_root.unresolved\":1}",
+"store result update_metadata_json {\"unbound.agree_new\":1}",
 "log [\"hermes_lcm.engine\",\"DEBUG\",\"Ingested %d messages into LCM store\",[1]]",
 "store read_metadata_json [[\"ignored_active_replay_placeholder_hashes:S\"],{}]",
 "sql _store sha12/len=2974f8f19965/85",
@@ -23152,28 +23351,29 @@
 "aliases-0 {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "attr _host_rewrite_overrides {}",
 "attr _host_rewrite_watch sha12/len=f30f1964b62a/106",
-"attr _host_uid_counters {\"skipped.no_lineage_root.unresolved\":1}",
-"attr _host_uid_lineage_cache {\"('<sandbox>/home/state.db', 'S')\":[null,\"unresolved\"]}",
+"attr _host_uid_counters {\"unbound.agree_new\":1}",
+"attr _host_uid_lineage_cache {\"('<sandbox>/home/state.db', 'S')\":[\"30d40ea85d1da1e4:S\",null]}",
 "attr _identity_anchor_recent [[\"S\",[\"user\",\"fresh\",\"\",\"\",\"\"],1,null]]",
 "attr _identity_anchor_text_memo {}",
 "attr _identity_anchor_versions []",
 "attr _ingest_cursor 1",
 "attr _last_active_replay_messages [{\"content\":\"fresh\",\"message_uid\":\"host-uid-new\",\"role\":\"user\"}]",
 "attr _last_active_replay_source_identities [[\"user\",\"fresh\",\"\",\"\",\"\"]]",
-"attr tables sha12/len=578a5f314637/1083",
-"state-after sha12/len=05d3e67c3713/8867",
+"attr tables sha12/len=69731892576a/1213",
+"state-after sha12/len=fc1005dda269/8988",
+"search-after [[\"fresh\",[[1,\"S\",\"fresh\"]]]]",
 "input-after [{\"content\":\"fresh\",\"message_uid\":\"host-uid-new\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"fresh\",\"message_uid\":\"host-uid-new\",\"role\":\"user\"}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
-"next-state sha12/len=05d3e67c3713/8867",
+"next-state sha12/len=fc1005dda269/8988",
 "cold-return [{\"content\":\"fresh\",\"message_uid\":\"host-uid-new\",\"role\":\"user\"}]",
-"cold-state sha12/len=b9f6b80ce2b3/9128"
+"cold-state sha12/len=c39baf074d5a/9286"
 ],
 "uid-bindings-new-occurrence": [
 "input-before sha12/len=4ae15669f985/371",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=0e53542e5fa3/10052",
+"state-before sha12/len=dd6d565355ae/10419",
 "store find_rows_by_observed_at [[\"trace-conversation\",[\"S\"],[101.0,102.0,103.0,999.0]],{}]",
 "sql _store sha12/len=af26081635a0/298",
 "sql _store sha12/len=5c8ad30140d1/123",
@@ -23223,14 +23423,35 @@
 "store result _append_protected_batch [5]",
 "store backfill_observed_at_many [[[]],{}]",
 "store result backfill_observed_at_many 0",
+"store host_uid_bindings_for sha12/len=73f71fb04200/81",
+"sql _store sha12/len=16c9ab4e1329/208",
+"store result host_uid_bindings_for sha12/len=d1a6d7d6342c/125",
+"store host_uid_bindings_for sha12/len=660704e7b8f1/92",
+"sql _store sha12/len=64378a2bdbf0/195",
+"store result host_uid_bindings_for {}",
+"store get_batch [[[1,2,3,4]],{}]",
+"sql _store sha12/len=042692b5ecec/229",
+"store result get_batch sha12/len=271dee43d312/1359",
+"sql _store sha12/len=66d7663bdea1/209",
+"store read_metadata_json_many [[[\"host_rewrite_identity:1\"]],{}]",
+"sql _store \"SELECT key, value FROM metadata WHERE key IN ('host_rewrite_identity:1')\"",
+"store result read_metadata_json_many {}",
+"store add_host_uid_bindings [[\"30d40ea85d1da1e4:S\",[]],{}]",
+"store result add_host_uid_bindings null",
+"sql _store \"BEGIN IMMEDIATE\"",
+"sql _store sha12/len=8e82cb33ba78/235",
+"sql _store sha12/len=c79a1aeb844b/232",
+"sql _store sha12/len=e67f53ed26df/232",
+"sql _store sha12/len=ced58f156955/232",
+"sql _store \"COMMIT\"",
 "store update_metadata_json [[\"host_uid:counters\",\"<metadata-callback>\"],{}]",
 "sql _store \"BEGIN IMMEDIATE\"",
 "store read_metadata_json [[\"host_uid:counters\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'host_uid:counters'\"",
-"store result read_metadata_json {\"skipped.no_lineage_root.unresolved\":4}",
-"sql _store sha12/len=a82e96b2230c/163",
+"store result read_metadata_json {\"unbound.agree_new\":4}",
+"sql _store sha12/len=bc3667a4303e/224",
 "sql _store \"COMMIT\"",
-"store result update_metadata_json {\"skipped.no_lineage_root.unresolved\":8}",
+"store result update_metadata_json sha12/len=105081ad87c2/93",
 "log [\"hermes_lcm.engine\",\"DEBUG\",\"Ingested %d messages into LCM store\",[1]]",
 "store read_metadata_json [[\"ignored_active_replay_placeholder_hashes:S\"],{}]",
 "sql _store sha12/len=2974f8f19965/85",
@@ -23246,38 +23467,40 @@
 "store result write_metadata_json false",
 "return-0 sha12/len=4ae15669f985/371",
 "aliases-0 {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"attr _host_rewrite_overrides {\"3\":null}",
+"attr _host_rewrite_overrides {\"1\":null,\"3\":null}",
 "attr _host_rewrite_watch sha12/len=af56d602245a/463",
-"attr _host_uid_counters {\"skipped.no_lineage_root.unresolved\":8}",
+"attr _host_uid_counters sha12/len=105081ad87c2/93",
 "attr _identity_anchor_recent sha12/len=2b55d16dfc7a/154",
 "attr _last_active_replay_messages sha12/len=4ae15669f985/371",
-"attr tables sha12/len=d404d69c47bb/1701",
-"state-after sha12/len=eff639e4cefe/10403",
+"attr tables sha12/len=8b1c0f10e3e6/2177",
+"state-after sha12/len=c32b7ab0a7d8/10942",
+"search-after sha12/len=cf515f2ac03c/633",
 "input-after sha12/len=4ae15669f985/371",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=4ae15669f985/371",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=eff639e4cefe/10403",
+"next-state sha12/len=c32b7ab0a7d8/10942",
 "cold-return sha12/len=4ae15669f985/371",
-"cold-state sha12/len=d69e979cce42/10066"
+"cold-state sha12/len=47ef8bb81be3/10496"
 ],
 "uid-bindings-replay": [
 "input-before sha12/len=eb41c0bc5651/371",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=0e53542e5fa3/10052",
+"state-before sha12/len=dd6d565355ae/10419",
 "store backfill_observed_at_many [[[]],{}]",
 "store result backfill_observed_at_many 0",
 "log [\"hermes_lcm.engine\",\"DEBUG\",\"Ingest: session=%s cursor=%d incoming=%d\",[\"S\",4,4]]",
 "return-0 sha12/len=eb41c0bc5651/371",
 "aliases-0 {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"state-after sha12/len=0e53542e5fa3/10052",
+"state-after sha12/len=dd6d565355ae/10419",
+"search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=eb41c0bc5651/371",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=eb41c0bc5651/371",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=0e53542e5fa3/10052",
+"next-state sha12/len=dd6d565355ae/10419",
 "cold-return sha12/len=eb41c0bc5651/371",
-"cold-state sha12/len=85a0949fd766/9871"
+"cold-state sha12/len=c3e6179dd69d/10238"
 ],
 "whitespace-changed": [
 "input-before sha12/len=468b33749374/263",
@@ -23439,13 +23662,14 @@
 "attr _last_ingest_reconciliation sha12/len=f8eced835a98/152",
 "attr tables sha12/len=5a01d9604bfa/1634",
 "state-after sha12/len=d4f148036edc/9852",
+"search-after sha12/len=4a686a64da09/417",
 "input-after sha12/len=468b33749374/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=468b33749374/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=d4f148036edc/9852",
 "cold-return sha12/len=468b33749374/263",
-"cold-state sha12/len=761892089fbb/9735"
+"cold-state sha12/len=008ccb1ed29f/9711"
 ],
 "whitespace-delta": [
 "input-before sha12/len=af8dbc1e88ed/321",
@@ -23665,13 +23889,14 @@
 "attr _last_ingest_reconciliation sha12/len=d63c66382c70/148",
 "attr tables sha12/len=e47052f57661/1627",
 "state-after sha12/len=18de6429c526/9903",
+"search-after sha12/len=29b209d21fca/403",
 "input-after sha12/len=af8dbc1e88ed/321",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=af8dbc1e88ed/321",
 "next-aliases sha12/len=62674f2353cd/83",
 "next-state sha12/len=18de6429c526/9903",
 "cold-return sha12/len=af8dbc1e88ed/321",
-"cold-state sha12/len=34a05fe4178e/9808"
+"cold-state sha12/len=e173996c4df2/9790"
 ],
 "whitespace-full": [
 "input-before sha12/len=ca7f1b05ff41/265",
@@ -23835,13 +24060,14 @@
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=3830a5066f9a/1470",
 "state-after sha12/len=04d2bab022cf/9538",
+"search-after sha12/len=7e9c57cde539/367",
 "input-after sha12/len=ca7f1b05ff41/265",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=ca7f1b05ff41/265",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=04d2bab022cf/9538",
 "cold-return sha12/len=ca7f1b05ff41/265",
-"cold-state sha12/len=cecfffc2a0cc/9538"
+"cold-state sha12/len=04d2bab022cf/9538"
 ],
 "whitespace-new": [
 "input-before [{\"content\":\"new request\",\"role\":\"user\"}]",
@@ -23952,13 +24178,14 @@
 "attr _last_ingest_reconciliation sha12/len=776359dcd07c/152",
 "attr tables sha12/len=76f68e4debd0/1585",
 "state-after sha12/len=35b771ac4811/9399",
+"search-after sha12/len=9f522450b57a/407",
 "input-after [{\"content\":\"new request\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"new request\",\"role\":\"user\"}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=35b771ac4811/9399",
 "cold-return [{\"content\":\"new request\",\"role\":\"user\"}]",
-"cold-state sha12/len=9f856d154c95/9559"
+"cold-state sha12/len=79c1a02d2c10/9514"
 ],
 "whitespace-prefix": [
 "input-before sha12/len=a1d9ce191a40/134",
@@ -24080,13 +24307,14 @@
 "attr _last_ingest_reconciliation sha12/len=431cfd995d1f/152",
 "attr tables sha12/len=ab3419321233/1493",
 "state-after sha12/len=2c44b091223a/9346",
+"search-after sha12/len=7e9c57cde539/367",
 "input-after sha12/len=a1d9ce191a40/134",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=a1d9ce191a40/134",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=2c44b091223a/9346",
 "cold-return sha12/len=a1d9ce191a40/134",
-"cold-state sha12/len=db920feec7bd/9346"
+"cold-state sha12/len=2c44b091223a/9346"
 ],
 "whitespace-rewrite": [
 "input-before sha12/len=f8189a438a4e/305",
@@ -24287,13 +24515,14 @@
 "attr _last_ingest_reconciliation sha12/len=d63c66382c70/148",
 "attr tables sha12/len=e6eb59dc0311/1591",
 "state-after sha12/len=4bd33abfeabe/9866",
+"search-after sha12/len=1f6384a3299b/467",
 "input-after sha12/len=f8189a438a4e/305",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=f8189a438a4e/305",
 "next-aliases sha12/len=62674f2353cd/83",
 "next-state sha12/len=4bd33abfeabe/9866",
 "cold-return sha12/len=f8189a438a4e/305",
-"cold-state sha12/len=11a851238c9a/10411"
+"cold-state sha12/len=8624910c8d98/10359"
 ],
 "whitespace-suffix": [
 "input-before sha12/len=cf421a34acd1/132",
@@ -24415,13 +24644,14 @@
 "attr _last_ingest_reconciliation sha12/len=431cfd995d1f/152",
 "attr tables sha12/len=ab3419321233/1493",
 "state-after sha12/len=5dcfe8f49857/9342",
+"search-after sha12/len=7e9c57cde539/367",
 "input-after sha12/len=cf421a34acd1/132",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=cf421a34acd1/132",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=5dcfe8f49857/9342",
 "cold-return sha12/len=cf421a34acd1/132",
-"cold-state sha12/len=0477d2bd9249/9342"
+"cold-state sha12/len=5dcfe8f49857/9342"
 ],
 "whitespace-warm": [
 "input-before sha12/len=ca7f1b05ff41/265",
@@ -24433,12 +24663,13 @@
 "return-0 sha12/len=ca7f1b05ff41/265",
 "aliases-0 {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "state-after sha12/len=5d91f2932ecb/9774",
+"search-after sha12/len=7e9c57cde539/367",
 "input-after sha12/len=ca7f1b05ff41/265",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=ca7f1b05ff41/265",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5d91f2932ecb/9774",
 "cold-return sha12/len=ca7f1b05ff41/265",
-"cold-state sha12/len=b168303c38da/9641"
+"cold-state sha12/len=194e2de3fe6b/9564"
 ]
 }

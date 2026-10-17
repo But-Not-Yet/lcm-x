@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,9 @@ import pytest
 from tests.behaviour.ingest_trace_harness import (
     GOLDEN, OBSERVED_ATTRIBUTES, SCENARIOS, TRACE_GUIDANCE, IngestCanonical,
     engine_attributes, engine_module, first_difference, observe,
+    install_clock, reopen, search_observation, snapshot,
 )
+from tests.harness import engine_context, pin_char_counter
 
 
 @pytest.mark.parametrize("case", SCENARIOS, ids=lambda case: case.name)
@@ -68,3 +71,64 @@ def test_occurrence_uids_and_structured_payload_bytes_stay_distinct(tmp_path: Pa
     assert canonical.value(first)["content"] == first["content"]
     assert canonical.value({"content": "mtime_ns=123"}) == {"content": "mtime_ns=123"}
     assert canonical.value(first) != canonical.value({**first, "timestamp": 11.})
+
+
+def test_search_observation_detects_unindexed_ingest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pin: Any = pin_char_counter
+    context: Any = engine_context
+    pin(monkeypatch)
+    install_clock(monkeypatch)
+    with context(tmp_path, window=200000, conversation_id="trace-conversation", embeddings_enabled=False) as engine:
+        first = [{"role": "user", "content": "indexed trace observation"}]
+        engine._ingest_messages(first)
+        assert search_observation(engine, first) == [[first[0]["content"], [[1, "S", first[0]["content"]]]]]
+        # A real SQLite trigger failure leaves durable bytes but no FTS entry.
+        engine._store._conn.execute("DROP TRIGGER msg_fts_insert")
+        missing = {"role": "user", "content": "unindexed distinct needle"}
+        engine._ingest_messages([*first, missing])
+        observations = dict(search_observation(engine, [missing]))
+        assert engine._store.get_session_count("S") == 2
+        assert observations[missing["content"]] == []
+
+
+def test_reopen_discards_instance_caches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pin: Any = pin_char_counter
+    context: Any = engine_context
+    pin(monkeypatch)
+    install_clock(monkeypatch)
+    with context(tmp_path, window=200000, conversation_id="trace-conversation", embeddings_enabled=False) as old, ExitStack() as engines:
+        old._host_uid_lineage_cache = {"stale": True}
+        old._host_uid_counters = {"stale": 7}
+        old._engine_uids_pending = {"stale": True}
+        fresh = reopen(old, tmp_path, engines)
+        assert fresh is not old
+        assert fresh._config is old._config
+        for name in ("_host_uid_lineage_cache", "_host_uid_counters", "_engine_uids_pending"):
+            assert "stale" not in getattr(fresh, name, {})
+
+
+def test_snapshot_keeps_labelled_messages_alive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pin: Any = pin_char_counter
+    context: Any = engine_context
+    pin(monkeypatch)
+    install_clock(monkeypatch)
+    with context(tmp_path, window=200000, embeddings_enabled=False) as engine:
+        message = {"role": "assistant", "content": "retained identity"}
+        engine._last_active_replay_messages = [message]
+        canonical = IngestCanonical(tmp_path, [])
+        snapshot(engine, canonical)
+        engine._last_active_replay_messages = []
+        assert canonical.retained_messages[id(message)] is message
+
+
+@pytest.mark.parametrize("name", [case.name for case in SCENARIOS if case.shape == "uid"])
+def test_uid_scenarios_bind_durable_rows(name: str, tmp_path: Path) -> None:
+    payloads: list[str] = []
+    observe(next(case for case in SCENARIOS if case.name == name), tmp_path, payloads=payloads)
+    state = json.loads(next(event.removeprefix("state-after ") for event in payloads
+                            if event.startswith("state-after ")))
+    bindings = state["tables"]["host_uid_bindings"]
+    assert len(bindings) == (1 if name == "uid-bindings-new" else 4)
+    assert all(row[3] == "canonical" for row in bindings)
+    assert state["_host_uid_counters"]["unbound.agree_new"] == len(bindings)
+    assert not any(key.startswith("skipped.") for key in state["_host_uid_counters"])
