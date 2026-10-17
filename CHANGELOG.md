@@ -6,6 +6,8 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
+- Fix: the `conversational` chunk policy (and the conversational half of `heads`) now embeds every non-empty user and assistant turn; before, turns under 40 tokens got no vector, and short turns often carry the fact a later question asks about. On LoCoMo (1,540 questions, shared OmniMemEval protocol) local embeddings scored 0.710 with the minimum and 0.791 without it, against 0.751 with embeddings off. Stores chunked before this change are filled in by the automatic chunk pass (new messages first, then the missing turns newest first), and `/lcm status` marks the chunk backlog `(gap-fill)` until it is done. Tool rows and the `full` policy are unchanged; no new setting. (#1197)
+
 - Fix: carry an accepted compaction prefix through the same ingest without auditing it against the stale cached list; outside that prefix, an unstamped stored copy needs a recorded canonical host-UID binding before a changed-prefix audit can consume it, preserving fresh repeated turns after proof loss. (#1403)
 - Fix: retry a busy session-end raw-message flush at later lifecycle boundaries and for up to five seconds at shutdown or process exit, preserving the ended session and replay order. (#1160)
 
