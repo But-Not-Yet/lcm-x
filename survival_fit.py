@@ -235,8 +235,16 @@ class SurvivalFitMixin:
             return result
         fitted, count, ids, projected, notice = cut
         plan = FitPlan(fitted, count, ids, projected, notice, emergency, result[system:prefix])
-        return self._apply_survival_fit(result, plan, before, budget, reason,
-                                        after_exception=after_exception, persisted=persisted, exit_fit=exit_fit)
+        fitted = self._apply_survival_fit(result, plan, before, budget, reason,
+                                          after_exception=after_exception, persisted=persisted, exit_fit=exit_fit)
+        if fitted is not result:
+            from .engine import _stamp_generated_model_only
+            # Pure DAG-verified scaffold only: carriers include human text. Keep
+            # row/list identities unless this view needs different display metadata.
+            generated_rows = [row for row in fitted if row.get("role") != "system"
+                              and self._is_verified_replay_scaffold_message(row)]
+            _stamp_generated_model_only(fitted, generated_rows, copy_rows=True)
+        return fitted
 
     def _survival_summary_identity(self, row: dict, summary: str, uid, proof_kind: str, absorbed_from=None, taken=()) -> dict:
         """The survival summary part (B1's gate): the carrier's engine uid, else a minted ``survival_summary``
@@ -250,11 +258,6 @@ class SurvivalFitMixin:
                                        taken=(message.get("message_uid") for message in taken))
             if absorbed_from is not None:
                 record_absorbed_message(row, absorbed_from)
-        if proof_kind == "survival_summary":
-            from .engine import _model_only_display_metadata_key
-            key = _model_only_display_metadata_key()
-            if key is not None:
-                row["display_metadata"] = {**(row.get("display_metadata") or {}), key: True}
         return row
 
     def _survival_cut(self, result, lead: int, budget: int, persisted: bool, reason: str, store_ids,
