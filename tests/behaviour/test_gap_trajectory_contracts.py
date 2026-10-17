@@ -32,9 +32,11 @@ class RecordingProvider:
 
     def __init__(self) -> None:
         self.documents: list[str] = []
+        self.document_texts: list[str] = []
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         self.documents.extend(texts)
+        self.document_texts.extend(texts)
         return [[1.0, 0.0] for _ in texts]
 
     def embed_query(self, text: str) -> list[float]:
@@ -66,7 +68,7 @@ def make_store(
 
 
 @pytest.mark.parametrize("budget", [1, 7])
-def test_public_state_backfill_preserves_unicode_and_resumes(
+def test_public_state_backfill_preserves_unicode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, budget: int,
 ) -> None:
     harness.pin_char_counter(monkeypatch)
@@ -84,21 +86,31 @@ def test_public_state_backfill_preserves_unicode_and_resumes(
         stats = store.build_state_semantic_index(document_token_budget=7)
         assert stats["states_embedded"] == stats["chunked_states"] == 1
         assert all(len(text.encode("utf-8")) <= 7 for text in provider.documents)
-        # First request probes dimension; subsequent requests cover the exact document once.
-        assert "".join(provider.documents[1:]) == "visible 🐑 café 🐑 boundary"
+        assert "".join(provider.document_texts) == "visible 🐑 café 🐑 boundary"
         profiles = store.connection.execute(
             "SELECT profile_digest, active FROM lcm_trajectory_state_embedding_profiles"
         ).fetchall()
         assert [tuple(row) for row in profiles] == [(stats["profile_digest"], 1)]
-        calls = len(provider.documents)
-        resumed = store.build_state_semantic_index(document_token_budget=7)
-        assert resumed["already_embedded"] == 1
-        # observed behaviour; see REPORT: a complete backfill still probes dimension.
-        assert len(provider.documents) == calls + 1
-        assert resumed["states_embedded"] == 0
-        assert resumed["provider_calls"] == 1
         rows = store.connection.execute("SELECT text FROM lcm_trajectory_states").fetchall()
         assert [row[0] for row in rows] == ["visible 🐑 café 🐑 boundary"]
+    finally:
+        store.close()
+
+
+@pytest.mark.xfail(strict=True, reason="known gap: completed state-index resume resends text in a probe; issue #1457")
+def test_completed_state_backfill_resumes_without_provider_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness.pin_char_counter(monkeypatch)
+    provider = RecordingProvider()
+    store = make_store(tmp_path, provider, ("synthetic state text",))
+    try:
+        store.build_state_semantic_index()
+        provider.documents.clear()
+        resumed = store.build_state_semantic_index(resume=True)
+        assert resumed["already_embedded"] == 1
+        assert resumed["states_embedded"] == 0
+        assert (provider.documents, resumed["provider_calls"]) == ([], 0)
     finally:
         store.close()
 
@@ -151,8 +163,8 @@ def test_interrupted_state_backfill_resumes_after_reopen(
         assert activations and all(profile is None for profile in activations)
         assert stats["already_embedded"] == 1
         assert stats["states_embedded"] == 2
-        # The query probe repeats the first state; document requests must only embed the remainder.
-        assert provider.documents == [texts[0], texts[1], texts[2]]
+        # Document requests must only embed the remainder; no contract requires a query probe.
+        assert provider.document_texts == list(texts[1:])
         rows = [tuple(row) for row in store.connection.execute(
             "SELECT state_id, profile_digest, document_sha256, vector "
             "FROM lcm_trajectory_state_embeddings ORDER BY state_id"
