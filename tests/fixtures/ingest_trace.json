@@ -80,7 +80,7 @@
 "next-aliases {\"inputs\":[[0,1],[0,1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=51311acdb0f6/8960",
 "cold-return [{\"content\":\"fresh\",\"role\":\"user\"},{\"content\":\"fresh\",\"role\":\"user\"}]",
-"cold-state sha12/len=c3df865f31ea/8867"
+"cold-state sha12/len=21126aeca8ef/8870"
 ],
 "admission-empty": [
 "input-before []",
@@ -102,7 +102,7 @@
 "next-aliases {\"inputs\":[],\"output-is-input\":false,\"outputs\":[]}",
 "next-state sha12/len=1ea9deb3c625/8310",
 "cold-return []",
-"cold-state sha12/len=e5fa3fc9d142/8307"
+"cold-state sha12/len=1ea9deb3c625/8310"
 ],
 "admission-full": [
 "input-before [{\"content\":\"fresh\",\"role\":\"user\"}]",
@@ -175,7 +175,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=47ac35399dcd/8680",
 "cold-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
-"cold-state sha12/len=93c0579c4e04/8902"
+"cold-state sha12/len=69cb02fd6184/8901"
 ],
 "admission-ignored": [
 "input-before [{\"content\":\"fresh\",\"role\":\"user\"}]",
@@ -192,7 +192,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=3896520fdd51/8348",
 "cold-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
-"cold-state sha12/len=4c0342e830e4/8681"
+"cold-state sha12/len=47ac35399dcd/8680"
 ],
 "admission-no-session": [
 "input-before [{\"content\":\"fresh\",\"role\":\"user\"}]",
@@ -209,7 +209,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=10d7dc6c24c0/8348",
 "cold-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
-"cold-state sha12/len=4c0342e830e4/8681"
+"cold-state sha12/len=72ca33e38670/8362"
 ],
 "admission-stateless": [
 "input-before [{\"content\":\"fresh\",\"role\":\"user\"}]",
@@ -226,7 +226,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=1028446e87f3/8348",
 "cold-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
-"cold-state sha12/len=4c0342e830e4/8681"
+"cold-state sha12/len=47ac35399dcd/8680"
 ],
 "anchor-disabled": [
 "input-before sha12/len=a2801b378fca/263",
@@ -243,7 +243,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=61a9fdade9b2/9676",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=2b63c39b89ee/9532"
+"cold-state sha12/len=460a370e069d/9535"
 ],
 "anchor-remainder": [
 "input-before sha12/len=17c4bd30e618/438",
@@ -368,7 +368,7 @@
 "next-aliases sha12/len=176862c7acc1/90",
 "next-state sha12/len=c6833b8a1072/11091",
 "cold-return sha12/len=17c4bd30e618/438",
-"cold-state sha12/len=f1d58150f997/10456"
+"cold-state sha12/len=3e9d4cfa9d14/10459"
 ],
 "anchor-stamp-new-uid": [
 "input-before sha12/len=2a3d3a1bac02/296",
@@ -459,7 +459,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=4b034ed3844a/10308",
 "cold-return sha12/len=2a3d3a1bac02/296",
-"cold-state sha12/len=5d69133931b0/9891"
+"cold-state sha12/len=119e53c64eea/9894"
 ],
 "anchor-stamp-replay": [
 "input-before sha12/len=a2801b378fca/263",
@@ -478,7 +478,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=47f5c7ad287e/9761",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "anchor-version": [
 "input-before sha12/len=36d5d169adc1/393",
@@ -575,7 +575,7 @@
 "next-aliases sha12/len=176862c7acc1/90",
 "next-state sha12/len=152c5dd4d2be/10743",
 "cold-return sha12/len=36d5d169adc1/393",
-"cold-state sha12/len=25a52b176854/10268"
+"cold-state sha12/len=1d15e49d4cd5/10271"
 ],
 "boundary-exhausted-other-digest": [
 "input-before sha12/len=f3a3f0b3ce5b/391",
@@ -719,7 +719,7 @@
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=87f214e541e7/9994",
 "cold-return sha12/len=f3a3f0b3ce5b/391",
-"cold-state sha12/len=c5073b9e4fa2/9912"
+"cold-state sha12/len=d42e34481ccd/9915"
 ],
 "boundary-stored-counts-mixed": [
 "input-before sha12/len=289542eea95a/632",
@@ -889,7 +889,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=d0a57d4b8aa1/10796",
 "cold-return sha12/len=289542eea95a/632",
-"cold-state sha12/len=6a867f36c9d2/10770"
+"cold-state sha12/len=90b15f27ff93/10773"
 ],
 "boundary-two-digests": [
 "input-before sha12/len=0c248a5886e1/1171",
@@ -1091,7 +1091,7 @@
 "next-aliases sha12/len=79cf032c539d/102",
 "next-state sha12/len=7663ac4a7bde/12373",
 "cold-return sha12/len=0c248a5886e1/1171",
-"cold-state sha12/len=3a141619acd6/12508"
+"cold-state sha12/len=1b7e96af6c0b/12511"
 ],
 "cache-absent": [
 "input-before sha12/len=a2801b378fca/263",
@@ -1124,7 +1124,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=47f5c7ad287e/9761",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "cache-divergent-cache": [
 "input-before sha12/len=468b33749374/263",
@@ -1214,7 +1214,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5e88362e7cd4/10093",
 "cold-return sha12/len=468b33749374/263",
-"cold-state sha12/len=cc6fd8f0ce56/9709"
+"cold-state sha12/len=807d6b0e0a23/9712"
 ],
 "cache-empty-delta": [
 "input-before sha12/len=a2801b378fca/263",
@@ -1233,7 +1233,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=47f5c7ad287e/9761",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "cache-new-stamp": [
 "input-before sha12/len=26edc68f71dd/263",
@@ -1317,7 +1317,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=c2e6885446f4/10085",
 "cold-return sha12/len=26edc68f71dd/263",
-"cold-state sha12/len=828a105212e5/9701"
+"cold-state sha12/len=2fbd9c89a470/9704"
 ],
 "cache-new-uid": [
 "input-before sha12/len=2a3d3a1bac02/296",
@@ -1408,7 +1408,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=4b034ed3844a/10308",
 "cold-return sha12/len=2a3d3a1bac02/296",
-"cold-state sha12/len=5d69133931b0/9891"
+"cold-state sha12/len=119e53c64eea/9894"
 ],
 "cache-rewrite": [
 "input-before sha12/len=b941c9d1e1af/309",
@@ -1466,7 +1466,7 @@
 "next-aliases sha12/len=62674f2353cd/83",
 "next-state sha12/len=c2547c8606d5/10125",
 "cold-return sha12/len=b941c9d1e1af/309",
-"cold-state sha12/len=f0907ebec8fb/9769"
+"cold-state sha12/len=af28aa800034/9772"
 ],
 "cache-short-cache": [
 "input-before sha12/len=a2801b378fca/263",
@@ -1499,12 +1499,12 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=47f5c7ad287e/9761",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "durable-end-allow-end": [
 "input-before sha12/len=a2801b378fca/263",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=ba2ada7c0aca/8902",
+"state-before sha12/len=7ea42530ebee/8905",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -1665,20 +1665,20 @@
 "attr _last_active_replay_source_identities sha12/len=dd9a3c2074d8/159",
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=036af1e083b7/1468",
-"state-after sha12/len=195103fe0464/9532",
+"state-after sha12/len=1b347bfc4132/9535",
 "search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=195103fe0464/9532",
+"next-state sha12/len=1b347bfc4132/9535",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=195103fe0464/9532"
+"cold-state sha12/len=1b347bfc4132/9535"
 ],
 "durable-end-delta": [
 "input-before sha12/len=eb6a778b0b83/319",
 "aliases-before sha12/len=7059c5d5f127/87",
-"state-before sha12/len=ba2ada7c0aca/8902",
+"state-before sha12/len=7ea42530ebee/8905",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -1843,13 +1843,13 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=84fc13deea0b/241",
+"store _append_protected_batch sha12/len=69ed151c7094/244",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
 "metadata-callback input [{\"content\":\"new delta\",\"role\":\"user\",\"timestamp\":200.0},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -1891,21 +1891,21 @@
 "attr _last_active_replay_messages sha12/len=eb6a778b0b83/319",
 "attr _last_active_replay_source_identities sha12/len=36b88856686f/189",
 "attr _last_ingest_reconciliation sha12/len=d63c66382c70/148",
-"attr tables sha12/len=18765f99561d/1625",
-"state-after sha12/len=e711ab984530/9897",
+"attr tables sha12/len=cf45573b13cb/1621",
+"state-after sha12/len=6d43a4a0705a/9896",
 "search-after sha12/len=52a835628361/561",
 "input-after sha12/len=eb6a778b0b83/319",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=eb6a778b0b83/319",
 "next-aliases sha12/len=62674f2353cd/83",
-"next-state sha12/len=e711ab984530/9897",
+"next-state sha12/len=6d43a4a0705a/9896",
 "cold-return sha12/len=eb6a778b0b83/319",
-"cold-state sha12/len=ce2c5982a07d/9784"
+"cold-state sha12/len=33b7abfae34b/9783"
 ],
 "durable-end-full": [
 "input-before sha12/len=a2801b378fca/263",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=ba2ada7c0aca/8902",
+"state-before sha12/len=7ea42530ebee/8905",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -2063,20 +2063,20 @@
 "attr _last_active_replay_source_identities sha12/len=dd9a3c2074d8/159",
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=036af1e083b7/1468",
-"state-after sha12/len=195103fe0464/9532",
+"state-after sha12/len=1b347bfc4132/9535",
 "search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=195103fe0464/9532",
+"next-state sha12/len=1b347bfc4132/9535",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=195103fe0464/9532"
+"cold-state sha12/len=1b347bfc4132/9535"
 ],
 "durable-end-new-uid": [
 "input-before sha12/len=2a3d3a1bac02/296",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=ba2ada7c0aca/8902",
+"state-before sha12/len=7ea42530ebee/8905",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -2243,20 +2243,20 @@
 "attr _last_active_replay_source_identities sha12/len=dd9a3c2074d8/159",
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=24df685bafd8/1536",
-"state-after sha12/len=26a0fa4628a4/9713",
+"state-after sha12/len=080e2939cd7a/9716",
 "search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=2a3d3a1bac02/296",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=2a3d3a1bac02/296",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=26a0fa4628a4/9713",
+"next-state sha12/len=080e2939cd7a/9716",
 "cold-return sha12/len=2a3d3a1bac02/296",
-"cold-state sha12/len=69a135b6bb3c/9713"
+"cold-state sha12/len=7e2a7b5e7714/9716"
 ],
 "durable-metadata-conflict": [
 "input-before sha12/len=26edc68f71dd/263",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=f213396c9728/10113",
+"state-before sha12/len=78820cb8d86c/10116",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -2466,13 +2466,13 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=34c7a52874b0/256",
+"store _append_protected_batch sha12/len=e94fa8f12556/259",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=781c420d978b/451",
-"sql _store sha12/len=781c420d978b/451",
-"sql _store sha12/len=781c420d978b/451",
-"sql _store sha12/len=781c420d978b/451",
-"sql _store sha12/len=781c420d978b/451",
+"sql _store sha12/len=11110eb7405f/447",
+"sql _store sha12/len=11110eb7405f/447",
+"sql _store sha12/len=11110eb7405f/447",
+"sql _store sha12/len=11110eb7405f/447",
+"sql _store sha12/len=11110eb7405f/447",
 "metadata-callback input [{\"content\":\"row 0: العربية 🪷\",\"role\":\"user\",\"timestamp\":999.0},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -2514,21 +2514,21 @@
 "attr _last_active_replay_messages sha12/len=26edc68f71dd/263",
 "attr _last_active_replay_source_identities sha12/len=dd9a3c2074d8/159",
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
-"attr tables sha12/len=13b5cb4bc204/2844",
-"state-after sha12/len=5e3fd8e6cc4d/11049",
+"attr tables sha12/len=ef4383c065e7/2840",
+"state-after sha12/len=b8be999cdc0e/11048",
 "search-after sha12/len=cf515f2ac03c/633",
 "input-after sha12/len=26edc68f71dd/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=26edc68f71dd/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=5e3fd8e6cc4d/11049",
+"next-state sha12/len=b8be999cdc0e/11048",
 "cold-return sha12/len=26edc68f71dd/263",
-"cold-state sha12/len=0e3f40e8e7b7/10912"
+"cold-state sha12/len=025d05c7e1d6/10911"
 ],
 "durable-v2-allow-end": [
 "input-before sha12/len=a2801b378fca/263",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=2c7a73b0c0ca/10113",
+"state-before sha12/len=409cef084b12/10116",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -2790,20 +2790,20 @@
 "attr _last_active_replay_source_identities sha12/len=dd9a3c2074d8/159",
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=8533cd3f3940/2679",
-"state-after sha12/len=977af5ee48a1/10743",
+"state-after sha12/len=d707aaf01bed/10746",
 "search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=977af5ee48a1/10743",
+"next-state sha12/len=d707aaf01bed/10746",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=977af5ee48a1/10743"
+"cold-state sha12/len=d707aaf01bed/10746"
 ],
 "durable-v2-delta": [
 "input-before sha12/len=eb6a778b0b83/319",
 "aliases-before sha12/len=7059c5d5f127/87",
-"state-before sha12/len=2c7a73b0c0ca/10113",
+"state-before sha12/len=409cef084b12/10116",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -3082,13 +3082,13 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=84fc13deea0b/241",
+"store _append_protected_batch sha12/len=69ed151c7094/244",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
 "metadata-callback input [{\"content\":\"new delta\",\"role\":\"user\",\"timestamp\":200.0},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -3130,21 +3130,21 @@
 "attr _last_active_replay_messages sha12/len=eb6a778b0b83/319",
 "attr _last_active_replay_source_identities sha12/len=36b88856686f/189",
 "attr _last_ingest_reconciliation sha12/len=d63c66382c70/148",
-"attr tables sha12/len=7bdb70a64059/2836",
-"state-after sha12/len=b024485f4f36/11108",
+"attr tables sha12/len=f6febfdc17bd/2832",
+"state-after sha12/len=865af9129c33/11107",
 "search-after sha12/len=52a835628361/561",
 "input-after sha12/len=eb6a778b0b83/319",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=eb6a778b0b83/319",
 "next-aliases sha12/len=62674f2353cd/83",
-"next-state sha12/len=b024485f4f36/11108",
+"next-state sha12/len=865af9129c33/11107",
 "cold-return sha12/len=eb6a778b0b83/319",
-"cold-state sha12/len=f1d2cfe0698e/10995"
+"cold-state sha12/len=f1edceaac92e/10994"
 ],
 "durable-v2-full": [
 "input-before sha12/len=a2801b378fca/263",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=2c7a73b0c0ca/10113",
+"state-before sha12/len=409cef084b12/10116",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -3403,20 +3403,20 @@
 "attr _last_active_replay_source_identities sha12/len=dd9a3c2074d8/159",
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=8533cd3f3940/2679",
-"state-after sha12/len=977af5ee48a1/10743",
+"state-after sha12/len=d707aaf01bed/10746",
 "search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=977af5ee48a1/10743",
+"next-state sha12/len=d707aaf01bed/10746",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=977af5ee48a1/10743"
+"cold-state sha12/len=d707aaf01bed/10746"
 ],
 "durable-v2-new-uid": [
 "input-before sha12/len=2a3d3a1bac02/296",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=2c7a73b0c0ca/10113",
+"state-before sha12/len=409cef084b12/10116",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -3684,20 +3684,20 @@
 "attr _last_active_replay_source_identities sha12/len=dd9a3c2074d8/159",
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=bed4a5c42462/2747",
-"state-after sha12/len=ba7b45d28e78/10924",
+"state-after sha12/len=b50db1c29599/10927",
 "search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=2a3d3a1bac02/296",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=2a3d3a1bac02/296",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=ba7b45d28e78/10924",
+"next-state sha12/len=b50db1c29599/10927",
 "cold-return sha12/len=2a3d3a1bac02/296",
-"cold-state sha12/len=12285b3770b5/10924"
+"cold-state sha12/len=7d5597a710e7/10927"
 ],
 "durable-v3-allow-end": [
 "input-before sha12/len=a2801b378fca/263",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=f213396c9728/10113",
+"state-before sha12/len=78820cb8d86c/10116",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -3959,20 +3959,20 @@
 "attr _last_active_replay_source_identities sha12/len=dd9a3c2074d8/159",
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=881c0e3051b3/2679",
-"state-after sha12/len=137eb959097a/10743",
+"state-after sha12/len=f0f3311a7fa6/10746",
 "search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=137eb959097a/10743",
+"next-state sha12/len=f0f3311a7fa6/10746",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=137eb959097a/10743"
+"cold-state sha12/len=f0f3311a7fa6/10746"
 ],
 "durable-v3-delta": [
 "input-before sha12/len=eb6a778b0b83/319",
 "aliases-before sha12/len=7059c5d5f127/87",
-"state-before sha12/len=f213396c9728/10113",
+"state-before sha12/len=78820cb8d86c/10116",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -4251,13 +4251,13 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=84fc13deea0b/241",
+"store _append_protected_batch sha12/len=69ed151c7094/244",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
 "metadata-callback input [{\"content\":\"new delta\",\"role\":\"user\",\"timestamp\":200.0},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -4299,21 +4299,21 @@
 "attr _last_active_replay_messages sha12/len=eb6a778b0b83/319",
 "attr _last_active_replay_source_identities sha12/len=36b88856686f/189",
 "attr _last_ingest_reconciliation sha12/len=d63c66382c70/148",
-"attr tables sha12/len=0119ae496120/2836",
-"state-after sha12/len=155b0cfc4bd0/11108",
+"attr tables sha12/len=3c9e7435d692/2832",
+"state-after sha12/len=077af05d0b1f/11107",
 "search-after sha12/len=52a835628361/561",
 "input-after sha12/len=eb6a778b0b83/319",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=eb6a778b0b83/319",
 "next-aliases sha12/len=62674f2353cd/83",
-"next-state sha12/len=155b0cfc4bd0/11108",
+"next-state sha12/len=077af05d0b1f/11107",
 "cold-return sha12/len=eb6a778b0b83/319",
-"cold-state sha12/len=495e34abb24f/10995"
+"cold-state sha12/len=f748c7283e1a/10994"
 ],
 "durable-v3-full": [
 "input-before sha12/len=a2801b378fca/263",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=f213396c9728/10113",
+"state-before sha12/len=78820cb8d86c/10116",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -4572,20 +4572,20 @@
 "attr _last_active_replay_source_identities sha12/len=dd9a3c2074d8/159",
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=881c0e3051b3/2679",
-"state-after sha12/len=137eb959097a/10743",
+"state-after sha12/len=f0f3311a7fa6/10746",
 "search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=137eb959097a/10743",
+"next-state sha12/len=f0f3311a7fa6/10746",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=137eb959097a/10743"
+"cold-state sha12/len=f0f3311a7fa6/10746"
 ],
 "durable-v3-new-uid": [
 "input-before sha12/len=2a3d3a1bac02/296",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=f213396c9728/10113",
+"state-before sha12/len=78820cb8d86c/10116",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -4853,20 +4853,20 @@
 "attr _last_active_replay_source_identities sha12/len=dd9a3c2074d8/159",
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=718dd534cba5/2747",
-"state-after sha12/len=63f746764877/10924",
+"state-after sha12/len=af697a5e6b85/10927",
 "search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=2a3d3a1bac02/296",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=2a3d3a1bac02/296",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=63f746764877/10924",
+"next-state sha12/len=af697a5e6b85/10927",
 "cold-return sha12/len=2a3d3a1bac02/296",
-"cold-state sha12/len=f945a5beb803/10924"
+"cold-state sha12/len=69b56b3b1495/10927"
 ],
 "durable-v4-allow-end": [
 "input-before sha12/len=a2801b378fca/263",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=150b1ed31550/10151",
+"state-before sha12/len=e8eb96a7200d/10154",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -5128,20 +5128,20 @@
 "attr _last_active_replay_source_identities sha12/len=dd9a3c2074d8/159",
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=7bf381374654/2717",
-"state-after sha12/len=d1834e40dd0f/10781",
+"state-after sha12/len=c0e2703ec2e7/10784",
 "search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=d1834e40dd0f/10781",
+"next-state sha12/len=c0e2703ec2e7/10784",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=d1834e40dd0f/10781"
+"cold-state sha12/len=c0e2703ec2e7/10784"
 ],
 "durable-v4-delta": [
 "input-before sha12/len=eb6a778b0b83/319",
 "aliases-before sha12/len=7059c5d5f127/87",
-"state-before sha12/len=150b1ed31550/10151",
+"state-before sha12/len=e8eb96a7200d/10154",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -5420,13 +5420,13 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=84fc13deea0b/241",
+"store _append_protected_batch sha12/len=69ed151c7094/244",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
 "metadata-callback input [{\"content\":\"new delta\",\"role\":\"user\",\"timestamp\":200.0},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -5468,21 +5468,21 @@
 "attr _last_active_replay_messages sha12/len=eb6a778b0b83/319",
 "attr _last_active_replay_source_identities sha12/len=36b88856686f/189",
 "attr _last_ingest_reconciliation sha12/len=d63c66382c70/148",
-"attr tables sha12/len=267d7ab99784/2874",
-"state-after sha12/len=8bdc6f1629ce/11146",
+"attr tables sha12/len=0a374edf91db/2870",
+"state-after sha12/len=644312f68b45/11145",
 "search-after sha12/len=52a835628361/561",
 "input-after sha12/len=eb6a778b0b83/319",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=eb6a778b0b83/319",
 "next-aliases sha12/len=62674f2353cd/83",
-"next-state sha12/len=8bdc6f1629ce/11146",
+"next-state sha12/len=644312f68b45/11145",
 "cold-return sha12/len=eb6a778b0b83/319",
-"cold-state sha12/len=30a9a771dfff/11033"
+"cold-state sha12/len=8ed6eb24eace/11032"
 ],
 "durable-v4-full": [
 "input-before sha12/len=a2801b378fca/263",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=150b1ed31550/10151",
+"state-before sha12/len=e8eb96a7200d/10154",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -5741,20 +5741,20 @@
 "attr _last_active_replay_source_identities sha12/len=dd9a3c2074d8/159",
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=7bf381374654/2717",
-"state-after sha12/len=d1834e40dd0f/10781",
+"state-after sha12/len=c0e2703ec2e7/10784",
 "search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=d1834e40dd0f/10781",
+"next-state sha12/len=c0e2703ec2e7/10784",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=d1834e40dd0f/10781"
+"cold-state sha12/len=c0e2703ec2e7/10784"
 ],
 "durable-v4-new-uid": [
 "input-before sha12/len=2a3d3a1bac02/296",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=150b1ed31550/10151",
+"state-before sha12/len=e8eb96a7200d/10154",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -6022,15 +6022,15 @@
 "attr _last_active_replay_source_identities sha12/len=dd9a3c2074d8/159",
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=04c7ce64e5d2/2785",
-"state-after sha12/len=b93b9d41cdd8/10962",
+"state-after sha12/len=6a1ba9745c77/10965",
 "search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=2a3d3a1bac02/296",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=2a3d3a1bac02/296",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=b93b9d41cdd8/10962",
+"next-state sha12/len=6a1ba9745c77/10965",
 "cold-return sha12/len=2a3d3a1bac02/296",
-"cold-state sha12/len=2ef83cbb4665/10962"
+"cold-state sha12/len=16f6bb495664/10965"
 ],
 "empty-all-ordinals": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -6173,7 +6173,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=5589ed863bfe/9943",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=68ced3b29c41/10818"
+"cold-state sha12/len=5b7aa93be379/10809"
 ],
 "empty-child-placeholder-prefix": [
 "input-before sha12/len=84a2b0acfd8c/444",
@@ -6313,12 +6313,12 @@
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=7cf9aa6e8503/9656",
 "cold-return sha12/len=84a2b0acfd8c/444",
-"cold-state sha12/len=b218acdf52e5/10392"
+"cold-state sha12/len=5f443c0ecdf4/10383"
 ],
 "ignored-changed": [
 "input-before sha12/len=7b916b76500b/262",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=192b66948a05/8947",
+"state-before sha12/len=a2ba68d9e333/8950",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
 "store result read_metadata_json null",
@@ -6482,13 +6482,13 @@
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
 "log [\"hermes_lcm.engine\",\"INFO\",\"LCM ignore_message_patterns dropped %s message (not persisted; total dropped=%d): %r\",[\"assistant\",1,\"IGNORE THIS ROW\"]]",
-"store _append_protected_batch sha12/len=a9d2f1837c8f/255",
+"store _append_protected_batch sha12/len=59bbf396d004/258",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=fe25f1b83e77/450",
-"sql _store sha12/len=fe25f1b83e77/450",
-"sql _store sha12/len=fe25f1b83e77/450",
-"sql _store sha12/len=fe25f1b83e77/450",
-"sql _store sha12/len=fe25f1b83e77/450",
+"sql _store sha12/len=645f3a9a8681/446",
+"sql _store sha12/len=645f3a9a8681/446",
+"sql _store sha12/len=645f3a9a8681/446",
+"sql _store sha12/len=645f3a9a8681/446",
+"sql _store sha12/len=645f3a9a8681/446",
 "metadata-callback input [{\"content\":\"different prefix\",\"role\":\"user\",\"timestamp\":100.0},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -6513,7 +6513,7 @@
 "store result read_metadata_json null",
 "store get_session_messages_after [[\"S\"],{\"after_store_id\":0}]",
 "sql _store sha12/len=7cc7157f7e11/303",
-"store result get_session_messages_after sha12/len=9e1a6a8d47e2/1674",
+"store result get_session_messages_after sha12/len=32b1b991e348/1670",
 "store get_session_messages_after [[\"S\"],{\"after_store_id\":5}]",
 "sql _store sha12/len=750091b8fb54/303",
 "store result get_session_messages_after []",
@@ -6564,7 +6564,7 @@
 "store result read_metadata_json null",
 "store get_session_messages_after [[\"S\"],{\"after_store_id\":0}]",
 "sql _store sha12/len=7cc7157f7e11/303",
-"store result get_session_messages_after sha12/len=9e1a6a8d47e2/1674",
+"store result get_session_messages_after sha12/len=32b1b991e348/1670",
 "store get_session_messages_after [[\"S\"],{\"after_store_id\":5}]",
 "sql _store sha12/len=750091b8fb54/303",
 "store result get_session_messages_after []",
@@ -6616,21 +6616,21 @@
 "attr _last_active_replay_messages sha12/len=6a06b8679e18/390",
 "attr _last_active_replay_source_identities sha12/len=e427c11335fe/158",
 "attr _last_ingest_reconciliation sha12/len=fb21d44b3bfe/152",
-"attr tables sha12/len=48bf74ba4cb1/1751",
-"state-after sha12/len=fdbe88c781dc/10627",
+"attr tables sha12/len=a3ae44946dbc/1747",
+"state-after sha12/len=86dd34b2d61f/10626",
 "search-after sha12/len=c27aec47be85/489",
 "input-after sha12/len=7b916b76500b/262",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=6a06b8679e18/390",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=f34958903b6b/10390",
+"next-state sha12/len=fe5d7efaa466/10389",
 "cold-return sha12/len=6a06b8679e18/390",
-"cold-state sha12/len=2a45a931dfcf/10481"
+"cold-state sha12/len=e3b7f7b6be19/10480"
 ],
 "ignored-delta": [
 "input-before sha12/len=8c74f6e4ae92/318",
 "aliases-before sha12/len=7059c5d5f127/87",
-"state-before sha12/len=192b66948a05/8947",
+"state-before sha12/len=a2ba68d9e333/8950",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
 "store result read_metadata_json null",
@@ -6857,13 +6857,13 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=84fc13deea0b/241",
+"store _append_protected_batch sha12/len=69ed151c7094/244",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
 "metadata-callback input [{\"content\":\"new delta\",\"role\":\"user\",\"timestamp\":200.0},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -6888,7 +6888,7 @@
 "store result read_metadata_json null",
 "store get_session_messages_after [[\"S\"],{\"after_store_id\":0}]",
 "sql _store sha12/len=7cc7157f7e11/303",
-"store result get_session_messages_after sha12/len=03d076159500/1667",
+"store result get_session_messages_after sha12/len=cac7e95eb496/1663",
 "store get_session_messages_after [[\"S\"],{\"after_store_id\":5}]",
 "sql _store sha12/len=750091b8fb54/303",
 "store result get_session_messages_after []",
@@ -6942,7 +6942,7 @@
 "store result read_metadata_json null",
 "store get_session_messages_after [[\"S\"],{\"after_store_id\":0}]",
 "sql _store sha12/len=7cc7157f7e11/303",
-"store result get_session_messages_after sha12/len=03d076159500/1667",
+"store result get_session_messages_after sha12/len=cac7e95eb496/1663",
 "store get_session_messages_after [[\"S\"],{\"after_store_id\":5}]",
 "sql _store sha12/len=750091b8fb54/303",
 "store result get_session_messages_after []",
@@ -6995,21 +6995,21 @@
 "attr _last_active_replay_messages sha12/len=144f2697bb1e/446",
 "attr _last_active_replay_source_identities sha12/len=49ebe686c801/188",
 "attr _last_ingest_reconciliation sha12/len=d1297ec21b2b/148",
-"attr tables sha12/len=546bc59c864a/1744",
-"state-after sha12/len=e6ced0d0ded8/10674",
+"attr tables sha12/len=d7688e05ede9/1740",
+"state-after sha12/len=0c26e901cc32/10673",
 "search-after sha12/len=763c681674c8/475",
 "input-after sha12/len=8c74f6e4ae92/318",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=144f2697bb1e/446",
 "next-aliases sha12/len=62674f2353cd/83",
-"next-state sha12/len=db124d8cbf1a/10439",
+"next-state sha12/len=1dbfbf4f1290/10438",
 "cold-return sha12/len=144f2697bb1e/446",
-"cold-state sha12/len=cffb6fbd89ce/10556"
+"cold-state sha12/len=85f0c0a932bc/10555"
 ],
 "ignored-full": [
 "input-before sha12/len=e8f650f485dd/262",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=192b66948a05/8947",
+"state-before sha12/len=a2ba68d9e333/8950",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
 "store result read_metadata_json null",
@@ -7307,20 +7307,20 @@
 "attr _last_active_replay_source_identities sha12/len=8fdb2d66bcd9/158",
 "attr _last_ingest_reconciliation sha12/len=966c4ff89fcc/148",
 "attr tables sha12/len=c744e535cc47/1587",
-"state-after sha12/len=3b26192599a7/10300",
+"state-after sha12/len=0b74afb48f16/10303",
 "search-after sha12/len=278f6a5a92a6/439",
 "input-after sha12/len=e8f650f485dd/262",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=52568ee1000d/390",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=d2cd227a940c/10063",
+"next-state sha12/len=acd803c269a6/10066",
 "cold-return sha12/len=52568ee1000d/390",
-"cold-state sha12/len=0c88b642d3a2/10304"
+"cold-state sha12/len=abb478630b45/10307"
 ],
 "ignored-new": [
 "input-before [{\"content\":\"new request\",\"role\":\"user\"}]",
 "aliases-before {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
-"state-before sha12/len=192b66948a05/8947",
+"state-before sha12/len=a2ba68d9e333/8950",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
 "store result read_metadata_json null",
@@ -7409,13 +7409,13 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=a5778bc9b8b7/209",
+"store _append_protected_batch sha12/len=fc3776d1c035/212",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=da86253ae171/424",
-"sql _store sha12/len=da86253ae171/424",
-"sql _store sha12/len=da86253ae171/424",
-"sql _store sha12/len=da86253ae171/424",
-"sql _store sha12/len=da86253ae171/424",
+"sql _store sha12/len=2d1aec7346df/420",
+"sql _store sha12/len=2d1aec7346df/420",
+"sql _store sha12/len=2d1aec7346df/420",
+"sql _store sha12/len=2d1aec7346df/420",
+"sql _store sha12/len=2d1aec7346df/420",
 "metadata-callback input [{\"content\":\"new request\",\"role\":\"user\"},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -7457,21 +7457,21 @@
 "attr _last_active_replay_messages [{\"content\":\"new request\",\"role\":\"user\"}]",
 "attr _last_active_replay_source_identities [[\"user\",\"new request\",\"\",\"\",\"\"]]",
 "attr _last_ingest_reconciliation sha12/len=67e4b3d43daa/152",
-"attr tables sha12/len=4350865ec5ef/1582",
-"state-after sha12/len=5aae181b5c69/9459",
+"attr tables sha12/len=1b0d893dac88/1578",
+"state-after sha12/len=688274ce3d7b/9458",
 "search-after sha12/len=3bbef4ec8131/479",
 "input-after [{\"content\":\"new request\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"new request\",\"role\":\"user\"}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
-"next-state sha12/len=3fd473dfc91a/9468",
+"next-state sha12/len=9a08979f752d/9467",
 "cold-return [{\"content\":\"new request\",\"role\":\"user\"}]",
-"cold-state sha12/len=df4b56f91dd0/9583"
+"cold-state sha12/len=0bed38984b04/9578"
 ],
 "ignored-prefix": [
 "input-before sha12/len=10a913c998cf/131",
 "aliases-before {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
-"state-before sha12/len=192b66948a05/8947",
+"state-before sha12/len=a2ba68d9e333/8950",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
 "store result read_metadata_json null",
@@ -7706,20 +7706,20 @@
 "attr _last_active_replay_source_identities [[\"user\",\"row 0: العربية 🪷\",\"\",\"\",\"\"],[\"assistant\",\"IGNORE THIS ROW\",\"\",\"\",\"\"]]",
 "attr _last_ingest_reconciliation sha12/len=c52283c19293/152",
 "attr tables sha12/len=d39ba2e479a3/1610",
-"state-after sha12/len=9d06521bee0d/10117",
+"state-after sha12/len=81697b2dced2/10120",
 "search-after sha12/len=278f6a5a92a6/439",
 "input-after sha12/len=10a913c998cf/131",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=7f0fbcc7ce53/259",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
-"next-state sha12/len=2eef4b1fe03b/9880",
+"next-state sha12/len=5334cfd537af/9883",
 "cold-return sha12/len=7f0fbcc7ce53/259",
-"cold-state sha12/len=af29097ca2b7/10117"
+"cold-state sha12/len=9d2383b0c93f/10120"
 ],
 "ignored-rewrite": [
 "input-before sha12/len=3d5a2864acb3/308",
 "aliases-before sha12/len=7059c5d5f127/87",
-"state-before sha12/len=192b66948a05/8947",
+"state-before sha12/len=a2ba68d9e333/8950",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
 "store result read_metadata_json null",
@@ -7927,13 +7927,13 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=9b3aaac98c95/221",
+"store _append_protected_batch sha12/len=1f7c9f72ea03/224",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=7eea6dc11a47/430",
-"sql _store sha12/len=7eea6dc11a47/430",
-"sql _store sha12/len=7eea6dc11a47/430",
-"sql _store sha12/len=7eea6dc11a47/430",
-"sql _store sha12/len=7eea6dc11a47/430",
+"sql _store sha12/len=2a4457ed4aa3/426",
+"sql _store sha12/len=2a4457ed4aa3/426",
+"sql _store sha12/len=2a4457ed4aa3/426",
+"sql _store sha12/len=2a4457ed4aa3/426",
+"sql _store sha12/len=2a4457ed4aa3/426",
 "metadata-callback input [{\"content\":\"new after rewrite\",\"role\":\"user\"},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -7958,7 +7958,7 @@
 "store result read_metadata_json null",
 "store get_session_messages_after [[\"S\"],{\"after_store_id\":0}]",
 "sql _store sha12/len=7cc7157f7e11/303",
-"store result get_session_messages_after sha12/len=b7df71bf8723/1654",
+"store result get_session_messages_after sha12/len=e7903b73f249/1650",
 "store get_session_messages_after [[\"S\"],{\"after_store_id\":5}]",
 "sql _store sha12/len=750091b8fb54/303",
 "store result get_session_messages_after []",
@@ -8012,7 +8012,7 @@
 "store result read_metadata_json null",
 "store get_session_messages_after [[\"S\"],{\"after_store_id\":0}]",
 "sql _store sha12/len=7cc7157f7e11/303",
-"store result get_session_messages_after sha12/len=b7df71bf8723/1654",
+"store result get_session_messages_after sha12/len=e7903b73f249/1650",
 "store get_session_messages_after [[\"S\"],{\"after_store_id\":5}]",
 "sql _store sha12/len=750091b8fb54/303",
 "store result get_session_messages_after []",
@@ -8065,21 +8065,21 @@
 "attr _last_active_replay_messages sha12/len=e662fa5d0c23/436",
 "attr _last_active_replay_source_identities sha12/len=6ab4562b1dbb/196",
 "attr _last_ingest_reconciliation sha12/len=d1297ec21b2b/148",
-"attr tables sha12/len=ffccee2d5bd4/1708",
-"state-after sha12/len=f8ea058ff192/10649",
+"attr tables sha12/len=9b8299eb11a1/1704",
+"state-after sha12/len=aaea4a34672e/10648",
 "search-after sha12/len=d4ddd75ba60c/491",
 "input-after sha12/len=3d5a2864acb3/308",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=e662fa5d0c23/436",
 "next-aliases sha12/len=62674f2353cd/83",
-"next-state sha12/len=fb0da9adf197/10414",
+"next-state sha12/len=1769c8342a9b/10413",
 "cold-return sha12/len=e662fa5d0c23/436",
-"cold-state sha12/len=d1d3e26c57ee/10518"
+"cold-state sha12/len=0075c05cb5ab/10517"
 ],
 "ignored-suffix": [
 "input-before sha12/len=cf421a34acd1/132",
 "aliases-before {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
-"state-before sha12/len=192b66948a05/8947",
+"state-before sha12/len=a2ba68d9e333/8950",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
 "store result read_metadata_json null",
@@ -8234,15 +8234,15 @@
 "attr _last_active_replay_source_identities [[\"user\",\"row 2: العربية 🪷\",\"\",\"\",\"\"],[\"assistant\",\"row 3: العربية 🪷\",\"\",\"\",\"\"]]",
 "attr _last_ingest_reconciliation sha12/len=b5ac092efa95/152",
 "attr tables sha12/len=b59f6aae07f7/1490",
-"state-after sha12/len=5fadaf6dc026/9394",
+"state-after sha12/len=1f7602f746d7/9397",
 "search-after sha12/len=278f6a5a92a6/439",
 "input-after sha12/len=cf421a34acd1/132",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=cf421a34acd1/132",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
-"next-state sha12/len=5fadaf6dc026/9394",
+"next-state sha12/len=1f7602f746d7/9397",
 "cold-return sha12/len=cf421a34acd1/132",
-"cold-state sha12/len=5fadaf6dc026/9394"
+"cold-state sha12/len=1f7602f746d7/9397"
 ],
 "ignored-warm": [
 "input-before sha12/len=e8f650f485dd/262",
@@ -8302,12 +8302,12 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=fbebe9d85778/10169",
 "cold-return sha12/len=52568ee1000d/390",
-"cold-state sha12/len=5a60e2715d1d/10189"
+"cold-state sha12/len=230bb082dfb7/10192"
 ],
 "marker-changed": [
 "input-before sha12/len=9e9abe7ae73c/450",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=2482e33f4c16/9190",
+"state-before sha12/len=4a3b1963e691/9193",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -8414,23 +8414,23 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=df08370d66dd/889",
+"store _append_protected_batch sha12/len=a2c2a1f6f736/892",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=fe25f1b83e77/450",
-"sql _store sha12/len=fe25f1b83e77/450",
-"sql _store sha12/len=fe25f1b83e77/450",
-"sql _store sha12/len=fe25f1b83e77/450",
-"sql _store sha12/len=fe25f1b83e77/450",
+"sql _store sha12/len=645f3a9a8681/446",
+"sql _store sha12/len=645f3a9a8681/446",
+"sql _store sha12/len=645f3a9a8681/446",
+"sql _store sha12/len=645f3a9a8681/446",
+"sql _store sha12/len=645f3a9a8681/446",
 "metadata-callback input [{\"content\":\"different prefix\",\"role\":\"user\",\"timestamp\":100.0},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
 "store result read_metadata_json null",
 "metadata-callback result []",
-"sql _store sha12/len=b4ec5bf129d8/744",
-"sql _store sha12/len=b4ec5bf129d8/744",
-"sql _store sha12/len=b4ec5bf129d8/744",
-"sql _store sha12/len=b4ec5bf129d8/744",
-"sql _store sha12/len=b4ec5bf129d8/744",
+"sql _store sha12/len=79b3d8cdbc96/740",
+"sql _store sha12/len=79b3d8cdbc96/740",
+"sql _store sha12/len=79b3d8cdbc96/740",
+"sql _store sha12/len=79b3d8cdbc96/740",
+"sql _store sha12/len=79b3d8cdbc96/740",
 "metadata-callback input sha12/len=b56cc6feacab/258",
 "metadata-callback result []",
 "sql _store \"COMMIT\"",
@@ -8469,21 +8469,21 @@
 "attr _last_active_replay_messages sha12/len=9e9abe7ae73c/450",
 "attr _last_active_replay_source_identities sha12/len=6a9598942e95/328",
 "attr _last_ingest_reconciliation sha12/len=f8eced835a98/152",
-"attr tables sha12/len=0badb81dd3c9/2355",
-"state-after sha12/len=973f3df08a8b/10929",
+"attr tables sha12/len=48511eda54aa/2347",
+"state-after sha12/len=89057156fb51/10924",
 "search-after sha12/len=ec2f048cafdf/4026",
 "input-after sha12/len=9e9abe7ae73c/450",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=9e9abe7ae73c/450",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=973f3df08a8b/10929",
+"next-state sha12/len=89057156fb51/10924",
 "cold-return sha12/len=9e9abe7ae73c/450",
-"cold-state sha12/len=7246841bfc7b/11197"
+"cold-state sha12/len=c4ad7739cb4a/11188"
 ],
 "marker-delta": [
 "input-before sha12/len=150ecba943d7/506",
 "aliases-before sha12/len=7059c5d5f127/87",
-"state-before sha12/len=2482e33f4c16/9190",
+"state-before sha12/len=4a3b1963e691/9193",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -8604,20 +8604,20 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=cc6efe8ad50a/875",
+"store _append_protected_batch sha12/len=94f9539b3f56/878",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=b4ec5bf129d8/744",
-"sql _store sha12/len=b4ec5bf129d8/744",
-"sql _store sha12/len=b4ec5bf129d8/744",
-"sql _store sha12/len=b4ec5bf129d8/744",
-"sql _store sha12/len=b4ec5bf129d8/744",
+"sql _store sha12/len=79b3d8cdbc96/740",
+"sql _store sha12/len=79b3d8cdbc96/740",
+"sql _store sha12/len=79b3d8cdbc96/740",
+"sql _store sha12/len=79b3d8cdbc96/740",
+"sql _store sha12/len=79b3d8cdbc96/740",
 "metadata-callback input sha12/len=8742f00fde2b/258",
 "metadata-callback result []",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
 "metadata-callback input [{\"content\":\"new delta\",\"role\":\"user\",\"timestamp\":200.0},6]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -8659,21 +8659,21 @@
 "attr _last_active_replay_messages sha12/len=150ecba943d7/506",
 "attr _last_active_replay_source_identities sha12/len=2184df37653a/358",
 "attr _last_ingest_reconciliation sha12/len=ee7bd3e5c381/152",
-"attr tables sha12/len=5efea3a7f082/2348",
-"state-after sha12/len=7f216dddec0a/10980",
+"attr tables sha12/len=68f8f66a4928/2340",
+"state-after sha12/len=a23d8520c36d/10975",
 "search-after sha12/len=4a132f0be9c7/4012",
 "input-after sha12/len=150ecba943d7/506",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=150ecba943d7/506",
 "next-aliases sha12/len=62674f2353cd/83",
-"next-state sha12/len=7f216dddec0a/10980",
+"next-state sha12/len=a23d8520c36d/10975",
 "cold-return sha12/len=150ecba943d7/506",
-"cold-state sha12/len=e170e0b70115/11276"
+"cold-state sha12/len=f551fc7ee500/11267"
 ],
 "marker-full": [
 "input-before sha12/len=beef8adb65d7/450",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=2482e33f4c16/9190",
+"state-before sha12/len=4a3b1963e691/9193",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -8777,13 +8777,13 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=94a307e26c35/761",
+"store _append_protected_batch sha12/len=b09f6b7aaadb/764",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=b4ec5bf129d8/744",
-"sql _store sha12/len=b4ec5bf129d8/744",
-"sql _store sha12/len=b4ec5bf129d8/744",
-"sql _store sha12/len=b4ec5bf129d8/744",
-"sql _store sha12/len=b4ec5bf129d8/744",
+"sql _store sha12/len=79b3d8cdbc96/740",
+"sql _store sha12/len=79b3d8cdbc96/740",
+"sql _store sha12/len=79b3d8cdbc96/740",
+"sql _store sha12/len=79b3d8cdbc96/740",
+"sql _store sha12/len=79b3d8cdbc96/740",
 "metadata-callback input sha12/len=8742f00fde2b/258",
 "metadata-callback result []",
 "sql _store \"COMMIT\"",
@@ -8822,21 +8822,21 @@
 "attr _last_active_replay_messages sha12/len=beef8adb65d7/450",
 "attr _last_active_replay_source_identities sha12/len=dd175d9ea3d8/328",
 "attr _last_ingest_reconciliation sha12/len=f8eced835a98/152",
-"attr tables sha12/len=603590b35608/2214",
-"state-after sha12/len=f90cc170e766/10612",
+"attr tables sha12/len=cccabc2c11b8/2210",
+"state-after sha12/len=4fe964a8b768/10611",
 "search-after sha12/len=6a13b227909d/3976",
 "input-after sha12/len=beef8adb65d7/450",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=beef8adb65d7/450",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=f90cc170e766/10612",
+"next-state sha12/len=4fe964a8b768/10611",
 "cold-return sha12/len=beef8adb65d7/450",
-"cold-state sha12/len=70db255d9aa1/11047"
+"cold-state sha12/len=388ff8376712/11042"
 ],
 "marker-new": [
 "input-before [{\"content\":\"new request\",\"role\":\"user\"}]",
 "aliases-before {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
-"state-before sha12/len=2482e33f4c16/9190",
+"state-before sha12/len=4a3b1963e691/9193",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -8892,13 +8892,13 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=a5778bc9b8b7/209",
+"store _append_protected_batch sha12/len=fc3776d1c035/212",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=da86253ae171/424",
-"sql _store sha12/len=da86253ae171/424",
-"sql _store sha12/len=da86253ae171/424",
-"sql _store sha12/len=da86253ae171/424",
-"sql _store sha12/len=da86253ae171/424",
+"sql _store sha12/len=2d1aec7346df/420",
+"sql _store sha12/len=2d1aec7346df/420",
+"sql _store sha12/len=2d1aec7346df/420",
+"sql _store sha12/len=2d1aec7346df/420",
+"sql _store sha12/len=2d1aec7346df/420",
 "metadata-callback input [{\"content\":\"new request\",\"role\":\"user\"},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -8940,21 +8940,21 @@
 "attr _last_active_replay_messages [{\"content\":\"new request\",\"role\":\"user\"}]",
 "attr _last_active_replay_source_identities [[\"user\",\"new request\",\"\",\"\",\"\"]]",
 "attr _last_ingest_reconciliation sha12/len=776359dcd07c/152",
-"attr tables sha12/len=1e7954d9d318/1871",
-"state-after sha12/len=d444b607cd37/9685",
+"attr tables sha12/len=e946266b74cd/1867",
+"state-after sha12/len=fffc81a40106/9684",
 "search-after sha12/len=5950f80603e9/1929",
 "input-after [{\"content\":\"new request\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"new request\",\"role\":\"user\"}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
-"next-state sha12/len=d444b607cd37/9685",
+"next-state sha12/len=fffc81a40106/9684",
 "cold-return [{\"content\":\"new request\",\"role\":\"user\"}]",
-"cold-state sha12/len=09914c22e170/9800"
+"cold-state sha12/len=a61e6de55201/9795"
 ],
 "marker-prefix": [
 "input-before sha12/len=3cf04c6f21e8/132",
 "aliases-before {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
-"state-before sha12/len=2482e33f4c16/9190",
+"state-before sha12/len=4a3b1963e691/9193",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -9070,20 +9070,20 @@
 "attr _last_active_replay_source_identities [[\"user\",\"row 0: العربية 🪷\",\"\",\"\",\"\"],[\"assistant\",\"row 1: العربية 🪷\",\"\",\"\",\"\"]]",
 "attr _last_ingest_reconciliation sha12/len=431cfd995d1f/152",
 "attr tables sha12/len=c700ecffeac4/1779",
-"state-after sha12/len=7f6eb3bcc185/9628",
+"state-after sha12/len=9ed97176cbe1/9631",
 "search-after sha12/len=0691974eaeec/1889",
 "input-after sha12/len=3cf04c6f21e8/132",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=3cf04c6f21e8/132",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
-"next-state sha12/len=7f6eb3bcc185/9628",
+"next-state sha12/len=9ed97176cbe1/9631",
 "cold-return sha12/len=3cf04c6f21e8/132",
-"cold-state sha12/len=7f6eb3bcc185/9628"
+"cold-state sha12/len=9ed97176cbe1/9631"
 ],
 "marker-rewrite": [
 "input-before sha12/len=f26ed003c6e1/496",
 "aliases-before sha12/len=7059c5d5f127/87",
-"state-before sha12/len=2482e33f4c16/9190",
+"state-before sha12/len=4a3b1963e691/9193",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -9196,20 +9196,20 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=eb083fd69da4/855",
+"store _append_protected_batch sha12/len=026c7f8d50bc/858",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=b4ec5bf129d8/744",
-"sql _store sha12/len=b4ec5bf129d8/744",
-"sql _store sha12/len=b4ec5bf129d8/744",
-"sql _store sha12/len=b4ec5bf129d8/744",
-"sql _store sha12/len=b4ec5bf129d8/744",
+"sql _store sha12/len=79b3d8cdbc96/740",
+"sql _store sha12/len=79b3d8cdbc96/740",
+"sql _store sha12/len=79b3d8cdbc96/740",
+"sql _store sha12/len=79b3d8cdbc96/740",
+"sql _store sha12/len=79b3d8cdbc96/740",
 "metadata-callback input sha12/len=8742f00fde2b/258",
 "metadata-callback result []",
-"sql _store sha12/len=7eea6dc11a47/430",
-"sql _store sha12/len=7eea6dc11a47/430",
-"sql _store sha12/len=7eea6dc11a47/430",
-"sql _store sha12/len=7eea6dc11a47/430",
-"sql _store sha12/len=7eea6dc11a47/430",
+"sql _store sha12/len=2a4457ed4aa3/426",
+"sql _store sha12/len=2a4457ed4aa3/426",
+"sql _store sha12/len=2a4457ed4aa3/426",
+"sql _store sha12/len=2a4457ed4aa3/426",
+"sql _store sha12/len=2a4457ed4aa3/426",
 "metadata-callback input [{\"content\":\"new after rewrite\",\"role\":\"user\"},6]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -9251,21 +9251,21 @@
 "attr _last_active_replay_messages sha12/len=f26ed003c6e1/496",
 "attr _last_active_replay_source_identities sha12/len=7364e46c9cec/366",
 "attr _last_ingest_reconciliation sha12/len=ee7bd3e5c381/152",
-"attr tables sha12/len=ff420f61e7df/2335",
-"state-after sha12/len=99362fad4a66/10978",
+"attr tables sha12/len=3ccecedd825f/2327",
+"state-after sha12/len=f5394d542ec9/10973",
 "search-after sha12/len=c1f1c4f87f7a/4028",
 "input-after sha12/len=f26ed003c6e1/496",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=f26ed003c6e1/496",
 "next-aliases sha12/len=62674f2353cd/83",
-"next-state sha12/len=99362fad4a66/10978",
+"next-state sha12/len=f5394d542ec9/10973",
 "cold-return sha12/len=f26ed003c6e1/496",
-"cold-state sha12/len=a06c0e41da2b/11534"
+"cold-state sha12/len=b72c12892695/11521"
 ],
 "marker-suffix": [
 "input-before sha12/len=12362e28feda/319",
 "aliases-before {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
-"state-before sha12/len=2482e33f4c16/9190",
+"state-before sha12/len=4a3b1963e691/9193",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -9351,13 +9351,13 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=94a307e26c35/761",
+"store _append_protected_batch sha12/len=b09f6b7aaadb/764",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=b4ec5bf129d8/744",
-"sql _store sha12/len=b4ec5bf129d8/744",
-"sql _store sha12/len=b4ec5bf129d8/744",
-"sql _store sha12/len=b4ec5bf129d8/744",
-"sql _store sha12/len=b4ec5bf129d8/744",
+"sql _store sha12/len=79b3d8cdbc96/740",
+"sql _store sha12/len=79b3d8cdbc96/740",
+"sql _store sha12/len=79b3d8cdbc96/740",
+"sql _store sha12/len=79b3d8cdbc96/740",
+"sql _store sha12/len=79b3d8cdbc96/740",
 "metadata-callback input sha12/len=8742f00fde2b/258",
 "metadata-callback result []",
 "sql _store \"COMMIT\"",
@@ -9396,16 +9396,16 @@
 "attr _last_active_replay_messages sha12/len=12362e28feda/319",
 "attr _last_active_replay_source_identities sha12/len=847081ad05ef/249",
 "attr _last_ingest_reconciliation sha12/len=431cfd995d1f/152",
-"attr tables sha12/len=603590b35608/2214",
-"state-after sha12/len=1c867282fc5e/10393",
+"attr tables sha12/len=cccabc2c11b8/2210",
+"state-after sha12/len=896f0aea36ca/10392",
 "search-after sha12/len=6a13b227909d/3976",
 "input-after sha12/len=12362e28feda/319",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=12362e28feda/319",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
-"next-state sha12/len=1c867282fc5e/10393",
+"next-state sha12/len=896f0aea36ca/10392",
 "cold-return sha12/len=12362e28feda/319",
-"cold-state sha12/len=8b7d80756fc6/10828"
+"cold-state sha12/len=b6bf21c9d216/10823"
 ],
 "marker-warm": [
 "input-before sha12/len=beef8adb65d7/450",
@@ -9424,7 +9424,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=b181a19fbeed/10405",
 "cold-return sha12/len=beef8adb65d7/450",
-"cold-state sha12/len=9c9fcb1fbf9a/10616"
+"cold-state sha12/len=65d0d7d8eaf4/10615"
 ],
 "opaque-raw-stub-assistant-1": [
 "input-before sha12/len=5d84bac833f1/133",
@@ -9488,13 +9488,15 @@
 "attr tables sha12/len=e885a481a1b7/1114",
 "state-after sha12/len=a25d14e4fb2a/8862",
 "search-after sha12/len=6a83cdbae596/215",
+"payloads-after sha12/len=bf5127ffb6ee/152",
 "input-after sha12/len=5d84bac833f1/133",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=5d84bac833f1/133",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=a25d14e4fb2a/8862",
 "cold-return sha12/len=5d84bac833f1/133",
-"cold-state sha12/len=f009c808b09d/8997"
+"cold-state sha12/len=07748feeab13/9000",
+"payloads-cold sha12/len=bf5127ffb6ee/152"
 ],
 "opaque-raw-stub-assistant-2": [
 "input-before sha12/len=75073efb42bb/265",
@@ -9565,13 +9567,15 @@
 "attr tables sha12/len=cacf46c22c35/1318",
 "state-after sha12/len=2396113b4a39/9322",
 "search-after sha12/len=69258aa6e0bc/324",
+"payloads-after sha12/len=bf5127ffb6ee/152",
 "input-after sha12/len=75073efb42bb/265",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=75073efb42bb/265",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=2396113b4a39/9322",
 "cold-return sha12/len=75073efb42bb/265",
-"cold-state sha12/len=8d648f64b2f1/9457"
+"cold-state sha12/len=1f16d26c2b75/9460",
+"payloads-cold sha12/len=bf5127ffb6ee/152"
 ],
 "opaque-raw-stub-tool-1": [
 "input-before sha12/len=090cd507464b/123",
@@ -9635,13 +9639,15 @@
 "attr tables sha12/len=f881225854b4/1104",
 "state-after sha12/len=8ef4cad8090d/8832",
 "search-after sha12/len=a11506d60d12/205",
+"payloads-after sha12/len=bf5127ffb6ee/152",
 "input-after sha12/len=090cd507464b/123",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=090cd507464b/123",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=8ef4cad8090d/8832",
 "cold-return sha12/len=090cd507464b/123",
-"cold-state sha12/len=0fa4507a62f5/8967"
+"cold-state sha12/len=cdb3bad7c88e/8970",
+"payloads-cold sha12/len=bf5127ffb6ee/152"
 ],
 "opaque-raw-stub-tool-2": [
 "input-before sha12/len=4e46855bd4f5/245",
@@ -9712,13 +9718,15 @@
 "attr tables sha12/len=93a9101c3bc0/1298",
 "state-after sha12/len=e1e05534b158/9262",
 "search-after sha12/len=70960ddfb2d7/309",
+"payloads-after sha12/len=bf5127ffb6ee/152",
 "input-after sha12/len=4e46855bd4f5/245",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=4e46855bd4f5/245",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=e1e05534b158/9262",
 "cold-return sha12/len=4e46855bd4f5/245",
-"cold-state sha12/len=3f0062164fb1/9397"
+"cold-state sha12/len=a33783f07323/9400",
+"payloads-cold sha12/len=bf5127ffb6ee/152"
 ],
 "opaque-raw-stub-user-1": [
 "input-before sha12/len=d88159f3f4d9/123",
@@ -9785,13 +9793,15 @@
 "attr tables sha12/len=94905aa13108/1104",
 "state-after sha12/len=01acc723398a/9297",
 "search-after sha12/len=652e3e66e312/205",
+"payloads-after sha12/len=bf5127ffb6ee/152",
 "input-after sha12/len=d88159f3f4d9/123",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=d88159f3f4d9/123",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=01acc723398a/9297",
 "cold-return sha12/len=d88159f3f4d9/123",
-"cold-state sha12/len=8df842d98b29/8967"
+"cold-state sha12/len=d5f57472d283/8970",
+"payloads-cold sha12/len=bf5127ffb6ee/152"
 ],
 "opaque-raw-stub-user-2": [
 "input-before sha12/len=b5879a00fe77/245",
@@ -9868,13 +9878,15 @@
 "attr tables sha12/len=ae5af81eefbd/1298",
 "state-after sha12/len=345e877a359d/10194",
 "search-after sha12/len=7d209bd8ead1/309",
+"payloads-after sha12/len=bf5127ffb6ee/152",
 "input-after sha12/len=b5879a00fe77/245",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=b5879a00fe77/245",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=345e877a359d/10194",
 "cold-return sha12/len=b5879a00fe77/245",
-"cold-state sha12/len=c0d0792870b5/9397"
+"cold-state sha12/len=c5b7c581faf6/9400",
+"payloads-cold sha12/len=bf5127ffb6ee/152"
 ],
 "placeholder-0-1-all": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -10023,7 +10035,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=8d709463dc1a/11085"
+"cold-state sha12/len=7382183f29cf/11076"
 ],
 "placeholder-0-1-generated": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -10155,7 +10167,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=b746feaa34f8/9345",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=64e59a1560bd/9512"
+"cold-state sha12/len=47d6ea73fad6/9511"
 ],
 "placeholder-0-1-mixed": [
 "input-before sha12/len=289542eea95a/632",
@@ -10331,7 +10343,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=d0a57d4b8aa1/10796",
 "cold-return sha12/len=289542eea95a/632",
-"cold-state sha12/len=6a867f36c9d2/10770"
+"cold-state sha12/len=90b15f27ff93/10773"
 ],
 "placeholder-0-1-single": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -10462,7 +10474,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=26c64b6bf3a3/9128",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=64e59a1560bd/9512"
+"cold-state sha12/len=47d6ea73fad6/9511"
 ],
 "placeholder-0-1-stored-counts": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -10612,7 +10624,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=8d709463dc1a/11085"
+"cold-state sha12/len=7382183f29cf/11076"
 ],
 "placeholder-0-1-summary": [
 "input-before sha12/len=9a6211db2471/291",
@@ -10763,7 +10775,7 @@
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=a0d982cb571c/9933",
 "cold-return sha12/len=9a6211db2471/291",
-"cold-state sha12/len=65a3f07964be/9711"
+"cold-state sha12/len=a9c2ac721659/9714"
 ],
 "placeholder-0-2-all": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -10915,7 +10927,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=8d709463dc1a/11085"
+"cold-state sha12/len=7382183f29cf/11076"
 ],
 "placeholder-0-2-generated": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -11047,7 +11059,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=b746feaa34f8/9345",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=64e59a1560bd/9512"
+"cold-state sha12/len=47d6ea73fad6/9511"
 ],
 "placeholder-0-2-mixed": [
 "input-before sha12/len=289542eea95a/632",
@@ -11218,7 +11230,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=409c115043bf/10577",
 "cold-return sha12/len=289542eea95a/632",
-"cold-state sha12/len=8ef98db6102f/10748"
+"cold-state sha12/len=41b562025929/10747"
 ],
 "placeholder-0-2-single": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -11349,7 +11361,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=26c64b6bf3a3/9128",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=64e59a1560bd/9512"
+"cold-state sha12/len=47d6ea73fad6/9511"
 ],
 "placeholder-0-2-stored-counts": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -11502,7 +11514,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=8d709463dc1a/11085"
+"cold-state sha12/len=7382183f29cf/11076"
 ],
 "placeholder-0-2-summary": [
 "input-before sha12/len=9a6211db2471/291",
@@ -11653,7 +11665,7 @@
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=a0d982cb571c/9933",
 "cold-return sha12/len=9a6211db2471/291",
-"cold-state sha12/len=65a3f07964be/9711"
+"cold-state sha12/len=a9c2ac721659/9714"
 ],
 "placeholder-1-1-all": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -11795,7 +11807,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=8d709463dc1a/11085"
+"cold-state sha12/len=7382183f29cf/11076"
 ],
 "placeholder-1-1-generated": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -11897,7 +11909,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=01d4c0025866/9153",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=e3d62a2c9012/9129"
+"cold-state sha12/len=26c64b6bf3a3/9128"
 ],
 "placeholder-1-1-mixed": [
 "input-before sha12/len=289542eea95a/632",
@@ -12066,7 +12078,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=d0a57d4b8aa1/10796",
 "cold-return sha12/len=289542eea95a/632",
-"cold-state sha12/len=6a867f36c9d2/10770"
+"cold-state sha12/len=90b15f27ff93/10773"
 ],
 "placeholder-1-1-single": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -12190,7 +12202,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=26c64b6bf3a3/9128",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=64e59a1560bd/9512"
+"cold-state sha12/len=47d6ea73fad6/9511"
 ],
 "placeholder-1-1-stored-counts": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -12333,7 +12345,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=8d709463dc1a/11085"
+"cold-state sha12/len=7382183f29cf/11076"
 ],
 "placeholder-1-1-summary": [
 "input-before sha12/len=9a6211db2471/291",
@@ -12469,7 +12481,7 @@
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=f57e3f5527a1/9714",
 "cold-return sha12/len=9a6211db2471/291",
-"cold-state sha12/len=60fd55002b97/9492"
+"cold-state sha12/len=0e4f422f445a/9495"
 ],
 "placeholder-1-2-all": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -12614,7 +12626,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=8d709463dc1a/11085"
+"cold-state sha12/len=7382183f29cf/11076"
 ],
 "placeholder-1-2-generated": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -12719,7 +12731,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=01d4c0025866/9153",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=e3d62a2c9012/9129"
+"cold-state sha12/len=26c64b6bf3a3/9128"
 ],
 "placeholder-1-2-mixed": [
 "input-before sha12/len=289542eea95a/632",
@@ -12883,7 +12895,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=409c115043bf/10577",
 "cold-return sha12/len=289542eea95a/632",
-"cold-state sha12/len=8ef98db6102f/10748"
+"cold-state sha12/len=41b562025929/10747"
 ],
 "placeholder-1-2-single": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -13007,7 +13019,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=26c64b6bf3a3/9128",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=64e59a1560bd/9512"
+"cold-state sha12/len=47d6ea73fad6/9511"
 ],
 "placeholder-1-2-stored-counts": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -13153,7 +13165,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=8d709463dc1a/11085"
+"cold-state sha12/len=7382183f29cf/11076"
 ],
 "placeholder-1-2-summary": [
 "input-before sha12/len=9a6211db2471/291",
@@ -13297,7 +13309,7 @@
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=a0d982cb571c/9933",
 "cold-return sha12/len=9a6211db2471/291",
-"cold-state sha12/len=65a3f07964be/9711"
+"cold-state sha12/len=a9c2ac721659/9714"
 ],
 "placeholder-2-1-all": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -13439,7 +13451,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=8d709463dc1a/11085"
+"cold-state sha12/len=7382183f29cf/11076"
 ],
 "placeholder-2-1-generated": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -13541,7 +13553,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=01d4c0025866/9153",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=e3d62a2c9012/9129"
+"cold-state sha12/len=26c64b6bf3a3/9128"
 ],
 "placeholder-2-1-mixed": [
 "input-before sha12/len=289542eea95a/632",
@@ -13710,7 +13722,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=d0a57d4b8aa1/10796",
 "cold-return sha12/len=289542eea95a/632",
-"cold-state sha12/len=6a867f36c9d2/10770"
+"cold-state sha12/len=90b15f27ff93/10773"
 ],
 "placeholder-2-1-single": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -13834,7 +13846,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=26c64b6bf3a3/9128",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=64e59a1560bd/9512"
+"cold-state sha12/len=47d6ea73fad6/9511"
 ],
 "placeholder-2-1-stored-counts": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -13977,7 +13989,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=8d709463dc1a/11085"
+"cold-state sha12/len=7382183f29cf/11076"
 ],
 "placeholder-2-1-summary": [
 "input-before sha12/len=9a6211db2471/291",
@@ -14113,7 +14125,7 @@
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=f57e3f5527a1/9714",
 "cold-return sha12/len=9a6211db2471/291",
-"cold-state sha12/len=60fd55002b97/9492"
+"cold-state sha12/len=0e4f422f445a/9495"
 ],
 "placeholder-2-2-all": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -14258,7 +14270,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=8d709463dc1a/11085"
+"cold-state sha12/len=7382183f29cf/11076"
 ],
 "placeholder-2-2-generated": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -14363,7 +14375,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=01d4c0025866/9153",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=e3d62a2c9012/9129"
+"cold-state sha12/len=26c64b6bf3a3/9128"
 ],
 "placeholder-2-2-mixed": [
 "input-before sha12/len=289542eea95a/632",
@@ -14527,7 +14539,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=409c115043bf/10577",
 "cold-return sha12/len=289542eea95a/632",
-"cold-state sha12/len=8ef98db6102f/10748"
+"cold-state sha12/len=41b562025929/10747"
 ],
 "placeholder-2-2-single": [
 "input-before sha12/len=eaab59862cf6/196",
@@ -14651,7 +14663,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=26c64b6bf3a3/9128",
 "cold-return sha12/len=eaab59862cf6/196",
-"cold-state sha12/len=64e59a1560bd/9512"
+"cold-state sha12/len=47d6ea73fad6/9511"
 ],
 "placeholder-2-2-stored-counts": [
 "input-before sha12/len=59d2b38c58d1/586",
@@ -14797,7 +14809,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=228eb70a3751/10207",
 "cold-return sha12/len=59d2b38c58d1/586",
-"cold-state sha12/len=8d709463dc1a/11085"
+"cold-state sha12/len=7382183f29cf/11076"
 ],
 "placeholder-2-2-summary": [
 "input-before sha12/len=9a6211db2471/291",
@@ -14941,7 +14953,7 @@
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=a0d982cb571c/9933",
 "cold-return sha12/len=9a6211db2471/291",
-"cold-state sha12/len=65a3f07964be/9711"
+"cold-state sha12/len=a9c2ac721659/9714"
 ],
 "proof-consumed-consulted": [
 "input-before sha12/len=a2801b378fca/263",
@@ -14960,7 +14972,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=e2c268682633/11004",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "proof-consumed-divergent": [
 "input-before sha12/len=4d2eb06dc995/258",
@@ -15127,7 +15139,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=eec47cddd1d8/11417",
 "cold-return sha12/len=4d2eb06dc995/258",
-"cold-state sha12/len=608bbf956048/9694"
+"cold-state sha12/len=26dfa6dc9303/9697"
 ],
 "proof-consumed-foreign-conversation": [
 "input-before sha12/len=a2801b378fca/263",
@@ -15146,7 +15158,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=bf8ac2aeb3da/11005",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "proof-consumed-foreign-session": [
 "input-before sha12/len=a2801b378fca/263",
@@ -15165,7 +15177,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=2bed6a59544b/11017",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "proof-consumed-full": [
 "input-before sha12/len=a2801b378fca/263",
@@ -15233,7 +15245,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5c384dfb09ae/9778",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "proof-consumed-input": [
 "input-before sha12/len=a2801b378fca/263",
@@ -15301,7 +15313,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5c384dfb09ae/9778",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "proof-consumed-merge": [
 "input-before [{\"content\":\"left\\n\\nright\",\"role\":\"user\"}]",
@@ -15413,7 +15425,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=739dd00ab9c4/10287",
 "cold-return [{\"content\":\"left\\n\\nright\",\"role\":\"user\"}]",
-"cold-state sha12/len=5e286d1d2ab0/9551"
+"cold-state sha12/len=a338178c1c70/9550"
 ],
 "proof-consumed-missing-metadata": [
 "input-before sha12/len=5758f8fd0855/245",
@@ -15481,7 +15493,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5c384dfb09ae/9778",
 "cold-return sha12/len=5758f8fd0855/245",
-"cold-state sha12/len=38c933383fd6/9541"
+"cold-state sha12/len=90f6f702ece7/9544"
 ],
 "proof-consumed-new-stamp": [
 "input-before sha12/len=26edc68f71dd/263",
@@ -15566,7 +15578,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=c2e6885446f4/10085",
 "cold-return sha12/len=26edc68f71dd/263",
-"cold-state sha12/len=828a105212e5/9701"
+"cold-state sha12/len=2fbd9c89a470/9704"
 ],
 "proof-consumed-new-uid": [
 "input-before sha12/len=2a3d3a1bac02/296",
@@ -15658,7 +15670,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=4b034ed3844a/10308",
 "cold-return sha12/len=2a3d3a1bac02/296",
-"cold-state sha12/len=5d69133931b0/9891"
+"cold-state sha12/len=119e53c64eea/9894"
 ],
 "proof-consumed-repair": [
 "input-before sha12/len=d708301caed4/195",
@@ -15791,7 +15803,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=cd516e806a75/11126",
 "cold-return sha12/len=d708301caed4/195",
-"cold-state sha12/len=1be51bd8eb71/9453"
+"cold-state sha12/len=215abf6cf85d/9456"
 ],
 "proof-consumed-short": [
 "input-before [{\"content\":\"row 0: العربية 🪷\",\"role\":\"user\",\"timestamp\":100.0}]",
@@ -15900,7 +15912,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=4e601c7b4cb7/10808",
 "cold-return [{\"content\":\"row 0: العربية 🪷\",\"role\":\"user\",\"timestamp\":100.0}]",
-"cold-state sha12/len=aae04dab2e7e/9234"
+"cold-state sha12/len=7296f183516e/9237"
 ],
 "proof-consumed-zero": [
 "input-before sha12/len=a2801b378fca/263",
@@ -15962,7 +15974,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=e3b75d97db07/9778",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "proof-native-consulted": [
 "input-before sha12/len=a2801b378fca/263",
@@ -15981,7 +15993,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=09038e30d5c4/11004",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "proof-native-divergent": [
 "input-before sha12/len=4d2eb06dc995/258",
@@ -16148,7 +16160,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=eb79a8d969b9/11417",
 "cold-return sha12/len=4d2eb06dc995/258",
-"cold-state sha12/len=608bbf956048/9694"
+"cold-state sha12/len=26dfa6dc9303/9697"
 ],
 "proof-native-foreign-conversation": [
 "input-before sha12/len=a2801b378fca/263",
@@ -16167,7 +16179,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=9bb107774e8a/11005",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "proof-native-foreign-session": [
 "input-before sha12/len=a2801b378fca/263",
@@ -16186,7 +16198,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=dd388aad66fa/11017",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "proof-native-full": [
 "input-before sha12/len=a2801b378fca/263",
@@ -16254,7 +16266,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5c384dfb09ae/9778",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "proof-native-input": [
 "input-before sha12/len=a2801b378fca/263",
@@ -16322,7 +16334,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5c384dfb09ae/9778",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "proof-native-lossy": [
 "input-before sha12/len=a2801b378fca/263",
@@ -16469,7 +16481,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=eaf37ebad68d/11186",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "proof-native-merge": [
 "input-before [{\"content\":\"left\\n\\nright\",\"role\":\"user\"}]",
@@ -16581,7 +16593,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=c92e6fa744a5/10287",
 "cold-return [{\"content\":\"left\\n\\nright\",\"role\":\"user\"}]",
-"cold-state sha12/len=5e286d1d2ab0/9551"
+"cold-state sha12/len=a338178c1c70/9550"
 ],
 "proof-native-missing-metadata": [
 "input-before sha12/len=5758f8fd0855/245",
@@ -16649,7 +16661,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5c384dfb09ae/9778",
 "cold-return sha12/len=5758f8fd0855/245",
-"cold-state sha12/len=38c933383fd6/9541"
+"cold-state sha12/len=90f6f702ece7/9544"
 ],
 "proof-native-new-stamp": [
 "input-before sha12/len=26edc68f71dd/263",
@@ -16734,7 +16746,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=c2e6885446f4/10085",
 "cold-return sha12/len=26edc68f71dd/263",
-"cold-state sha12/len=828a105212e5/9701"
+"cold-state sha12/len=2fbd9c89a470/9704"
 ],
 "proof-native-new-uid": [
 "input-before sha12/len=2a3d3a1bac02/296",
@@ -16826,7 +16838,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=4b034ed3844a/10308",
 "cold-return sha12/len=2a3d3a1bac02/296",
-"cold-state sha12/len=5d69133931b0/9891"
+"cold-state sha12/len=119e53c64eea/9894"
 ],
 "proof-native-remap": [
 "input-before sha12/len=22242b44a316/428",
@@ -16942,7 +16954,7 @@
 "next-aliases sha12/len=62674f2353cd/83",
 "next-state sha12/len=2e09fde4d23b/10100",
 "cold-return sha12/len=22242b44a316/428",
-"cold-state sha12/len=a05ecaa779e9/9881"
+"cold-state sha12/len=d2bb1525f8b9/9884"
 ],
 "proof-native-remap-new-stamp": [
 "input-before sha12/len=696275f18e66/428",
@@ -17061,7 +17073,7 @@
 "next-aliases sha12/len=62674f2353cd/83",
 "next-state sha12/len=f2f01e710c1b/10407",
 "cold-return sha12/len=696275f18e66/428",
-"cold-state sha12/len=20b1942cf901/10026"
+"cold-state sha12/len=ee2bfba3b115/10029"
 ],
 "proof-native-repair": [
 "input-before sha12/len=d708301caed4/195",
@@ -17168,7 +17180,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=ceaa4331417f/9668",
 "cold-return sha12/len=d708301caed4/195",
-"cold-state sha12/len=1be51bd8eb71/9453"
+"cold-state sha12/len=215abf6cf85d/9456"
 ],
 "proof-native-short": [
 "input-before [{\"content\":\"row 0: العربية 🪷\",\"role\":\"user\",\"timestamp\":100.0}]",
@@ -17277,7 +17289,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=db4bbfc925c5/10808",
 "cold-return [{\"content\":\"row 0: العربية 🪷\",\"role\":\"user\",\"timestamp\":100.0}]",
-"cold-state sha12/len=aae04dab2e7e/9234"
+"cold-state sha12/len=7296f183516e/9237"
 ],
 "proof-native-zero": [
 "input-before sha12/len=a2801b378fca/263",
@@ -17339,7 +17351,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=e3b75d97db07/9778",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "proof-output-consulted": [
 "input-before sha12/len=a2801b378fca/263",
@@ -17358,7 +17370,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=b05f70bd1e08/11005",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "proof-output-divergent": [
 "input-before sha12/len=4d2eb06dc995/258",
@@ -17525,7 +17537,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=501b3d3beaba/11418",
 "cold-return sha12/len=4d2eb06dc995/258",
-"cold-state sha12/len=608bbf956048/9694"
+"cold-state sha12/len=26dfa6dc9303/9697"
 ],
 "proof-output-foreign-conversation": [
 "input-before sha12/len=a2801b378fca/263",
@@ -17544,7 +17556,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=688f0745bb70/11006",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "proof-output-foreign-session": [
 "input-before sha12/len=a2801b378fca/263",
@@ -17563,7 +17575,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=3b425cab10e6/11018",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "proof-output-full": [
 "input-before sha12/len=a2801b378fca/263",
@@ -17631,7 +17643,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5c384dfb09ae/9778",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "proof-output-input": [
 "input-before sha12/len=a2801b378fca/263",
@@ -17723,7 +17735,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5c384dfb09ae/9778",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "proof-output-merge": [
 "input-before [{\"content\":\"left\\n\\nright\",\"role\":\"user\"}]",
@@ -17835,7 +17847,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=8f735124be78/10288",
 "cold-return [{\"content\":\"left\\n\\nright\",\"role\":\"user\"}]",
-"cold-state sha12/len=5e286d1d2ab0/9551"
+"cold-state sha12/len=a338178c1c70/9550"
 ],
 "proof-output-missing-metadata": [
 "input-before sha12/len=5758f8fd0855/245",
@@ -17903,7 +17915,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5c384dfb09ae/9778",
 "cold-return sha12/len=5758f8fd0855/245",
-"cold-state sha12/len=38c933383fd6/9541"
+"cold-state sha12/len=90f6f702ece7/9544"
 ],
 "proof-output-new-stamp": [
 "input-before sha12/len=26edc68f71dd/263",
@@ -17988,7 +18000,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=c2e6885446f4/10085",
 "cold-return sha12/len=26edc68f71dd/263",
-"cold-state sha12/len=828a105212e5/9701"
+"cold-state sha12/len=2fbd9c89a470/9704"
 ],
 "proof-output-new-uid": [
 "input-before sha12/len=2a3d3a1bac02/296",
@@ -18080,7 +18092,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=4b034ed3844a/10308",
 "cold-return sha12/len=2a3d3a1bac02/296",
-"cold-state sha12/len=5d69133931b0/9891"
+"cold-state sha12/len=119e53c64eea/9894"
 ],
 "proof-output-repair": [
 "input-before sha12/len=d708301caed4/195",
@@ -18213,7 +18225,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=75ac4e0c0767/11127",
 "cold-return sha12/len=d708301caed4/195",
-"cold-state sha12/len=1be51bd8eb71/9453"
+"cold-state sha12/len=215abf6cf85d/9456"
 ],
 "proof-output-short": [
 "input-before [{\"content\":\"row 0: العربية 🪷\",\"role\":\"user\",\"timestamp\":100.0}]",
@@ -18322,7 +18334,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=685716f0a15b/10809",
 "cold-return [{\"content\":\"row 0: العربية 🪷\",\"role\":\"user\",\"timestamp\":100.0}]",
-"cold-state sha12/len=aae04dab2e7e/9234"
+"cold-state sha12/len=7296f183516e/9237"
 ],
 "proof-output-zero": [
 "input-before sha12/len=a2801b378fca/263",
@@ -18384,12 +18396,12 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=e3b75d97db07/9778",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "reconcile-tool-after-new": [
 "input-before sha12/len=8b3016be9f12/440",
 "aliases-before sha12/len=7059c5d5f127/87",
-"state-before sha12/len=c5a1d5d6e434/9003",
+"state-before sha12/len=8bb9456fa458/9006",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -18505,30 +18517,30 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=daea4fff3ee0/793",
+"store _append_protected_batch sha12/len=d3dddc2fa73f/796",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=47f0f2d96155/442",
-"sql _store sha12/len=47f0f2d96155/442",
-"sql _store sha12/len=47f0f2d96155/442",
-"sql _store sha12/len=47f0f2d96155/442",
-"sql _store sha12/len=47f0f2d96155/442",
+"sql _store sha12/len=ea260d567778/438",
+"sql _store sha12/len=ea260d567778/438",
+"sql _store sha12/len=ea260d567778/438",
+"sql _store sha12/len=ea260d567778/438",
+"sql _store sha12/len=ea260d567778/438",
 "metadata-callback input [{\"content\":\"new between prefix and tools\",\"role\":\"user\"},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
 "store result read_metadata_json null",
 "metadata-callback result []",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
 "metadata-callback input sha12/len=f3790cf72aa5/173",
 "metadata-callback result []",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
 "metadata-callback input sha12/len=f1ea40d71378/105",
 "metadata-callback result []",
 "sql _store \"COMMIT\"",
@@ -18567,16 +18579,16 @@
 "attr _last_active_replay_messages sha12/len=8b3016be9f12/440",
 "attr _last_active_replay_source_identities sha12/len=991e6588ff14/312",
 "attr _last_ingest_reconciliation sha12/len=ee7bd3e5c381/152",
-"attr tables sha12/len=62025c860422/2135",
-"state-after sha12/len=3ea8072e3e4a/10703",
+"attr tables sha12/len=5ef1771558b1/2123",
+"state-after sha12/len=1cc8bd7c394b/10694",
 "search-after sha12/len=8875068417af/204",
 "input-after sha12/len=8b3016be9f12/440",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=8b3016be9f12/440",
 "next-aliases sha12/len=62674f2353cd/83",
-"next-state sha12/len=3ea8072e3e4a/10703",
+"next-state sha12/len=1cc8bd7c394b/10694",
 "cold-return sha12/len=8b3016be9f12/440",
-"cold-state sha12/len=1fddca36d082/11247"
+"cold-state sha12/len=8ac14257ffd3/11226"
 ],
 "repeated-equal-occurrences": [
 "input-before sha12/len=f8f4dee943fc/143",
@@ -18692,12 +18704,12 @@
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=a6fd46d51529/9300",
 "cold-return sha12/len=f8f4dee943fc/143",
-"cold-state sha12/len=b0b06a72f4d9/9150"
+"cold-state sha12/len=2a8bc78d455f/9153"
 ],
 "repeated-tool-id": [
 "input-before sha12/len=7a68e9fd1efb/664",
 "aliases-before sha12/len=5cc29f7d8099/95",
-"state-before sha12/len=c5a1d5d6e434/9003",
+"state-before sha12/len=8bb9456fa458/9006",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -18825,34 +18837,34 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=b956fb33673d/1244",
+"store _append_protected_batch sha12/len=a4e08f723bed/1247",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
 "metadata-callback input sha12/len=cf4869badcc6/173",
 "metadata-callback result []",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
 "metadata-callback input sha12/len=12e959abbfc7/105",
 "metadata-callback result []",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
 "metadata-callback input sha12/len=79093083af68/173",
 "metadata-callback result []",
-"sql _store sha12/len=652bfda4d8b5/462",
-"sql _store sha12/len=652bfda4d8b5/462",
-"sql _store sha12/len=652bfda4d8b5/462",
-"sql _store sha12/len=652bfda4d8b5/462",
-"sql _store sha12/len=652bfda4d8b5/462",
+"sql _store sha12/len=3e2540c49077/458",
+"sql _store sha12/len=3e2540c49077/458",
+"sql _store sha12/len=3e2540c49077/458",
+"sql _store sha12/len=3e2540c49077/458",
+"sql _store sha12/len=3e2540c49077/458",
 "metadata-callback input sha12/len=4cbd83f5a799/114",
 "metadata-callback result []",
 "sql _store \"COMMIT\"",
@@ -18891,16 +18903,16 @@
 "attr _last_active_replay_messages sha12/len=7a68e9fd1efb/664",
 "attr _last_active_replay_source_identities sha12/len=23de009d34c5/476",
 "attr _last_ingest_reconciliation sha12/len=9c17b3374330/152",
-"attr tables sha12/len=d985933d8638/2422",
-"state-after sha12/len=33e4ea9f5c2e/11173",
+"attr tables sha12/len=9e9ae2aaa433/2406",
+"state-after sha12/len=048118573cee/11160",
 "search-after sha12/len=cd3af62ccb34/194",
 "input-after sha12/len=7a68e9fd1efb/664",
 "aliases-after sha12/len=5cc29f7d8099/95",
 "next-return sha12/len=7a68e9fd1efb/664",
 "next-aliases sha12/len=176862c7acc1/90",
-"next-state sha12/len=33e4ea9f5c2e/11173",
+"next-state sha12/len=048118573cee/11160",
 "cold-return sha12/len=7a68e9fd1efb/664",
-"cold-state sha12/len=bbdf2db6d2d8/12006"
+"cold-state sha12/len=eb14ef6940b0/11977"
 ],
 "scaffold-metadata": [
 "input-before sha12/len=dc31772d7fff/96",
@@ -18974,7 +18986,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=cd1da6f21e43/9199",
 "cold-return sha12/len=dc31772d7fff/96",
-"cold-state sha12/len=3cd543b05ad4/8984"
+"cold-state sha12/len=d38c85f5de99/8987"
 ],
 "sequence-compaction": [
 "input-before sha12/len=ee4c53fc4c3c/9960",
@@ -19097,7 +19109,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=c48615f50f71/118319",
 "cold-return sha12/len=ee4c53fc4c3c/9960",
-"cold-state sha12/len=adbe044b2af1/97269"
+"cold-state sha12/len=c284e57c81ce/97272"
 ],
 "sequence-host-merge": [
 "input-before sha12/len=f92a5e4364d9/9893",
@@ -19235,7 +19247,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=8b05b54843f8/118255",
 "cold-return sha12/len=f92a5e4364d9/9893",
-"cold-state sha12/len=9b07f9cc1dcc/97185"
+"cold-state sha12/len=42e35f9f79c7/97188"
 ],
 "sequence-rewrite": [
 "input-before sha12/len=4299565a0cfa/9973",
@@ -19489,7 +19501,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=7337c010f898/145616",
 "cold-return sha12/len=4299565a0cfa/9973",
-"cold-state sha12/len=0a96bcb5a5da/98085"
+"cold-state sha12/len=2248a8978865/98088"
 ],
 "sequence-rotation": [
 "input-before sha12/len=ee4c53fc4c3c/9960",
@@ -19608,7 +19620,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=26f89acfc808/104525",
 "cold-return sha12/len=ee4c53fc4c3c/9960",
-"cold-state sha12/len=c87a7873ea6b/83807"
+"cold-state sha12/len=0c2854726320/83409"
 ],
 "sqlite-append": [
 "input-before [{\"content\":\"fresh\",\"role\":\"user\"}]",
@@ -19642,7 +19654,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=47ac35399dcd/8680",
 "cold-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
-"cold-state sha12/len=93c0579c4e04/8902"
+"cold-state sha12/len=69cb02fd6184/8901"
 ],
 "sqlite-duplicate-tail": [
 "input-before [{\"content\":\"fresh\",\"role\":\"user\"}]",
@@ -19703,12 +19715,12 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=8fc325463474/8915",
 "cold-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
-"cold-state sha12/len=93c0579c4e04/8902"
+"cold-state sha12/len=69cb02fd6184/8901"
 ],
 "sqlite-durable": [
 "input-before sha12/len=a2801b378fca/263",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=ba2ada7c0aca/8902",
+"state-before sha12/len=7ea42530ebee/8905",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -19890,15 +19902,15 @@
 "attr _last_active_replay_messages sha12/len=a2801b378fca/263",
 "attr _last_active_replay_source_identities sha12/len=dd9a3c2074d8/159",
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
-"state-after sha12/len=d352507cba94/9412",
+"state-after sha12/len=f4634f8363d2/9415",
 "search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=e3c87c4d7868/9399",
+"next-state sha12/len=fbc7fb7d9570/9402",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=195103fe0464/9532"
+"cold-state sha12/len=1b347bfc4132/9535"
 ],
 "sqlite-locked": [
 "input-before [{\"content\":\"fresh\",\"role\":\"user\"}]",
@@ -19938,7 +19950,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=8fc325463474/8915",
 "cold-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
-"cold-state sha12/len=93c0579c4e04/8902"
+"cold-state sha12/len=69cb02fd6184/8901"
 ],
 "sqlite-metadata": [
 "input-before sha12/len=dc31772d7fff/96",
@@ -19984,7 +19996,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=cd1da6f21e43/9199",
 "cold-return sha12/len=dc31772d7fff/96",
-"cold-state sha12/len=3cd543b05ad4/8984"
+"cold-state sha12/len=d38c85f5de99/8987"
 ],
 "sqlite-prematch": [
 "input-before sha12/len=468b33749374/263",
@@ -20019,7 +20031,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=68e84b3b5664/9761",
 "cold-return sha12/len=468b33749374/263",
-"cold-state sha12/len=758501b1ba92/9854"
+"cold-state sha12/len=3736f9495009/9853"
 ],
 "sqlite-probe": [
 "input-before [{\"content\":\"fresh\",\"role\":\"user\"}]",
@@ -20086,12 +20098,12 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=47ac35399dcd/8680",
 "cold-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
-"cold-state sha12/len=93c0579c4e04/8902"
+"cold-state sha12/len=69cb02fd6184/8901"
 ],
 "sqlite-relation": [
 "input-before sha12/len=59e4a7a217ce/176",
 "aliases-before {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
-"state-before sha12/len=26d5829b131a/8499",
+"state-before sha12/len=252f3159cb1e/8502",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 1",
@@ -20191,23 +20203,23 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=a56650177cf2/404",
+"store _append_protected_batch sha12/len=cda798caf959/407",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=4a8e24af1fe8/447",
-"sql _store sha12/len=4a8e24af1fe8/447",
-"sql _store sha12/len=4a8e24af1fe8/447",
-"sql _store sha12/len=4a8e24af1fe8/447",
-"sql _store sha12/len=4a8e24af1fe8/447",
+"sql _store sha12/len=cf2d63f7abbf/443",
+"sql _store sha12/len=cf2d63f7abbf/443",
+"sql _store sha12/len=cf2d63f7abbf/443",
+"sql _store sha12/len=cf2d63f7abbf/443",
+"sql _store sha12/len=cf2d63f7abbf/443",
 "metadata-callback input sha12/len=eb2bdd5f30d0/82",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
 "store result read_metadata_json null",
 "metadata-callback result []",
-"sql _store sha12/len=60387a25b3df/444",
-"sql _store sha12/len=60387a25b3df/444",
-"sql _store sha12/len=60387a25b3df/444",
-"sql _store sha12/len=60387a25b3df/444",
-"sql _store sha12/len=60387a25b3df/444",
+"sql _store sha12/len=72f33f8cebe8/440",
+"sql _store sha12/len=72f33f8cebe8/440",
+"sql _store sha12/len=72f33f8cebe8/440",
+"sql _store sha12/len=72f33f8cebe8/440",
+"sql _store sha12/len=72f33f8cebe8/440",
 "metadata-callback input [{\"content\":\"reply\",\"role\":\"assistant\",\"timestamp\":501.0},3]",
 "metadata-callback result []",
 "sql _store \"COMMIT\"",
@@ -20248,16 +20260,16 @@
 "attr _last_active_replay_messages sha12/len=59e4a7a217ce/176",
 "attr _last_active_replay_source_identities sha12/len=649988aa3748/124",
 "attr _last_ingest_reconciliation sha12/len=c6a880bb4d73/152",
-"attr tables sha12/len=90de3bd8245f/1361",
-"state-after sha12/len=46779ce57c6b/9593",
+"attr tables sha12/len=9b1e435636f6/1353",
+"state-after sha12/len=67fdbee0530a/9588",
 "search-after sha12/len=b9a3fc63803c/278",
 "input-after sha12/len=59e4a7a217ce/176",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=59e4a7a217ce/176",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
-"next-state sha12/len=8b40329558a9/9551",
+"next-state sha12/len=ecbf9b413390/9546",
 "cold-return sha12/len=59e4a7a217ce/176",
-"cold-state sha12/len=83217b9b8ee7/9472"
+"cold-state sha12/len=be5c86c2f339/9467"
 ],
 "sqlite-snapshot": [
 "input-before [{\"content\":\"fresh\",\"role\":\"user\"}]",
@@ -20328,12 +20340,12 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=7f25bdc639ed/8716",
 "cold-return [{\"content\":\"fresh\",\"role\":\"user\"}]",
-"cold-state sha12/len=321bc83444c7/8938"
+"cold-state sha12/len=79dd2fc32a8d/8937"
 ],
 "tool-segments-after-new": [
 "input-before sha12/len=f2e1af035d42/2925",
 "aliases-before sha12/len=7083c85f8122/127",
-"state-before sha12/len=479a2ce8f9b1/12031",
+"state-before sha12/len=016cf5cdad3e/12034",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 11",
@@ -20533,20 +20545,20 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=a81e3108d071/275",
+"store _append_protected_batch sha12/len=2db76dabad00/278",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=ba022d49639d/425",
-"sql _store sha12/len=ba022d49639d/425",
-"sql _store sha12/len=ba022d49639d/425",
-"sql _store sha12/len=ba022d49639d/425",
-"sql _store sha12/len=ba022d49639d/425",
+"sql _store sha12/len=c8b43f83f85c/421",
+"sql _store sha12/len=c8b43f83f85c/421",
+"sql _store sha12/len=c8b43f83f85c/421",
+"sql _store sha12/len=c8b43f83f85c/421",
+"sql _store sha12/len=c8b43f83f85c/421",
 "metadata-callback input [{\"content\":\"new row\",\"role\":\"assistant\"},12]",
 "metadata-callback result []",
-"sql _store sha12/len=b8e59ba7c032/415",
-"sql _store sha12/len=b8e59ba7c032/415",
-"sql _store sha12/len=b8e59ba7c032/415",
-"sql _store sha12/len=b8e59ba7c032/415",
-"sql _store sha12/len=b8e59ba7c032/415",
+"sql _store sha12/len=12285a31090d/411",
+"sql _store sha12/len=12285a31090d/411",
+"sql _store sha12/len=12285a31090d/411",
+"sql _store sha12/len=12285a31090d/411",
+"sql _store sha12/len=12285a31090d/411",
 "metadata-callback input [{\"content\":\"u2\",\"role\":\"user\"},13]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -20588,16 +20600,16 @@
 "attr _last_active_replay_messages sha12/len=f2e1af035d42/2925",
 "attr _last_active_replay_source_identities sha12/len=d942df5fe18d/2617",
 "attr _last_ingest_reconciliation sha12/len=ab9044224e47/183",
-"attr tables sha12/len=86455375553e/4844",
-"state-after sha12/len=2265a0b02836/18133",
+"attr tables sha12/len=22370d42ee75/4836",
+"state-after sha12/len=734b576a810b/18128",
 "search-after sha12/len=dac1f63cc260/3805",
 "input-after sha12/len=f2e1af035d42/2925",
 "aliases-after sha12/len=7083c85f8122/127",
 "next-return sha12/len=f2e1af035d42/2925",
 "next-aliases sha12/len=1a461933e56f/118",
-"next-state sha12/len=2265a0b02836/18133",
+"next-state sha12/len=734b576a810b/18128",
 "cold-return sha12/len=f2e1af035d42/2925",
-"cold-state sha12/len=f86ef81e3019/18367"
+"cold-state sha12/len=8d85607d78cb/18354"
 ],
 "tool-stub-host-held": [
 "input-before sha12/len=c1f012aaaae1/634",
@@ -20649,13 +20661,15 @@
 "attr tables sha12/len=3362d6d3237a/1718",
 "state-after sha12/len=ef0193b2f3f4/13624",
 "search-after sha12/len=dc8cd916ee05/1051",
+"payloads-after sha12/len=a431378ad08e/4719",
 "input-after sha12/len=c1f012aaaae1/634",
 "aliases-after {\"inputs\":[[0],[1],[2]],\"output-is-input\":true,\"outputs\":[[0],[1],[2]]}",
 "next-return sha12/len=c1f012aaaae1/634",
 "next-aliases {\"inputs\":[[0],[1],[2]],\"output-is-input\":false,\"outputs\":[[],[],[]]}",
 "next-state sha12/len=ef0193b2f3f4/13624",
 "cold-return sha12/len=c1f012aaaae1/634",
-"cold-state sha12/len=2b2cbfe9f2ad/13650"
+"cold-state sha12/len=861a6a270e66/13653",
+"payloads-cold sha12/len=a431378ad08e/4719"
 ],
 "tool-stub-pair": [
 "input-before sha12/len=47a7fceec7d1/3707",
@@ -20726,13 +20740,15 @@
 "attr tables sha12/len=57239ff9ebd8/1614",
 "state-after sha12/len=98df63e5ae98/13353",
 "search-after sha12/len=5ee9bbe3c15c/4641",
+"payloads-after sha12/len=a431378ad08e/4719",
 "input-after sha12/len=47a7fceec7d1/3707",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=698ced44c74a/601",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=98df63e5ae98/13353",
 "cold-return sha12/len=47a7fceec7d1/3707",
-"cold-state sha12/len=e5921b675d40/16594"
+"cold-state sha12/len=2609e7447b95/16597",
+"payloads-cold sha12/len=a431378ad08e/4719"
 ],
 "tool-stub-recovery": [
 "input-before sha12/len=281ae148c616/2300",
@@ -20803,13 +20819,15 @@
 "attr tables sha12/len=1308cda3bd41/1503",
 "state-after sha12/len=3235ae59395c/13560",
 "search-after sha12/len=30ff76f6f521/2639",
+"payloads-after sha12/len=f06719063636/2660",
 "input-after sha12/len=281ae148c616/2300",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=281ae148c616/2300",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=3235ae59395c/13560",
 "cold-return sha12/len=281ae148c616/2300",
-"cold-state sha12/len=5d64612ebf8a/13695"
+"cold-state sha12/len=dbd31944d756/13698",
+"payloads-cold sha12/len=f06719063636/2660"
 ],
 "tool-stub-single": [
 "input-before sha12/len=f7bf31b76433/2154",
@@ -20873,13 +20891,15 @@
 "attr tables sha12/len=1407d1a953c7/1262",
 "state-after sha12/len=ac71f04bdf72/11174",
 "search-after sha12/len=9e98eb888e4c/2621",
+"payloads-after sha12/len=a70868dc12a5/2660",
 "input-after sha12/len=f7bf31b76433/2154",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return sha12/len=7775a84d3e5f/301",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=ac71f04bdf72/11174",
 "cold-return sha12/len=f7bf31b76433/2154",
-"cold-state sha12/len=7c37b64a6ea5/13162"
+"cold-state sha12/len=84dc641abd4a/13165",
+"payloads-cold sha12/len=a70868dc12a5/2660"
 ],
 "tool-stub-warm": [
 "input-before sha12/len=8c35cfb6b347/2187",
@@ -20931,18 +20951,20 @@
 "attr tables sha12/len=450251c4bc10/1366",
 "state-after sha12/len=8bf595c638be/11445",
 "search-after sha12/len=3475b25da4c2/2647",
+"payloads-after sha12/len=a70868dc12a5/2660",
 "input-after sha12/len=8c35cfb6b347/2187",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=04267a9731a3/334",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
 "next-state sha12/len=8bf595c638be/11445",
 "cold-return sha12/len=8c35cfb6b347/2187",
-"cold-state sha12/len=77258be43f0a/13324"
+"cold-state sha12/len=111c3407a539/13327",
+"payloads-cold sha12/len=a70868dc12a5/2660"
 ],
 "tools-changed": [
 "input-before sha12/len=bc9745e4bbe6/392",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=c5a1d5d6e434/9003",
+"state-before sha12/len=8bb9456fa458/9006",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -21052,30 +21074,30 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=5a65b7dd6897/804",
+"store _append_protected_batch sha12/len=6f472d0bfca4/807",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=fe25f1b83e77/450",
-"sql _store sha12/len=fe25f1b83e77/450",
-"sql _store sha12/len=fe25f1b83e77/450",
-"sql _store sha12/len=fe25f1b83e77/450",
-"sql _store sha12/len=fe25f1b83e77/450",
+"sql _store sha12/len=645f3a9a8681/446",
+"sql _store sha12/len=645f3a9a8681/446",
+"sql _store sha12/len=645f3a9a8681/446",
+"sql _store sha12/len=645f3a9a8681/446",
+"sql _store sha12/len=645f3a9a8681/446",
 "metadata-callback input [{\"content\":\"different prefix\",\"role\":\"user\",\"timestamp\":100.0},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
 "store result read_metadata_json null",
 "metadata-callback result []",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
 "metadata-callback input sha12/len=f3790cf72aa5/173",
 "metadata-callback result []",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
 "metadata-callback input sha12/len=f1ea40d71378/105",
 "metadata-callback result []",
 "sql _store \"COMMIT\"",
@@ -21114,21 +21136,21 @@
 "attr _last_active_replay_messages sha12/len=bc9745e4bbe6/392",
 "attr _last_active_replay_source_identities sha12/len=350f4ab5974e/272",
 "attr _last_ingest_reconciliation sha12/len=f8eced835a98/152",
-"attr tables sha12/len=caea611fba63/2143",
-"state-after sha12/len=61dc4ea7616e/10594",
+"attr tables sha12/len=3ebdbdbdb2a2/2131",
+"state-after sha12/len=665f0c72c025/10585",
 "search-after sha12/len=e33c055285f1/180",
 "input-after sha12/len=bc9745e4bbe6/392",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=bc9745e4bbe6/392",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=61dc4ea7616e/10594",
+"next-state sha12/len=665f0c72c025/10585",
 "cold-return sha12/len=bc9745e4bbe6/392",
-"cold-state sha12/len=5c240d272327/10837"
+"cold-state sha12/len=7e0039dca8e9/10820"
 ],
 "tools-delta": [
 "input-before sha12/len=45b07bb21b0f/439",
 "aliases-before sha12/len=7059c5d5f127/87",
-"state-before sha12/len=c5a1d5d6e434/9003",
+"state-before sha12/len=8bb9456fa458/9006",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -21252,27 +21274,27 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=ed398ffb670a/790",
+"store _append_protected_batch sha12/len=9d725531816e/793",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
 "metadata-callback input sha12/len=cf4869badcc6/173",
 "metadata-callback result []",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
 "metadata-callback input sha12/len=12e959abbfc7/105",
 "metadata-callback result []",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
 "metadata-callback input [{\"content\":\"new delta\",\"role\":\"user\",\"timestamp\":200.0},7]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -21314,21 +21336,21 @@
 "attr _last_active_replay_messages sha12/len=45b07bb21b0f/439",
 "attr _last_active_replay_source_identities sha12/len=927e080cf405/293",
 "attr _last_ingest_reconciliation sha12/len=ee7bd3e5c381/152",
-"attr tables sha12/len=05b0629773ec/2136",
-"state-after sha12/len=ed5f4ef9b5ad/10627",
+"attr tables sha12/len=c66416424867/2124",
+"state-after sha12/len=1c6844740e6d/10618",
 "search-after sha12/len=a2df4bce1337/166",
 "input-after sha12/len=45b07bb21b0f/439",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=45b07bb21b0f/439",
 "next-aliases sha12/len=62674f2353cd/83",
-"next-state sha12/len=ed5f4ef9b5ad/10627",
+"next-state sha12/len=1c6844740e6d/10618",
 "cold-return sha12/len=45b07bb21b0f/439",
-"cold-state sha12/len=40ee03b603e5/10898"
+"cold-state sha12/len=418e1a747122/10881"
 ],
 "tools-full": [
 "input-before sha12/len=3fefa8d9d036/383",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=c5a1d5d6e434/9003",
+"state-before sha12/len=8bb9456fa458/9006",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -21435,20 +21457,20 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=de4f2298e8ec/676",
+"store _append_protected_batch sha12/len=1f04ced50a24/679",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
 "metadata-callback input sha12/len=cf4869badcc6/173",
 "metadata-callback result []",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
 "metadata-callback input sha12/len=12e959abbfc7/105",
 "metadata-callback result []",
 "sql _store \"COMMIT\"",
@@ -21487,21 +21509,21 @@
 "attr _last_active_replay_messages sha12/len=3fefa8d9d036/383",
 "attr _last_active_replay_source_identities sha12/len=b4d756fb7c9c/263",
 "attr _last_ingest_reconciliation sha12/len=f8eced835a98/152",
-"attr tables sha12/len=c86fdc381cae/2002",
-"state-after sha12/len=f94d99603e20/10259",
+"attr tables sha12/len=c10c2dc88f71/1994",
+"state-after sha12/len=86c9d8a78328/10254",
 "search-after sha12/len=0558d47965ef/130",
 "input-after sha12/len=3fefa8d9d036/383",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=3fefa8d9d036/383",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=f94d99603e20/10259",
+"next-state sha12/len=86c9d8a78328/10254",
 "cold-return sha12/len=3fefa8d9d036/383",
-"cold-state sha12/len=24f8ddb097e9/10669"
+"cold-state sha12/len=ab0d94da8294/10656"
 ],
 "tools-new": [
 "input-before [{\"content\":\"new request\",\"role\":\"user\"}]",
 "aliases-before {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
-"state-before sha12/len=c5a1d5d6e434/9003",
+"state-before sha12/len=8bb9456fa458/9006",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -21557,13 +21579,13 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=a5778bc9b8b7/209",
+"store _append_protected_batch sha12/len=fc3776d1c035/212",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=da86253ae171/424",
-"sql _store sha12/len=da86253ae171/424",
-"sql _store sha12/len=da86253ae171/424",
-"sql _store sha12/len=da86253ae171/424",
-"sql _store sha12/len=da86253ae171/424",
+"sql _store sha12/len=2d1aec7346df/420",
+"sql _store sha12/len=2d1aec7346df/420",
+"sql _store sha12/len=2d1aec7346df/420",
+"sql _store sha12/len=2d1aec7346df/420",
+"sql _store sha12/len=2d1aec7346df/420",
 "metadata-callback input [{\"content\":\"new request\",\"role\":\"user\"},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -21605,21 +21627,21 @@
 "attr _last_active_replay_messages [{\"content\":\"new request\",\"role\":\"user\"}]",
 "attr _last_active_replay_source_identities [[\"user\",\"new request\",\"\",\"\",\"\"]]",
 "attr _last_ingest_reconciliation sha12/len=776359dcd07c/152",
-"attr tables sha12/len=945b1830d963/1684",
-"state-after sha12/len=ad2084314d9c/9498",
+"attr tables sha12/len=b5de199c5cf5/1680",
+"state-after sha12/len=c6d79a0a68a5/9497",
 "search-after sha12/len=fb0090bdba1c/145",
 "input-after [{\"content\":\"new request\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"new request\",\"role\":\"user\"}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
-"next-state sha12/len=ad2084314d9c/9498",
+"next-state sha12/len=c6d79a0a68a5/9497",
 "cold-return [{\"content\":\"new request\",\"role\":\"user\"}]",
-"cold-state sha12/len=453aa1cc20c6/9613"
+"cold-state sha12/len=f40c9d3ea05a/9608"
 ],
 "tools-prefix": [
 "input-before sha12/len=de04d1ab1131/225",
 "aliases-before {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
-"state-before sha12/len=c5a1d5d6e434/9003",
+"state-before sha12/len=8bb9456fa458/9006",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -21735,20 +21757,20 @@
 "attr _last_active_replay_source_identities sha12/len=3b015bcffc72/185",
 "attr _last_ingest_reconciliation sha12/len=431cfd995d1f/152",
 "attr tables sha12/len=1e200d40ee29/1592",
-"state-after sha12/len=6bdbb956ccae/9639",
+"state-after sha12/len=048069b943fb/9642",
 "search-after sha12/len=a2c974e09af0/105",
 "input-after sha12/len=de04d1ab1131/225",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=de04d1ab1131/225",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
-"next-state sha12/len=6bdbb956ccae/9639",
+"next-state sha12/len=048069b943fb/9642",
 "cold-return sha12/len=de04d1ab1131/225",
-"cold-state sha12/len=6bdbb956ccae/9639"
+"cold-state sha12/len=048069b943fb/9642"
 ],
 "tools-rewrite": [
 "input-before sha12/len=fb82cdec156f/429",
 "aliases-before sha12/len=7059c5d5f127/87",
-"state-before sha12/len=c5a1d5d6e434/9003",
+"state-before sha12/len=8bb9456fa458/9006",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -21864,27 +21886,27 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=ad4de8bcee9d/770",
+"store _append_protected_batch sha12/len=99bc057db1a8/773",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
-"sql _store sha12/len=d6522a1c7c1a/576",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
+"sql _store sha12/len=da051557b4d0/572",
 "metadata-callback input sha12/len=cf4869badcc6/173",
 "metadata-callback result []",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
 "metadata-callback input sha12/len=12e959abbfc7/105",
 "metadata-callback result []",
-"sql _store sha12/len=7eea6dc11a47/430",
-"sql _store sha12/len=7eea6dc11a47/430",
-"sql _store sha12/len=7eea6dc11a47/430",
-"sql _store sha12/len=7eea6dc11a47/430",
-"sql _store sha12/len=7eea6dc11a47/430",
+"sql _store sha12/len=2a4457ed4aa3/426",
+"sql _store sha12/len=2a4457ed4aa3/426",
+"sql _store sha12/len=2a4457ed4aa3/426",
+"sql _store sha12/len=2a4457ed4aa3/426",
+"sql _store sha12/len=2a4457ed4aa3/426",
 "metadata-callback input [{\"content\":\"new after rewrite\",\"role\":\"user\"},7]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -21926,21 +21948,21 @@
 "attr _last_active_replay_messages sha12/len=fb82cdec156f/429",
 "attr _last_active_replay_source_identities sha12/len=81062a6d5a29/301",
 "attr _last_ingest_reconciliation sha12/len=ee7bd3e5c381/152",
-"attr tables sha12/len=473c57ad892d/2123",
-"state-after sha12/len=cf482188c660/10625",
+"attr tables sha12/len=38e10fdb238a/2111",
+"state-after sha12/len=5be82106a465/10616",
 "search-after sha12/len=31f356c0c73a/182",
 "input-after sha12/len=fb82cdec156f/429",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=fb82cdec156f/429",
 "next-aliases sha12/len=62674f2353cd/83",
-"next-state sha12/len=cf482188c660/10625",
+"next-state sha12/len=5be82106a465/10616",
 "cold-return sha12/len=fb82cdec156f/429",
-"cold-state sha12/len=728ea479ca8e/11159"
+"cold-state sha12/len=37349e910ecd/11138"
 ],
 "tools-suffix": [
 "input-before sha12/len=3de5ce6c7a5e/159",
 "aliases-before {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
-"state-before sha12/len=c5a1d5d6e434/9003",
+"state-before sha12/len=8bb9456fa458/9006",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -22023,13 +22045,13 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=6adf5be8bba1/333",
+"store _append_protected_batch sha12/len=fbc20af52d2b/336",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
-"sql _store sha12/len=036de38e31bf/452",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
+"sql _store sha12/len=b48f6d694319/448",
 "metadata-callback input sha12/len=d02286c46b8d/105",
 "metadata-callback result []",
 "sql _store \"COMMIT\"",
@@ -22068,16 +22090,16 @@
 "attr _last_active_replay_messages sha12/len=3de5ce6c7a5e/159",
 "attr _last_active_replay_source_identities [[\"tool\",\"durable output\",\"call-1\",\"\",\"inspect\"],[\"assistant\",\"done\",\"\",\"\",\"\"]]",
 "attr _last_ingest_reconciliation sha12/len=431cfd995d1f/152",
-"attr tables sha12/len=08656f072763/1735",
-"state-after sha12/len=82627cd3774d/9576",
+"attr tables sha12/len=4b579d9bdae4/1731",
+"state-after sha12/len=f96f8c118ba3/9575",
 "search-after sha12/len=99300e680112/130",
 "input-after sha12/len=3de5ce6c7a5e/159",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=3de5ce6c7a5e/159",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
-"next-state sha12/len=82627cd3774d/9576",
+"next-state sha12/len=f96f8c118ba3/9575",
 "cold-return sha12/len=3de5ce6c7a5e/159",
-"cold-state sha12/len=4fcab2f51c25/9719"
+"cold-state sha12/len=35c4f8f53100/9714"
 ],
 "tools-warm": [
 "input-before sha12/len=3fefa8d9d036/383",
@@ -22096,12 +22118,12 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=9f15d4ee1277/9869",
 "cold-return sha12/len=3fefa8d9d036/383",
-"cold-state sha12/len=e24d8d27eb90/10260"
+"cold-state sha12/len=f426b8e0d237/10255"
 ],
 "turns-changed": [
 "input-before sha12/len=468b33749374/263",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=ba2ada7c0aca/8902",
+"state-before sha12/len=7ea42530ebee/8905",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -22208,13 +22230,13 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=a9d2f1837c8f/255",
+"store _append_protected_batch sha12/len=59bbf396d004/258",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=fe25f1b83e77/450",
-"sql _store sha12/len=fe25f1b83e77/450",
-"sql _store sha12/len=fe25f1b83e77/450",
-"sql _store sha12/len=fe25f1b83e77/450",
-"sql _store sha12/len=fe25f1b83e77/450",
+"sql _store sha12/len=645f3a9a8681/446",
+"sql _store sha12/len=645f3a9a8681/446",
+"sql _store sha12/len=645f3a9a8681/446",
+"sql _store sha12/len=645f3a9a8681/446",
+"sql _store sha12/len=645f3a9a8681/446",
 "metadata-callback input [{\"content\":\"different prefix\",\"role\":\"user\",\"timestamp\":100.0},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -22256,21 +22278,21 @@
 "attr _last_active_replay_messages sha12/len=468b33749374/263",
 "attr _last_active_replay_source_identities sha12/len=ddca5ebf570f/159",
 "attr _last_ingest_reconciliation sha12/len=f8eced835a98/152",
-"attr tables sha12/len=f5e6c48e957b/1632",
-"state-after sha12/len=1b471916f602/9850",
+"attr tables sha12/len=6effcb164df3/1628",
+"state-after sha12/len=041c06d55612/9849",
 "search-after sha12/len=ed526f782f4b/575",
 "input-after sha12/len=468b33749374/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=468b33749374/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=1b471916f602/9850",
+"next-state sha12/len=041c06d55612/9849",
 "cold-return sha12/len=468b33749374/263",
-"cold-state sha12/len=aedcbec02a3b/9709"
+"cold-state sha12/len=4bd2ff4eaccd/9708"
 ],
 "turns-delta": [
 "input-before sha12/len=eb6a778b0b83/319",
 "aliases-before sha12/len=7059c5d5f127/87",
-"state-before sha12/len=ba2ada7c0aca/8902",
+"state-before sha12/len=7ea42530ebee/8905",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -22435,13 +22457,13 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=84fc13deea0b/241",
+"store _append_protected_batch sha12/len=69ed151c7094/244",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
 "metadata-callback input [{\"content\":\"new delta\",\"role\":\"user\",\"timestamp\":200.0},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -22483,21 +22505,21 @@
 "attr _last_active_replay_messages sha12/len=eb6a778b0b83/319",
 "attr _last_active_replay_source_identities sha12/len=36b88856686f/189",
 "attr _last_ingest_reconciliation sha12/len=d63c66382c70/148",
-"attr tables sha12/len=18765f99561d/1625",
-"state-after sha12/len=e711ab984530/9897",
+"attr tables sha12/len=cf45573b13cb/1621",
+"state-after sha12/len=6d43a4a0705a/9896",
 "search-after sha12/len=52a835628361/561",
 "input-after sha12/len=eb6a778b0b83/319",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=eb6a778b0b83/319",
 "next-aliases sha12/len=62674f2353cd/83",
-"next-state sha12/len=e711ab984530/9897",
+"next-state sha12/len=6d43a4a0705a/9896",
 "cold-return sha12/len=eb6a778b0b83/319",
-"cold-state sha12/len=ce2c5982a07d/9784"
+"cold-state sha12/len=33b7abfae34b/9783"
 ],
 "turns-full": [
 "input-before sha12/len=a2801b378fca/263",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=ba2ada7c0aca/8902",
+"state-before sha12/len=7ea42530ebee/8905",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -22655,20 +22677,20 @@
 "attr _last_active_replay_source_identities sha12/len=dd9a3c2074d8/159",
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=036af1e083b7/1468",
-"state-after sha12/len=195103fe0464/9532",
+"state-after sha12/len=1b347bfc4132/9535",
 "search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=a2801b378fca/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=a2801b378fca/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=195103fe0464/9532",
+"next-state sha12/len=1b347bfc4132/9535",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=195103fe0464/9532"
+"cold-state sha12/len=1b347bfc4132/9535"
 ],
 "turns-new": [
 "input-before [{\"content\":\"new request\",\"role\":\"user\"}]",
 "aliases-before {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
-"state-before sha12/len=ba2ada7c0aca/8902",
+"state-before sha12/len=7ea42530ebee/8905",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -22724,13 +22746,13 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=a5778bc9b8b7/209",
+"store _append_protected_batch sha12/len=fc3776d1c035/212",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=da86253ae171/424",
-"sql _store sha12/len=da86253ae171/424",
-"sql _store sha12/len=da86253ae171/424",
-"sql _store sha12/len=da86253ae171/424",
-"sql _store sha12/len=da86253ae171/424",
+"sql _store sha12/len=2d1aec7346df/420",
+"sql _store sha12/len=2d1aec7346df/420",
+"sql _store sha12/len=2d1aec7346df/420",
+"sql _store sha12/len=2d1aec7346df/420",
+"sql _store sha12/len=2d1aec7346df/420",
 "metadata-callback input [{\"content\":\"new request\",\"role\":\"user\"},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -22772,21 +22794,21 @@
 "attr _last_active_replay_messages [{\"content\":\"new request\",\"role\":\"user\"}]",
 "attr _last_active_replay_source_identities [[\"user\",\"new request\",\"\",\"\",\"\"]]",
 "attr _last_ingest_reconciliation sha12/len=776359dcd07c/152",
-"attr tables sha12/len=d33ee472c746/1583",
-"state-after sha12/len=7fd773c19134/9397",
+"attr tables sha12/len=f096c2514177/1579",
+"state-after sha12/len=7062fe2daaca/9396",
 "search-after sha12/len=5955ea353fc0/565",
 "input-after [{\"content\":\"new request\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"new request\",\"role\":\"user\"}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
-"next-state sha12/len=7fd773c19134/9397",
+"next-state sha12/len=7062fe2daaca/9396",
 "cold-return [{\"content\":\"new request\",\"role\":\"user\"}]",
-"cold-state sha12/len=53b7ae2c442a/9512"
+"cold-state sha12/len=f49030ec6bd6/9507"
 ],
 "turns-prefix": [
 "input-before sha12/len=3cf04c6f21e8/132",
 "aliases-before {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
-"state-before sha12/len=ba2ada7c0aca/8902",
+"state-before sha12/len=7ea42530ebee/8905",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -22902,20 +22924,20 @@
 "attr _last_active_replay_source_identities [[\"user\",\"row 0: العربية 🪷\",\"\",\"\",\"\"],[\"assistant\",\"row 1: العربية 🪷\",\"\",\"\",\"\"]]",
 "attr _last_ingest_reconciliation sha12/len=431cfd995d1f/152",
 "attr tables sha12/len=ee116860a7fe/1491",
-"state-after sha12/len=ac21e2e823f8/9340",
+"state-after sha12/len=f118e4a57074/9343",
 "search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=3cf04c6f21e8/132",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=3cf04c6f21e8/132",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
-"next-state sha12/len=ac21e2e823f8/9340",
+"next-state sha12/len=f118e4a57074/9343",
 "cold-return sha12/len=3cf04c6f21e8/132",
-"cold-state sha12/len=ac21e2e823f8/9340"
+"cold-state sha12/len=f118e4a57074/9343"
 ],
 "turns-rewrite": [
 "input-before sha12/len=b941c9d1e1af/309",
 "aliases-before sha12/len=7059c5d5f127/87",
-"state-before sha12/len=ba2ada7c0aca/8902",
+"state-before sha12/len=7ea42530ebee/8905",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -23061,13 +23083,13 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=9b3aaac98c95/221",
+"store _append_protected_batch sha12/len=1f7c9f72ea03/224",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=7eea6dc11a47/430",
-"sql _store sha12/len=7eea6dc11a47/430",
-"sql _store sha12/len=7eea6dc11a47/430",
-"sql _store sha12/len=7eea6dc11a47/430",
-"sql _store sha12/len=7eea6dc11a47/430",
+"sql _store sha12/len=2a4457ed4aa3/426",
+"sql _store sha12/len=2a4457ed4aa3/426",
+"sql _store sha12/len=2a4457ed4aa3/426",
+"sql _store sha12/len=2a4457ed4aa3/426",
+"sql _store sha12/len=2a4457ed4aa3/426",
 "metadata-callback input [{\"content\":\"new after rewrite\",\"role\":\"user\"},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -23109,21 +23131,21 @@
 "attr _last_active_replay_messages sha12/len=b941c9d1e1af/309",
 "attr _last_active_replay_source_identities sha12/len=fc1cb9a2c35f/197",
 "attr _last_ingest_reconciliation sha12/len=d63c66382c70/148",
-"attr tables sha12/len=a4a1946a4b11/1589",
-"state-after sha12/len=f195cd8d743a/9872",
+"attr tables sha12/len=05ddc83b5762/1585",
+"state-after sha12/len=21c2e04cff0e/9871",
 "search-after sha12/len=6375910bc14d/577",
 "input-after sha12/len=b941c9d1e1af/309",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=b941c9d1e1af/309",
 "next-aliases sha12/len=62674f2353cd/83",
-"next-state sha12/len=f195cd8d743a/9872",
+"next-state sha12/len=21c2e04cff0e/9871",
 "cold-return sha12/len=b941c9d1e1af/309",
-"cold-state sha12/len=05176cd6fd0d/9746"
+"cold-state sha12/len=a508ac411f0d/9745"
 ],
 "turns-suffix": [
 "input-before sha12/len=cf421a34acd1/132",
 "aliases-before {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
-"state-before sha12/len=ba2ada7c0aca/8902",
+"state-before sha12/len=7ea42530ebee/8905",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -23239,15 +23261,15 @@
 "attr _last_active_replay_source_identities [[\"user\",\"row 2: العربية 🪷\",\"\",\"\",\"\"],[\"assistant\",\"row 3: العربية 🪷\",\"\",\"\",\"\"]]",
 "attr _last_ingest_reconciliation sha12/len=431cfd995d1f/152",
 "attr tables sha12/len=ee116860a7fe/1491",
-"state-after sha12/len=9142c72b1092/9340",
+"state-after sha12/len=ed8b3b68aaa2/9343",
 "search-after sha12/len=1b5a3565de03/525",
 "input-after sha12/len=cf421a34acd1/132",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=cf421a34acd1/132",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
-"next-state sha12/len=9142c72b1092/9340",
+"next-state sha12/len=ed8b3b68aaa2/9343",
 "cold-return sha12/len=cf421a34acd1/132",
-"cold-state sha12/len=9142c72b1092/9340"
+"cold-state sha12/len=ed8b3b68aaa2/9343"
 ],
 "turns-warm": [
 "input-before sha12/len=a2801b378fca/263",
@@ -23266,7 +23288,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=47f5c7ad287e/9761",
 "cold-return sha12/len=a2801b378fca/263",
-"cold-state sha12/len=1a2ab36f3437/9559"
+"cold-state sha12/len=cc59fff93161/9562"
 ],
 "uid-bindings-new": [
 "input-before [{\"content\":\"fresh\",\"message_uid\":\"host-uid-new\",\"role\":\"user\"}]",
@@ -23368,7 +23390,7 @@
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
 "next-state sha12/len=fc1005dda269/8988",
 "cold-return [{\"content\":\"fresh\",\"message_uid\":\"host-uid-new\",\"role\":\"user\"}]",
-"cold-state sha12/len=c39baf074d5a/9286"
+"cold-state sha12/len=605d6b5be1d1/9285"
 ],
 "uid-bindings-new-occurrence": [
 "input-before sha12/len=4ae15669f985/371",
@@ -23481,7 +23503,7 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=c32b7ab0a7d8/10942",
 "cold-return sha12/len=4ae15669f985/371",
-"cold-state sha12/len=47ef8bb81be3/10496"
+"cold-state sha12/len=2114601b0d4c/10499"
 ],
 "uid-bindings-replay": [
 "input-before sha12/len=eb41c0bc5651/371",
@@ -23500,12 +23522,12 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=dd6d565355ae/10419",
 "cold-return sha12/len=eb41c0bc5651/371",
-"cold-state sha12/len=c3e6179dd69d/10238"
+"cold-state sha12/len=928493ba3b26/10241"
 ],
 "whitespace-changed": [
 "input-before sha12/len=468b33749374/263",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=d0190594c058/8904",
+"state-before sha12/len=2ca14e542422/8907",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -23612,13 +23634,13 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=a9d2f1837c8f/255",
+"store _append_protected_batch sha12/len=59bbf396d004/258",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=fe25f1b83e77/450",
-"sql _store sha12/len=fe25f1b83e77/450",
-"sql _store sha12/len=fe25f1b83e77/450",
-"sql _store sha12/len=fe25f1b83e77/450",
-"sql _store sha12/len=fe25f1b83e77/450",
+"sql _store sha12/len=645f3a9a8681/446",
+"sql _store sha12/len=645f3a9a8681/446",
+"sql _store sha12/len=645f3a9a8681/446",
+"sql _store sha12/len=645f3a9a8681/446",
+"sql _store sha12/len=645f3a9a8681/446",
 "metadata-callback input [{\"content\":\"different prefix\",\"role\":\"user\",\"timestamp\":100.0},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -23660,21 +23682,21 @@
 "attr _last_active_replay_messages sha12/len=468b33749374/263",
 "attr _last_active_replay_source_identities sha12/len=ddca5ebf570f/159",
 "attr _last_ingest_reconciliation sha12/len=f8eced835a98/152",
-"attr tables sha12/len=5a01d9604bfa/1634",
-"state-after sha12/len=d4f148036edc/9852",
+"attr tables sha12/len=931ec1181517/1630",
+"state-after sha12/len=56d472be8c9b/9851",
 "search-after sha12/len=4a686a64da09/417",
 "input-after sha12/len=468b33749374/263",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=468b33749374/263",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=d4f148036edc/9852",
+"next-state sha12/len=56d472be8c9b/9851",
 "cold-return sha12/len=468b33749374/263",
-"cold-state sha12/len=008ccb1ed29f/9711"
+"cold-state sha12/len=9c502795ad70/9710"
 ],
 "whitespace-delta": [
 "input-before sha12/len=af8dbc1e88ed/321",
 "aliases-before sha12/len=7059c5d5f127/87",
-"state-before sha12/len=d0190594c058/8904",
+"state-before sha12/len=2ca14e542422/8907",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -23839,13 +23861,13 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=84fc13deea0b/241",
+"store _append_protected_batch sha12/len=69ed151c7094/244",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
-"sql _store sha12/len=652f0e685c93/443",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
+"sql _store sha12/len=c56d9c17704b/439",
 "metadata-callback input [{\"content\":\"new delta\",\"role\":\"user\",\"timestamp\":200.0},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -23887,21 +23909,21 @@
 "attr _last_active_replay_messages sha12/len=af8dbc1e88ed/321",
 "attr _last_active_replay_source_identities sha12/len=6302006929c0/191",
 "attr _last_ingest_reconciliation sha12/len=d63c66382c70/148",
-"attr tables sha12/len=e47052f57661/1627",
-"state-after sha12/len=18de6429c526/9903",
+"attr tables sha12/len=2a5386762d64/1623",
+"state-after sha12/len=743ba2fd647b/9902",
 "search-after sha12/len=29b209d21fca/403",
 "input-after sha12/len=af8dbc1e88ed/321",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=af8dbc1e88ed/321",
 "next-aliases sha12/len=62674f2353cd/83",
-"next-state sha12/len=18de6429c526/9903",
+"next-state sha12/len=743ba2fd647b/9902",
 "cold-return sha12/len=af8dbc1e88ed/321",
-"cold-state sha12/len=e173996c4df2/9790"
+"cold-state sha12/len=7ce0a9951690/9789"
 ],
 "whitespace-full": [
 "input-before sha12/len=ca7f1b05ff41/265",
 "aliases-before {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
-"state-before sha12/len=d0190594c058/8904",
+"state-before sha12/len=2ca14e542422/8907",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -24059,20 +24081,20 @@
 "attr _last_active_replay_source_identities sha12/len=a831ae699571/161",
 "attr _last_ingest_reconciliation sha12/len=1bc13a654f81/148",
 "attr tables sha12/len=3830a5066f9a/1470",
-"state-after sha12/len=04d2bab022cf/9538",
+"state-after sha12/len=b0e866329f5e/9541",
 "search-after sha12/len=7e9c57cde539/367",
 "input-after sha12/len=ca7f1b05ff41/265",
 "aliases-after {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":true,\"outputs\":[[0],[1],[2],[3]]}",
 "next-return sha12/len=ca7f1b05ff41/265",
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
-"next-state sha12/len=04d2bab022cf/9538",
+"next-state sha12/len=b0e866329f5e/9541",
 "cold-return sha12/len=ca7f1b05ff41/265",
-"cold-state sha12/len=04d2bab022cf/9538"
+"cold-state sha12/len=b0e866329f5e/9541"
 ],
 "whitespace-new": [
 "input-before [{\"content\":\"new request\",\"role\":\"user\"}]",
 "aliases-before {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
-"state-before sha12/len=d0190594c058/8904",
+"state-before sha12/len=2ca14e542422/8907",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -24128,13 +24150,13 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=a5778bc9b8b7/209",
+"store _append_protected_batch sha12/len=fc3776d1c035/212",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=da86253ae171/424",
-"sql _store sha12/len=da86253ae171/424",
-"sql _store sha12/len=da86253ae171/424",
-"sql _store sha12/len=da86253ae171/424",
-"sql _store sha12/len=da86253ae171/424",
+"sql _store sha12/len=2d1aec7346df/420",
+"sql _store sha12/len=2d1aec7346df/420",
+"sql _store sha12/len=2d1aec7346df/420",
+"sql _store sha12/len=2d1aec7346df/420",
+"sql _store sha12/len=2d1aec7346df/420",
 "metadata-callback input [{\"content\":\"new request\",\"role\":\"user\"},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -24176,21 +24198,21 @@
 "attr _last_active_replay_messages [{\"content\":\"new request\",\"role\":\"user\"}]",
 "attr _last_active_replay_source_identities [[\"user\",\"new request\",\"\",\"\",\"\"]]",
 "attr _last_ingest_reconciliation sha12/len=776359dcd07c/152",
-"attr tables sha12/len=76f68e4debd0/1585",
-"state-after sha12/len=35b771ac4811/9399",
+"attr tables sha12/len=048cef74c7b5/1581",
+"state-after sha12/len=fc23e94a5cb8/9398",
 "search-after sha12/len=9f522450b57a/407",
 "input-after [{\"content\":\"new request\",\"role\":\"user\"}]",
 "aliases-after {\"inputs\":[[0]],\"output-is-input\":true,\"outputs\":[[0]]}",
 "next-return [{\"content\":\"new request\",\"role\":\"user\"}]",
 "next-aliases {\"inputs\":[[0]],\"output-is-input\":false,\"outputs\":[[]]}",
-"next-state sha12/len=35b771ac4811/9399",
+"next-state sha12/len=fc23e94a5cb8/9398",
 "cold-return [{\"content\":\"new request\",\"role\":\"user\"}]",
-"cold-state sha12/len=79c1a02d2c10/9514"
+"cold-state sha12/len=360b61fae9b1/9509"
 ],
 "whitespace-prefix": [
 "input-before sha12/len=a1d9ce191a40/134",
 "aliases-before {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
-"state-before sha12/len=d0190594c058/8904",
+"state-before sha12/len=2ca14e542422/8907",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -24306,20 +24328,20 @@
 "attr _last_active_replay_source_identities sha12/len=80a36cb002e3/82",
 "attr _last_ingest_reconciliation sha12/len=431cfd995d1f/152",
 "attr tables sha12/len=ab3419321233/1493",
-"state-after sha12/len=2c44b091223a/9346",
+"state-after sha12/len=c6f545222a11/9349",
 "search-after sha12/len=7e9c57cde539/367",
 "input-after sha12/len=a1d9ce191a40/134",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=a1d9ce191a40/134",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
-"next-state sha12/len=2c44b091223a/9346",
+"next-state sha12/len=c6f545222a11/9349",
 "cold-return sha12/len=a1d9ce191a40/134",
-"cold-state sha12/len=2c44b091223a/9346"
+"cold-state sha12/len=c6f545222a11/9349"
 ],
 "whitespace-rewrite": [
 "input-before sha12/len=f8189a438a4e/305",
 "aliases-before sha12/len=7059c5d5f127/87",
-"state-before sha12/len=d0190594c058/8904",
+"state-before sha12/len=2ca14e542422/8907",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -24465,13 +24487,13 @@
 "store has_session_messages [[\"S\"],{}]",
 "sql _store \"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = 'S')\"",
 "store result has_session_messages true",
-"store _append_protected_batch sha12/len=9b3aaac98c95/221",
+"store _append_protected_batch sha12/len=1f7c9f72ea03/224",
 "sql _store \"BEGIN IMMEDIATE\"",
-"sql _store sha12/len=7eea6dc11a47/430",
-"sql _store sha12/len=7eea6dc11a47/430",
-"sql _store sha12/len=7eea6dc11a47/430",
-"sql _store sha12/len=7eea6dc11a47/430",
-"sql _store sha12/len=7eea6dc11a47/430",
+"sql _store sha12/len=2a4457ed4aa3/426",
+"sql _store sha12/len=2a4457ed4aa3/426",
+"sql _store sha12/len=2a4457ed4aa3/426",
+"sql _store sha12/len=2a4457ed4aa3/426",
+"sql _store sha12/len=2a4457ed4aa3/426",
 "metadata-callback input [{\"content\":\"new after rewrite\",\"role\":\"user\"},5]",
 "store read_metadata_json [[\"folded_tail_lineage:S\"],{}]",
 "sql _store \"SELECT value FROM metadata WHERE key = 'folded_tail_lineage:S'\"",
@@ -24513,21 +24535,21 @@
 "attr _last_active_replay_messages sha12/len=f8189a438a4e/305",
 "attr _last_active_replay_source_identities sha12/len=3cd0dd485dad/193",
 "attr _last_ingest_reconciliation sha12/len=d63c66382c70/148",
-"attr tables sha12/len=e6eb59dc0311/1591",
-"state-after sha12/len=4bd33abfeabe/9866",
+"attr tables sha12/len=2dd131b1552b/1587",
+"state-after sha12/len=967aa64062b0/9865",
 "search-after sha12/len=1f6384a3299b/467",
 "input-after sha12/len=f8189a438a4e/305",
 "aliases-after sha12/len=7059c5d5f127/87",
 "next-return sha12/len=f8189a438a4e/305",
 "next-aliases sha12/len=62674f2353cd/83",
-"next-state sha12/len=4bd33abfeabe/9866",
+"next-state sha12/len=967aa64062b0/9865",
 "cold-return sha12/len=f8189a438a4e/305",
-"cold-state sha12/len=8624910c8d98/10359"
+"cold-state sha12/len=a249d7026bac/10354"
 ],
 "whitespace-suffix": [
 "input-before sha12/len=cf421a34acd1/132",
 "aliases-before {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
-"state-before sha12/len=d0190594c058/8904",
+"state-before sha12/len=2ca14e542422/8907",
 "store get_session_count [[\"S\"],{}]",
 "sql _store \"SELECT COUNT(*) FROM messages WHERE session_id = 'S'\"",
 "store result get_session_count 4",
@@ -24643,15 +24665,15 @@
 "attr _last_active_replay_source_identities [[\"user\",\"row 2: العربية 🪷\",\"\",\"\",\"\"],[\"assistant\",\"row 3: العربية 🪷\",\"\",\"\",\"\"]]",
 "attr _last_ingest_reconciliation sha12/len=431cfd995d1f/152",
 "attr tables sha12/len=ab3419321233/1493",
-"state-after sha12/len=5dcfe8f49857/9342",
+"state-after sha12/len=e5f5a5519832/9345",
 "search-after sha12/len=7e9c57cde539/367",
 "input-after sha12/len=cf421a34acd1/132",
 "aliases-after {\"inputs\":[[0],[1]],\"output-is-input\":true,\"outputs\":[[0],[1]]}",
 "next-return sha12/len=cf421a34acd1/132",
 "next-aliases {\"inputs\":[[0],[1]],\"output-is-input\":false,\"outputs\":[[],[]]}",
-"next-state sha12/len=5dcfe8f49857/9342",
+"next-state sha12/len=e5f5a5519832/9345",
 "cold-return sha12/len=cf421a34acd1/132",
-"cold-state sha12/len=5dcfe8f49857/9342"
+"cold-state sha12/len=e5f5a5519832/9345"
 ],
 "whitespace-warm": [
 "input-before sha12/len=ca7f1b05ff41/265",
@@ -24670,6 +24692,6 @@
 "next-aliases {\"inputs\":[[0],[1],[2],[3]],\"output-is-input\":false,\"outputs\":[[],[],[],[]]}",
 "next-state sha12/len=5d91f2932ecb/9774",
 "cold-return sha12/len=ca7f1b05ff41/265",
-"cold-state sha12/len=194e2de3fe6b/9564"
+"cold-state sha12/len=cb45170f4157/9567"
 ]
 }

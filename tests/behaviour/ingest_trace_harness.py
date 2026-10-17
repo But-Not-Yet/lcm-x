@@ -323,11 +323,34 @@ class Logs(logging.Handler):
 
 def reopen(engine: Any, root: Path, engines: ExitStack) -> Any:
     config = engine._config
+    session_id = engine._session_id
+    binding = dict(platform=engine._session_platform, conversation_id=engine._conversation_id,
+                   context_length=engine.context_length)
     engine.shutdown()
     fresh = engine_module.LCMEngine(config=config, hermes_home=str(root / "home"))
     engines.callback(fresh.shutdown)
-    fresh.on_session_start("S", conversation_id="trace-conversation", context_length=200000)
+    fresh.on_session_start(session_id, **binding)
     return fresh
+
+
+def payload_observation(engine: Any) -> list[dict[str, Any]]:
+    """Observe every durable reference and read it via the supported expansion API."""
+    externalize = importlib.import_module("hermes_lcm.externalize")
+    tools = importlib.import_module("hermes_lcm.tools")
+    refs = sorted({ref for (content,) in engine._store._conn.execute(
+        "SELECT content FROM messages ORDER BY store_id")
+        for ref in externalize.extract_externalized_refs(content)})
+    directory = externalize.get_large_output_storage_dir(
+        engine._config, hermes_home=engine._hermes_home, create=False)
+    manifest = []
+    for ref in refs:
+        path = directory / ref
+        exists = path.exists()
+        raw = path.read_bytes() if exists else None
+        manifest.append(dict(ref=ref, exists=exists, bytes=len(raw) if raw is not None else None,
+                             sha256=hashlib.sha256(raw).hexdigest() if raw is not None else None,
+                             read=json.loads(tools.lcm_expand({"externalized_ref": ref}, engine=engine))))
+    return manifest
 
 
 def search_observation(engine: Any, incoming: list[Message]) -> list[Any]:
@@ -808,6 +831,9 @@ def observe(case: Scenario, root: Path, *, payloads: list[str] | None = None) ->
                     emit("attr " + name, value)
             emit("state-after", after)
             emit("search-after", search_observation(engine, incoming))
+            manifest = payload_observation(engine)
+            if manifest:
+                emit("payloads-after", manifest)
             emit("input-after", incoming)
             emit("aliases-after", aliases(incoming, incoming))
             # Deferred effects are checked by another real ingest and a cold
@@ -828,6 +854,9 @@ def observe(case: Scenario, root: Path, *, payloads: list[str] | None = None) ->
             except Exception as exc:
                 emit("cold-raise", [type(exc).__name__, str(exc)])
             emit("cold-state", snapshot(engine, canonical))
+            manifest = payload_observation(engine)
+            if manifest:
+                emit("payloads-cold", manifest)
     return events
 
 
