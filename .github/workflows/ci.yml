@@ -57,6 +57,9 @@ jobs:
       - name: Install test dependencies
         run: pip install pytest==9.1.1 numpy ruff==0.15.13 hypothesis==6.141.1
 
+      - name: Print SQLite library version
+        run: python -c "import sqlite3, sys; print('python', sys.version.split()[0], 'sqlite', sqlite3.sqlite_version)"
+
       - name: Stub hermes-agent ABC
         run: |
           mkdir -p agent
