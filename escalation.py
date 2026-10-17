@@ -145,6 +145,7 @@ class ForegroundBudget:
         self.slot_taken = self.sweep_active = False
         self.progress = ""
         self.stop_reason = ""  # the reason of the last stop(), for the stop line with the sweep off
+        self.hung_route: str | None = None  # a circuit opened by this pass, not a previous hang
         self.leaves, self.first_call_started, self.last_call_ended = 0, None, None
         self.host = 0.0  # D5: seconds inside the host's native compressor (a bypassed session), not LCM work
         self.selected = False  # #1162: this compaction selected a leaf chunk (its zero-leaf pass counts)
@@ -247,6 +248,21 @@ class SummaryCircuitBreaker:
             self._open_until.pop(key, None)
             self._config_episodes.discard(key)  # #682: a success ends the episode
             self._note(key, None, None)
+
+    def record_hang(self, model: str | None, *, now: float | None = None) -> None:
+        """#1137: a route that used the whole foreground window opens immediately."""
+        key = self._key(model)
+        current_time = time.monotonic() if now is None else now
+        with self._lock:
+            first = self._open_until.get(key, 0.0) <= current_time
+            cooldown = max(0, int(self.cooldown_seconds or 0))
+            self._open_until[key] = current_time + cooldown
+            self._note(key, "hung", None)
+        if first:
+            logger.warning(
+                "LCM summary route circuit opened for %s: route used the whole window; cooldown=%ss",
+                key, cooldown,
+            )
 
     def record_config_error(self, model: str | None, *, route: dict | None = None, error: BaseException | None = None,
                             now: float | None = None, sent_model: str | None = None) -> None:
@@ -537,12 +553,22 @@ def _summary_contract_shape(content: str) -> str:
     return "other" if "expand for details about" in last.lower() else "missing"
 
 
+_UNCLOSED_BODY_TAG_RE = re.compile(
+    r"<[/|]?[A-Za-z][\w:.-]*(?:\s[^<>]*)?\|?>|\[\s*(?:think|thinking|reasoning|thought)\s*\]"
+    # Spaced spellings that _REASONING_START_RE accepts only at a line start, found anywhere in the body.
+    r"|<\s*(?:/\s*)?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b[^<>]*>"
+    r"|<\|\s*(?:start_of_)?(?:think|thinking|reasoning|thought)\s*\|>", re.IGNORECASE)
+
+
 def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[str, str, tuple[str, ...]]:
     """Return ``(body, failed_check, tolerated)`` for a reply under the nonce contract.
 
     ``failed_check`` is "" when accepted, else ``envelope``, ``nonce_count``, ``short_body`` or ``closing_hint``.
     ``tolerated`` names the known formatting mistakes that were accepted (#612): the ``</summary>`` closer, one
-    ``<summary>`` wrapper around the whole body, and one layer of quotes or emphasis on the closing hint. The
+    ``<summary>`` wrapper around the whole body, one layer of quotes or emphasis on the closing hint, and
+    ``unclosed_envelope`` (#1163). A missing closer is safe because it carries no nonce and the closing-hint check
+    still anchors the body; it is not accepted when a closer appears anywhere after the opener (text written past
+    a closed envelope) or when the body holds any tag-like token or a reasoning header line (an unclosed reasoning block). The
     nonce opening tag, its uniqueness, the body minimum and a recognised closing hint are still required.
     """
     if not nonce:
@@ -562,18 +588,35 @@ def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[
     # envelope contract could never be summarized again. The opening-tag count
     # is kept because it is nonce-bearing, so a second occurrence is genuinely
     # anomalous rather than ordinary transcript content.
-    if not stripped.startswith(opening_tag) or not stripped.endswith(closing_tag):
+    if not stripped.startswith(opening_tag):
         return "", "envelope", ()
+    unclosed_envelope = not stripped.endswith(closing_tag)
+    if unclosed_envelope:
+        # #1163: tolerate a missing closer only if every remaining check passes. A closer anywhere after the
+        # opener means the envelope was closed and text followed it, which is not a missing closer; an unmatched
+        # <summary> opener is not a tolerated shape and would hide a reasoning marker from the check below.
+        if "</lcm-summary>" in stripped or "</summary>" in stripped or "<summary>" in stripped:
+            return "", "envelope", ()
+        tolerated.append("unclosed_envelope")
     if stripped.count(opening_tag) != 1:
-        return "", "nonce_count", ()
-    body = stripped[len(opening_tag) : -len(closing_tag)].strip()
+        return "", "envelope" if unclosed_envelope else "nonce_count", ()
+    body = stripped[len(opening_tag) :].strip() if unclosed_envelope else (
+        stripped[len(opening_tag) : -len(closing_tag)].strip())
     wrapper = _SUMMARY_WRAPPER_RE.match(body)
     if wrapper and "<summary>" not in wrapper.group("inner") and "</summary>" not in wrapper.group("inner"):
         body = wrapper.group("inner").strip()
         tolerated.append("summary_wrapper")
+    if unclosed_envelope and (_UNCLOSED_BODY_TAG_RE.search(body) or any(
+        _REASONING_START_RE.match(re.sub(r"^(?:\s*(?:[>*_`]+|[-•]|\d+\.)\s*)+", "", line)) for line in body.splitlines()
+    )):
+        # The opener hides an unclosed reasoning block from _sanitize_reasoning_summary. The missing-closer tolerance
+        # therefore applies only to a body with no tag-like token (any <name>, </name>, <|name|> or [think]: reasoning
+        # tags of any provider, a second envelope opener) and no reasoning header line, also behind Markdown emphasis,
+        # quote or list prefixes. Any other reply keeps the base result, envelope.
+        return "", "envelope", ()
     minimum_body_tokens = max(4, min(16, max(1, int(max_tokens) // 16)))
     if count_tokens(body) < minimum_body_tokens:
-        return "", "short_body", ()
+        return "", "envelope" if unclosed_envelope else "short_body", ()
     lines = body.splitlines()
     nonempty = [i for i, line in enumerate(lines) if line.strip()]
     controls = 0
@@ -591,14 +634,14 @@ def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[
         if not plain:
             plain, hint_tags = _normalize_expand_hint(raw_last_line.strip())
         if not plain:
-            return "", "closing_hint", ()
+            return "", "envelope" if unclosed_envelope else "closing_hint", ()
         body = body[: len(body) - len(raw_last_line)] + plain
         if count_tokens(body) < minimum_body_tokens:
             # Accept a decorated reply only if its plain form would be accepted.
-            return "", "short_body", ()
+            return "", "envelope" if unclosed_envelope else "short_body", ()
         tolerated.extend(hint_tags)
     if count_tokens(body) < minimum_body_tokens:
-        return "", "short_body", ()
+        return "", "envelope" if unclosed_envelope else "short_body", ()
     return body, "", tuple(tolerated)
 
 
@@ -1017,7 +1060,20 @@ def _invoke_summary_llm_chain(
             budget.record_call(route_key, started, ended)
             if result is None and _is_budget_cut(error, budget, budget_bound, ended - started, call_timeout,
                                                  deadline_installed):
-                # #605 F4: the budget, not the route, ended the call: no circuit failure, no fallback.
+                # #1137: a full-window hang opens this route for the NEXT compaction.
+                full_window = min(budget.configured_timeout, budget.hard - budget.reserve - budget.leaf_reserve)
+                if not budget_bound:  # the host timeout can be a no-progress window, shorter than the call
+                    full_window = budget.hard - budget.reserve - budget.leaf_reserve
+                used_window = (
+                    (budget_bound and call_timeout >= 0.9 * full_window)
+                    or (deadline_installed and ended >= budget.usable_deadline - 1.0)
+                )
+                if (circuit_breaker is not None and used_window
+                        and ended - started >= 0.9 * full_window):  # an early host fence is not a hang
+                    circuit_breaker.record_hang(route_key)
+                    if not circuit_breaker.allows(route_key):
+                        budget.hung_route = route_key
+                # #605 F4: still stop this compaction, with no time left for a fallback.
                 raise budget.stop("summariser call cut by the foreground budget")
         if circuit_breaker is not None and route:
             circuit_breaker.note_route(route_key, route)

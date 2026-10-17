@@ -884,7 +884,7 @@ class IdentityAnchorMixin:
     # -- R4: coverage bound to the summarizer input ----------------------------
 
     def _identity_anchor_summary_input(self, chunk, full_map, view=(), raw_chunk=(), budget=None,
-                                       accounted_ids=()) -> Optional[list]:
+                                       accounted_ids=(), copy_lookup=None) -> Optional[list]:
         """The summarizer input for ``chunk`` built TOGETHER with what each input row may claim:
         ``[(input_row, [store_id, ...]), ...]``, ``[]`` (no leaf can start), or None (today's input).
         - A live composite LCM recorded (R2 witness) claims its constituents: their text is in it.
@@ -972,7 +972,8 @@ class IdentityAnchorMixin:
         if budget is None:
             budget = count_messages_tokens(chunk)
         return self._store_complete_input(chunk, claims, full_map, view, raw_chunk, frontier, carry,
-                                          max(budget, count_messages_tokens(chunk)), accounted_ids)
+                                          max(budget, count_messages_tokens(chunk)), accounted_ids,
+                                          copy_lookup=copy_lookup)
 
     def _identity_anchor_view_key(self, message) -> Optional[tuple]:
         """A view row's occurrence key ``(stamp, form)`` as the ingest site keys it; None for LCM's own scaffold
