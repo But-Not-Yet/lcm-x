@@ -226,7 +226,7 @@ def test_automatic_compaction_holds_only_without_a_hung_route_alternative(
         assert engine._dag.get_session_nodes("S") == []
         retry = failure == "hang" and bool(fallbacks) and not blocked
         assert engine._sweep_budget_hold_active() is not retry
-        assert engine._no_progress_hold_active() is not retry
+        assert engine._no_progress_hold_active() is (failure != "hang")
         assert engine.should_compress(engine.threshold_tokens + 1) is retry
         skip_lines = [r for r in caplog.records if "skipping sweep budget hold" in r.getMessage()]
         assert len(skip_lines) == int(retry)
