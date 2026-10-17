@@ -143,3 +143,38 @@ def test_generated_identity_fields_normalize_without_changing_store_ids(tmp_path
     replacement = [second] if field.endswith("uids") else second
     assert Canonical(tmp_path, []).value({field: value, "store_id": 17}) == Canonical(tmp_path, []).value({
         field: replacement, "store_id": 17})
+
+
+@pytest.mark.parametrize("field", ["_absorbed_message_uids", "_tool_call_uids"])
+@pytest.mark.parametrize("list_values", [False, True], ids=["scalar", "list"])
+def test_identity_maps_normalize_with_aliases(tmp_path: Path, field: str, list_values: bool) -> None:
+    first, second = "12345678123412341234123456789abc", "fedcba9876543210fedcba9876543210"
+
+    def canonicalize(uid: str) -> Any:
+        return Canonical(tmp_path, []).value({
+            field: {"call-1": [uid, uid] if list_values else uid, "call-2": uid},
+            "_tool_call_uid": uid,
+            "store_id": 17,
+        })
+
+    expected = {
+        field: {"call-1": ["<nonce-0>", "<nonce-0>"] if list_values else "<nonce-0>", "call-2": "<nonce-0>"},
+        "_tool_call_uid": "<nonce-0>",
+        "store_id": 17,
+    }
+    assert canonicalize(first) == canonicalize(second) == expected
+
+
+@pytest.mark.parametrize("role", ["user", "assistant", "tool"])
+@pytest.mark.parametrize("subtree", ["content", "payload"])
+@pytest.mark.parametrize("field", ["message_uid", "_absorbed_message_uids", "_tool_call_uids", "_tool_call_uid"])
+def test_payload_identity_keys_remain_observable(tmp_path: Path, role: str, subtree: str, field: str) -> None:
+    first, second = "12345678123412341234123456789abc", "fedcba9876543210fedcba9876543210"
+    originals = []
+    for uid in (first, second):
+        payload = {field: uid, "nested": [{field: [uid]}]}
+        original = Canonical(tmp_path, []).value({"role": role, "message_uid": uid, subtree: payload})
+        assert original[subtree] == payload
+        assert original["message_uid"] == "<nonce-0>"
+        originals.append(original)
+    assert originals[0] != originals[1]
