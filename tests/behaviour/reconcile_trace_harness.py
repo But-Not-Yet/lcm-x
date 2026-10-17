@@ -65,6 +65,13 @@ NOTE: Message = {"role": "system", "content": (
     "Earlier turns have been compacted into hierarchical summaries below.]")}
 
 
+TRACE_GUIDANCE = (
+    "Regenerate from repo root: python -m tests.behaviour.reconcile_trace_harness --repo . --regenerate\n"
+    "Attribute every changed event in the PR description to its commit or behaviour change.\n"
+    "See docs/process/turn-path-probe-packet.md#golden-traces."
+)
+
+
 def encoded(value: Any) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
@@ -104,7 +111,9 @@ def engine_attributes(source: str) -> set[str]:
                     and isinstance(node.args[0], ast.Name) and node.args[0].id == "self"):
                 key = node.args[1]
                 if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
-                    raise AssertionError("dynamic self lookup needs an explicit completeness rule")
+                    raise AssertionError(
+                        "Dynamic self lookup: update engine_attributes and OBSERVED_ATTRIBUTES.\n"
+                        + TRACE_GUIDANCE)
                 attr = key.value
             if attr is not None:
                 if attr in methods:

@@ -11,6 +11,7 @@ from tests.behaviour.reconcile_trace_harness import (
     GOLDEN,
     OBSERVED_ATTRIBUTES,
     SCENARIOS,
+    TRACE_GUIDANCE,
     engine_attributes,
     first_difference,
     observe,
@@ -23,12 +24,14 @@ def test_reconcile_golden(case: Any, tmp_path: Path) -> None:
     expected: dict[str, list[str]] = json.loads(GOLDEN.read_text())
     actual = observe(case, tmp_path)
     difference = first_difference(expected[case.name], actual)
-    assert difference is None, f"{case.name}: {difference}"
+    assert difference is None, f"{case.name}: {difference}\n" + TRACE_GUIDANCE
 
 
 def test_observed_attribute_inventory_is_complete() -> None:
     discovered = engine_attributes(Path(reconcile.__file__).read_text())
-    assert discovered <= OBSERVED_ATTRIBUTES, f"Unobserved engine state: {sorted(discovered - OBSERVED_ATTRIBUTES)}"
+    assert discovered <= OBSERVED_ATTRIBUTES, (
+        f"Unobserved engine state: {sorted(discovered - OBSERVED_ATTRIBUTES)}; update OBSERVED_ATTRIBUTES.\n"
+        + TRACE_GUIDANCE)
     # Prove this guard is sensitive to new state used by a transitive helper,
     # independently of the frozen constant and without editing product source.
     source = Path(reconcile.__file__).read_text()
@@ -39,9 +42,12 @@ def test_observed_attribute_inventory_is_complete() -> None:
 
 def test_fixture_scenario_inventory_and_size() -> None:
     data: dict[str, list[str]] = json.loads(GOLDEN.read_text())
-    assert set(data) == {case.name for case in SCENARIOS}
-    assert GOLDEN.stat().st_size <= 800_000
-    assert all(len(json.dumps(trace).encode()) <= 40_000 for trace in data.values())
+    assert set(data) == {case.name for case in SCENARIOS}, (
+        "Scenario inventory differs; update SCENARIOS and the fixture scenario keys together.\n" + TRACE_GUIDANCE)
+    assert GOLDEN.stat().st_size <= 800_000, (
+        "Fixture exceeds 800000 bytes; review the fixture size bound.\n" + TRACE_GUIDANCE)
+    assert all(len(json.dumps(trace).encode()) <= 40_000 for trace in data.values()), (
+        "A trace exceeds 40000 bytes; review the trace size bound.\n" + TRACE_GUIDANCE)
 
 
 @pytest.mark.parametrize("index", [0, 1, 2])
