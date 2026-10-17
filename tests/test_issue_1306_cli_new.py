@@ -20,13 +20,14 @@ from hermes_lcm.engine_registry import resolve_active_lcm_engine
 
 
 @pytest.fixture
-def engine(tmp_path, monkeypatch):
+def engine(tmp_path, monkeypatch, request):
     monkeypatch.setattr(tokens, "_get_encoder", lambda: None)
     tokens._count_tokens_cached.cache_clear()
     monkeypatch.setattr(escalation, "_call_llm_for_summary",
                         lambda *args, **kwargs: "Earlier turns retained. Expand for details about: turns")
     instance = LCMEngine(config=LCMConfig(database_path=str(tmp_path / "lcm.db"),
-                                         fresh_tail_count=2, leaf_chunk_tokens=64),
+                                         fresh_tail_count=2, leaf_chunk_tokens=64,
+                                         **getattr(request, "param", {})),
                          hermes_home=str(tmp_path / "home"))
     instance.on_session_start("old", platform="cli", context_length=8192)
     yield instance
@@ -385,3 +386,54 @@ def test_gateway_run_turn_binding_is_noop(tmp_path, monkeypatch, binding):
         assert binding_snapshot(instance) == before
     finally:
         instance.shutdown()
+
+
+@pytest.mark.parametrize("engine", [
+    {"ignore_session_patterns": ["filtered-*"]},
+    {"stateless_session_patterns": ["filtered-*"]},
+], indirect=True, ids=["ignored", "stateless"])
+@pytest.mark.parametrize("reverse", [False, True], ids=["enter-filter", "leave-filter"])
+def test_reset_only_applies_target_session_filters(engine, reverse):
+    before = []
+    turn(before, "durable old turn")
+    engine.on_session_end("old", before)
+    rows_before = engine._store.connection.execute(
+        "SELECT * FROM messages ORDER BY store_id").fetchall()
+    real_reset(engine, "filtered-new")
+    bypassed = [{"role": "user", "content": "filtered turn must not be stored"}]
+    engine.ingest(bypassed)
+    if reverse:
+        engine.on_session_end("filtered-new", bypassed)
+        real_reset(engine, "normal-new")
+        assert engine.bound_session_id == engine.current_session_id == "normal-new"
+        assert not engine._session_ignored and not engine._session_stateless
+        engine.ingest([{"role": "user", "content": "normal turn must be stored"}])
+        assert engine._store.get_session_count("normal-new") == 1
+    else:
+        assert engine.bound_session_id == engine.current_session_id == "filtered-new"
+        assert engine._session_ignored is bool(engine._config.ignore_session_patterns)
+        assert engine._session_stateless is bool(engine._config.stateless_session_patterns)
+    assert engine._store.get_session_count("filtered-new") == 0
+    rows_after = engine._store.connection.execute(
+        "SELECT * FROM messages WHERE session_id = 'old' ORDER BY store_id").fetchall()
+    assert rows_after == rows_before
+
+
+@pytest.mark.parametrize("node_owner", ["rotated", "conversation-root", None],
+                         ids=["bound-session", "conversation-root", "empty-control"])
+def test_reset_only_checks_bound_session_dag(engine, node_owner):
+    engine.on_session_end("old", [])
+    engine.on_session_start("rotated", platform="cli", conversation_id="conversation-root")
+    if node_owner:
+        engine._dag.add_node(SummaryNode(session_id=node_owner, depth=2,
+                                        summary="carried summary must remain reachable"))
+    engine.on_session_reset()
+    assert engine._session_id != engine._conversation_id
+    assert engine._store.get_session_count("rotated") == 0
+    before = binding_snapshot(engine)
+    engine.bind_session_state(None, "new")
+    if node_owner:
+        assert binding_snapshot(engine) == before
+        assert engine._dag.get_session_node_count(node_owner) == 1
+    else:
+        assert engine.bound_session_id == engine.current_session_id == "new"

@@ -3989,8 +3989,8 @@ class LCMEngine(
                 or not self._session_id
                 or session_id == self._session_id
                 or self._session_id != self._foreground_session_id
-                or self._bypasses_lcm_context_management()
-                or self._session_id_bypasses_lcm(session_id, platform=self._session_platform)
+                or self._thread_context_stateless()
+                or self._thread_context_has_auxiliary_session(session_id)
                 or self._is_live_auxiliary_child_session(session_id, self._session_id, {})
             ):
                 return
@@ -4019,11 +4019,16 @@ class LCMEngine(
                     and state.last_reset_at is not None
                     and state.updated_at == state.last_reset_at
                     and self._store.get_session_count(self._session_id) == 0
+                    and self._dag.get_session_node_count(self._session_id) == 0
                     and self._dag.get_session_node_count(self._conversation_id) == 0
                 )
                 if not empty_reset_binding:
                     return
                 self._on_session_end_unlocked(self._session_id, [])
+                if self._session_ignored or self._session_stateless:
+                    # Bypass end hooks skip lifecycle writes. The exact reset
+                    # and empty-binding proof above permits finalizing here.
+                    self._lifecycle.finalize_session(self._conversation_id, self._session_id)
                 state = self._lifecycle.get_by_conversation(self._conversation_id)
             if (
                 state is None
@@ -4032,6 +4037,12 @@ class LCMEngine(
             ):
                 return
             self._on_session_start_unlocked(session_id, platform=self._session_platform)
+            if self._session_ignored or self._session_stateless:
+                # This is an explicit foreground reset, unlike a side-channel
+                # start. Keep it eligible for the next reset back to normal.
+                self._foreground_session_id = self._session_id
+                self._foreground_session_platform = self._session_platform
+                self._foreground_conversation_id = self._conversation_id
 
     def on_session_start(self, session_id: str, **kwargs) -> None:
         with self._exclusive_lifecycle("rebind"):
