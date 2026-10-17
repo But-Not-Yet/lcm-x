@@ -141,22 +141,6 @@ def _engine_bound_session_id(engine) -> str:
     )
 
 
-def _ensure_engine_bound_to_session(
-    active_engine,
-    session_id: str,
-    *,
-    platform: str = "",
-    conversation_id: str = "",
-) -> None:
-    session_id = str(session_id or "")
-    if session_id and _engine_bound_session_id(active_engine) != session_id:
-        active_engine.on_session_start(
-            session_id,
-            platform=platform,
-            conversation_id=conversation_id or None,
-        )
-
-
 def _session_context_value(name: str) -> str:
     """Read task-local host session metadata with legacy env compatibility."""
     try:
