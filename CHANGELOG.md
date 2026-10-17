@@ -6,6 +6,8 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
+- Fix: retry a busy session-end raw-message flush at later lifecycle boundaries and for up to five seconds at shutdown or process exit, preserving the ended session and replay order. (#1160)
+
 - Fix: a survival fit now says LCM could not summarise only when the pass's summary chain failed; every other fit says older messages left live context to keep the conversation within the model's context window. So a primary summary error followed by a usable fallback no longer gives the summary-failed warning. An exhausted chain still records its error for the pass. Doctor survival-fit history includes the last cause without changing the top-level status; the `lcm_doctor` tool returns the record as top-level `survival_fit` (or null), outside `checks`. (#1162)
 - Fix: a repeat hung summary retry, including forced overflow, keeps its circuit open at turn end; a first hang after a stored leaf or condensation in the same sweep still gets the one turn-end retry. (#1369, #1096)
 - Fix: generated-only Hermes merge groups stay model-only, while groups that absorb a real user prompt stay visible after assembly and survival fitting, including exception recovery. Native summary carriers, `/steer` rows, and non-plain-text rows retain their separate display handling. (#1370)
