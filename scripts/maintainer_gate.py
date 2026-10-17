@@ -49,6 +49,7 @@ TURN_PATH_FILES = {
     "prefix_matching.py", "reconcile.py", "sanitize.py", "store_complete.py",
     "summary_attempt.py", "summary_input_clip.py", "summary_outcome.py", "survival_codec.py",
     "survival_fit.py", "tokens.py", "tool_pairs.py",
+    "reset_state.py",  # resets the ingest cursor and compaction progress on rotation
 }
 # Explicit exclusions: classify every top-level Python module, not just reachable dependencies.
 NON_TURN_PATH_FILES = {
@@ -89,7 +90,6 @@ NON_TURN_PATH_FILES = {
     "recall_delivery.py",  # Recall-tool selection and serialization.
     "recent.py",  # Recent temporal retrieval tools.
     "requirements_compiler.py",  # Pre-answer evidence requirements compilation.
-    "reset_state.py",  # Session runtime-state reset helpers.
     "retrieval_context.py",  # Retrieval-reader connection ownership.
     "retrieval_core.py",  # Shared search-tool plumbing.
     "rollup_builder.py",  # Opt-in temporal rollup construction.

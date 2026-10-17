@@ -47,6 +47,7 @@ jobs:
             placeholder_ledger.py
             prefix_matching.py
             reconcile.py
+            reset_state.py
             sanitize.py
             store_complete.py
             summary_attempt.py
