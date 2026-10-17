@@ -76,7 +76,7 @@ def digest(rows: list[dict[str, Any]]) -> str:
 
 
 def checkpoint(engine: Any, home: Path, turn: int, history: list[dict[str, Any]],
-               ledger: list[dict[str, Any]], baseline: dict[str, Any]) -> dict[str, Any]:
+               ledger: list[dict[str, Any]]) -> dict[str, Any]:
     rows = stored(home, engine)
     got, want = Counter(map(canonical, rows)), Counter(map(canonical, ledger))
     assert got == want, (f"I1 exactly-once at turn {turn}: stored={len(rows)} expected={len(ledger)} "
@@ -102,6 +102,10 @@ def checkpoint(engine: Any, home: Path, turn: int, history: list[dict[str, Any]]
         recalled += 1
     with sqlite3.connect(home / "lcm.db") as db:
         nodes = db.execute("SELECT node_id, depth, summary, source_ids, source_type FROM summary_nodes").fetchall()
+        frontier = db.execute(
+            "SELECT current_frontier_store_id FROM lcm_lifecycle_state WHERE conversation_id = ?",
+            (engine._conversation_id,),
+        ).fetchone()[0]
     row_ids = {r["store_id"] for r in rows}
     node_ids = {n[0] for n in nodes}
     covered: set[int] = set()
@@ -111,10 +115,21 @@ def checkpoint(engine: Any, home: Path, turn: int, history: list[dict[str, Any]]
         assert ids <= (row_ids if kind == "messages" else node_ids), f"I4 DAG: dangling sources at node {node_id}"
         if kind == "messages":
             covered.update(ids)
-    uncovered = len(row_ids - covered)
-    assert uncovered <= baseline["uncovered"][str(turn)], f"I4 DAG at turn {turn}: uncovered rows grew to {uncovered}"
+    uncovered_ids = row_ids - covered
+    # Hosts compact at different turns. Coverage follows the published frontier,
+    # not the number of live rows observed on one reference host at this turn.
+    assert uncovered_ids == {i for i in row_ids if i > frontier}, \
+        f"I4 DAG at turn {turn}: source coverage disagrees with frontier {frontier}"
+    live = []
+    for message in history:
+        remainder = engine._generated_context_carrier_remainder(message)
+        live.append(canonical({**message, "content": remainder} if remainder is not None else message))
+    pending = Counter(canonical(r) for r in rows if r["store_id"] in uncovered_ids)
+    assert not pending - Counter(live), f"I4 DAG at turn {turn}: uncovered rows missing from live history"
+    uncovered = len(uncovered_ids)
     return {"turn": turn, "rows": len(rows), "digest": digest(rows), "uncovered": uncovered,
-            "nodes": len(nodes), "max_depth": max((n[1] for n in nodes), default=-1), "recalled": recalled}
+            "frontier": frontier, "nodes": len(nodes),
+            "max_depth": max((n[1] for n in nodes), default=-1), "recalled": recalled}
 
 
 def run(first: int, last: int, out: Path) -> None:
@@ -132,7 +147,6 @@ def run(first: int, last: int, out: Path) -> None:
     timings: list[dict[str, Any]] = []
     compactions: list[dict[str, Any]] = []
     checks: list[dict[str, Any]] = []
-    baseline = json.loads((ROOT / "tests/fixtures/long_session_baseline.json").read_text())
 
     def main_reply(messages: list[dict[str, Any]]) -> dict[str, Any]:
         nonlocal issued
@@ -262,7 +276,7 @@ def run(first: int, last: int, out: Path) -> None:
                 assert Counter(map(canonical, after)) == Counter(map(canonical, ledger)), \
                     "I5 cursor: restart re-ingested or skipped rows"
             if turn % 25 == 0:
-                checks.append(checkpoint(engine, home, turn, history, ledger, baseline))
+                checks.append(checkpoint(engine, home, turn, history, ledger))
                 print(json.dumps(checks[-1]), flush=True)
         if last == 300:
             assert checks[-1]["max_depth"] >= 1, "I4 DAG: no condensation above leaf level"
