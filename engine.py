@@ -6091,8 +6091,18 @@ class LCMEngine(
         current, old = cls._host_occurrence_metadata(message), cls._host_occurrence_metadata(previous)
         stamp, old_stamp = current["timestamp"], old["timestamp"]
         uid, old_uid = current["message_uid"], old["message_uid"]
+        retained_uid = previous.get("_retained_message_uid")
+        try:
+            absorbed = message.get("_absorbed_message_uids")
+        except Exception:
+            absorbed = None
+        retained_changed = (
+            _valid_uid(retained_uid) and isinstance(absorbed, list)
+            and any(_valid_uid(value) for value in absorbed) and retained_uid not in absorbed
+        )
         return ((stamp is not None and old_stamp is not None and stamp != old_stamp)
-                or (_valid_uid(uid) and _valid_uid(old_uid) and uid != old_uid))
+                or (_valid_uid(uid) and _valid_uid(old_uid) and uid != old_uid)
+                or retained_changed)
 
     def _remapped_output_metadata(self, messages, proof, cursor) -> dict:
         """Map a proven effective prefix back to the output's metadata snapshot."""
@@ -6117,6 +6127,10 @@ class LCMEngine(
             result[index] = (snapshot[output_index] if entry.generated_span is not None
                              and output_index is not None and output_index < len(snapshot)
                              else target[matched])
+            if entry.generated_span is not None:
+                # The scaffold's identity cannot prove that its absorbed user
+                # is still the retained occurrence, even when its text matches.
+                result[index] = {**result[index], "_retained_message_uid": target[matched].get("message_uid")}
             matched += 1
         return result
 
@@ -6357,6 +6371,7 @@ class LCMEngine(
                 if cursor > 0 and cached_source_identities is not None and len(cached_source_identities) >= cursor
                 else None
             )
+        unchanged_prefix_occurrences -= new_prefix_occurrences
         anchor_plan = None
         if identity_anchor_enabled():
             # A steady-state cursor proves the prefix only while the host keeps that prefix; where it
@@ -6509,8 +6524,7 @@ class LCMEngine(
                 absolute_idx = cursor + offset
                 if absolute_idx in replayed_tool_segment_indexes:
                     continue
-                if (not identity_anchor_enabled() and new_prefix_occurrences
-                        and absolute_idx in unchanged_prefix_occurrences):
+                if new_prefix_occurrences and absolute_idx in unchanged_prefix_occurrences:
                     continue
                 replay_text = text_content_for_pattern_matching(replay_msg.get("content")) or ""
                 original_text = text_content_for_pattern_matching(original_msg.get("content")) or ""
