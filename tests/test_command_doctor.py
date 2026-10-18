@@ -495,3 +495,75 @@ def test_doctor_read_order(
                     "host_uid_doctor_lines",
                 )
             )
+
+
+@pytest.mark.parametrize("owner_name,helper,expected", (
+    ("command", "load_integrity_failed", "issues: none"),
+    ("command", "check_external_content_fts_integrity", "issues: messages_fts, nodes_fts"),
+    ("store", "read_metadata_json", "survival_fit_count: 0"),
+    ("store", "get_source_stats", "issues: source_lineage"),
+    ("lifecycle", "get_fragmentation_stats", "issues: lifecycle_fragmentation"),
+    ("command", "externalized_payload_stats", "issues: payload_storage"),
+    ("command", "scan_externalized_payload_integrity", "issues: payload_storage"),
+))
+def test_doctor_helper_exceptions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    owner_name: str, helper: str, expected: str,
+) -> None:
+    with doctor_engine(tmp_path, "healthy", monkeypatch) as engine:
+        owner = {"command": command, "store": engine._store,
+                 "lifecycle": engine._lifecycle}[owner_name]
+        calls = []
+
+        def fail(*args: Any, **kwargs: Any) -> Any:
+            calls.append(helper)
+            return _raise()
+
+        monkeypatch.setattr(owner, helper, fail)
+        text = command._doctor_text(engine)
+        assert expected in text.splitlines()
+        assert len(calls) == (2 if helper in {
+            "load_integrity_failed", "check_external_content_fts_integrity", "read_metadata_json"
+        } else 1)
+
+
+def test_doctor_compound_exception_issue_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with doctor_engine(tmp_path, "healthy", monkeypatch) as engine:
+        engine._store.connection.fault = lambda q, p: q in {
+            "PRAGMA integrity_check", "PRAGMA mmap_size", "PRAGMA journal_mode",
+            "PRAGMA quick_check", "SELECT COUNT(*) FROM messages",
+            "SELECT COUNT(DISTINCT session_id) FROM messages",
+        }
+        engine._dag.connection.fault = lambda q, p: q in {
+            "SELECT COUNT(*) FROM summary_nodes",
+            "SELECT COUNT(DISTINCT session_id) FROM summary_nodes",
+        }
+        engine._lifecycle.connection.fault = lambda q, p: (
+            "SELECT conversation_id, debt_kind, debt_size_estimate" in q
+        )
+        for helper in ("scan_sqlite_payload_risks", "check_external_content_fts_integrity"):
+            monkeypatch.setattr(command, helper, _raise)
+        monkeypatch.setattr(engine._store, "get_source_stats", _raise)
+        monkeypatch.setattr(engine._lifecycle, "get_fragmentation_stats", _raise)
+        monkeypatch.setattr(tools, "_embedding_provider_health_check", _raise)
+        text = command._doctor_text(engine)
+        assert next(line for line in text.splitlines() if line.startswith("issues:")) == (
+            "issues: sqlite_integrity, messages_fts, nodes_fts, sqlite_mmap_size, "
+            "messages_total, message_sessions_total, summary_nodes_total, "
+            "summary_node_sessions_total, sqlite_journal_mode, sqlite_quick_check, "
+            "payload_storage, lifecycle_state, source_lineage, lifecycle_fragmentation, "
+            "embedding_provider_health"
+        )
+        assert text.count("payload_storage, ") == 1
+
+
+def test_doctor_missing_payload_precedes_late_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with doctor_engine(tmp_path, "missing_refs", monkeypatch) as engine:
+        monkeypatch.setattr(engine._store, "get_source_stats", _raise)
+        monkeypatch.setattr(engine._lifecycle, "get_fragmentation_stats", _raise)
+        text = command._doctor_text(engine)
+        assert "issues: payload_storage, source_lineage, lifecycle_fragmentation" in text.splitlines()
