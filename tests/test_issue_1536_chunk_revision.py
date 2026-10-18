@@ -342,3 +342,38 @@ def test_invalid_scan_record_revalidates_full_gap(store: Store, record: str, ope
     else:
         run(store)
         assert counts(store) == dict.fromkeys(range(1, 6), 1)
+
+
+@pytest.mark.parametrize("operation", ["status", "apply"])
+@pytest.mark.parametrize("bound", ["not-a-number", "", "1.5", "[1]"])
+def test_unreadable_revision_bound_revalidates_full_gap(store: Store, bound: str, operation: str) -> None:
+    config, vectors, identity, _ = store
+    add_rows(store, [(1, "user", LONG), (2, "user", SHORT), (3, "user", SHORT),
+                     (4, "user", SHORT), (5, "assistant", LONG)], {1, 5})
+    metadata(store, "chunk_policy_revision", 2)
+    vectors.connection.execute("INSERT OR REPLACE INTO metadata VALUES(?, ?)",
+                               (f"chunk_policy_revision_through:{identity.identity_hash}", bound))
+    if operation == "status":
+        before = list(vectors.connection.execute("SELECT * FROM metadata ORDER BY key"))
+        engine = SimpleNamespace(_config=config, _store=SimpleNamespace(db_path=config.database_path))
+        assert "embedding_backlog_chunks: 3 (gap-fill)" in command._embedding_maintenance_status_lines(engine)
+        assert before == list(vectors.connection.execute("SELECT * FROM metadata ORDER BY key"))
+    else:
+        run(store)
+        assert counts(store) == dict.fromkeys(range(1, 6), 1)
+
+
+@pytest.mark.parametrize("extra", [{}, {"format": 2, "cursor": {"low": 1, "high": 5}}])
+def test_scan_record_from_a_newer_revision_is_not_trusted(store: Store, extra: dict[str, Any]) -> None:
+    _, vectors, identity, _ = store
+    add_rows(store, [(1, "user", LONG), (2, "user", SHORT), (3, "user", SHORT),
+                     (4, "user", SHORT), (5, "assistant", LONG)], {1, 5})
+    metadata(store, "chunk_policy_revision", 2)
+    metadata(store, "chunk_policy_revision_through", 1)
+    newer = {"revision": command.CHUNK_POLICY_REVISION + 1, "policy": "conversational",
+             "high": 5, "pending": [3], **extra}
+    vectors.connection.execute("INSERT OR REPLACE INTO metadata VALUES(?, ?)",
+                               (f"chunk_gapfill_scan:{identity.identity_hash}", json.dumps(newer)))
+    run(store)
+    # Trusting the newer record would recheck only row 3 and skip rows 2 and 4.
+    assert counts(store) == dict.fromkeys(range(1, 6), 1)
