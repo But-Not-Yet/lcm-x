@@ -567,3 +567,44 @@ def test_doctor_missing_payload_precedes_late_failures(
         monkeypatch.setattr(engine._lifecycle, "get_fragmentation_stats", _raise)
         text = command._doctor_text(engine)
         assert "issues: payload_storage, source_lineage, lifecycle_fragmentation" in text.splitlines()
+
+
+@pytest.mark.parametrize("case", ("healthy", "payload_error", "fit_projection", "embedding_raise"))
+def test_doctor_render_is_detached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str,
+) -> None:
+    from hermes_lcm.command_doctor import collect_doctor, render_doctor
+
+    with doctor_engine(tmp_path, case, monkeypatch) as engine:
+        facts = collect_doctor(engine)
+        expected = render_doctor(facts)
+        for owner in (engine._store, engine._dag, engine._lifecycle):
+            owner.connection.fault = lambda q, p: True
+        for name in (
+            "inspect_lcm_schema_health", "sensitive_pattern_status", "sqlite_wal_reset_affected",
+            "stem_index_status", "host_uid_doctor_lines", "doctor_guidance_for_checks",
+            "doctor_guidance_for_check", "survival_fit_count", "survival_fit_projection_floor_applies",
+        ):
+            monkeypatch.setattr(command, name, _raise)
+        monkeypatch.setattr(tools, "_embedding_provider_health_check", _raise)
+        monkeypatch.setattr(Path, "exists", _raise)
+        monkeypatch.setattr(Path, "stat", _raise)
+        assert render_doctor(facts) == expected
+        assert render_doctor(facts) == expected
+        # Restore pathlib before the engine's fixture teardown.
+        monkeypatch.undo()
+
+
+def test_doctor_render_keeps_duplicate_payload_issue_positions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import replace
+    from hermes_lcm.command_doctor import collect_doctor, render_doctor
+
+    with doctor_engine(tmp_path, "missing_refs", monkeypatch) as engine:
+        facts = collect_doctor(engine)
+        # The collector's fallback cannot produce this combination today. Replay
+        # both issue sites independently so rendering never deduplicates them.
+        facts = replace(facts, probe_errors={"payload_storage": True, "lifecycle_state": True})
+        text = render_doctor(facts)
+        assert "issues: payload_storage, lifecycle_state, payload_storage" in text.splitlines()
