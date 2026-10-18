@@ -317,8 +317,11 @@ class IdentityAnchorMixin:
                 self._identity_anchor_take(idx, carried, consumed, matched, plan)
             elif any(r["row"] is messages[idx] for r in getattr(self, "_identity_anchor_recoveries", ())):
                 # No intermediate ingest: the rewritten recovery may be after the cursor already.
+                from .reconcile import _proof_user_identity
+
                 copies = [{"store_id": entry[2]} for entry in getattr(self, "_identity_anchor_recent", ())
-                          if entry[0] in [str(self._session_id), *chain] and entry[1] == identity_at(idx)
+                          if entry[0] in [str(self._session_id), *chain] and identity_at(idx) is not None
+                          and _proof_user_identity(entry[1]) == _proof_user_identity(identity_at(idx))
                           and entry[2] not in consumed]
                 recovery = self._identity_anchor_recovery_stamp(messages, idx, stamps, copies, chain)
                 if recovery:
@@ -418,6 +421,11 @@ class IdentityAnchorMixin:
                 messages, idx, stamps, copies, previous, chain, distinct=_distinct_from_predecessor(identity_at, idx))
             carried = self._identity_anchor_durable_stamp(carried, previous, stamps.get(idx - 1))
             recovery_candidates = copies
+            if not copies and any(r["row"] is messages[idx] for r in getattr(self, "_identity_anchor_recoveries", ())):
+                # A recovery can drop more orphan followers than the audit tail holds.
+                recovery_candidates = [{"store_id": entry[2]} for entry in getattr(self, "_identity_anchor_recent", ())
+                                       if entry[0] in [str(self._session_id), *chain] and entry[2] not in consumed
+                                       and _proof_user_identity(entry[1]) == _proof_user_identity(identity)]
             # #1328: equal content at a different known stamp is a different occurrence.
             # A NULL copy needs independent occurrence proof before consumption or unique backfill.
             copies = [row for row in copies if row.get("observed_at") == stamps[idx]
@@ -504,6 +512,7 @@ class IdentityAnchorMixin:
         through the caller's plan; cold replays use R1.
         """
         from .reconcile import _proof_user_identity
+        from .store import _normalize_conversation_id_value
 
         receipts = getattr(self, "_identity_anchor_recoveries", ())
         own = [r for r in receipts if r["row"] is messages[idx]]
@@ -524,13 +533,16 @@ class IdentityAnchorMixin:
         if any(r.get("store_id") == store_id for r in receipts):
             return []
         row = self._store.get_batch([store_id]).get(store_id)
+        conversation = _normalize_conversation_id_value(self._conversation_id)
         if (not row or row.get("session_id") not in scope or row.get("role") != "user"
+                or _normalize_conversation_id_value(row.get("conversation_id")) not in {conversation, ""}
                 or row.get("observed_at") is None or row["observed_at"] == stamp
                 or _proof_user_identity(self._message_replay_identity(row, stored_row=True))
                 != _proof_user_identity(self._message_replay_identity(messages[idx], strip_carrier=False))):
             return []
         for session in scope:
-            followers = self._store.get_range(session, start_id=store_id + 1, limit=257)
+            followers = self._store.get_range(session, start_id=store_id + 1, limit=257,
+                                              conversation_id=conversation, include_blank_conversation=True)
             if len(followers) == 257 or any(r.get("role") not in {"assistant", "tool"} for r in followers):
                 return []
         receipt.update(used=True, store_id=store_id)
