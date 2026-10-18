@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from tests.harness import engine_context
+from tests.harness import ScriptedSummarizer, engine_context, pin_char_counter
 
 
 def message(content: Any, stamp: float | None, role: str = "user") -> dict[str, Any]:
@@ -157,3 +157,139 @@ def test_fresh_identity_variants_at_recovery_stamp_are_stored(tmp_path: Path, sh
         before = len(users(engine))
         engine.ingest([*recovered[:-1], fresh, message("reply", 31., "assistant")])
         assert len(users(engine)) == before + 1
+
+
+def assert_copies(engine: Any, text: str, expected: int = 1) -> None:
+    copies = [r for r in users(engine) if r["content"] == text]
+    assert len(copies) == expected, [(r["store_id"], r["observed_at"]) for r in copies]
+
+
+def live_rewrite(engine: Any, *, observe: bool = True) -> tuple[list[dict[str, Any]], str]:
+    view, current = recover(engine)
+    view[-1]["timestamp"] = 30.
+    if observe:
+        engine.ingest(deepcopy(view))
+    view[-1]["content"] = current["content"]
+    view.append(message("reply", 31., "assistant"))
+    engine.ingest(view)
+    assert_copies(engine, current["content"])
+    return view, current["content"]
+
+
+@pytest.mark.parametrize("shape", ["rotation", "cold-compress", "cold-rotation", "trim", "steer",
+                                    "compression-callback", "copied-compress"])
+def test_recovery_alias_survives_delayed_replay(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shape: str) -> None:
+    pin_char_counter(monkeypatch)
+    ScriptedSummarizer("outage").install(monkeypatch)
+    lineage(tmp_path)
+    with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
+        view, text = live_rewrite(engine)
+        view += [message("next request", 40.), message("next reply", 41., "assistant")]
+        engine.ingest(view)
+        assert_copies(engine, text)
+        if shape.startswith("cold"):
+            view = deepcopy(view)
+        else:
+            if shape in {"rotation", "compression-callback"}:
+                engine.on_session_end("parent", view)
+                engine.on_session_start("child" if shape == "rotation" else "parent", platform="cli",
+                                        context_length=128000, conversation_id="conv", boundary_reason="compression",
+                                        old_session_id="parent")
+            if shape == "trim":
+                view = view[1:]
+            elif shape == "steer":
+                view = [message("steering request", 39.), *view]
+            else:
+                view = engine.compress(deepcopy(view), current_tokens=100, force=True)
+            assert_copies(engine, text)
+            engine.ingest(deepcopy(view))
+            assert_copies(engine, text)
+    if shape.startswith("cold"):
+        with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
+            engine.ingest(view)
+            assert_copies(engine, text)
+            if shape == "cold-rotation":
+                engine.on_session_end("parent", view)
+                engine.on_session_start("child", platform="cli", context_length=128000, conversation_id="conv",
+                                        boundary_reason="compression", old_session_id="parent")
+            engine.compress(view, current_tokens=100, force=True)
+            assert_copies(engine, text)
+
+
+def test_stamp_first_observed_after_override(tmp_path: Path) -> None:
+    lineage(tmp_path)
+    with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
+        view, text = live_rewrite(engine, observe=False)
+        row = next(r for r in users(engine) if r["content"] == text)
+        assert row["observed_at"] == 20.
+        aliases = engine._store.get_message_relations([row["store_id"]], "alt_stamp")
+        assert [r["observed_at"] for r in aliases] == [30.]
+        engine.ingest([*view, message(text, 40.)])
+        assert_copies(engine, text, 2)
+
+
+@pytest.mark.parametrize("observe", [False, True], ids=["late-stamp", "observed-stamp"])
+@pytest.mark.parametrize("key", ["message_uid", "platform_message_id", "event_id"])
+def test_new_occurrence_key_on_reused_object_stores(tmp_path: Path, observe: bool, key: str) -> None:
+    lineage(tmp_path)
+    with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
+        view, current = recover(engine)
+        view[-1]["timestamp"] = 30.
+        if observe:
+            engine.ingest(deepcopy(view))
+        view[-1]["content"] = current["content"]
+        view[-1][key] = "new-event"
+        engine.ingest([*view, message("reply", 31., "assistant")])
+        assert_copies(engine, current["content"], 2)
+
+
+@pytest.mark.parametrize("guard", ["fresh-object", "position", "unknown-stamp", "no-recent-copy", "new-user"])
+def test_late_stamp_requires_live_recent_proof(tmp_path: Path, guard: str) -> None:
+    lineage(tmp_path)
+    with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
+        view, current = recover(engine)
+        view[-1]["content"] = current["content"]
+        view[-1]["timestamp"] = None if guard == "unknown-stamp" else 30.
+        if guard == "fresh-object":
+            view[-1] = dict(view[-1])
+        elif guard == "position":
+            view.insert(0, message("another reply", 29., "assistant"))
+        elif guard == "no-recent-copy":
+            engine._identity_anchor_recent = []
+        elif guard == "new-user":
+            engine.ingest([message("a later request", 29.)])
+        engine.ingest([*view, message("reply", 31., "assistant")])
+        assert_copies(engine, current["content"], 2)
+
+
+@pytest.mark.parametrize("abandoned", ["cancelled", "no-copy", "followers", "no-stamp", "session-switch"])
+def test_stale_receipt_does_not_block_new_recoveries(tmp_path: Path, abandoned: str) -> None:
+    lineage(tmp_path)
+    with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
+        first, _ = recover(engine)
+        if abandoned in {"no-copy", "followers"}:
+            first[-1]["timestamp"] = 30.
+            engine.ingest(deepcopy(first))
+            if abandoned == "no-copy":
+                first[-1]["content"] = "not stored"
+            engine.ingest([*first, message("intervening request", 32.)])
+        elif abandoned == "no-stamp":
+            engine.ingest(deepcopy(first))
+        elif abandoned == "session-switch":
+            engine.on_session_start("elsewhere", platform="cli", conversation_id="other")
+            engine.on_session_start("parent", platform="cli", conversation_id="conv")
+        for turn in range(6):
+            stamp = 100. + turn * 10
+            current = message(f"next recovery {turn} " * 500, stamp)
+            source = [message("earlier request", stamp - 2), message("reply", stamp - 1, "assistant"), current,
+                      {"role": "tool", "content": "orphan", "tool_call_id": "orphan", "timestamp": stamp + 1}]
+            engine.ingest(source)
+            view = engine._assemble_overflow_recovery_context(None, source, assembly_cap_override=120)
+            view = engine._finalize_forced_overflow_result(source, view, assembly_cap_override=120)
+            engine._record_compress_commit_proof(source, view)
+            view[-1]["timestamp"] = stamp + 2
+            engine.ingest(deepcopy(view))
+            view[-1]["content"] = current["content"]
+            engine.ingest([*view, message("reply", stamp + 3, "assistant")])
+            assert_copies(engine, current["content"])
+        assert len(engine._identity_anchor_recoveries) <= 4
