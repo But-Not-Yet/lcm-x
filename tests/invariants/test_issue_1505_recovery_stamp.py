@@ -24,7 +24,7 @@ def lineage(root: Path, verified: bool = True) -> None:
                        [("parent", None, "compression" if verified else "normal"), ("child", "parent", None)])
 
 
-def recover(engine: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def recover(engine: Any, end: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Drive the real forced assembly/finalization and its publication, with no internal mocks."""
     current = message("[T32] rebuild the index " * 500, 20.)
     source = [message("[T31] earlier request", 10.), message("earlier reply", 11., "assistant"), current,
@@ -36,6 +36,8 @@ def recover(engine: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     assert engine._last_compression_status == "overflow_recovery"
     assert result[-1]["content"].startswith("[LCM overflow recovery] Your latest message")
     assert any(d["kind"] == "recovery" for d in engine._compress_commit_proof["emissions"])
+    if end:
+        engine.on_session_end("parent", source)
     return result, current
 
 
@@ -48,10 +50,10 @@ def users(engine: Any) -> list[dict[str, Any]]:
 def test_live_recovery_then_fresh_repeat(tmp_path: Path, rotation: bool) -> None:
     lineage(tmp_path)
     with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
-        recovered, current = recover(engine)
+        recovered, current = recover(engine, end=rotation)
         if rotation:
             engine.on_session_start("child", platform="cli", context_length=128000,
-                                    conversation_id="conv", boundary_reason="compression")
+                                    conversation_id="conv", boundary_reason="compression", old_session_id="parent")
         recovered[-1]["timestamp"] = 30.
         # The host passes copies on its intermediate compress calls, retaining the original live row.
         engine.ingest(deepcopy(recovered))

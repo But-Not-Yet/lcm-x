@@ -6622,6 +6622,8 @@ class LCMEngine(
             )
             return self._redact_active_replay_messages(messages)
 
+        if getattr(self, "_identity_anchor_recovery", None):
+            self._identity_anchor_observe_recovery()
         self._capture_host_rewrites(messages)
         n = len(messages)
         cursor = min(max(self._ingest_cursor, 0), n)
@@ -7238,7 +7240,7 @@ class LCMEngine(
         self._watch_stored_user_rows(zip(originals, protected_messages, store_ids))
         if anchor_plan is not None:
             stored_at = {idx: store_id for (idx, _msg), store_id in zip(messages_to_store_with_index, store_ids)}
-            try:  # #1501 provenance, read before the commit's R5 backfill; a miss leaves the duplicate fallback
+            try:  # #1501 provenance: read right after R is stored (R3 has a NULL stamp); a miss duplicates
                 self._identity_anchor_mark_carried(messages, stored_at, anchor_plan)
             except Exception as exc:
                 logger.warning("LCM carried-stamp marker write failed (%s)", type(exc).__name__)
