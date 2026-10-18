@@ -126,6 +126,10 @@ class _CompressionState:
     prep_freed: int = 0
     prep_low_water: float = 0.0
 
+    sweep_step_seconds: Dict[str, float] = field(default_factory=dict)
+    preexisting_dependent_reply_records: list[dict[str, str]] = field(default_factory=list)
+    unattributed_leaf_refused: bool = False
+
 
 @dataclass
 class _LeafState:
@@ -2269,6 +2273,130 @@ class CompactionMixin:
                     self._start_sweep_budget_hold(turn_paced=first_hang)
 
 
+    def _finish_without_leaf(
+        self, state: _CompressionState, messages: List[Dict[str, Any]],
+        warn_rejected: Callable[[], None],
+    ) -> tuple[Literal["next", "return"], Optional[List[Dict[str, Any]]]]:
+        """Finish a no-leaf run, or continue to post-leaf condensation."""
+        if not state.leaf_compacted_this_turn:
+            if state.pre_leaf_condensation_reason == "summary_result_rejected":
+                warn_rejected()
+            if state.sweep_stop_reason == "time_budget_exhausted":
+                state.noop_reason = "threshold sweep time budget spent before the first leaf"
+                logger.warning(
+                    "LCM threshold sweep spent its time budget before the first leaf: %.1fs (budget %.0fs); steps: %s",
+                    time.monotonic() - state.budget.t0,
+                    state.budget.hard,
+                    ", ".join(f"{step}={seconds:.1f}s" for step, seconds in state.sweep_step_seconds.items()),
+                )
+                if (not state.force_overflow and state.pre_leaf_condensation_passes == 0
+                        and state.budget.hung_route is None):  # #909: stored condensation is progress
+                    self._start_sweep_budget_hold()
+            self._refresh_raw_backlog_debt(
+                state.working_messages,
+                observed_tokens=state.observed_prompt_tokens,
+            )
+            if state.force_overflow and len(messages) >= 1:
+                leading_anchor_count = self._leading_anchor_count(state.working_messages)
+                compressed = self._assemble_overflow_recovery_context(
+                    state.working_messages[0] if leading_anchor_count else None,
+                    state.working_messages[leading_anchor_count:],
+                    assembly_cap_override=state.recovery_assembly_cap,
+                    **(
+                        {"retained_user_message": state.working_messages[1]}
+                        if leading_anchor_count == 2
+                        else {}
+                    ),
+                )
+                return "return", self._finalize_forced_overflow_result(
+                    state.working_messages,
+                    compressed,
+                    assembly_cap_override=state.recovery_assembly_cap,
+                    ingest_cleanup_changed_active_context=state.ingest_cleanup_changed_active_context,
+                )
+            active_context_messages = self._drop_preexisting_generated_ignored_dependent_eof_replies(
+                state.working_messages,
+                state.preexisting_dependent_reply_records,
+            )
+            if state.dropped_replayed_scaffold_messages:
+                leading_anchor_count = self._leading_anchor_count(active_context_messages)
+                if state.resumed_ahead == 1 and leading_anchor_count == 1 and active_context_messages[1].get("role") == "user":
+                    leading_anchor_count = 2  # #457: attempt 1's retained anchor, kept, goes back ahead of its summary
+                anchor_leading_count = self._leading_anchor_count(state.anchor_source_messages)
+                self._pending_context_anchor_messages = state.anchor_source_messages[anchor_leading_count:]
+                try:
+                    sanitized_messages = self._assemble_context(
+                        active_context_messages[0] if leading_anchor_count else None,
+                        active_context_messages[leading_anchor_count:],
+                        assembly_cap_override=state.recovery_assembly_cap,
+                        **(
+                            {"retained_user_message": active_context_messages[1]}
+                            if leading_anchor_count == 2
+                            else {}
+                        ),
+                    )
+                finally:
+                    self._pending_context_anchor_messages = None
+            else:
+                sanitized_messages = self._sanitize_active_context_messages(
+                    active_context_messages,
+                    insert_missing_tool_stubs=False,
+                )
+            if sanitized_messages != state.working_messages or state.ingest_cleanup_changed_active_context:
+                # _ingest_messages() already advanced the cursor to the original
+                # active-context length. If the host continues from a sanitized
+                # or reassembled context, keeping the old cursor could make the
+                # next appended messages look already ingested. This applies to
+                # content-only cleanup as well as dropped-message cleanup.
+                self._ingest_cursor = len(sanitized_messages)
+                # A resumed committed prefix returns that compaction's output.
+                self._last_compression_status = "compacted" if state.resumed_prefix else "sanitized"
+                if state.unattributed_leaf_refused:  # #1147: the refusal reason stays visible
+                    self._last_compression_noop_reason = state.noop_reason
+                    self._note_fresh_tail_pressure_relieved()
+                elif state.noop_reason.startswith(_RETAINED_NOOP_REASON):  # #1162: no leaf; the reason stays visible
+                    self._last_compression_noop_reason = state.noop_reason
+                    logger.info("LCM compression no-op: %s", state.noop_reason)
+                else:
+                    self._last_compression_noop_reason = ""
+                    self._note_fresh_tail_pressure_relieved()
+            else:
+                if state.dropped_replayed_scaffold_messages:
+                    # The active context changed even though no new leaf node was
+                    # written. Keep the cursor aligned with the returned context
+                    # so the next appended turn is ingested instead of skipped.
+                    self._ingest_cursor = len(sanitized_messages)
+                self._last_compression_status = "noop"
+                self._last_compression_noop_reason = state.noop_reason
+                hidden_label = self._hidden_backlog_label()
+                logger.info("LCM compression no-op: %s%s", state.noop_reason,
+                            f", hidden_rows={hidden_label}" if hidden_label is not None else "")
+            if state.threshold_full_sweep_active:
+                duration_ms = (time.perf_counter() - state._compress_started) * 1000.0
+                # #605: a stored pre-leaf condensation is progress, so its stop is a partial one, not a no-op.
+                condensed_then_stopped = (
+                    state.pre_leaf_condensation_passes > 0
+                    and state.sweep_stop_reason in _THRESHOLD_FULL_SWEEP_PARTIAL_STOP_REASONS
+                )
+                self._last_threshold_full_sweep = {
+                    **self._last_threshold_full_sweep,
+                    "status": "partial" if condensed_then_stopped else "noop",
+                    "duration_ms": round(duration_ms, 3),
+                    "stop_reason": state.sweep_stop_reason or state.noop_reason,
+                    "budget_exhausted": state.sweep_stop_reason
+                    in {"pass_budget_exhausted", "time_budget_exhausted"},
+                    **self._hidden_backlog_status(),
+                }
+            self._write_generated_ignored_placeholder_hash_counts(
+                self._generated_placeholder_digest_budget_for_active_replay(sanitized_messages)
+            )
+            self._write_generated_ignored_placeholder_hash_ordinals(
+                self._generated_placeholder_digest_ordinals_for_active_replay(sanitized_messages)
+            )
+            return "return", sanitized_messages
+        return "next", None
+
+
     def _condense_after_leaves(
         self, state: _CompressionState, focus_topic: Optional[str], warn_rejected: Callable[[], None],
     ) -> tuple[Literal["next", "return"], Optional[List[Dict[str, Any]]]]:
@@ -3057,122 +3185,29 @@ class CompactionMixin:
         sweep_raw_drained = state.sweep_raw_drained
         noop_reason = state.noop_reason
 
-        if not leaf_compacted_this_turn:
-            if pre_leaf_condensation_reason == "summary_result_rejected":
-                warn_rejected()
-            if sweep_stop_reason == "time_budget_exhausted":
-                noop_reason = "threshold sweep time budget spent before the first leaf"
-                logger.warning(
-                    "LCM threshold sweep spent its time budget before the first leaf: %.1fs (budget %.0fs); steps: %s",
-                    time.monotonic() - budget.t0,
-                    budget.hard,
-                    ", ".join(f"{step}={seconds:.1f}s" for step, seconds in sweep_step_seconds.items()),
-                )
-                if (not force_overflow and pre_leaf_condensation_passes == 0
-                        and budget.hung_route is None):  # #909: stored condensation is progress
-                    self._start_sweep_budget_hold()
-            self._refresh_raw_backlog_debt(
-                working_messages,
-                observed_tokens=observed_prompt_tokens,
-            )
-            if force_overflow and len(messages) >= 1:
-                leading_anchor_count = self._leading_anchor_count(working_messages)
-                compressed = self._assemble_overflow_recovery_context(
-                    working_messages[0] if leading_anchor_count else None,
-                    working_messages[leading_anchor_count:],
-                    assembly_cap_override=recovery_assembly_cap,
-                    **(
-                        {"retained_user_message": working_messages[1]}
-                        if leading_anchor_count == 2
-                        else {}
-                    ),
-                )
-                return self._finalize_forced_overflow_result(
-                    working_messages,
-                    compressed,
-                    assembly_cap_override=recovery_assembly_cap,
-                    ingest_cleanup_changed_active_context=ingest_cleanup_changed_active_context,
-                )
-            active_context_messages = self._drop_preexisting_generated_ignored_dependent_eof_replies(
-                working_messages,
-                preexisting_dependent_reply_records,
-            )
-            if dropped_replayed_scaffold_messages:
-                leading_anchor_count = self._leading_anchor_count(active_context_messages)
-                if resumed_ahead == 1 and leading_anchor_count == 1 and active_context_messages[1].get("role") == "user":
-                    leading_anchor_count = 2  # #457: attempt 1's retained anchor, kept, goes back ahead of its summary
-                anchor_leading_count = self._leading_anchor_count(anchor_source_messages)
-                self._pending_context_anchor_messages = anchor_source_messages[anchor_leading_count:]
-                try:
-                    sanitized_messages = self._assemble_context(
-                        active_context_messages[0] if leading_anchor_count else None,
-                        active_context_messages[leading_anchor_count:],
-                        assembly_cap_override=recovery_assembly_cap,
-                        **(
-                            {"retained_user_message": active_context_messages[1]}
-                            if leading_anchor_count == 2
-                            else {}
-                        ),
-                    )
-                finally:
-                    self._pending_context_anchor_messages = None
-            else:
-                sanitized_messages = self._sanitize_active_context_messages(
-                    active_context_messages,
-                    insert_missing_tool_stubs=False,
-                )
-            if sanitized_messages != working_messages or ingest_cleanup_changed_active_context:
-                # _ingest_messages() already advanced the cursor to the original
-                # active-context length. If the host continues from a sanitized
-                # or reassembled context, keeping the old cursor could make the
-                # next appended messages look already ingested. This applies to
-                # content-only cleanup as well as dropped-message cleanup.
-                self._ingest_cursor = len(sanitized_messages)
-                # A resumed committed prefix returns that compaction's output.
-                self._last_compression_status = "compacted" if resumed_prefix else "sanitized"
-                if unattributed_leaf_refused:  # #1147: the refusal reason stays visible
-                    self._last_compression_noop_reason = noop_reason
-                    self._note_fresh_tail_pressure_relieved()
-                elif noop_reason.startswith(_RETAINED_NOOP_REASON):  # #1162: no leaf; the reason stays visible
-                    self._last_compression_noop_reason = noop_reason
-                    logger.info("LCM compression no-op: %s", noop_reason)
-                else:
-                    self._last_compression_noop_reason = ""
-                    self._note_fresh_tail_pressure_relieved()
-            else:
-                if dropped_replayed_scaffold_messages:
-                    # The active context changed even though no new leaf node was
-                    # written. Keep the cursor aligned with the returned context
-                    # so the next appended turn is ingested instead of skipped.
-                    self._ingest_cursor = len(sanitized_messages)
-                self._last_compression_status = "noop"
-                self._last_compression_noop_reason = noop_reason
-                hidden_label = self._hidden_backlog_label()
-                logger.info("LCM compression no-op: %s%s", noop_reason,
-                            f", hidden_rows={hidden_label}" if hidden_label is not None else "")
-            if threshold_full_sweep_active:
-                duration_ms = (time.perf_counter() - _compress_started) * 1000.0
-                # #605: a stored pre-leaf condensation is progress, so its stop is a partial one, not a no-op.
-                condensed_then_stopped = (
-                    pre_leaf_condensation_passes > 0
-                    and sweep_stop_reason in _THRESHOLD_FULL_SWEEP_PARTIAL_STOP_REASONS
-                )
-                self._last_threshold_full_sweep = {
-                    **self._last_threshold_full_sweep,
-                    "status": "partial" if condensed_then_stopped else "noop",
-                    "duration_ms": round(duration_ms, 3),
-                    "stop_reason": sweep_stop_reason or noop_reason,
-                    "budget_exhausted": sweep_stop_reason
-                    in {"pass_budget_exhausted", "time_budget_exhausted"},
-                    **self._hidden_backlog_status(),
-                }
-            self._write_generated_ignored_placeholder_hash_counts(
-                self._generated_placeholder_digest_budget_for_active_replay(sanitized_messages)
-            )
-            self._write_generated_ignored_placeholder_hash_ordinals(
-                self._generated_placeholder_digest_ordinals_for_active_replay(sanitized_messages)
-            )
-            return sanitized_messages
+        state.leaf_compacted_this_turn = leaf_compacted_this_turn
+        state.pre_leaf_condensation_reason = pre_leaf_condensation_reason
+        state.sweep_stop_reason = sweep_stop_reason
+        state.noop_reason = noop_reason
+        state.budget = budget
+        state.sweep_step_seconds = sweep_step_seconds
+        state.force_overflow = force_overflow
+        state.pre_leaf_condensation_passes = pre_leaf_condensation_passes
+        state.working_messages = working_messages
+        state.observed_prompt_tokens = observed_prompt_tokens
+        state.recovery_assembly_cap = recovery_assembly_cap
+        state.ingest_cleanup_changed_active_context = ingest_cleanup_changed_active_context
+        state.preexisting_dependent_reply_records = preexisting_dependent_reply_records
+        state.dropped_replayed_scaffold_messages = dropped_replayed_scaffold_messages
+        state.resumed_ahead = resumed_ahead
+        state.anchor_source_messages = anchor_source_messages
+        state.resumed_prefix = resumed_prefix
+        state.unattributed_leaf_refused = unattributed_leaf_refused
+        state.threshold_full_sweep_active = threshold_full_sweep_active
+        state._compress_started = _compress_started
+        transfer, returned = self._finish_without_leaf(state, messages, warn_rejected)
+        if transfer == "return":
+            return returned
 
         state._compress_started = _compress_started
         state.anchor_source_messages = anchor_source_messages
