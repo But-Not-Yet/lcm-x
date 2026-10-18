@@ -57,10 +57,12 @@ jobs:
       # Explicit opt-in cells: retain diagnostics separately from the existing gate inputs.
       - name: Default-window R1 in-process (report-only)
         continue-on-error: ${{ env.DEFAULT_WINDOW_REPORT_ONLY == 'true' }}
+        timeout-minutes: 30  # a hang here must not starve the gate step below
         run: python bench/instruments/reliability/run_matrix.py --hosts-file "$RUNNER_TEMP/hosts.json" --hosts "${{ matrix.host }}" --plugin-ref HEAD --cells 'default-window/*' --jobs 4 --out "$OUT/default-window-r1"
 
       - name: Default-window R2 acp-process (report-only)
         continue-on-error: ${{ env.DEFAULT_WINDOW_REPORT_ONLY == 'true' }}
+        timeout-minutes: 30  # a hang here must not starve the gate step below
         run: python bench/instruments/reliability/run_matrix.py --transport acp-process --hosts-file "$RUNNER_TEMP/hosts.json" --hosts "${{ matrix.host }}" --plugin-ref HEAD --cells 'default-window/*' --jobs 4 --out "$OUT/default-window-r2"
 
       - name: Job summary
