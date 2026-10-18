@@ -4355,21 +4355,35 @@ def _chunk_gapfill_rows(conn, identity_hash, bounds, policy, limit, *, record_pr
     low, high = bounds
     scan_key = f"chunk_gapfill_scan:{identity_hash}"
     saved = conn.execute("SELECT value FROM metadata WHERE key = ?", (scan_key,)).fetchone()
-    scan = json.loads(saved[0]) if saved else {}
+    try:
+        scan = json.loads(saved[0]) if saved else {}
+        valid = (
+            isinstance(scan, dict)
+            and type(scan.get("revision")) is int and type(scan.get("high")) is int
+            and isinstance(scan.get("policy"), str)
+            and ("pending" not in scan or (isinstance(scan["pending"], list)
+                 and all(type(i) is int for i in scan["pending"])))
+            and ("ceiling" not in scan or type(scan["ceiling"]) is int)
+        )
+        if not valid:
+            scan = {}
+    except Exception:
+        scan = {}  # Unusable progress metadata requires the full gap revalidation.
     if scan.get("revision") != CHUNK_POLICY_REVISION or scan.get("policy") != policy:
         scan = {}
     pending = []
     ceiling = high + 1
     if "pending" in scan and scan["high"] <= high:
         ids = [i for i in scan["pending"] if i >= low]
-        if ids:
-            pending = conn.execute(
+        for start in range(0, len(ids), 500):
+            batch = ids[start:start + 500]
+            pending.extend(conn.execute(
                 "SELECT store_id, role, content FROM messages AS p "
-                f"WHERE store_id IN ({','.join('?' for _ in ids)}) "
+                f"WHERE store_id IN ({','.join('?' for _ in batch)}) "
                 "AND NOT EXISTS (SELECT 1 FROM lcm_chunk_meta AS c "
                 "WHERE c.store_id = p.store_id AND c.identity_hash = ?)",
-                (*ids, identity_hash),
-            ).fetchall()
+                (*batch, identity_hash),
+            ).fetchall())
         low = max(low, scan["high"] + 1)
     elif scan.get("high") == high:
         # Only our own scan can certify a zero-chunk prefix. Older writers can
