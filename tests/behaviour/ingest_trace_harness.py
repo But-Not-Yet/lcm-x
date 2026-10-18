@@ -141,6 +141,8 @@ SCENARIOS = (
     Scenario("uid-bindings-new", "W1", shape="uid", stored=0),
     Scenario("uid-bindings-replay", "P1/W1", shape="uid", warm=True),
     Scenario("uid-bindings-new-occurrence", "P1/W1", shape="uid", warm=True, variant="new-stamp"),
+    Scenario("row-filter-ignored-append-error", "F1/W1", shape="ignored", variant="changed", fault="append"),
+    Scenario("row-filter-generated-append-error", "F1/W1", shape="quarantine", variant="generated-append", fault="append"),
 )
 
 
@@ -608,6 +610,14 @@ def prepare(engine: Any, case: Scenario, root: Path, engines: ExitStack) -> tupl
             engine._generated_ignored_active_replay_placeholder_message_ids.add(id(incoming[0]))
     if case.shape == "uid" and not case.stored:
         incoming[0]["message_uid"] = "host-uid-new"
+    if case.variant == "generated-append":
+        incoming = [{**original[0], "timestamp": 999.}, {"role": "user", "content": "after ignored quarantine"}]
+        incoming[0]["content"] = incoming[0]["content"].replace(
+            "LCM sensitive redaction:", "LCM active replay placeholder: assistant output quarantined;")
+        digest = engine._active_replay_placeholder_digest(incoming[0]["content"])
+        assert digest
+        engine._remember_generated_ignored_placeholder_hash(digest)
+        incoming.insert(0, {"role": "user", "content": "new row before generated placeholder"})
     if case.variant == "no-session":
         engine._session_id = ""
     return engine, incoming
