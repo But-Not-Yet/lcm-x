@@ -144,6 +144,17 @@ class _LeafState:
     candidate_start: int = 0
     premapped_store_ids: Optional[Dict[int, int]] = None
 
+    summary_input_chunk: List[Dict[str, Any]] = field(default_factory=list)
+    selected_raw_chunk: List[Dict[str, Any]] = field(default_factory=list)
+    prepared: Any = None
+    sources: Dict[int, Dict[str, Any]] = field(default_factory=dict)
+    anchor_claims: Dict[int, List[int]] = field(default_factory=dict)
+    compacted_chunk: List[Dict[str, Any]] = field(default_factory=list)
+    source_tokens: int = 0
+    summary_text: str = ""
+    level: int = 0
+    rescue_attempts: int = 0
+
 
 def select_oldest_leaf_chunk(
     candidate_raw: List[Dict[str, Any]],
@@ -2562,6 +2573,108 @@ class CompactionMixin:
 
         return compressed
 
+    def _summarize_selected_leaf(
+        self, state: _CompressionState, leaf: _LeafState,
+        sweep_step_done: Callable[[str, float], float],
+    ) -> tuple[Literal["next", "break", "continue", "return"], Optional[List[Dict[str, Any]]]]:
+        """Summarize this selected leaf, preserving its call-scoped rescue hook."""
+        sources, anchor_claims = leaf.sources, leaf.anchor_claims
+        if not leaf.summary_input_chunk:
+            leaf.compacted_chunk = leaf.selected_raw_chunk
+            leaf.source_tokens = count_messages_tokens(leaf.selected_raw_chunk)
+            leaf.summary_text = (
+                "Filtered replies derived from ignored messages.\n"
+                "[Expand for details: ignored-dependent reply]"
+            )
+            leaf.level = 0
+            leaf.rescue_attempts = 0
+        else:
+            if state.no_call_only:
+                serialized, clipped = self._serialize_messages_with_clip(leaf.summary_input_chunk)
+                if self._summary_route_stop_applies(state.force_overflow, None if clipped else serialized):
+                    state.sweep_stop_reason = "summary_route_unavailable"
+                    return "break", None
+            # Pre-compaction extraction: best-effort, never blocks compaction.
+            # Use the same dependency-filtered view as summarization so ignored
+            # turns cannot leak through derived assistant/tool replies.
+            if self._config.extraction_enabled:
+                # #1122: reserve the next admit's floor/estimate and timeout-handling overhead.
+                est = state.budget.estimate(self._primary_summary_route())
+                extraction_deadline = (
+                    state.budget.usable_deadline
+                    - max(est, _THRESHOLD_FULL_SWEEP_MIN_CALL_SECONDS)
+                    - _EXTRACTION_HEADROOM_SECONDS
+                )
+                if state.budget.progress and state.budget.soft > 0:
+                    extraction_deadline = min(
+                        extraction_deadline, state.budget.t0 + state.budget.soft - est - _EXTRACTION_HEADROOM_SECONDS
+                    )
+                extraction_deadline = min(extraction_deadline, state.sweep_deadline)
+                span_started = time.monotonic()
+                try:
+                    self._run_pre_compaction_extraction(leaf.summary_input_chunk, deadline=extraction_deadline)
+                finally:
+                    self._pre_leaf_span("extraction", span_started)
+            if bool(
+                getattr(
+                    self._config,
+                    "assertion_extraction_enabled",
+                    False,
+                )
+            ):
+                self._schedule_pre_compaction_assertions(leaf.summary_input_chunk)
+
+            self._end_pre_leaf_phase(state.budget, "first_leaf")
+            step_started = time.monotonic() if state.threshold_full_sweep_active else 0.0
+            self._last_leaf_level_3_verbatim = False
+            self._last_leaf_content_filter_error = False
+            try:
+                full_map = self._compress_run.store_ids_by_message_id  # #1147 r1: use the full pass lineage.
+                self._leaf_rescue_admit = lambda chunk: any(anchor_claims.get(id(m)) for m in chunk) or bool(
+                    self._get_store_ids_for_messages([sources.get(id(m), m) for m in chunk], full_map))
+                summary_kwargs: dict[str, Any] = {"focus_topic": state.focus_topic}
+                if state.threshold_full_sweep_active:
+                    summary_kwargs["deadline"] = state.sweep_deadline
+                (
+                    leaf.compacted_chunk,
+                    leaf.source_tokens,
+                    leaf.summary_text,
+                    leaf.level,
+                    leaf.rescue_attempts,
+                ) = (self._summarize_leaf_chunk_with_rescue if leaf.prepared is None
+                     else self._prepared_leaf_summary(leaf.prepared))(
+                    leaf.summary_input_chunk,
+                    **summary_kwargs,
+                )
+            except Exception as exc:
+                if isinstance(exc, SweepBudgetExhausted):
+                    state.sweep_stop_reason = exc.reason  # #608: a stop, with or without a leaf (#605: or soft; any path)
+                    return "break", None
+                if isinstance(exc, UnattributedRescueRefused):  # #1147 r1: a safe no-op, before another call.
+                    self._warn_unattributed_leaf(leaf.summary_input_chunk)
+                    state.noop_reason, state.unattributed_leaf_refused = "selected leaf chunk lacks raw store lineage", True
+                    return "break", None
+                if state.threshold_full_sweep_active and state.leaf_compacted_this_turn:
+                    state.sweep_stop_reason = "leaf_summary_error"
+                    logger.warning(
+                        "LCM threshold full sweep stopped after %d persisted leaf pass(es): %s",
+                        state.leaf_passes,
+                        exc,
+                    )
+                    return "break", None
+                raise
+            finally:
+                self._leaf_rescue_admit = None  # #1147 r1: the rescue hook lives for this call only
+                if state.threshold_full_sweep_active:
+                    sweep_step_done("summariser", step_started)
+            # #652: no truncated level 3 leaf while the fit can rescue; the backlog stays. A level 3 that
+            # is the whole source (it already fits the truncation budget) loses nothing and is written.
+            if leaf.level == 3 and self._fit_can_rescue(state.force_overflow) and not (
+                    self._last_leaf_level_3_verbatim or self._last_leaf_content_filter_error):
+                state.sweep_stop_reason = "summary_result_rejected"
+                return "break", None
+        return "next", None
+
     def _compress_impl(self, messages: List[Dict[str, Any]],
                        current_tokens: int = None,
                        focus_topic: Optional[str] = None,
@@ -2877,100 +2990,32 @@ class CompactionMixin:
                     dependent_reply_message_ids)[3:]) != (list(prepared.covered_store_ids),) * 2):
                 self._reject_prepared_chain(prepared, "host_unit_split")  # the pass reruns on its own chunk
                 continue
-            if not summary_input_chunk:
-                compacted_chunk = selected_raw_chunk
-                source_tokens = count_messages_tokens(selected_raw_chunk)
-                summary_text = (
-                    "Filtered replies derived from ignored messages.\n"
-                    "[Expand for details: ignored-dependent reply]"
-                )
-                _level = 0
-                _rescue_attempts = 0
-            else:
-                if no_call_only:
-                    serialized, clipped = self._serialize_messages_with_clip(summary_input_chunk)
-                    if self._summary_route_stop_applies(force_overflow, None if clipped else serialized):
-                        sweep_stop_reason = "summary_route_unavailable"
-                        break
-                # Pre-compaction extraction: best-effort, never blocks compaction.
-                # Use the same dependency-filtered view as summarization so ignored
-                # turns cannot leak through derived assistant/tool replies.
-                if self._config.extraction_enabled:
-                    # #1122: reserve the next admit's floor/estimate and timeout-handling overhead.
-                    est = budget.estimate(self._primary_summary_route())
-                    extraction_deadline = (
-                        budget.usable_deadline
-                        - max(est, _THRESHOLD_FULL_SWEEP_MIN_CALL_SECONDS)
-                        - _EXTRACTION_HEADROOM_SECONDS
-                    )
-                    if budget.progress and budget.soft > 0:
-                        extraction_deadline = min(
-                            extraction_deadline, budget.t0 + budget.soft - est - _EXTRACTION_HEADROOM_SECONDS
-                        )
-                    extraction_deadline = min(extraction_deadline, sweep_deadline)
-                    span_started = time.monotonic()
-                    try:
-                        self._run_pre_compaction_extraction(summary_input_chunk, deadline=extraction_deadline)
-                    finally:
-                        self._pre_leaf_span("extraction", span_started)
-                if bool(
-                    getattr(
-                        self._config,
-                        "assertion_extraction_enabled",
-                        False,
-                    )
-                ):
-                    self._schedule_pre_compaction_assertions(summary_input_chunk)
-
-                self._end_pre_leaf_phase(budget, "first_leaf")
-                step_started = time.monotonic() if threshold_full_sweep_active else 0.0
-                self._last_leaf_level_3_verbatim = False
-                self._last_leaf_content_filter_error = False
-                try:
-                    full_map = self._compress_run.store_ids_by_message_id  # #1147 r1: use the full pass lineage.
-                    self._leaf_rescue_admit = lambda chunk: any(anchor_claims.get(id(m)) for m in chunk) or bool(
-                        self._get_store_ids_for_messages([sources.get(id(m), m) for m in chunk], full_map))
-                    summary_kwargs: dict[str, Any] = {"focus_topic": focus_topic}
-                    if threshold_full_sweep_active:
-                        summary_kwargs["deadline"] = sweep_deadline
-                    (
-                        compacted_chunk,
-                        source_tokens,
-                        summary_text,
-                        _level,
-                        _rescue_attempts,
-                    ) = (self._summarize_leaf_chunk_with_rescue if prepared is None
-                         else self._prepared_leaf_summary(prepared))(
-                        summary_input_chunk,
-                        **summary_kwargs,
-                    )
-                except Exception as exc:
-                    if isinstance(exc, SweepBudgetExhausted):
-                        sweep_stop_reason = exc.reason  # #608: a stop, with or without a leaf (#605: or soft; any path)
-                        break
-                    if isinstance(exc, UnattributedRescueRefused):  # #1147 r1: a safe no-op, before another call.
-                        self._warn_unattributed_leaf(summary_input_chunk)
-                        noop_reason, unattributed_leaf_refused = "selected leaf chunk lacks raw store lineage", True
-                        break
-                    if threshold_full_sweep_active and leaf_compacted_this_turn:
-                        sweep_stop_reason = "leaf_summary_error"
-                        logger.warning(
-                            "LCM threshold full sweep stopped after %d persisted leaf pass(es): %s",
-                            leaf_passes,
-                            exc,
-                        )
-                        break
-                    raise
-                finally:
-                    self._leaf_rescue_admit = None  # #1147 r1: the rescue hook lives for this call only
-                    if threshold_full_sweep_active:
-                        sweep_step_done("summariser", step_started)
-                # #652: no truncated level 3 leaf while the fit can rescue; the backlog stays. A level 3 that
-                # is the whole source (it already fits the truncation budget) loses nothing and is written.
-                if _level == 3 and self._fit_can_rescue(force_overflow) and not (
-                        self._last_leaf_level_3_verbatim or self._last_leaf_content_filter_error):
-                    sweep_stop_reason = "summary_result_rejected"
-                    break
+            state.focus_topic = focus_topic
+            state.leaf_compacted_this_turn = leaf_compacted_this_turn
+            state.leaf_passes = leaf_passes
+            state.noop_reason = noop_reason
+            state.sweep_stop_reason = sweep_stop_reason
+            state.unattributed_leaf_refused = unattributed_leaf_refused
+            leaf.summary_input_chunk = summary_input_chunk
+            leaf.selected_raw_chunk = selected_raw_chunk
+            leaf.prepared = prepared
+            leaf.sources = sources
+            leaf.anchor_claims = anchor_claims
+            action, result = self._summarize_selected_leaf(state, leaf, sweep_step_done)
+            sweep_stop_reason = state.sweep_stop_reason
+            noop_reason = state.noop_reason
+            unattributed_leaf_refused = state.unattributed_leaf_refused
+            if action == "break":
+                break
+            if action == "continue":
+                continue
+            if action == "return":
+                return result
+            compacted_chunk = leaf.compacted_chunk
+            source_tokens = leaf.source_tokens
+            summary_text = leaf.summary_text
+            _level = leaf.level
+            _rescue_attempts = leaf.rescue_attempts
             compacted_chunk, compacted_positions, source_lookup_chunk, source_store_ids, consumed_store_ids = (
                 self._leaf_consumption(selected_raw_chunk, compacted_chunk, sources, anchored_input, anchor_claims,
                                        dependent_reply_message_ids))
