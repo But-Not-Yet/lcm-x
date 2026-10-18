@@ -218,6 +218,7 @@ class IdentityAnchorMixin:
             str(self._conversation_id or ""), [str(self._session_id), *chain], sorted(wanted)
         ) if wanted else []
         self._load_host_rewrite_overrides(rows)
+        plan["stamped_users"] = {int(row["store_id"]) for row in rows if row.get("role") == "user"}
         by_stamp: dict[float, list] = defaultdict(list)
         for row in rows:
             by_stamp[float(row["observed_at"])].append((row, self._stored_row_forms(row)))
@@ -304,8 +305,19 @@ class IdentityAnchorMixin:
                     if k in plan["replayed"] or int(row["store_id"]) in consumed:
                         break
                     self._identity_anchor_take(k, [row], consumed, matched, plan)
+        for idx in range(cursor, n):  # a cold restart can have no positional prefix to audit
+            if idx in plan["replayed"] or idx not in stamps or messages[idx].get("role") != "user":
+                continue
+            copies = [row for row, forms in by_stamp.get(stamps.get(idx - 1), ())
+                      if int(row["store_id"]) not in consumed and identity_at(idx) in forms]
+            carried = self._identity_anchor_carried_stamp(messages, idx, stamps, copies, matched.get(idx - 1, ()), chain,
+                                                          distinct=_distinct_from_predecessor(identity_at, idx))
+            carried = self._identity_anchor_durable_stamp(carried, matched.get(idx - 1, ()), stamps.get(idx - 1))
+            if carried:
+                self._identity_anchor_take(idx, carried, consumed, matched, plan)
         if start < cursor:
-            self._identity_anchor_audit(messages, identity_messages, cursor, start, stamps, identity_at, consumed, plan)
+            self._identity_anchor_audit(messages, identity_messages, cursor, start, stamps, identity_at, consumed, plan,
+                                        matched)
         self._identity_anchor_tool_segments(messages, plan["cursor"], plan["replayed"], matched, plan.get("positional", ()))
         for idx in list(plan["remainders"]):
             if idx in plan["replayed"]:
@@ -323,7 +335,8 @@ class IdentityAnchorMixin:
         plan["matched"] = {**plan.get("matched", {}), **matched}  # read only by the v0.26.0 host-uid shadow
         return plan
 
-    def _identity_anchor_audit(self, messages, identity_messages, cursor, start, stamps, identity_at, consumed, plan) -> None:
+    def _identity_anchor_audit(self, messages, identity_messages, cursor, start, stamps, identity_at, consumed, plan,
+                               matched) -> None:
         """Rows in ``[start, cursor)`` of a list the host changed before the cursor: a stamped host row,
         or an unstamped user row the host inserted there (#633: a /steer row), that
         no stored occurrence explains (key, witness, alias, or a stored copy of its content -- up to
@@ -334,7 +347,8 @@ class IdentityAnchorMixin:
 
         span = max(64, 2 * (cursor - start))
         held: dict = defaultdict(list)
-        for session in [str(self._session_id), *self._identity_anchor_chain()]:
+        chain = self._identity_anchor_chain()
+        for session in [str(self._session_id), *chain]:
             for row in self._store.get_session_tail(session, limit=span):
                 if int(row["store_id"]) not in consumed:
                     held[_proof_user_identity(self._message_replay_identity(row, stored_row=True))].append(row)
@@ -390,10 +404,16 @@ class IdentityAnchorMixin:
                 plan.setdefault("matched", {})[idx] = [ws]  # host-uid shadow only
                 plan.setdefault("ws", []).append((ws, identity_messages[idx]))
                 continue
+            previous = matched.get(idx - 1, plan.get("matched", {}).get(idx - 1, ()))
+            carried = self._identity_anchor_carried_stamp(
+                messages, idx, stamps, copies, previous, chain, distinct=_distinct_from_predecessor(identity_at, idx))
+            carried = self._identity_anchor_durable_stamp(carried, previous, stamps.get(idx - 1))
             # #1328: equal content at a different known stamp is a different occurrence.
             # A NULL copy needs independent occurrence proof before consumption or unique backfill.
             copies = [row for row in copies if row.get("observed_at") == stamps[idx]
                       or row.get("observed_at") is None and bound_null(idx, row)]
+            if not copies:
+                copies = carried
             if copies:
                 consumed.add(int(copies[0]["store_id"]))
                 plan.setdefault("matched", {})[idx] = [copies[0]]  # host-uid shadow only
@@ -426,6 +446,83 @@ class IdentityAnchorMixin:
             plan["replayed"].update(plan["positional"])
             logger.info("LCM identity-anchor: host changed its list before the cursor; %d unstored rows from %d: session=%s",
                         len(missed), min(missed), self._session_id)
+
+    @staticmethod
+    def _identity_anchor_carried_stamp(messages, idx, stamps, copies, previous, chain, *, distinct=False) -> list:
+        """#1501: exact adjacent occurrence proof for the host's carried predecessor stamp.
+
+        Candidates already have today's content identity, verified scope and single-consumption filter.
+        A tolerated copy keeps its stamp, so it cannot independently prove the next carried copy.
+        The host folds consecutive user content only: the predecessor and its match must be user rows,
+        the stamp must move forward, and an identical predecessor text gives no positional proof
+        (``distinct``: the caller compares both rows in the matching identity form).
+        """
+        if (idx < 1 or not distinct or not chain or messages[idx].get("message_uid") or messages[idx].get("role") != "user"
+                or len(previous) != 1 or stamps.get(idx - 1) is None or stamps.get(idx) is None
+                or stamps[idx] <= stamps[idx - 1] or messages[idx - 1].get("role") != "user"
+                or messages[idx - 1].get("content") == messages[idx].get("content")):
+            return []
+        prior = previous[0]
+        if prior.get("role") != "user" or prior.get("observed_at") != stamps[idx - 1]:
+            return []
+        return [row for row in copies if int(row["store_id"]) == int(prior["store_id"]) + 1
+                and row.get("observed_at") == stamps[idx - 1]]
+
+    def _identity_anchor_durable_stamp(self, rows, previous, stamp) -> list:
+        """#1501: the carried candidates whose own stored row holds ``stamp``, when the proven predecessor's
+        own stored row holds it too, with store-time positional-replacement provenance. A recorded
+        alternate stamp (``find_rows_by_observed_at``'s R5 projection) proves another occurrence, never
+        a carried stamp, on either row."""
+        if not rows or len(previous) != 1:
+            return []
+        prior = int(previous[0]["store_id"])
+        stored = self._store.get_batch(sorted({prior, *(int(row["store_id"]) for row in rows)}))
+        if prior not in stored or stored[prior].get("observed_at") != stamp:
+            return []
+        marked = {int(rel["store_id"]) for rel in self._store.get_message_relations(
+            [int(row["store_id"]) for row in rows], "carried_stamp")
+            if rel["related_store_id"] == prior and rel["observed_at"] == stamp}
+        return [row for row in rows if (stored.get(int(row["store_id"])) or {}).get("observed_at") == stamp
+                and int(row["store_id"]) in marked]
+
+    def _identity_anchor_mark_carried(self, messages, stored_at, plan) -> None:
+        """Record a new user row taking its absent predecessor's slot at that predecessor's stamp.
+
+        The preceding list row must still be the stored predecessor's predecessor, in this session
+        or its verified compression chain. Absence alone (trim, compaction, /new) is not proof.
+        Read actual stored stamps before R5 backfill: an R3 remainder's stamp is NULL. Only a
+        predecessor the prematch's stamp lookup returned can qualify, so other rows cost no read.
+        """
+        stamped_users = plan.get("stamped_users", ())
+        candidates = {idx: store_id for idx, store_id in stored_at.items()
+                      if idx > 0 and messages[idx].get("role") == "user" and not messages[idx].get("message_uid")
+                      and store_id - 1 in stamped_users}
+        if not candidates:
+            return
+        scope = [str(self._session_id), *self._identity_anchor_chain()]
+        stored = self._store.get_batch(sorted({sid for store_id in candidates.values() for sid in (store_id - 1, store_id)}))
+        stamps = [_normalize_observed_at(message.get("timestamp")) for message in messages]
+        identities = [self._message_replay_identity(message, strip_carrier=False) for message in messages]
+        groups = []
+        for idx, store_id in candidates.items():
+            row, prior = stored.get(store_id) or {}, stored.get(store_id - 1) or {}
+            stamp = row.get("observed_at")
+            if (row.get("role") != "user" or stamp is None or prior.get("role") != "user"
+                    or prior.get("session_id") not in scope or prior.get("observed_at") != stamp):
+                continue
+            if any(at == stamp and self._anchor_row_admits(identity, prior)
+                   for at, identity in zip(stamps, identities)):
+                continue
+            predecessors = [r for session in scope
+                            for r in self._store.get_session_rows_through(session, store_id - 2, 1)]
+            before = max(predecessors, key=lambda r: int(r["store_id"]), default=None)
+            if (before is None or before.get("observed_at") is None or stamps[idx - 1] != before.get("observed_at")
+                    or self._identity_is_lcm_scaffold(messages[idx - 1])
+                    or not self._anchor_row_admits(identities[idx - 1], before)):
+                continue
+            groups.append([(store_id, "carried_stamp", store_id - 1, None, stamp)])
+        if groups:
+            self._store.add_message_relations(groups)
 
     def _identity_anchor_inserted(self, messages, start: int, cursor: int) -> set:
         """#633: indexes in ``[start, cursor)`` the host inserted into the last list LCM ingested (Hermes
@@ -1135,6 +1232,17 @@ def _composite_relation(group, stamp) -> list:
     """One composite relation group, keyed by the constituent whose host stamp the composite carries."""
     head = next((row for row in group if row.get("observed_at") == stamp), group[0])
     return [(int(head["store_id"]), "composite", int(row["store_id"]), ordinal, stamp) for ordinal, row in enumerate(group)]
+
+
+def _distinct_from_predecessor(identity_at, idx: int) -> bool:
+    """#1501: the view rows ``idx - 1`` and ``idx`` differ in the form occurrence matching compares
+    (edge whitespace stripped, structured content canonical); an unknown identity is never distinct."""
+    from .reconcile import _proof_user_identity
+
+    if idx < 1:
+        return False
+    previous, current = identity_at(idx - 1), identity_at(idx)
+    return previous is not None and current is not None and _proof_user_identity(previous) != _proof_user_identity(current)
 
 
 def _lossy(identity) -> bool:

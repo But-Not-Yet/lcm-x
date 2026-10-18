@@ -7237,8 +7237,12 @@ class LCMEngine(
         originals = [messages[idx] for idx, _msg in messages_to_store_with_index]
         self._watch_stored_user_rows(zip(originals, protected_messages, store_ids))
         if anchor_plan is not None:
+            stored_at = {idx: store_id for (idx, _msg), store_id in zip(messages_to_store_with_index, store_ids)}
+            try:  # #1501 provenance, read before the commit's R5 backfill; a miss leaves the duplicate fallback
+                self._identity_anchor_mark_carried(messages, stored_at, anchor_plan)
+            except Exception as exc:
+                logger.warning("LCM carried-stamp marker write failed (%s)", type(exc).__name__)
             try:
-                stored_at = {idx: store_id for (idx, _msg), store_id in zip(messages_to_store_with_index, store_ids)}
                 self._identity_anchor_commit(anchor_plan, {idx: stored_at[idx] for idx in anchor_remainders if idx in stored_at})
                 self._identity_anchor_remember([
                     (self._message_replay_identity(reconcile_messages[idx], strip_carrier=False), store_id, messages[idx])
@@ -8849,30 +8853,9 @@ class LCMEngine(
             and anchor_part is not None
             and count_messages_tokens(result) > assembly_cap + (kept_reply or {}).get("tokens", 0)
         ):
-            if any(_PRESERVED_OBJECTIVE_CONTEXT_PREFIX in (normalize_content_value(m.get("content")) or "")
-                   for m in result):
-                logger.warning(
-                    "LCM assembly: %d token(s) over the cap after sanitizing; dropping the preserved user "
-                    "objective from the active context as a last resort (the store keeps it)",
-                    count_messages_tokens(result) - assembly_cap - (kept_reply or {}).get("tokens", 0),
-                )
-            trimmed_result: list[Dict[str, Any]] = []
-            for msg in result:
-                content = normalize_content_value(msg.get("content")) or ""
-                if _PRESERVED_OBJECTIVE_CONTEXT_PREFIX not in content:
-                    trimmed_result.append(msg)
-                    continue
-                parts = [
-                    part for part in content.split("\n\n---\n\n")
-                    if not part.lstrip().startswith(_PRESERVED_OBJECTIVE_CONTEXT_PREFIX)
-                ]
-                if parts:
-                    trimmed = msg.copy()
-                    trimmed["content"] = "\n\n---\n\n".join(parts)
-                    trimmed_result.append(trimmed)
-                    generated_rows = [trimmed if row is msg else row
-                                      for row in generated_rows]
-            result = self._sanitize_active_context_messages(trimmed_result, generated_rows=generated_rows)
+            result, generated_rows = self._trim_preserved_objective_last_resort(
+                result, generated_rows, assembly_cap, kept_reply,
+            )
         if kept_reply is not None and (why := self._kept_reply_rejection(
                 result, kept_reply, kept_reply["objective"] and bool(anchor_candidates),
                 ([system_msg] if system_msg is not None else []) + ([retained_user_message] if retained_user_message
@@ -8885,21 +8868,9 @@ class LCMEngine(
             _stamp_generated_model_only(result, generated_rows)
             return result
 
-        existing_folded_lineage = self._load_folded_tail_lineage(result)
-        if (
-            folded_result_index is not None
-            and folded_original_tail is not None
-            and folded_result_index < len(result)
-        ):
-            if not self._write_folded_tail_lineage(
-                result[folded_result_index],
-                folded_source_store_id,
-            ):
-                result[folded_result_index] = folded_original_tail
-                result = self._sanitize_active_context_messages(result, generated_rows=generated_rows)
-                self._clear_folded_tail_lineage()
-        elif existing_folded_lineage is None:
-            self._clear_folded_tail_lineage()
+        result = self._persist_folded_lineage(
+            result, folded_result_index, folded_original_tail, folded_source_store_id, generated_rows,
+        )
 
         # Decide only after the final cleanup, including fold recovery. Trial
         # assemblies above use the same decision without publishing proof.
@@ -9124,6 +9095,55 @@ class LCMEngine(
                     })
                 tail_selected = tail_selected[1:]
         return carried_tail, tail_selected
+
+    def _trim_preserved_objective_last_resort(
+        self, result, generated_rows, assembly_cap, kept_reply,
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        if any(_PRESERVED_OBJECTIVE_CONTEXT_PREFIX in (normalize_content_value(m.get("content")) or "")
+               for m in result):
+            logger.warning(
+                "LCM assembly: %d token(s) over the cap after sanitizing; dropping the preserved user "
+                "objective from the active context as a last resort (the store keeps it)",
+                count_messages_tokens(result) - assembly_cap - (kept_reply or {}).get("tokens", 0),
+            )
+        trimmed_result: list[Dict[str, Any]] = []
+        for msg in result:
+            content = normalize_content_value(msg.get("content")) or ""
+            if _PRESERVED_OBJECTIVE_CONTEXT_PREFIX not in content:
+                trimmed_result.append(msg)
+                continue
+            parts = [
+                part for part in content.split("\n\n---\n\n")
+                if not part.lstrip().startswith(_PRESERVED_OBJECTIVE_CONTEXT_PREFIX)
+            ]
+            if parts:
+                trimmed = msg.copy()
+                trimmed["content"] = "\n\n---\n\n".join(parts)
+                trimmed_result.append(trimmed)
+                generated_rows = [trimmed if row is msg else row
+                                  for row in generated_rows]
+        result = self._sanitize_active_context_messages(trimmed_result, generated_rows=generated_rows)
+        return result, generated_rows
+
+    def _persist_folded_lineage(
+        self, result, folded_result_index, folded_original_tail, folded_source_store_id, generated_rows,
+    ) -> List[Dict[str, Any]]:
+        existing_folded_lineage = self._load_folded_tail_lineage(result)
+        if (
+            folded_result_index is not None
+            and folded_original_tail is not None
+            and folded_result_index < len(result)
+        ):
+            if not self._write_folded_tail_lineage(
+                result[folded_result_index],
+                folded_source_store_id,
+            ):
+                result[folded_result_index] = folded_original_tail
+                result = self._sanitize_active_context_messages(result, generated_rows=generated_rows)
+                self._clear_folded_tail_lineage()
+        elif existing_folded_lineage is None:
+            self._clear_folded_tail_lineage()
+        return result
 
     def _mint_assembled_engine_uids(self, result, candidates, summary_message, carried_tail, recall_row,
                                     context_row, tail_selected) -> None:
