@@ -228,6 +228,19 @@ def test_stamp_first_observed_after_override(tmp_path: Path) -> None:
         assert_copies(engine, text, 2)
 
 
+def test_recovery_alias_is_scoped_to_its_conversation(tmp_path: Path) -> None:
+    """The alias names one row in one conversation; another conversation's event at that stamp is its own."""
+    lineage(tmp_path)
+    with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
+        _, text = live_rewrite(engine)
+        assert [r["content"] for r in engine._store.find_rows_by_observed_at("conv", ["parent"], [30.])] == [text]
+        assert engine._store.find_rows_by_observed_at("other-conv", ["parent"], [30.]) == []
+    with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="other-conv") as engine:
+        engine.ingest([{**message(text, 30.), "platform_message_id": "other-event"}, message("reply", 32., "assistant")])
+        stored = [r for r in users(engine) if r["content"] == text]
+        assert sorted(r["conversation_id"] for r in stored) == ["conv", "other-conv"]
+
+
 @pytest.mark.parametrize("observe", [False, True], ids=["late-stamp", "observed-stamp"])
 @pytest.mark.parametrize("key", ["message_uid", "platform_message_id", "event_id"])
 def test_new_occurrence_key_on_reused_object_stores(tmp_path: Path, observe: bool, key: str) -> None:
