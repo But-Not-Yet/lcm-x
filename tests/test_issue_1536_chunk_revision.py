@@ -201,7 +201,7 @@ def test_exceptional_gap_scan_stays_flat_with_appends(
     connect = sqlite3.connect
 
     def traced(*args: Any, **kwargs: Any) -> sqlite3.Connection:
-        conn = connect(*args, **kwargs)
+        conn: sqlite3.Connection = connect(*args, **kwargs)
         conn.set_trace_callback(sql.append)
         return conn
 
