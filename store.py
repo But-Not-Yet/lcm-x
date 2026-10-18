@@ -1153,9 +1153,10 @@ class MessageStore:
                 f"SELECT {_MESSAGE_SELECT_COLUMNS} FROM messages WHERE conversation_id IN (?, '') AND observed_at IN ({marks})",
                 [_normalize_conversation_id_value(conversation_id), *chunk],
             ).fetchall()
-            aliased = self._conn.execute(
-                f"SELECT store_id, observed_at FROM message_relations WHERE kind = 'alt_stamp' AND observed_at IN ({marks})",
-                chunk,
+            aliased = self._conn.execute(  # an alias is scoped like the row it names: same conversation filter
+                "SELECT r.store_id, r.observed_at FROM message_relations r JOIN messages m ON m.store_id = r.store_id "
+                f"WHERE r.kind = 'alt_stamp' AND r.observed_at IN ({marks}) AND m.conversation_id IN (?, '')",
+                [*chunk, _normalize_conversation_id_value(conversation_id)],
             ).fetchall()
             for r in rows:
                 row = self._row_to_dict(r)
