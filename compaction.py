@@ -2884,6 +2884,45 @@ class CompactionMixin:
                 leaf.prepared, leaf.to_compact, state.prep_low_water = match
         return "next", None
 
+    def _prepare_leaf_input(
+        self, state: _CompressionState, leaf: _LeafState,
+        dependent_reply_message_ids: set[int], sweep_step_done: Callable[[str, float], float],
+    ) -> tuple[Literal["next", "break", "continue", "return"], Optional[List[Dict[str, Any]]]]:
+        """Build attributed summary input and reject a changed prepared chunk."""
+        leaf.selected_raw_chunk = leaf.to_compact
+        selected_input = [message for message in leaf.selected_raw_chunk if id(message) not in dependent_reply_message_ids]
+        self._store_complete_excluded, self._store_complete_cut, self._store_complete_blocked = [], False, None
+        self._store_complete_copy_exclusion_proofs = {}
+        step_started = time.monotonic() if state.threshold_full_sweep_active else 0.0
+        leaf.anchored_input = self._identity_anchor_summary_input(
+            selected_input, self._compress_run.store_ids_by_message_id, state.working_messages, leaf.selected_raw_chunk,
+            budget=max(1, int(self._config.leaf_chunk_tokens)), accounted_ids=leaf.publication_excluded_store_ids,
+            copy_lookup=leaf.copy_lookup[0] if leaf.copy_lookup else None,
+        )
+        if state.threshold_full_sweep_active and sweep_step_done("identity_anchor", step_started) >= state.sweep_deadline:
+            state.sweep_stop_reason = "time_budget_exhausted"
+            return "break", None
+        if leaf.anchored_input == []:  # #581: the oldest owned row above the frontier is a retained occurrence
+            blocked = self._store_complete_blocked  # #1162: name it
+            state.noop_reason = _RETAINED_NOOP_REASON + (
+                " (store_id=%d role=%s kind=%s)" % blocked[:3] if blocked else "")
+            return "break", None
+        leaf.publication_excluded_store_ids.extend(self._store_complete_excluded)
+        leaf_map = self._compress_run.store_ids_by_message_id or {}
+        if not any(claims for _message, claims in leaf.anchored_input or ()) and not any(
+            id(message) in leaf_map for message in leaf.selected_raw_chunk
+        ) and not self._get_store_ids_for_messages(leaf.selected_raw_chunk, leaf_map):
+            self._warn_unattributed_leaf(leaf.selected_raw_chunk)  # #1147 r1: refuse before the first call.
+            state.noop_reason, state.unattributed_leaf_refused = "selected leaf chunk lacks raw store lineage", True
+            return "break", None
+        leaf.summary_input_chunk, leaf.sources, leaf.anchor_claims = self._leaf_summary_input(leaf.anchored_input, selected_input)
+        if leaf.prepared is not None and (not leaf.summary_input_chunk or tuple(self._leaf_consumption(
+                leaf.selected_raw_chunk, leaf.summary_input_chunk, leaf.sources, leaf.anchored_input, leaf.anchor_claims,
+                dependent_reply_message_ids)[3:]) != (list(leaf.prepared.covered_store_ids),) * 2):
+            self._reject_prepared_chain(leaf.prepared, "host_unit_split")  # the pass reruns on its own chunk
+            return "continue", None
+        return "next", None
+
     def _compress_impl(self, messages: List[Dict[str, Any]],
                        current_tokens: int = None,
                        focus_topic: Optional[str] = None,
@@ -3011,7 +3050,6 @@ class CompactionMixin:
             leading_anchor_count = leaf.leading_anchor_count
             publication_excluded_store_ids = leaf.publication_excluded_store_ids
             filter_exclusion_proofs = leaf.filter_exclusion_proofs
-            copy_lookup = leaf.copy_lookup
 
             action, result = self._filter_leaf_backlog(
                 state, leaf, dependent_reply_message_ids, sweep_step_done,
@@ -3049,41 +3087,24 @@ class CompactionMixin:
                 continue
             if action == "return":
                 return result
-            to_compact = leaf.to_compact
             prepared = leaf.prepared
 
-            selected_raw_chunk = to_compact
-            selected_input = [message for message in selected_raw_chunk if id(message) not in dependent_reply_message_ids]
-            self._store_complete_excluded, self._store_complete_cut, self._store_complete_blocked = [], False, None
-            self._store_complete_copy_exclusion_proofs = {}
-            step_started = time.monotonic() if threshold_full_sweep_active else 0.0
-            anchored_input = self._identity_anchor_summary_input(
-                selected_input, self._compress_run.store_ids_by_message_id, working_messages, selected_raw_chunk,
-                budget=max(1, int(self._config.leaf_chunk_tokens)), accounted_ids=publication_excluded_store_ids,
-                copy_lookup=copy_lookup[0] if copy_lookup else None,
-            )
-            if threshold_full_sweep_active and sweep_step_done("identity_anchor", step_started) >= sweep_deadline:
-                sweep_stop_reason = "time_budget_exhausted"
+            state.unattributed_leaf_refused = unattributed_leaf_refused
+            action, result = self._prepare_leaf_input(state, leaf, dependent_reply_message_ids, sweep_step_done)
+            sweep_stop_reason = state.sweep_stop_reason
+            noop_reason = state.noop_reason
+            unattributed_leaf_refused = state.unattributed_leaf_refused
+            if action == "break":
                 break
-            if anchored_input == []:  # #581: the oldest owned row above the frontier is a retained occurrence
-                blocked = self._store_complete_blocked  # #1162: name it
-                noop_reason = _RETAINED_NOOP_REASON + (
-                    " (store_id=%d role=%s kind=%s)" % blocked[:3] if blocked else "")
-                break
-            publication_excluded_store_ids.extend(self._store_complete_excluded)
-            leaf_map = self._compress_run.store_ids_by_message_id or {}
-            if not any(claims for _message, claims in anchored_input or ()) and not any(
-                id(message) in leaf_map for message in selected_raw_chunk
-            ) and not self._get_store_ids_for_messages(selected_raw_chunk, leaf_map):
-                self._warn_unattributed_leaf(selected_raw_chunk)  # #1147 r1: refuse before the first call.
-                noop_reason, unattributed_leaf_refused = "selected leaf chunk lacks raw store lineage", True
-                break
-            summary_input_chunk, sources, anchor_claims = self._leaf_summary_input(anchored_input, selected_input)
-            if prepared is not None and (not summary_input_chunk or tuple(self._leaf_consumption(
-                    selected_raw_chunk, summary_input_chunk, sources, anchored_input, anchor_claims,
-                    dependent_reply_message_ids)[3:]) != (list(prepared.covered_store_ids),) * 2):
-                self._reject_prepared_chain(prepared, "host_unit_split")  # the pass reruns on its own chunk
+            if action == "continue":
                 continue
+            if action == "return":
+                return result
+            selected_raw_chunk = leaf.selected_raw_chunk
+            anchored_input = leaf.anchored_input
+            summary_input_chunk = leaf.summary_input_chunk
+            sources = leaf.sources
+            anchor_claims = leaf.anchor_claims
             state.focus_topic = focus_topic
             state.leaf_compacted_this_turn = leaf_compacted_this_turn
             state.leaf_passes = leaf_passes
