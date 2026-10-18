@@ -21,11 +21,15 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.select.outputs.matrix }}
+      sha: ${{ steps.pin.outputs.sha }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
+      - name: Pin the requested ref to one commit for every host
+        id: pin
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Select pinned hosts at the product ref
         id: select
         env:
@@ -63,7 +67,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.hosts.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
 
