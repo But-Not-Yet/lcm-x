@@ -138,3 +138,32 @@ def test_null_predecessor_requires_canonical_binding(tmp_path: Path) -> None:
         assert plan["cursor"] == 2
         assert len(plan["backfill"]) == 1  # only the independently bound NULL predecessor
         assert len({r["store_id"] for group in plan["matched"].values() for r in group}) == 2
+
+
+def test_alternate_stamp_alias_gives_no_carry_proof(tmp_path: Path) -> None:
+    """Stored A@10, B@20 with a recorded alternate stamp 10 on B, view A@10, B@30: B@30 is stored."""
+    lineage(tmp_path)
+    with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
+        engine.ingest([message("first", 10.)])
+        engine.on_session_start("child", platform="cli", context_length=128000, conversation_id="conv")
+        engine.ingest([message("second", 20.)])
+        (row,) = engine._store.get_session_messages("child")
+        engine._store.add_message_relations([[(int(row["store_id"]), "alt_stamp", None, None, 10.)]])
+    view = [message("first", 10.), message("second", 30.)]
+    with engine_context(tmp_path, window=128000, session_id="child", conversation_id="conv") as engine:
+        engine.ingest(deepcopy(view))
+        assert [r["observed_at"] for r in engine._store.get_session_messages("child")] == [20., 30.]
+
+
+def test_model_switch_wrapper_gives_no_carry_proof(tmp_path: Path) -> None:
+    """Stored first@10, wrapped-X@10, X@10 and view first@10, wrapped-X@10, X@20: X@20 is stored."""
+    lineage(tmp_path)
+    wrapped = "[Note: model was just switched from model-a to model-b via router.]\n\nrequest"
+    with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
+        engine.ingest([message("first", 10.)])
+        engine.on_session_start("child", platform="cli", context_length=128000, conversation_id="conv")
+        engine.ingest([message(wrapped, 10.), message("request", 10.)])
+    view = [message("first", 10.), message(wrapped, 10.), message("request", 20.)]
+    with engine_context(tmp_path, window=128000, session_id="child", conversation_id="conv") as engine:
+        engine.ingest(deepcopy(view))
+        assert 20. in [r["observed_at"] for r in engine._store.get_session_messages("child")]

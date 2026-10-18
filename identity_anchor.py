@@ -311,6 +311,7 @@ class IdentityAnchorMixin:
                       if int(row["store_id"]) not in consumed and identity_at(idx) in forms]
             carried = self._identity_anchor_carried_stamp(messages, idx, stamps, copies, matched.get(idx - 1, ()), chain,
                                                           distinct=_distinct_from_predecessor(identity_at, idx))
+            carried = self._identity_anchor_durable_stamp(carried, stamps.get(idx - 1))
             if carried:
                 self._identity_anchor_take(idx, carried, consumed, matched, plan)
         if start < cursor:
@@ -407,6 +408,7 @@ class IdentityAnchorMixin:
                 messages, idx, stamps, copies, previous, chain, distinct=_distinct_from_predecessor(identity_at, idx),
                 null_bound=len(previous) == 1 and previous[0].get("observed_at") is None
                 and bound_null(idx - 1, previous[0]))
+            carried = self._identity_anchor_durable_stamp(carried, stamps.get(idx - 1))
             # #1328: equal content at a different known stamp is a different occurrence.
             # A NULL copy needs independent occurrence proof before consumption or unique backfill.
             copies = [row for row in copies if row.get("observed_at") == stamps[idx]
@@ -467,6 +469,12 @@ class IdentityAnchorMixin:
             return []
         return [row for row in copies if int(row["store_id"]) == int(prior["store_id"]) + 1
                 and row.get("observed_at") == stamps[idx - 1]]
+
+    def _identity_anchor_durable_stamp(self, rows, stamp) -> list:
+        """#1501: the carried candidates whose own stored row holds ``stamp``; a recorded alternate stamp
+        (``find_rows_by_observed_at``'s R5 projection) proves another occurrence, never a carried stamp."""
+        stored = self._store.get_batch(sorted({int(row["store_id"]) for row in rows})) if rows else {}
+        return [row for row in rows if (stored.get(int(row["store_id"])) or {}).get("observed_at") == stamp]
 
     def _identity_anchor_inserted(self, messages, start: int, cursor: int) -> set:
         """#633: indexes in ``[start, cursor)`` the host inserted into the last list LCM ingested (Hermes
