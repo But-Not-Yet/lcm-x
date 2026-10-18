@@ -30,6 +30,7 @@ jobs:
         host: [ref-0.21.5, floor-0.21.3, r34.4-0.21.5, r34.10-0.21.5, upstream-main, upstream-uid]
     env:
       OUT: ${{ github.workspace }}/reliability-out
+      DEFAULT_WINDOW_REPORT_ONLY: "true"  # One switch for command failures; verdict promotion needs qualification.
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -53,11 +54,25 @@ jobs:
       - name: R2 acp-process, all cells
         run: python bench/instruments/reliability/run_matrix.py --transport acp-process --hosts-file "$RUNNER_TEMP/hosts.json" --hosts "${{ matrix.host }}" --plugin-ref HEAD --cells all --jobs 4 --out "$OUT/r2"
 
+      # Explicit opt-in cells: retain diagnostics separately from the existing gate inputs.
+      - name: Default-window R1 in-process (report-only)
+        continue-on-error: ${{ env.DEFAULT_WINDOW_REPORT_ONLY == 'true' }}
+        run: python bench/instruments/reliability/run_matrix.py --hosts-file "$RUNNER_TEMP/hosts.json" --hosts "${{ matrix.host }}" --plugin-ref HEAD --cells 'default-window/*' --jobs 4 --out "$OUT/default-window-r1"
+
+      - name: Default-window R2 acp-process (report-only)
+        continue-on-error: ${{ env.DEFAULT_WINDOW_REPORT_ONLY == 'true' }}
+        run: python bench/instruments/reliability/run_matrix.py --transport acp-process --hosts-file "$RUNNER_TEMP/hosts.json" --hosts "${{ matrix.host }}" --plugin-ref HEAD --cells 'default-window/*' --jobs 4 --out "$OUT/default-window-r2"
+
       - name: Job summary
         if: always()
         run: |
-          for t in r1 r2; do
-            if [ -f "$OUT/$t/MATRIX.md" ]; then cat "$OUT/$t/MATRIX.md" >> "$GITHUB_STEP_SUMMARY"; fi
+          for t in r1 r2 default-window-r1 default-window-r2; do
+            printf '\n## %s\n\n' "$t" >> "$GITHUB_STEP_SUMMARY"
+            if [ -f "$OUT/$t/MATRIX.md" ]; then
+              cat "$OUT/$t/MATRIX.md" >> "$GITHUB_STEP_SUMMARY"
+            else
+              printf 'No matrix report produced; see step logs.\n' >> "$GITHUB_STEP_SUMMARY"
+            fi
           done
 
       - name: Upload results
@@ -70,6 +85,7 @@ jobs:
             reliability-out/*/run.json
             reliability-out/*/*.md
             reliability-out/*/cells/**/verdict.json
+            reliability-out/default-window-*/**
           if-no-files-found: warn
 
       - name: Gate (ERROR, or a G-REL-1 FAIL without an open targeted issue)
