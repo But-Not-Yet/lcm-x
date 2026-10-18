@@ -72,6 +72,7 @@ OBSERVED_ATTRIBUTES = frozenset({
     "_foreground_rebind_previous_platform", "_foreground_rebind_previous_session_id", "_foreground_rebind_session_id",
     "_generated_ignored_active_replay_placeholder_messages", "_host_uid_counters", "_host_uid_error_logged",
     "_host_uid_read_error", "_identity_anchor_chain_cache", "_identity_anchor_recent", "_identity_anchor_text_memo",
+    "_identity_anchor_recoveries", "_identity_anchor_recovery", "_identity_anchor_user_generation",
     "_identity_anchor_versions", "_pressure_yield_tail_token_limit", "_survival_projected_fields",
     "_host_uid_lineage_cache", "_engine_uids_pending", "_engine_uids_recorded",
 })
@@ -266,6 +267,15 @@ class IngestCanonical(Canonical):
         return super().value(value, path, in_payload=in_payload)
 
 
+def recovery_receipts(engine: Any, value: Any) -> Any:
+    """#1505 receipts hold the live store; observe only whether it is the engine's own."""
+    if isinstance(value, list):
+        return [recovery_receipts(engine, item) for item in value]
+    if isinstance(value, dict) and "store" in value:
+        return {**value, "store": {"active": value["store"] is engine._store}}
+    return value
+
+
 def snapshot(engine: Any, canonical: IngestCanonical) -> dict[str, Any]:
     state: dict[str, Any] = {}
     # Match address-keyed ledgers to the actual retained message objects before
@@ -293,6 +303,8 @@ def snapshot(engine: Any, canonical: IngestCanonical) -> dict[str, Any]:
             value = engine._dag.get_session_nodes("S", limit=10000)
         elif name == "_lifecycle":
             value = engine._lifecycle.get_by_conversation("trace-conversation")
+        elif name in {"_identity_anchor_recoveries", "_identity_anchor_recovery"}:
+            value = recovery_receipts(engine, value)
         state[name] = canonical.value(value, name)
     conn = engine._store._conn
     # Exact durable rows, including relation IDs, observed_at/source, UID bindings,
