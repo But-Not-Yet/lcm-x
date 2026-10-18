@@ -68,6 +68,22 @@ class Scenario:
 
 
 SCENARIOS = (
+    Scenario("finish-repeat-condensation-skipped", mode="reject-pre-only", sweep=True,
+             seeded_depths=(0, 0, 0), overrides=(("summary_prefix_target_tokens", 100),)),
+    Scenario("finish-post-drain-read-error", mode="post-frontier-read-error", sweep=True,
+             overrides=(("summary_prefix_target_tokens", 20),)),
+    Scenario("finish-condensation-nonlock-error", mode="error-condensation", seeded_depths=(0, 0, 1),
+             overrides=(("condensation_fanin", 2),)),
+    Scenario("finish-condensation-lock", mode="lock-condensation", seeded_depths=(0, 0, 1),
+             overrides=(("condensation_fanin", 2),)),
+    Scenario("finish-gc-lock", shape="tools", mode="lock-gc", overrides=(
+        ("dynamic_leaf_chunk_max", 20000), ("large_output_externalization_enabled", True),
+        ("large_output_externalization_threshold_chars", 100), ("large_output_transcript_gc_enabled", True))),
+    Scenario("finish-callable-telemetry", sweep=True),
+    Scenario("finish-promoted-keys", setup="prepared", sweep=True, force=False,
+             current_tokens=150000, overrides=(("background_leaf_prep_enabled", True),
+             ("background_leaf_prep_max_calls", 64), ("context_threshold", 0.75),
+             ("max_assembly_tokens", 200000), ("large_output_externalization_path", ""))),
     Scenario("resume-commit-wide-tail", shape="no-system", setup="resume-wide-tail", mode="open-circuit",
              overrides=(("fresh_tail_count", 100),)),
     Scenario("persisted-volatile-no-pattern", shape="volatile", setup="stored-volatile"),
@@ -626,6 +642,11 @@ class Provider:
                                             or (not self.case.sweep and self.calls == 2)):
             self.engine._dag._conn.execute("""CREATE TEMP TRIGGER lock_summary BEFORE INSERT ON summary_nodes
                 BEGIN SELECT RAISE(ABORT, 'database is locked'); END""")
+        if mode == "error-condensation" and self.calls == 2:
+            self.engine._dag._conn.execute("""CREATE TEMP TRIGGER error_summary BEFORE INSERT ON summary_nodes
+                BEGIN SELECT RAISE(ABORT, 'fixture condensation failure'); END""")
+        if mode == "reject-pre-only" and self.calls <= 2:
+            return "not shorter " * 4000
         if mode == "lock-gc" and self.calls == 1:
             self.engine._store._conn.execute("""CREATE TEMP TRIGGER lock_gc BEFORE UPDATE OF content ON messages
                 BEGIN SELECT RAISE(ABORT, 'database is locked'); END""")
@@ -844,8 +865,8 @@ def observe(case: Scenario, root: Path) -> Trace:
                 return sqlite3.SQLITE_OK
 
             def trace_sql(connection: str, sql: str) -> None:
-                if (case.mode == "frontier-read-error" and connection == "_dag"
-                        and sql.strip() == "COMMIT" and provider.calls == 1 and not frontier_read_denied):
+                if (case.mode in {"frontier-read-error", "post-frontier-read-error"} and connection == "_dag"
+                        and sql.strip() == "COMMIT" and provider.calls == (8 if case.mode == "post-frontier-read-error" else 1) and not frontier_read_denied):
                     # Publication errors are converted to condensation_error by
                     # the sweep. Its post-publication frontier read propagates.
                     engine._dag._conn.set_authorizer(deny_frontier_read)
@@ -906,12 +927,12 @@ def observe(case: Scenario, root: Path) -> Trace:
                                 assert "_begin_compression" in frames
                                 assert "count_message_tokens" in frames
                                 events.append("non-dict tail: token counting rejects input before ingestion and leaf phases")
-                            if case.mode == "frontier-read-error":
+                            if case.mode in {"frontier-read-error", "post-frontier-read-error", "error-condensation"}:
                                 assert isinstance(exc, sqlite3.DatabaseError)
                                 assert not compaction._is_sqlite_locked_error(exc)
                                 propagated_frontier_error = True
                         finally:
-                            if case.mode == "frontier-read-error":
+                            if case.mode in {"frontier-read-error", "post-frontier-read-error"}:
                                 engine._dag._conn.set_authorizer(None)
                         if case.setup == "resume-wide-tail":
                             assert provider.calls == before_calls
@@ -928,6 +949,46 @@ def observe(case: Scenario, root: Path) -> Trace:
                             assert engine._foreground_budget.progress == "condensation"
                             assert provider.calls == 1
                             events.append("pre-leaf error propagated; leaf_reserve=0.0; committed condensation retained")
+                        if case.name.startswith("finish-"):
+                            assert engine._last_compacted_store_id > 0
+                            assert engine._dag.get_session_nodes("S")
+                            hook = getattr(engine, "_record_successful_compaction_telemetry", None)
+                            assert callable(hook)
+                            assert "_record_successful_compaction_telemetry" not in vars(engine)
+                            events.append("telemetry hook: concrete class method, callable, no instance shadow")
+                            if case.mode in {"post-frontier-read-error", "error-condensation"}:
+                                assert propagated_frontier_error
+                                assert engine.compression_count == 0
+                                events.append("non-lock error propagated after committed leaf; durable frontier retained")
+                            elif case.mode in {"lock-condensation", "lock-gc"}:
+                                assert engine._last_compression_status == "error"
+                                assert returned != view
+                                assert engine._ingest_cursor == len(returned)
+                                events.append("lock after committed leaf: returned committed context and aligned cursor")
+                            if case.mode == "reject-pre-only":
+                                sweep = engine._last_threshold_full_sweep
+                                assert sweep["leaf_passes"] > 0
+                                assert sweep["pre_leaf_condensation_stop_reason"] == "summary_result_rejected"
+                                assert sweep["post_drain_condensation_skipped"] == "pre_leaf_rejected"
+                                assert provider.calls == sweep["leaf_passes"] + 2
+                                events.append("pre-leaf rejection: leaves drain; repeat condensation skipped")
+                            if case.name in {"finish-callable-telemetry", "finish-promoted-keys"}:
+                                keys = list(engine._last_threshold_full_sweep)
+                                expected = ["status", "leaf_passes"]
+                                if case.setup == "prepared":
+                                    expected.append("promoted_leaves")
+                                expected.extend([
+                                    "condensation_passes", "pre_leaf_condensation_passes",
+                                    "pre_leaf_condensation_stop_reason", "post_drain_condensation_skipped",
+                                    "total_passes", "duration_ms", "tokens_before", "tokens_after",
+                                    "summary_prefix_tokens_before", "summary_prefix_tokens_after",
+                                    "summary_prefix_target_tokens", "stop_reason", "budget_exhausted",
+                                ])
+                                assert keys[:len(expected)] == expected
+                                events.append("sweep ordered keys " + compact(keys))
+                                telemetry = engine._store.read_compaction_telemetry(engine._conversation_id)
+                                assert telemetry["compression_count_at_record"] == engine.compression_count == 1
+                                events.append("callable telemetry: completed leaf counted durably once")
                         if case.name == "unknown-window-default-target":
                             assert engine.threshold_tokens == 0
                             assert not engine._foreground_budget.sweep_active
