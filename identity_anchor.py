@@ -478,7 +478,8 @@ class IdentityAnchorMixin:
         receipt = {"row": row, "content": row["content"], "index": idx,
                    "session": str(self._session_id), "keys": self._identity_anchor_occurrence_keys(row),
                    "store": self._store, "home": str(self._hermes_home), "conversation": str(self._conversation_id),
-                   "generation": getattr(self, "_identity_anchor_user_generation", 0), "stamp": None, "used": False}
+                   "generation": getattr(self, "_identity_anchor_user_generation", 0), "stamp": None, "used": False,
+                   "max_store_id": self._store.max_store_id()}  # the recovered turn was stored before its recovery
         receipts = list(getattr(self, "_identity_anchor_recoveries", ()))
         for previous in receipts:
             if (previous["row"] is row or previous["store"] is self._store
@@ -530,12 +531,12 @@ class IdentityAnchorMixin:
         if receipt["session"] not in scope:
             return []
         store_id = int(copies[0]["store_id"])
-        if any(r.get("store_id") == store_id for r in receipts):
+        if any(r.get("store_id") == store_id for r in receipts) or store_id > receipt["max_store_id"]:
             return []
         row = self._store.get_batch([store_id]).get(store_id)
         conversation = _normalize_conversation_id_value(self._conversation_id)
         if (not row or row.get("session_id") not in scope or row.get("role") != "user"
-                or _normalize_conversation_id_value(row.get("conversation_id")) not in {conversation, ""}
+                or _normalize_conversation_id_value(row.get("conversation_id")) != conversation
                 or row.get("observed_at") is None or row["observed_at"] == stamp
                 or _proof_user_identity(self._message_replay_identity(row, stored_row=True))
                 != _proof_user_identity(self._message_replay_identity(messages[idx], strip_carrier=False))):
