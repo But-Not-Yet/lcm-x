@@ -175,6 +175,33 @@ def live_rewrite(engine: Any) -> tuple[list[dict[str, Any]], str]:
     return view, current["content"]
 
 
+@pytest.mark.parametrize("cold", [False, True], ids=["warm", "cold-restart"])
+def test_public_compress_recovery_then_rewrite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cold: bool) -> None:
+    """#1505 through the public entry point: compress() emits the recovery note, the host stamps it, then rewrites it."""
+    pin_char_counter(monkeypatch)  # type: ignore[no-untyped-call]
+    ScriptedSummarizer("outage").install(monkeypatch)  # type: ignore[no-untyped-call]
+    lineage(tmp_path)
+    current = message("[T32] rebuild the index " * 500, 20.)
+    source = [message("[T31] earlier request", 10.), message("earlier reply", 11., "assistant"), current,
+              {"role": "tool", "content": "orphan result", "tool_call_id": "orphan", "timestamp": 21.}]
+    with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
+        engine.ingest(source)
+        engine._config.fresh_tail_count, engine._config.max_assembly_tokens = 64, 120
+        view = list(engine.compress(source, current_tokens=100, force=True))
+        assert engine._last_compression_status == "overflow_recovery"
+        assert view[-1]["content"].startswith("[LCM overflow recovery] Your latest message")
+        view[-1]["timestamp"] = 30.
+        engine.ingest(deepcopy(view))
+        view[-1]["content"] = current["content"]
+        view.append(message("reply", 31., "assistant"))
+        engine.ingest(view)
+        assert_copies(engine, current["content"])
+    if cold:
+        with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
+            engine.ingest([*deepcopy(view), message("next", 40.)])
+            assert_copies(engine, current["content"])
+
+
 @pytest.mark.parametrize("shape", ["rotation", "cold-compress", "cold-rotation", "trim", "steer",
                                     "compression-callback", "copied-compress"])
 def test_recovery_alias_survives_delayed_replay(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shape: str) -> None:
