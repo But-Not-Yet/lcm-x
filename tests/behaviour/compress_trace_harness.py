@@ -284,6 +284,22 @@ SCENARIOS = (
              ("background_leaf_prep_max_calls", 64), ("context_threshold", 0.75),
              ("max_assembly_tokens", 200000),
              ("large_output_externalization_path", ""))),
+    *(Scenario(f"publish-advance-{mode}", setup="prepared", mode=mode, force=mode == "promote-low",
+               current_tokens=130001 if mode == "promote-low" else 150000, overrides=(("background_leaf_prep_enabled", True),
+               ("background_leaf_prep_max_calls", 64), ("context_threshold", 0.75),
+               ("max_assembly_tokens", 200000), ("large_output_externalization_path", "")))
+      for mode in ("promote-low", "promote-continue", "publish-route", "publish-coverage",
+                   "publish-binding", "publish-frontier", "publish-fence", "publish-retry")),
+    Scenario("publish-advance-nonlock", mode="publish-error"),
+    Scenario("publish-advance-gc-nonlock", shape="tools", mode="gc-error", overrides=(
+        ("dynamic_leaf_chunk_max", 20000), ("large_output_externalization_enabled", True), ("large_output_active_replay_stubbing_enabled", False),
+        ("large_output_externalization_threshold_chars", 100), ("large_output_transcript_gc_enabled", True))),
+    Scenario("publish-advance-hidden-drain", shape="hidden", sweep=True),
+    Scenario("publish-advance-dynamic-empty", turns=2, current_tokens=60000, overrides=(
+        ("dynamic_leaf_chunk_enabled", True), ("leaf_chunk_tokens", 1), ("dynamic_leaf_chunk_max", 1))),
+    Scenario("publish-advance-deferred-short", setup="debt", current_tokens=190000, overrides=(
+        ("max_assembly_tokens", 200000), ("reserve_tokens_floor", 0), ("critical_budget_pressure_ratio", 0.9), ("deferred_maintenance_enabled", True), ("dynamic_leaf_chunk_enabled", True),
+        ("leaf_chunk_tokens", 2500), ("dynamic_leaf_chunk_max", 2500))),
 )
 
 
@@ -692,6 +708,12 @@ class Provider:
         if mode == "lock-gc" and self.calls == 1:
             self.engine._store._conn.execute("""CREATE TEMP TRIGGER lock_gc BEFORE UPDATE OF content ON messages
                 BEGIN SELECT RAISE(ABORT, 'database is locked'); END""")
+        if mode == "publish-error" and self.calls == 1:
+            self.engine._dag._conn.execute("""CREATE TEMP TRIGGER fail_publish BEFORE INSERT ON summary_nodes
+                BEGIN SELECT RAISE(ABORT, 'fixture publication failure'); END""")
+        if mode == "gc-error" and self.calls == 1:
+            self.engine._store._conn.execute("""CREATE TEMP TRIGGER fail_gc BEFORE UPDATE OF content ON messages
+                BEGIN SELECT RAISE(ABORT, 'fixture gc failure'); END""")
         if mode.startswith("rescue-read-error"):
             first = 2 if mode.endswith("after") else 1
             if self.calls in (first, first + 1):
@@ -903,6 +925,9 @@ def observe(case: Scenario, root: Path) -> Trace:
                 view = [*view[2:], dict(view[0]), dict(view[1])]
                 engine._ingest_cursor = len(view)
             if case.setup == "debt":
+                if case.name == "publish-advance-deferred-short":
+                    engine.ingest(view)
+                    engine.last_prompt_tokens = case.current_tokens
                 engine._lifecycle.record_debt("trace-conversation", kind="raw_backlog", size_estimate=4000)
             if case.mode == "open-circuit":
                 for _ in range(3):
@@ -977,7 +1002,24 @@ def observe(case: Scenario, root: Path) -> Trace:
                     return sqlite3.SQLITE_DENY
                 return sqlite3.SQLITE_OK
 
+            publication_race = False
+
             def trace_sql(connection: str, sql: str) -> None:
+                nonlocal publication_race
+                if (case.name.startswith("publish-advance-") and not publication_race
+                        and connection == "_dag" and sql.lstrip().startswith("INSERT INTO summary_nodes")):
+                    publication_race = True
+                    conn = engine._dag._conn
+                    if case.mode == "publish-route":
+                        engine._config.summary_model = "changed-trace-model"
+                    elif case.mode == "publish-coverage":
+                        conn.execute("UPDATE messages SET content = 'changed in transaction' WHERE store_id = 2")
+                    elif case.mode == "publish-binding":
+                        conn.execute("UPDATE lcm_lifecycle_state SET current_session_id = 'other-session'")
+                    elif case.mode == "publish-frontier":
+                        conn.execute("UPDATE lcm_lifecycle_state SET current_frontier_store_id = 1")
+                    elif case.mode == "publish-fence":
+                        conn.execute("UPDATE messages SET conversation_id = 'other-conversation' WHERE store_id = 2")
                 if (case.mode == "close-after-leaf" and connection == "_dag"
                         and sql.strip() == "COMMIT" and provider.calls == 1):
                     for _ in range(3):
@@ -1076,11 +1118,74 @@ def observe(case: Scenario, root: Path) -> Trace:
                             if event == "call" and frame.f_code.co_name == "_survival_fit":
                                 fit_causes.append(frame.f_locals["fit_cause"])
 
+                        publication_probe: dict[str, Any] = {
+                            "publish": 0, "insert": 0, "revalidate": 0, "stage": 0, "promoted": 0,
+                            "summaries": 0, "rejected": [], "order": [],
+                        }
+                        publication_passes: list[tuple[int, int, int]] = []
+                        initial_limit = 0
+
+                        def profile_publication(frame: Any, event: str, value: Any) -> None:
+                            nonlocal initial_limit
+                            if previous_profile is not None:
+                                previous_profile(frame, event, value)
+                            name = frame.f_code.co_name
+                            finish_keys = (
+                                "leaf_passes", "max_leaf_passes", "sweep_stop_reason", "estimated_active_tokens", "prep_low_water")
+                            if event == "return" and name == "_advance_after_leaf" and value is None:
+                                # An exception unwinds before the driver can unpack the run state.
+                                publication_probe["finish"] = {
+                                    key: getattr(frame.f_locals["state"], key) for key in finish_keys}
+                            if event == "return" and name == "_compress_impl" and "finish" not in publication_probe:
+                                publication_probe["finish"] = {key: frame.f_locals.get(key) for key in (
+                                    "leaf_passes", "max_leaf_passes", "sweep_stop_reason", "estimated_active_tokens", "prep_low_water")}
+                            if event != "call":
+                                return
+                            if name == "_publish_leaf_node":
+                                publication_probe["publish"] += 1
+                                assert engine._session_id and engine._conversation_id
+                                owner = frame.f_back
+                                while owner.f_code.co_name != "_compress_impl":
+                                    owner = owner.f_back
+                                local = owner.f_locals
+                                if not initial_limit:
+                                    initial_limit = local["max_leaf_passes"]
+                                publication_passes.append((local["leaf_passes"], local["max_leaf_passes"], provider.calls))
+                                if case.mode == "publish-retry" and publication_probe["publish"] == 1:
+                                    # A genuine stale read snapshot fails the first INSERT, then retries.
+                                    conn = engine._dag._conn
+                                    conn.execute("BEGIN")
+                                    conn.execute("SELECT COUNT(*) FROM messages").fetchone()
+                                    engine._store._conn.execute("UPDATE messages SET content = content WHERE store_id = 2")
+                                    engine._store._conn.commit()
+                            if name == "insert_node":
+                                owner = frame.f_back
+                                while owner is not None and owner.f_code.co_name != "_publish_leaf_node":
+                                    owner = owner.f_back
+                                if owner is not None:
+                                    publication_probe["insert"] += 1
+                            if name == "revalidate" and frame.f_globals.get("__name__") == "hermes_lcm.compaction":
+                                assert frame.f_locals["conn"].in_transaction
+                                publication_probe["revalidate"] += 1
+                                publication_probe["order"].append("revalidate")
+                            if name == "stage_compaction_publication":
+                                assert frame.f_locals["conn"].in_transaction
+                                publication_probe["stage"] += 1
+                                publication_probe["order"].append("stage")
+                            if name == "_reject_prepared_chain":
+                                publication_probe["rejected"].append(frame.f_locals["reason"])
+                            if name == "promoted" and frame.f_code.co_qualname == "promoted":
+                                publication_probe["promoted"] += 1
+                            if name == "_summarize_leaf_chunk_with_rescue":
+                                publication_probe["summaries"] += 1
+
                         previous_profile = sys.getprofile()
                         if case.name.startswith("stop-reason-") and (case.setup != "rotated" or attempt):
                             sys.setprofile(profile_fit)
                         if case.name.startswith("leaf-phase-"):
                             sys.setprofile(profile_leaf)
+                        if case.name.startswith("publish-advance-"):
+                            sys.setprofile(profile_publication)
                         try:
                             with engine._fresh_tail_pressure_yield_invocation():
                                 if case.name.startswith("stop-reason-") and (case.setup != "rotated" or attempt):
@@ -1114,6 +1219,41 @@ def observe(case: Scenario, root: Path) -> Trace:
                                 engine._dag._conn.set_authorizer(None)
                             if case.mode.startswith("rescue-read-error"):
                                 engine._store._conn.set_authorizer(None)
+                        if case.name.startswith("publish-advance-"):
+                            reasons = {"publish-route": "route_fingerprint_mismatch",
+                                       "publish-coverage": "coverage_digest_mismatch",
+                                       "publish-binding": "binding_changed", "publish-frontier": "frontier_moved",
+                                       "publish-fence": "fence_conflict"}
+                            if case.mode in reasons:
+                                assert publication_probe["rejected"] == [reasons[case.mode]], publication_probe
+                                assert publication_probe["promoted"] == 0
+                            if case.mode in {"publish-route", "publish-coverage"}:
+                                assert publication_probe["order"][0] == "revalidate"
+                                assert publication_probe["summaries"] > 0
+                            if case.mode in {"publish-binding", "publish-frontier", "publish-fence"}:
+                                assert publication_probe["order"] == ["revalidate", "stage"]
+                                assert engine._foreground_budget.leaves == 0
+                                assert returned == view
+                            if case.mode in {"promote-low", "promote-continue", "publish-retry"}:
+                                promoted = publication_probe["promoted"]
+                                assert promoted > 0, publication_probe
+                                assert publication_probe["order"][:2] == ["revalidate", "stage"]
+                                for passes, limit, calls in publication_passes[:promoted]:
+                                    assert limit == initial_limit + passes and calls == 0, (case.name, initial_limit, publication_passes, publication_probe)
+                                if case.mode == "promote-low":
+                                    assert publication_probe["finish"]["sweep_stop_reason"] == "prepared_leaves_promoted"
+                                    assert provider.calls == 0
+                                if case.mode == "promote-continue":
+                                    assert len(publication_passes) > 1
+                                if case.mode == "publish-retry":
+                                    assert publication_probe["insert"] == publication_probe["publish"] + 1
+                                    assert publication_probe["revalidate"] == promoted
+                            if case.mode in {"publish-error", "gc-error"}:
+                                assert any(event.startswith("raise IntegrityError") for event in events), (case.name, publication_probe, [e for e in events if e.startswith(("raise ", "log "))])
+                                assert engine._foreground_budget.leaves == (case.mode == "gc-error")
+                                assert bool(engine._dag.get_session_nodes("S")) == (case.mode == "gc-error")
+                            events.append("publication probes " + encoded(publication_probe))
+                            events.append("publication pass limits " + encoded(publication_passes))
                         if case.name.startswith("leaf-phase-"):
                             assert engine._leaf_rescue_admit is None
                             assert leaf_probe["captures"] == leaf_probe["summaries"]
