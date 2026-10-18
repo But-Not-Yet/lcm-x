@@ -15,8 +15,10 @@ AML Cycle 2's reference deployment served LCM-X tag `v0.28.0`, commit
 
 The adapter pins config `fleet`, provider `fastembed`, model
 `BAAI/bge-small-en-v1.5`, chunk policy `full`, delivery `full`, and top-k cap
-`100`. It uses an offline model cache and forbids downloads and external
-network access from the gateway. There are no generative-model calls in Add
+`100`. It uses an offline model cache, and an in-process Python audit hook in
+each worker rejects non-loopback connections and DNS lookups so that no model
+is downloaded. The hook guards against accidental downloads; it is not an
+OS-level network sandbox. There are no generative-model calls in Add
 or Search; the per-Add session summary is deterministic and rule-based.
 
 ## HTTP contract
