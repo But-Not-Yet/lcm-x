@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 import importlib
+import json
 from pathlib import Path
 import re
 import sqlite3
@@ -283,3 +284,61 @@ def test_healthy_appends_have_no_gapfill_status_suffix(store: Store) -> None:
         engine = SimpleNamespace(_config=config, _store=SimpleNamespace(db_path=config.database_path))
         assert "embedding_backlog_chunks: 0" in command._embedding_maintenance_status_lines(engine)
         assert before == list(vectors.connection.execute("SELECT * FROM metadata ORDER BY key"))
+
+
+@pytest.mark.parametrize("pending_count", [500, 501, 1000, 1999])
+def test_pending_recheck_respects_sqlite_variable_limit(
+    store: Store, monkeypatch: pytest.MonkeyPatch, pending_count: int,
+) -> None:
+    _, vectors, identity, _ = store
+    high = pending_count + 2
+    add_rows(store, [(1, "user", LONG),
+                     *[(i, "user", SHORT) for i in range(2, high)],
+                     (high, "assistant", LONG)], {1, high})
+    metadata(store, "chunk_policy_revision", 2)
+    metadata(store, "chunk_policy_revision_through", 1)
+    selected = list(command._chunk_frontier_rows(
+        vectors.connection, identity.identity_hash, policy="conversational", record_progress=True,
+    ))
+    assert {row[0] for row in selected} == set(range(2, high))
+    saved = metadata(store, "chunk_gapfill_scan")
+    assert saved is not None and set(json.loads(saved)["pending"]) == set(range(2, high))
+    connect = sqlite3.connect
+
+    def limited(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        conn: sqlite3.Connection = connect(*args, **kwargs)
+        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", limited)
+    vectors.connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+    run(store, limit=pending_count)
+    assert counts(store) == dict.fromkeys(range(1, high + 1), 1)
+
+
+@pytest.mark.parametrize("operation", ["status", "apply"])
+@pytest.mark.parametrize("record", [
+    "not-json", '{"revision":2', "[1,2,3]",
+    '{"revision":2,"policy":"conversational","pending":[3]}',
+    '{"revision":2,"policy":"conversational","high":"5","pending":[3]}',
+    *[json.dumps({"revision": 2, "policy": "conversational", "high": 5, "pending": [3], **invalid})
+      for invalid in ({"revision": "2"}, {"revision": True}, {"high": False},
+                      {"policy": 1}, {"pending": "3"}, {"pending": ["3"]},
+                      {"pending": [True]}, {"ceiling": "5"})],
+])
+def test_invalid_scan_record_revalidates_full_gap(store: Store, record: str, operation: str) -> None:
+    config, vectors, identity, _ = store
+    add_rows(store, [(1, "user", LONG), (2, "user", SHORT), (3, "user", SHORT),
+                     (4, "user", SHORT), (5, "assistant", LONG)], {1, 5})
+    metadata(store, "chunk_policy_revision", 2)
+    metadata(store, "chunk_policy_revision_through", 1)
+    vectors.connection.execute("INSERT OR REPLACE INTO metadata VALUES(?, ?)",
+                               (f"chunk_gapfill_scan:{identity.identity_hash}", record))
+    if operation == "status":
+        before = list(vectors.connection.execute("SELECT * FROM metadata ORDER BY key"))
+        engine = SimpleNamespace(_config=config, _store=SimpleNamespace(db_path=config.database_path))
+        assert "embedding_backlog_chunks: 3 (gap-fill)" in command._embedding_maintenance_status_lines(engine)
+        assert before == list(vectors.connection.execute("SELECT * FROM metadata ORDER BY key"))
+    else:
+        run(store)
+        assert counts(store) == dict.fromkeys(range(1, 6), 1)
