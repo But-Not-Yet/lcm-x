@@ -382,6 +382,46 @@ def collect_doctor(engine: Any) -> DoctorFacts:
     )
 
 
+def survival_fit_observation(
+    survival_fit: dict[str, Any], fit_count: int | None, projection_floor: bool,
+) -> str | None:
+    """Describe one collected survival-fit record without reading live state."""
+    if fit_count == 0:
+        return None
+    projected = survival_fit.get("projected_count")  # absent on a record from before the key: unknown
+    if type(projected) is not int or projected < 0 or survival_fit.get("count_lost"):
+        projected = None  # damaged metadata, or history lost with the count: conservatively unknown
+    uncovered = survival_fit.get("last_uncovered_rows")
+    uncovered_fits = survival_fit.get("uncovered_fit_count")
+    unknown_fits = survival_fit.get("unknown_coverage_fit_count")
+    within = ("rollback to a 0.24.x version older than v0.24.5: that plugin cannot compact stored rows that a "
+              "survival fit removed from the live context; stop Hermes, move the configured database file (by "
+              "default lcm.db, with its -wal and -shm companions) aside and keep it, then restore the database "
+              "backup taken before the first v0.24.5 install with the plugin; a rollback of the plugin alone to "
+              f"{'v0.27.0' if projection_floor else 'v0.24.5'} or later is fine")
+    applied = ("applied an unknown number of times (the stored count is unreadable)" if fit_count is None
+               else f"applied {fit_count} time(s)")
+    if survival_fit.get("last_shortened") is False:
+        applied = applied.replace("applied", "attempted", 1) + "; could not shorten the list on the last attempt"
+    rollback = (f"; {within}; a rollback to v0.23.3 keeps the database file and needs native recovery ON "
+                "(see triage_guidance)" if survival_fit.get("ever_shortened", True) else "")
+    if projection_floor:
+        rollback += ("; a survival fit projected rows (or the projection count is unknown): from v0.27.0 on, "
+                     "a plugin-only rollback must target v0.27.0 or later; v0.26.x or earlier cannot recognise "
+                     "a short projected row (head + mark) and stores it again on a cold resume (#601 duplicates); "
+                     "to roll back further, stop Hermes and move the configured database file (by default lcm.db, "
+                     "with its -wal and -shm companions) aside and keep it")
+    last_cause = f"; last cause {survival_fit['last_cause']}" if survival_fit.get("last_cause") else ""
+    return (f"survival_fit: {applied}; last reason "
+                        f"{survival_fit.get('last_reason') or '(unknown)'}{last_cause}; projected_count "
+                        f"{'unknown' if projected is None else projected}; unreached_budget_count "
+                        f"{survival_fit.get('unreached_budget_count', 0)}; last_reached_budget "
+                        f"{survival_fit.get('last_reached_budget', 'unknown')}; last_uncovered_rows "
+                        f"{'unknown' if uncovered is None else uncovered}; uncovered_fit_count "
+                        f"{'unknown' if uncovered_fits is None else uncovered_fits}; unknown_coverage_fit_count "
+                        f"{'unknown' if unknown_fits is None else unknown_fits}{rollback}")
+
+
 def render_doctor(facts: DoctorFacts) -> str:
     """Replay probe outcomes and format facts without live reads."""
     from .command import _fmt_bool, _fmt_size
@@ -570,39 +610,9 @@ def render_doctor(facts: DoctorFacts) -> str:
             "run `/lcm doctor repair`, then `/lcm backup` and `/lcm doctor repair apply` to rebuild nodes_fts"
         )
 
-    if facts.fit_count != 0:
-        projected = facts.survival_fit.get("projected_count")  # absent on a record from before the key: unknown
-        if type(projected) is not int or projected < 0 or facts.survival_fit.get("count_lost"):
-            projected = None  # damaged metadata, or history lost with the count: conservatively unknown
-        uncovered = facts.survival_fit.get("last_uncovered_rows")
-        uncovered_fits = facts.survival_fit.get("uncovered_fit_count")
-        unknown_fits = facts.survival_fit.get("unknown_coverage_fit_count")
-        within = ("rollback to a 0.24.x version older than v0.24.5: that plugin cannot compact stored rows that a "
-                  "survival fit removed from the live context; stop Hermes, move the configured database file (by "
-                  "default lcm.db, with its -wal and -shm companions) aside and keep it, then restore the database "
-                  "backup taken before the first v0.24.5 install with the plugin; a rollback of the plugin alone to "
-                  f"{'v0.27.0' if facts.projection_floor else 'v0.24.5'} or later is fine")
-        applied = ("applied an unknown number of times (the stored count is unreadable)" if facts.fit_count is None
-                   else f"applied {facts.fit_count} time(s)")
-        if facts.survival_fit.get("last_shortened") is False:
-            applied = applied.replace("applied", "attempted", 1) + "; could not shorten the list on the last attempt"
-        rollback = (f"; {within}; a rollback to v0.23.3 keeps the database file and needs native recovery ON "
-                    "(see triage_guidance)" if facts.survival_fit.get("ever_shortened", True) else "")
-        if facts.projection_floor:
-            rollback += ("; a survival fit projected rows (or the projection count is unknown): from v0.27.0 on, "
-                         "a plugin-only rollback must target v0.27.0 or later; v0.26.x or earlier cannot recognise "
-                         "a short projected row (head + mark) and stores it again on a cold resume (#601 duplicates); "
-                         "to roll back further, stop Hermes and move the configured database file (by default lcm.db, "
-                         "with its -wal and -shm companions) aside and keep it")
-        last_cause = f"; last cause {facts.survival_fit['last_cause']}" if facts.survival_fit.get("last_cause") else ""
-        observations.append(f"survival_fit: {applied}; last reason "
-                            f"{facts.survival_fit.get('last_reason') or '(unknown)'}{last_cause}; projected_count "
-                            f"{'unknown' if projected is None else projected}; unreached_budget_count "
-                            f"{facts.survival_fit.get('unreached_budget_count', 0)}; last_reached_budget "
-                            f"{facts.survival_fit.get('last_reached_budget', 'unknown')}; last_uncovered_rows "
-                            f"{'unknown' if uncovered is None else uncovered}; uncovered_fit_count "
-                            f"{'unknown' if uncovered_fits is None else uncovered_fits}; unknown_coverage_fit_count "
-                            f"{'unknown' if unknown_fits is None else unknown_fits}{rollback}")
+    fit_observation = survival_fit_observation(facts.survival_fit, facts.fit_count, facts.projection_floor)
+    if fit_observation is not None:
+        observations.append(fit_observation)
     if facts.stub_first_exit:  # #671: a partial stop; the rows no leaf summarised stay stored as backlog
         observations.append("stub_first_exit: the last threshold compaction stopped on its free cuts without a "
                             "model call (partial); " + " ".join(f"{k}={v}" for k, v in facts.stub_first_exit.items()))
