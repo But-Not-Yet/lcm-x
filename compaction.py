@@ -122,6 +122,18 @@ class _CompressionState:
     level3_leaves: int = 0
     promoted_leaves: int = 0
 
+    leaf_compacted_this_turn: bool = False
+    prep_freed: int = 0
+    prep_low_water: float = 0.0
+
+    sweep_step_seconds: Dict[str, float] = field(default_factory=dict)
+    preexisting_dependent_reply_records: list[dict[str, str]] = field(default_factory=list)
+    unattributed_leaf_refused: bool = False
+
+    focus_topic: Optional[str] = None
+    explicit_focus_topic: bool = False
+    prep_enabled: bool = False
+
 
 @dataclass
 class _LeafState:
@@ -135,6 +147,32 @@ class _LeafState:
     copy_lookup: List[Any] = field(default_factory=list)
     candidate_start: int = 0
     premapped_store_ids: Optional[Dict[int, int]] = None
+
+    summary_input_chunk: List[Dict[str, Any]] = field(default_factory=list)
+    selected_raw_chunk: List[Dict[str, Any]] = field(default_factory=list)
+    prepared: Any = None
+    sources: Dict[int, Dict[str, Any]] = field(default_factory=dict)
+    anchor_claims: Dict[int, List[int]] = field(default_factory=dict)
+    compacted_chunk: List[Dict[str, Any]] = field(default_factory=list)
+    source_tokens: int = 0
+    summary_text: str = ""
+    level: int = 0
+    rescue_attempts: int = 0
+
+    summary_tokens: int = 0
+    anchored_input: Any = None
+    compacted_positions: List[int] = field(default_factory=list)
+    source_lookup_chunk: List[Dict[str, Any]] = field(default_factory=list)
+    source_store_ids: List[int] = field(default_factory=list)
+    consumed_store_ids: List[int] = field(default_factory=list)
+    selected_raw_len: int = 0
+    remaining_messages: List[Dict[str, Any]] = field(default_factory=list)
+    node: Optional[SummaryNode] = None
+    published_frontier: int = 0
+    expected_frontier: int = 0
+    carried_ranges: List[tuple[str, int, int]] = field(default_factory=list)
+
+    to_compact: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def select_oldest_leaf_chunk(
@@ -2204,6 +2242,193 @@ class CompactionMixin:
                 return "break", None
         return "next", None
 
+    def _settle_leaf_stop(
+        self, state: _CompressionState, warn_rejected: Callable[[], None],
+    ) -> None:
+        """Settle the leaf stop without changing a committed partial result."""
+        if state.promoted_leaves:
+            logger.info("LCM promoted %d prepared leaves: tokens_freed=%d low_water=%d at_low_water=%s",
+                        state.promoted_leaves, state.prep_freed, int(state.prep_low_water), state.estimated_active_tokens <= state.prep_low_water)
+        self._end_pre_leaf_phase(state.budget, "leaf" if state.leaf_compacted_this_turn else "stopped")
+        if state.no_call_only:  # #628: this pass stored no leaf while every route is refused
+            state.sweep_stop_reason, state.sweep_raw_drained = "summary_route_unavailable", False
+            # review of #723: and returns the list it started with (no scaffold or ignored-backlog edit of its own)
+            state.working_messages, state.pressure_messages, state.dropped_replayed_scaffold_messages = state.refused_input
+        if (
+            state.threshold_full_sweep_active
+            and not state.sweep_raw_drained
+            and not state.sweep_stop_reason
+            and state.leaf_passes >= state.max_leaf_passes
+        ):
+            state.sweep_stop_reason = "pass_budget_exhausted"
+
+        if state.sweep_stop_reason == "summary_route_unavailable":
+            seconds_left = self._summary_route_seconds_left()
+            logger.warning(
+                "LCM compaction stopped: summary route unavailable (circuit open, %ds left); %d leaves written, "
+                "backlog kept",
+                seconds_left,
+                state.leaf_passes,
+            )
+            if not state.leaf_compacted_this_turn:
+                state.noop_reason = "summary route unavailable"
+                self._start_sweep_budget_hold(seconds_left, turn_paced=(
+                    self._sweep_budget_hold_turn_paced
+                    and self._sweep_budget_hold_active()
+                    and self._hung_summary_strike is not None
+                    and self._hung_summary_strike[0] == self._hold_conversation_key()
+                ))
+        elif state.sweep_stop_reason == "summary_result_rejected":
+            warn_rejected()
+            if not state.leaf_compacted_this_turn:
+                state.noop_reason = "summary result rejected"
+
+        if state.budget.hung_route is not None:
+            first_hang = (
+                self._hung_summary_strike is None
+                or self._hung_summary_strike[0] != self._hold_conversation_key())
+            if not first_hang:
+                # #1369: even an exempt forced retry consumes the pending turn-end release.
+                self._sweep_budget_hold_turn_paced = False
+            if not state.force_overflow:
+                if first_hang:
+                    self._hung_summary_strike = (self._hold_conversation_key(), state.budget.hung_route)
+                if self._hung_summary_route_has_fallback(state.budget):
+                    self._no_progress_candidate = False  # let the next automatic pass try the fallback
+                    logger.info(
+                        "LCM skipping sweep budget hold: hung summary route %s opened its circuit; "
+                        "fallback route available", state.budget.hung_route,
+                    )
+                else:
+                    if first_hang:
+                        self._no_progress_candidate = False
+                    self._start_sweep_budget_hold(turn_paced=first_hang)
+
+
+    def _finish_without_leaf(
+        self, state: _CompressionState, messages: List[Dict[str, Any]],
+        warn_rejected: Callable[[], None],
+    ) -> tuple[Literal["next", "return"], Optional[List[Dict[str, Any]]]]:
+        """Finish a no-leaf run, or continue to post-leaf condensation."""
+        if not state.leaf_compacted_this_turn:
+            if state.pre_leaf_condensation_reason == "summary_result_rejected":
+                warn_rejected()
+            if state.sweep_stop_reason == "time_budget_exhausted":
+                state.noop_reason = "threshold sweep time budget spent before the first leaf"
+                logger.warning(
+                    "LCM threshold sweep spent its time budget before the first leaf: %.1fs (budget %.0fs); steps: %s",
+                    time.monotonic() - state.budget.t0,
+                    state.budget.hard,
+                    ", ".join(f"{step}={seconds:.1f}s" for step, seconds in state.sweep_step_seconds.items()),
+                )
+                if (not state.force_overflow and state.pre_leaf_condensation_passes == 0
+                        and state.budget.hung_route is None):  # #909: stored condensation is progress
+                    self._start_sweep_budget_hold()
+            self._refresh_raw_backlog_debt(
+                state.working_messages,
+                observed_tokens=state.observed_prompt_tokens,
+            )
+            if state.force_overflow and len(messages) >= 1:
+                leading_anchor_count = self._leading_anchor_count(state.working_messages)
+                compressed = self._assemble_overflow_recovery_context(
+                    state.working_messages[0] if leading_anchor_count else None,
+                    state.working_messages[leading_anchor_count:],
+                    assembly_cap_override=state.recovery_assembly_cap,
+                    **(
+                        {"retained_user_message": state.working_messages[1]}
+                        if leading_anchor_count == 2
+                        else {}
+                    ),
+                )
+                return "return", self._finalize_forced_overflow_result(
+                    state.working_messages,
+                    compressed,
+                    assembly_cap_override=state.recovery_assembly_cap,
+                    ingest_cleanup_changed_active_context=state.ingest_cleanup_changed_active_context,
+                )
+            active_context_messages = self._drop_preexisting_generated_ignored_dependent_eof_replies(
+                state.working_messages,
+                state.preexisting_dependent_reply_records,
+            )
+            if state.dropped_replayed_scaffold_messages:
+                leading_anchor_count = self._leading_anchor_count(active_context_messages)
+                if state.resumed_ahead == 1 and leading_anchor_count == 1 and active_context_messages[1].get("role") == "user":
+                    leading_anchor_count = 2  # #457: attempt 1's retained anchor, kept, goes back ahead of its summary
+                anchor_leading_count = self._leading_anchor_count(state.anchor_source_messages)
+                self._pending_context_anchor_messages = state.anchor_source_messages[anchor_leading_count:]
+                try:
+                    sanitized_messages = self._assemble_context(
+                        active_context_messages[0] if leading_anchor_count else None,
+                        active_context_messages[leading_anchor_count:],
+                        assembly_cap_override=state.recovery_assembly_cap,
+                        **(
+                            {"retained_user_message": active_context_messages[1]}
+                            if leading_anchor_count == 2
+                            else {}
+                        ),
+                    )
+                finally:
+                    self._pending_context_anchor_messages = None
+            else:
+                sanitized_messages = self._sanitize_active_context_messages(
+                    active_context_messages,
+                    insert_missing_tool_stubs=False,
+                )
+            if sanitized_messages != state.working_messages or state.ingest_cleanup_changed_active_context:
+                # _ingest_messages() already advanced the cursor to the original
+                # active-context length. If the host continues from a sanitized
+                # or reassembled context, keeping the old cursor could make the
+                # next appended messages look already ingested. This applies to
+                # content-only cleanup as well as dropped-message cleanup.
+                self._ingest_cursor = len(sanitized_messages)
+                # A resumed committed prefix returns that compaction's output.
+                self._last_compression_status = "compacted" if state.resumed_prefix else "sanitized"
+                if state.unattributed_leaf_refused:  # #1147: the refusal reason stays visible
+                    self._last_compression_noop_reason = state.noop_reason
+                    self._note_fresh_tail_pressure_relieved()
+                elif state.noop_reason.startswith(_RETAINED_NOOP_REASON):  # #1162: no leaf; the reason stays visible
+                    self._last_compression_noop_reason = state.noop_reason
+                    logger.info("LCM compression no-op: %s", state.noop_reason)
+                else:
+                    self._last_compression_noop_reason = ""
+                    self._note_fresh_tail_pressure_relieved()
+            else:
+                if state.dropped_replayed_scaffold_messages:
+                    # The active context changed even though no new leaf node was
+                    # written. Keep the cursor aligned with the returned context
+                    # so the next appended turn is ingested instead of skipped.
+                    self._ingest_cursor = len(sanitized_messages)
+                self._last_compression_status = "noop"
+                self._last_compression_noop_reason = state.noop_reason
+                hidden_label = self._hidden_backlog_label()
+                logger.info("LCM compression no-op: %s%s", state.noop_reason,
+                            f", hidden_rows={hidden_label}" if hidden_label is not None else "")
+            if state.threshold_full_sweep_active:
+                duration_ms = (time.perf_counter() - state._compress_started) * 1000.0
+                # #605: a stored pre-leaf condensation is progress, so its stop is a partial one, not a no-op.
+                condensed_then_stopped = (
+                    state.pre_leaf_condensation_passes > 0
+                    and state.sweep_stop_reason in _THRESHOLD_FULL_SWEEP_PARTIAL_STOP_REASONS
+                )
+                self._last_threshold_full_sweep = {
+                    **self._last_threshold_full_sweep,
+                    "status": "partial" if condensed_then_stopped else "noop",
+                    "duration_ms": round(duration_ms, 3),
+                    "stop_reason": state.sweep_stop_reason or state.noop_reason,
+                    "budget_exhausted": state.sweep_stop_reason
+                    in {"pass_budget_exhausted", "time_budget_exhausted"},
+                    **self._hidden_backlog_status(),
+                }
+            self._write_generated_ignored_placeholder_hash_counts(
+                self._generated_placeholder_digest_budget_for_active_replay(sanitized_messages)
+            )
+            self._write_generated_ignored_placeholder_hash_ordinals(
+                self._generated_placeholder_digest_ordinals_for_active_replay(sanitized_messages)
+            )
+            return "return", sanitized_messages
+        return "next", None
+
+
     def _condense_after_leaves(
         self, state: _CompressionState, focus_topic: Optional[str], warn_rejected: Callable[[], None],
     ) -> tuple[Literal["next", "return"], Optional[List[Dict[str, Any]]]]:
@@ -2369,6 +2594,492 @@ class CompactionMixin:
 
         return compressed
 
+    def _summarize_selected_leaf(
+        self, state: _CompressionState, leaf: _LeafState,
+        sweep_step_done: Callable[[str, float], float],
+    ) -> tuple[Literal["next", "break", "continue", "return"], Optional[List[Dict[str, Any]]]]:
+        """Summarize this selected leaf, preserving its call-scoped rescue hook."""
+        sources, anchor_claims = leaf.sources, leaf.anchor_claims
+        if not leaf.summary_input_chunk:
+            leaf.compacted_chunk = leaf.selected_raw_chunk
+            leaf.source_tokens = count_messages_tokens(leaf.selected_raw_chunk)
+            leaf.summary_text = (
+                "Filtered replies derived from ignored messages.\n"
+                "[Expand for details: ignored-dependent reply]"
+            )
+            leaf.level = 0
+            leaf.rescue_attempts = 0
+        else:
+            if state.no_call_only:
+                serialized, clipped = self._serialize_messages_with_clip(leaf.summary_input_chunk)
+                if self._summary_route_stop_applies(state.force_overflow, None if clipped else serialized):
+                    state.sweep_stop_reason = "summary_route_unavailable"
+                    return "break", None
+            # Pre-compaction extraction: best-effort, never blocks compaction.
+            # Use the same dependency-filtered view as summarization so ignored
+            # turns cannot leak through derived assistant/tool replies.
+            if self._config.extraction_enabled:
+                # #1122: reserve the next admit's floor/estimate and timeout-handling overhead.
+                est = state.budget.estimate(self._primary_summary_route())
+                extraction_deadline = (
+                    state.budget.usable_deadline
+                    - max(est, _THRESHOLD_FULL_SWEEP_MIN_CALL_SECONDS)
+                    - _EXTRACTION_HEADROOM_SECONDS
+                )
+                if state.budget.progress and state.budget.soft > 0:
+                    extraction_deadline = min(
+                        extraction_deadline, state.budget.t0 + state.budget.soft - est - _EXTRACTION_HEADROOM_SECONDS
+                    )
+                extraction_deadline = min(extraction_deadline, state.sweep_deadline)
+                span_started = time.monotonic()
+                try:
+                    self._run_pre_compaction_extraction(leaf.summary_input_chunk, deadline=extraction_deadline)
+                finally:
+                    self._pre_leaf_span("extraction", span_started)
+            if bool(
+                getattr(
+                    self._config,
+                    "assertion_extraction_enabled",
+                    False,
+                )
+            ):
+                self._schedule_pre_compaction_assertions(leaf.summary_input_chunk)
+
+            self._end_pre_leaf_phase(state.budget, "first_leaf")
+            step_started = time.monotonic() if state.threshold_full_sweep_active else 0.0
+            self._last_leaf_level_3_verbatim = False
+            self._last_leaf_content_filter_error = False
+            try:
+                full_map = self._compress_run.store_ids_by_message_id  # #1147 r1: use the full pass lineage.
+                self._leaf_rescue_admit = lambda chunk: any(anchor_claims.get(id(m)) for m in chunk) or bool(
+                    self._get_store_ids_for_messages([sources.get(id(m), m) for m in chunk], full_map))
+                summary_kwargs: dict[str, Any] = {"focus_topic": state.focus_topic}
+                if state.threshold_full_sweep_active:
+                    summary_kwargs["deadline"] = state.sweep_deadline
+                (
+                    leaf.compacted_chunk,
+                    leaf.source_tokens,
+                    leaf.summary_text,
+                    leaf.level,
+                    leaf.rescue_attempts,
+                ) = (self._summarize_leaf_chunk_with_rescue if leaf.prepared is None
+                     else self._prepared_leaf_summary(leaf.prepared))(
+                    leaf.summary_input_chunk,
+                    **summary_kwargs,
+                )
+            except Exception as exc:
+                if isinstance(exc, SweepBudgetExhausted):
+                    state.sweep_stop_reason = exc.reason  # #608: a stop, with or without a leaf (#605: or soft; any path)
+                    return "break", None
+                if isinstance(exc, UnattributedRescueRefused):  # #1147 r1: a safe no-op, before another call.
+                    self._warn_unattributed_leaf(leaf.summary_input_chunk)
+                    state.noop_reason, state.unattributed_leaf_refused = "selected leaf chunk lacks raw store lineage", True
+                    return "break", None
+                if state.threshold_full_sweep_active and state.leaf_compacted_this_turn:
+                    state.sweep_stop_reason = "leaf_summary_error"
+                    logger.warning(
+                        "LCM threshold full sweep stopped after %d persisted leaf pass(es): %s",
+                        state.leaf_passes,
+                        exc,
+                    )
+                    return "break", None
+                raise
+            finally:
+                self._leaf_rescue_admit = None  # #1147 r1: the rescue hook lives for this call only
+                if state.threshold_full_sweep_active:
+                    sweep_step_done("summariser", step_started)
+            # #652: no truncated level 3 leaf while the fit can rescue; the backlog stays. A level 3 that
+            # is the whole source (it already fits the truncation budget) loses nothing and is written.
+            if leaf.level == 3 and self._fit_can_rescue(state.force_overflow) and not (
+                    self._last_leaf_level_3_verbatim or self._last_leaf_content_filter_error):
+                state.sweep_stop_reason = "summary_result_rejected"
+                return "break", None
+        return "next", None
+
+    def _build_leaf_publication(
+        self, state: _CompressionState, leaf: _LeafState,
+        dependent_reply_message_ids: set[int],
+    ) -> tuple[Literal["next", "break", "continue", "return"], Optional[List[Dict[str, Any]]]]:
+        """Build publication inputs only after confirming durable leaf coverage."""
+        leaf.compacted_chunk, leaf.compacted_positions, leaf.source_lookup_chunk, leaf.source_store_ids, leaf.consumed_store_ids = (
+            self._leaf_consumption(leaf.selected_raw_chunk, leaf.compacted_chunk, leaf.sources, leaf.anchored_input, leaf.anchor_claims,
+                                   dependent_reply_message_ids))
+        leaf.selected_raw_len = len(leaf.source_lookup_chunk)
+        leaf.remaining_messages = state.working_messages[leaf.leading_anchor_count + leaf.selected_raw_len:]
+        leaf.source_tokens = count_messages_tokens(leaf.source_lookup_chunk)
+        if not leaf.consumed_store_ids:  # #1141: oldest-prefix rescue can discard the last durable source.
+            self._warn_unattributed_leaf(leaf.compacted_chunk)  # #1147 r1: keep the publication backstop.
+            state.noop_reason, state.unattributed_leaf_refused = "selected leaf chunk lacks raw store lineage", True
+            return "break", None
+        earliest_at, latest_at = self._store.get_time_bounds(leaf.source_store_ids)
+        leaf.summary_tokens = count_tokens(leaf.summary_text)
+
+        leaf.node = SummaryNode(
+            session_id=self._session_id,
+            depth=0,
+            summary=leaf.summary_text,
+            token_count=leaf.summary_tokens,
+            source_token_count=leaf.source_tokens,
+            source_ids=leaf.source_store_ids,
+            source_type="messages",
+            created_at=time.time(),
+            earliest_at=earliest_at,
+            latest_at=latest_at,
+            expand_hint=self._extract_expand_hint(leaf.summary_text),
+        )
+        leaf.published_frontier = (
+            max(leaf.consumed_store_ids) if leaf.consumed_store_ids else 0
+        )
+        publication_state = self._lifecycle.get_by_conversation(
+            self._conversation_id
+        )
+        leaf.expected_frontier = int(
+            getattr(publication_state, "current_frontier_store_id", 0)
+        )
+        leaf.carried_ranges = self._load_compression_carry_ranges()
+        leaf.filter_exclusion_proofs = self._stored_publication_filter_exclusions(
+            leaf.expected_frontier,
+            leaf.published_frontier,
+            leaf.consumed_store_ids,
+            leaf.filter_exclusion_proofs,
+            leaf.carried_ranges,
+        )
+        leaf.publication_excluded_store_ids.extend(leaf.filter_exclusion_proofs)
+        return "next", None
+
+    def _publish_selected_leaf(
+        self, state: _CompressionState, leaf: _LeafState,
+    ) -> tuple[Literal["next", "break", "continue", "return"], Optional[List[Dict[str, Any]]]]:
+        """Publish one selected leaf without advancing uncommitted state."""
+        try:
+            self._publish_leaf_node(
+                leaf.node,
+                level=leaf.level,
+                model=self._take_leaf_summary_model(),
+                expected_frontier=leaf.expected_frontier,
+                consumed_store_ids=leaf.consumed_store_ids,
+                publication_excluded_store_ids=leaf.publication_excluded_store_ids,
+                filter_exclusion_proofs=leaf.filter_exclusion_proofs,
+                carried_ranges=leaf.carried_ranges,
+                before_publication=None if leaf.prepared is None else self._prepared_leaf_revalidation(leaf.prepared),
+            )
+        except Exception as exc:
+            if leaf.prepared is not None:  # #787: counted by reason; a failed revalidation reruns the pass
+                if isinstance(exc, leaf_prep.PromotionRejected):
+                    self._reject_prepared_chain(leaf.prepared, exc.reason)
+                    return "continue", None
+                if isinstance(exc, (LifecycleBindingChangedError, LifecyclePublicationConflictError)):
+                    self._reject_prepared_chain(leaf.prepared, "binding_changed" if isinstance(
+                        exc, LifecycleBindingChangedError) else "frontier_moved" if "frontier generation changed"
+                        in str(exc) else "fence_conflict")
+            if (
+                not _is_sqlite_locked_error(exc)
+                and not isinstance(exc, LifecycleBindingChangedError)
+                and not isinstance(exc, LifecyclePublicationConflictError)
+            ):
+                raise
+            fallback = state.working_messages
+            context_is_assembled = False
+            if state.leaf_passes or state.dropped_replayed_scaffold_messages:
+                fallback = self._assemble_committed_compaction_context(
+                    state.working_messages,
+                    state.anchor_source_messages,
+                    state.recovery_assembly_cap,
+                )
+                context_is_assembled = True
+            return "return", self._fail_open_after_publication_failure(
+                fallback,
+                exc,
+                compress_started=state._compress_started,
+                threshold_full_sweep_active=state.threshold_full_sweep_active,
+                recovery_assembly_cap=state.recovery_assembly_cap,
+                leaf_passes=state.leaf_passes,
+                condensation_passes=state.pre_leaf_condensation_passes,  # #653: completed pre-leaf passes
+                context_is_assembled=context_is_assembled,
+            )
+        return "next", None
+
+
+    def _advance_after_leaf(
+        self, state: _CompressionState, leaf: _LeafState,
+        sweep_step_done: Callable[[str, float], float],
+    ) -> tuple[Literal["next", "break", "continue", "return"], Optional[List[Dict[str, Any]]]]:
+        """Advance the committed leaf and choose the next loop transfer."""
+        self._last_compacted_store_id = leaf.published_frontier
+        self._compress_host_rows_consumed += leaf.selected_raw_len
+        self._compress_hidden_rows_consumed += len(leaf.compacted_chunk) - len(leaf.compacted_positions)
+        self._invalidate_rollups_for_published_node(leaf.node)
+
+        pressure_remaining_messages = state.pressure_messages[leaf.leading_anchor_count + leaf.selected_raw_len:]
+        state.working_messages = state.working_messages[:leaf.leading_anchor_count] + leaf.remaining_messages
+        state.pressure_messages = state.pressure_messages[:leaf.leading_anchor_count] + pressure_remaining_messages
+        state.leaf_compacted_this_turn, state.no_call_only, state.refused_input = True, False, None
+        state.budget.progress, state.budget.leaves = state.budget.progress or "leaf", state.budget.leaves + 1
+        self._sweep_budget_hold_until = 0.0  # #608: a stored leaf ends the hold
+        self._hung_summary_strike, self._sweep_budget_hold_turn_paced = None, False
+        self._no_progress_hold, self._no_progress_candidate = None, False  # #651: hidden-only leaves too
+        state.leaf_passes += 1
+        if leaf.prepared is not None:  # #787: a promoted pass spends no summariser pass
+            leaf_prep.promoted(str(self._store.db_path), self._conversation_id, leaf.prepared)
+            state.promoted_leaves, state.max_leaf_passes = state.promoted_leaves + 1, state.max_leaf_passes + 1
+            state.prep_freed += count_messages_tokens(leaf.source_lookup_chunk) - count_tokens(leaf.summary_text)
+        state.level3_leaves += leaf.level == 3
+        state.estimated_active_tokens = max(0, state.estimated_active_tokens - leaf.source_tokens + leaf.summary_tokens)
+        if (
+            getattr(self._config, "large_output_transcript_gc_enabled", False)
+            and leaf.source_store_ids
+        ):
+            committed_context = self._assemble_committed_compaction_context(
+                state.working_messages,
+                state.anchor_source_messages,
+                state.recovery_assembly_cap,
+            )
+            try:
+                self._maybe_gc_compacted_tool_results(
+                    leaf.compacted_chunk,
+                    leaf.source_store_ids,
+                )
+            except Exception as exc:
+                if not _is_sqlite_locked_error(exc):
+                    raise
+                return "return", self._fail_open_after_publication_failure(
+                    committed_context,
+                    exc,
+                    compress_started=state._compress_started,
+                    threshold_full_sweep_active=state.threshold_full_sweep_active,
+                    recovery_assembly_cap=state.recovery_assembly_cap,
+                    leaf_passes=state.leaf_passes,
+                    condensation_passes=state.pre_leaf_condensation_passes,
+                    context_is_assembled=True,
+                )
+
+        if leaf.prepared is not None:
+            if state.estimated_active_tokens <= state.prep_low_water:  # design §4.4, D-10: the leaf path stops at L
+                state.sweep_stop_reason = "prepared_leaves_promoted"
+                return "break", None
+            if not state.threshold_full_sweep_active:
+                return "continue", None  # the next prepared leaf, else the leaf path's own pass
+        if state.threshold_full_sweep_active:
+            leaf.leading_anchor_count = self._leading_anchor_count(state.working_messages)
+            remaining_fresh_tail_start = self._fresh_tail_start(state.working_messages)
+            remaining_raw = state.working_messages[
+                leaf.leading_anchor_count:remaining_fresh_tail_start
+            ]
+            if not remaining_raw:
+                # #597: owned hidden backlog left above the frontier is not drained; the next pass takes it
+                # (the loop's admission, deadline and pass budget still bound it).
+                step_started = time.monotonic()
+                hidden_left = self._store_complete_backlog(state.working_messages, leaf.leading_anchor_count)
+                sweep_step_done("store_complete", step_started)
+                if hidden_left:
+                    return "continue", None
+                state.sweep_raw_drained = True
+                state.sweep_stop_reason = "raw_prefix_drained"
+                return "break", None
+            return "continue", None
+
+        if not self._config.dynamic_leaf_chunk_enabled:
+            return "break", None
+
+        if not state.force_overflow:
+            if (not state.deferred_maintenance_active) and self.threshold_tokens > 0 and state.estimated_active_tokens < self.threshold_tokens:
+                return "break", None
+            leaf.leading_anchor_count = self._leading_anchor_count(state.working_messages)
+            remaining_fresh_tail_start = self._fresh_tail_start(state.working_messages)
+            remaining_raw = state.working_messages[
+                leaf.leading_anchor_count:remaining_fresh_tail_start
+            ]
+            if not remaining_raw:
+                return "break", None
+            pressure_remaining_raw = state.pressure_messages[
+                leaf.leading_anchor_count:remaining_fresh_tail_start
+            ]
+            remaining_raw_tokens = count_messages_tokens(pressure_remaining_raw)
+            remaining_threshold = self._working_leaf_chunk_tokens(remaining_raw_tokens)
+            if remaining_raw_tokens < remaining_threshold:
+                if not (state.deferred_maintenance_active and state.critical_budget_pressure):
+                    return "break", None
+        return "next", None
+
+
+    def _select_leaf_candidate(
+        self, state: _CompressionState, leaf: _LeafState,
+        dependent_reply_message_ids: set[int],
+    ) -> tuple[Literal["next", "break", "continue", "return"], Optional[List[Dict[str, Any]]]]:
+        """Select the next raw chunk and match an eligible prepared leaf."""
+        if not state.explicit_focus_topic:
+            state.focus_topic = self._derive_auto_focus_topic(state.working_messages)
+
+        candidate_raw = state.working_messages[leaf.leading_anchor_count:leaf.fresh_tail_start]
+        # #922: when assembly can repeat the current objective verbatim, a leaf
+        # containing only that prompt cannot reduce the active context.
+        # Keep filtering/publication and assistant-tail bookkeeping on their existing paths.
+        if (
+            len(candidate_raw) == 1
+            and not leaf.hidden_backlog
+            and not state.dropped_replayed_scaffold_messages
+            and any(msg.get("role") == "tool" for msg in state.working_messages[leaf.fresh_tail_start:])
+            and candidate_raw[0].get("role") == "user"
+            and self._latest_user_context_anchor(
+                state.anchor_source_messages, state.working_messages[leaf.fresh_tail_start:]
+            ) == (anchor := self._build_preserved_objective_summary_part(candidate_raw[0]))
+            and (
+                # Forced-overflow recovery assembles under the smaller recovery cap.
+                (cap := state.recovery_assembly_cap if state.recovery_assembly_cap is not None
+                 else self._effective_assembly_token_cap()) is None
+                or (
+                    count_messages_tokens(state.working_messages[:leaf.leading_anchor_count])
+                    + count_message_tokens({"role": "user", "content": anchor})
+                    + count_messages_tokens(state.working_messages[leaf.fresh_tail_start:])
+                    <= cap
+                )
+            )
+        ):
+            self._objective_only_noop = True
+            state.noop_reason = "no eligible raw backlog outside fresh tail"
+            if state.threshold_full_sweep_active:
+                state.sweep_raw_drained = True
+                state.sweep_stop_reason = "raw_prefix_drained"
+            return "break", None
+        if not candidate_raw and not leaf.hidden_backlog:  # #581: owned hidden backlog is scheduled, not a no-op
+            leaf.hidden_backlog = self._store_complete_backlog(state.working_messages, leaf.leading_anchor_count, leaf.copy_lookup)
+        if not candidate_raw and not leaf.hidden_backlog:
+            if self._maybe_engage_fresh_tail_pressure_yield(
+                state.pressure_messages,
+                state.observed_prompt_tokens,
+                eligible_tokens=0,
+            ):
+                return "continue", None
+            state.noop_reason = "no eligible raw backlog outside fresh tail"
+            if state.threshold_full_sweep_active:
+                state.sweep_raw_drained = True
+                state.sweep_stop_reason = "raw_prefix_drained"
+            return "break", None
+
+        pressure_candidate_raw = state.pressure_messages[leaf.leading_anchor_count:leaf.fresh_tail_start]
+        raw_tokens_outside_tail = count_messages_tokens(pressure_candidate_raw)
+        if leaf.hidden_backlog:
+            leaf.to_compact = []
+        elif state.threshold_full_sweep_active:
+            working_leaf_chunk_tokens = self._working_leaf_chunk_tokens(
+                raw_tokens_outside_tail
+            )
+            leaf.to_compact = self._select_oldest_leaf_chunk(
+                candidate_raw,
+                working_leaf_chunk_tokens,
+            )
+        elif self._config.dynamic_leaf_chunk_enabled:
+            working_leaf_chunk_tokens = self._working_leaf_chunk_tokens(raw_tokens_outside_tail)
+            # An armed pressure yield waives the leaf-chunk minimum: the
+            # whole point of the yield is progress, and the freed backlog
+            # can legitimately be smaller than one configured chunk.
+            if (
+                raw_tokens_outside_tail < working_leaf_chunk_tokens
+                and not state.force_overflow
+                and self._pressure_yield_tail_token_limit <= 0
+                and not state.fit_would_strand
+            ):
+                if not (state.deferred_maintenance_active and state.critical_budget_pressure):
+                    if self._maybe_engage_fresh_tail_pressure_yield(
+                        state.pressure_messages,
+                        state.observed_prompt_tokens,
+                        eligible_tokens=raw_tokens_outside_tail,
+                    ):
+                        return "continue", None
+                    state.noop_reason = (
+                        "raw backlog outside fresh tail is below leaf chunk threshold"
+                    )
+                    return "break", None
+            if state.force_overflow:
+                leaf.to_compact = candidate_raw
+            else:
+                leaf.to_compact = self._select_oldest_leaf_chunk(candidate_raw, working_leaf_chunk_tokens)
+        else:
+            if (
+                raw_tokens_outside_tail < self._working_leaf_chunk_tokens(raw_tokens_outside_tail)
+                and not state.force_overflow
+                and self._pressure_yield_tail_token_limit <= 0
+                and not state.fit_would_strand
+            ):
+                if not (state.deferred_maintenance_active and state.critical_budget_pressure):
+                    if self._maybe_engage_fresh_tail_pressure_yield(
+                        state.pressure_messages,
+                        state.observed_prompt_tokens,
+                        eligible_tokens=raw_tokens_outside_tail,
+                    ):
+                        return "continue", None
+                    state.noop_reason = (
+                        "raw backlog outside fresh tail is below leaf chunk threshold"
+                    )
+                    return "break", None
+            if state.force_overflow:
+                leaf.to_compact = candidate_raw
+            elif self._pressure_yield_tail_token_limit > 0:
+                leaf.to_compact = self._select_oldest_leaf_chunk(
+                    candidate_raw,
+                    max(1, int(self._config.leaf_chunk_tokens)),
+                )
+            else:  # #605 D2: one leaf is bounded, so its call fits the time budget (40% of a known window at most)
+                ceiling = max(int(self._config.leaf_chunk_tokens), int(self._config.dynamic_leaf_chunk_max))
+                window_cap = self._context_aware_leaf_cap()
+                leaf.to_compact = self._select_oldest_leaf_chunk(
+                    candidate_raw, max(1, min(ceiling, window_cap) if window_cap else ceiling))
+
+        if not leaf.to_compact and not leaf.hidden_backlog:
+            state.noop_reason = "no eligible leaf chunk selected"
+            return "break", None
+        state.budget.selected = True  # #1162: a chunk is selected; a pass that then stores no leaf counts
+        leaf.to_compact = self._identity_anchor_extend_chunk(leaf.to_compact, candidate_raw)  # #563
+        leaf.prepared = None
+        if state.prep_enabled and leaf.to_compact and not (leaf.hidden_backlog or state.force_overflow or state.no_call_only):
+            match = self._match_prepared_leaf(candidate_raw, state.working_messages, leaf.publication_excluded_store_ids,
+                                              dependent_reply_message_ids, state.estimated_active_tokens,
+                                              raw_tokens_outside_tail)
+            if match is not None:
+                leaf.prepared, leaf.to_compact, state.prep_low_water = match
+        return "next", None
+
+
+    def _prepare_leaf_input(
+        self, state: _CompressionState, leaf: _LeafState,
+        dependent_reply_message_ids: set[int], sweep_step_done: Callable[[str, float], float],
+    ) -> tuple[Literal["next", "break", "continue", "return"], Optional[List[Dict[str, Any]]]]:
+        """Build attributed summary input and reject a changed prepared chunk."""
+        leaf.selected_raw_chunk = leaf.to_compact
+        selected_input = [message for message in leaf.selected_raw_chunk if id(message) not in dependent_reply_message_ids]
+        self._store_complete_excluded, self._store_complete_cut, self._store_complete_blocked = [], False, None
+        self._store_complete_copy_exclusion_proofs = {}
+        step_started = time.monotonic() if state.threshold_full_sweep_active else 0.0
+        leaf.anchored_input = self._identity_anchor_summary_input(
+            selected_input, self._compress_run.store_ids_by_message_id, state.working_messages, leaf.selected_raw_chunk,
+            budget=max(1, int(self._config.leaf_chunk_tokens)), accounted_ids=leaf.publication_excluded_store_ids,
+            copy_lookup=leaf.copy_lookup[0] if leaf.copy_lookup else None,
+        )
+        if state.threshold_full_sweep_active and sweep_step_done("identity_anchor", step_started) >= state.sweep_deadline:
+            state.sweep_stop_reason = "time_budget_exhausted"
+            return "break", None
+        if leaf.anchored_input == []:  # #581: the oldest owned row above the frontier is a retained occurrence
+            blocked = self._store_complete_blocked  # #1162: name it
+            state.noop_reason = _RETAINED_NOOP_REASON + (
+                " (store_id=%d role=%s kind=%s)" % blocked[:3] if blocked else "")
+            return "break", None
+        leaf.publication_excluded_store_ids.extend(self._store_complete_excluded)
+        leaf_map = self._compress_run.store_ids_by_message_id or {}
+        if not any(claims for _message, claims in leaf.anchored_input or ()) and not any(
+            id(message) in leaf_map for message in leaf.selected_raw_chunk
+        ) and not self._get_store_ids_for_messages(leaf.selected_raw_chunk, leaf_map):
+            self._warn_unattributed_leaf(leaf.selected_raw_chunk)  # #1147 r1: refuse before the first call.
+            state.noop_reason, state.unattributed_leaf_refused = "selected leaf chunk lacks raw store lineage", True
+            return "break", None
+        leaf.summary_input_chunk, leaf.sources, leaf.anchor_claims = self._leaf_summary_input(leaf.anchored_input, selected_input)
+        if leaf.prepared is not None and (not leaf.summary_input_chunk or tuple(self._leaf_consumption(
+                leaf.selected_raw_chunk, leaf.summary_input_chunk, leaf.sources, leaf.anchored_input, leaf.anchor_claims,
+                dependent_reply_message_ids)[3:]) != (list(leaf.prepared.covered_store_ids),) * 2):
+            self._reject_prepared_chain(leaf.prepared, "host_unit_split")  # the pass reruns on its own chunk
+            return "continue", None
+        return "next", None
+
+
     def _compress_impl(self, messages: List[Dict[str, Any]],
                        current_tokens: int = None,
                        focus_topic: Optional[str] = None,
@@ -2396,7 +3107,6 @@ class CompactionMixin:
             return result
         working_messages = state.working_messages
         ingest_cleanup_changed_active_context = state.ingest_cleanup_changed_active_context
-        fit_would_strand = state.fit_would_strand
         action, result = self._prepare_compression_sweep(state, messages, force, recovery_attempt)
         if action == "return":
             return result
@@ -2494,12 +3204,7 @@ class CompactionMixin:
                 continue
             if action == "return":
                 return result
-            fresh_tail_start = leaf.fresh_tail_start
             leading_anchor_count = leaf.leading_anchor_count
-            publication_excluded_store_ids = leaf.publication_excluded_store_ids
-            filter_exclusion_proofs = leaf.filter_exclusion_proofs
-            hidden_backlog = leaf.hidden_backlog
-            copy_lookup = leaf.copy_lookup
 
             action, result = self._filter_leaf_backlog(
                 state, leaf, dependent_reply_message_ids, sweep_step_done,
@@ -2515,631 +3220,192 @@ class CompactionMixin:
                 continue
             if action == "return":
                 return result
-            fresh_tail_start = leaf.fresh_tail_start
 
             # Auto-derive focus topic from the post-filter compaction view when
             # not explicitly provided.  The derived focus is summarizer-visible,
             # so it must follow the same ignored-message filtering as the leaf
             # chunk itself.
-            if not explicit_focus_topic:
-                focus_topic = self._derive_auto_focus_topic(working_messages)
-
-            candidate_raw = working_messages[leading_anchor_count:fresh_tail_start]
-            # #922: when assembly can repeat the current objective verbatim, a leaf
-            # containing only that prompt cannot reduce the active context.
-            # Keep filtering/publication and assistant-tail bookkeeping on their existing paths.
-            if (
-                len(candidate_raw) == 1
-                and not hidden_backlog
-                and not dropped_replayed_scaffold_messages
-                and any(msg.get("role") == "tool" for msg in working_messages[fresh_tail_start:])
-                and candidate_raw[0].get("role") == "user"
-                and self._latest_user_context_anchor(
-                    anchor_source_messages, working_messages[fresh_tail_start:]
-                ) == (anchor := self._build_preserved_objective_summary_part(candidate_raw[0]))
-                and (
-                    # Forced-overflow recovery assembles under the smaller recovery cap.
-                    (cap := recovery_assembly_cap if recovery_assembly_cap is not None
-                     else self._effective_assembly_token_cap()) is None
-                    or (
-                        count_messages_tokens(working_messages[:leading_anchor_count])
-                        + count_message_tokens({"role": "user", "content": anchor})
-                        + count_messages_tokens(working_messages[fresh_tail_start:])
-                        <= cap
-                    )
-                )
-            ):
-                self._objective_only_noop = True
-                noop_reason = "no eligible raw backlog outside fresh tail"
-                if threshold_full_sweep_active:
-                    sweep_raw_drained = True
-                    sweep_stop_reason = "raw_prefix_drained"
+            state.explicit_focus_topic = explicit_focus_topic
+            state.focus_topic = focus_topic
+            state.prep_enabled = prep_enabled
+            state.prep_low_water = prep_low_water
+            state.sweep_raw_drained = sweep_raw_drained
+            action, result = self._select_leaf_candidate(state, leaf, dependent_reply_message_ids)
+            focus_topic = state.focus_topic
+            noop_reason = state.noop_reason
+            sweep_stop_reason = state.sweep_stop_reason
+            sweep_raw_drained = state.sweep_raw_drained
+            prep_low_water = state.prep_low_water
+            if action == "break":
                 break
-            if not candidate_raw and not hidden_backlog:  # #581: owned hidden backlog is scheduled, not a no-op
-                hidden_backlog = self._store_complete_backlog(working_messages, leading_anchor_count, copy_lookup)
-            if not candidate_raw and not hidden_backlog:
-                if self._maybe_engage_fresh_tail_pressure_yield(
-                    pressure_messages,
-                    observed_prompt_tokens,
-                    eligible_tokens=0,
-                ):
-                    continue
-                noop_reason = "no eligible raw backlog outside fresh tail"
-                if threshold_full_sweep_active:
-                    sweep_raw_drained = True
-                    sweep_stop_reason = "raw_prefix_drained"
-                break
-
-            pressure_candidate_raw = pressure_messages[leading_anchor_count:fresh_tail_start]
-            raw_tokens_outside_tail = count_messages_tokens(pressure_candidate_raw)
-            if hidden_backlog:
-                to_compact = []
-            elif threshold_full_sweep_active:
-                working_leaf_chunk_tokens = self._working_leaf_chunk_tokens(
-                    raw_tokens_outside_tail
-                )
-                to_compact = self._select_oldest_leaf_chunk(
-                    candidate_raw,
-                    working_leaf_chunk_tokens,
-                )
-            elif self._config.dynamic_leaf_chunk_enabled:
-                working_leaf_chunk_tokens = self._working_leaf_chunk_tokens(raw_tokens_outside_tail)
-                # An armed pressure yield waives the leaf-chunk minimum: the
-                # whole point of the yield is progress, and the freed backlog
-                # can legitimately be smaller than one configured chunk.
-                if (
-                    raw_tokens_outside_tail < working_leaf_chunk_tokens
-                    and not force_overflow
-                    and self._pressure_yield_tail_token_limit <= 0
-                    and not fit_would_strand
-                ):
-                    if not (deferred_maintenance_active and critical_budget_pressure):
-                        if self._maybe_engage_fresh_tail_pressure_yield(
-                            pressure_messages,
-                            observed_prompt_tokens,
-                            eligible_tokens=raw_tokens_outside_tail,
-                        ):
-                            continue
-                        noop_reason = (
-                            "raw backlog outside fresh tail is below leaf chunk threshold"
-                        )
-                        break
-                if force_overflow:
-                    to_compact = candidate_raw
-                else:
-                    to_compact = self._select_oldest_leaf_chunk(candidate_raw, working_leaf_chunk_tokens)
-            else:
-                if (
-                    raw_tokens_outside_tail < self._working_leaf_chunk_tokens(raw_tokens_outside_tail)
-                    and not force_overflow
-                    and self._pressure_yield_tail_token_limit <= 0
-                    and not fit_would_strand
-                ):
-                    if not (deferred_maintenance_active and critical_budget_pressure):
-                        if self._maybe_engage_fresh_tail_pressure_yield(
-                            pressure_messages,
-                            observed_prompt_tokens,
-                            eligible_tokens=raw_tokens_outside_tail,
-                        ):
-                            continue
-                        noop_reason = (
-                            "raw backlog outside fresh tail is below leaf chunk threshold"
-                        )
-                        break
-                if force_overflow:
-                    to_compact = candidate_raw
-                elif self._pressure_yield_tail_token_limit > 0:
-                    to_compact = self._select_oldest_leaf_chunk(
-                        candidate_raw,
-                        max(1, int(self._config.leaf_chunk_tokens)),
-                    )
-                else:  # #605 D2: one leaf is bounded, so its call fits the time budget (40% of a known window at most)
-                    ceiling = max(int(self._config.leaf_chunk_tokens), int(self._config.dynamic_leaf_chunk_max))
-                    window_cap = self._context_aware_leaf_cap()
-                    to_compact = self._select_oldest_leaf_chunk(
-                        candidate_raw, max(1, min(ceiling, window_cap) if window_cap else ceiling))
-
-            if not to_compact and not hidden_backlog:
-                noop_reason = "no eligible leaf chunk selected"
-                break
-            budget.selected = True  # #1162: a chunk is selected; a pass that then stores no leaf counts
-            to_compact = self._identity_anchor_extend_chunk(to_compact, candidate_raw)  # #563
-            prepared = None
-            if prep_enabled and to_compact and not (hidden_backlog or force_overflow or no_call_only):
-                match = self._match_prepared_leaf(candidate_raw, working_messages, publication_excluded_store_ids,
-                                                  dependent_reply_message_ids, estimated_active_tokens,
-                                                  raw_tokens_outside_tail)
-                if match is not None:
-                    prepared, to_compact, prep_low_water = match
-
-            selected_raw_chunk = to_compact
-            selected_input = [message for message in selected_raw_chunk if id(message) not in dependent_reply_message_ids]
-            self._store_complete_excluded, self._store_complete_cut, self._store_complete_blocked = [], False, None
-            self._store_complete_copy_exclusion_proofs = {}
-            step_started = time.monotonic() if threshold_full_sweep_active else 0.0
-            anchored_input = self._identity_anchor_summary_input(
-                selected_input, self._compress_run.store_ids_by_message_id, working_messages, selected_raw_chunk,
-                budget=max(1, int(self._config.leaf_chunk_tokens)), accounted_ids=publication_excluded_store_ids,
-                copy_lookup=copy_lookup[0] if copy_lookup else None,
-            )
-            if threshold_full_sweep_active and sweep_step_done("identity_anchor", step_started) >= sweep_deadline:
-                sweep_stop_reason = "time_budget_exhausted"
-                break
-            if anchored_input == []:  # #581: the oldest owned row above the frontier is a retained occurrence
-                blocked = self._store_complete_blocked  # #1162: name it
-                noop_reason = _RETAINED_NOOP_REASON + (
-                    " (store_id=%d role=%s kind=%s)" % blocked[:3] if blocked else "")
-                break
-            publication_excluded_store_ids.extend(self._store_complete_excluded)
-            leaf_map = self._compress_run.store_ids_by_message_id or {}
-            if not any(claims for _message, claims in anchored_input or ()) and not any(
-                id(message) in leaf_map for message in selected_raw_chunk
-            ) and not self._get_store_ids_for_messages(selected_raw_chunk, leaf_map):
-                self._warn_unattributed_leaf(selected_raw_chunk)  # #1147 r1: refuse before the first call.
-                noop_reason, unattributed_leaf_refused = "selected leaf chunk lacks raw store lineage", True
-                break
-            summary_input_chunk, sources, anchor_claims = self._leaf_summary_input(anchored_input, selected_input)
-            if prepared is not None and (not summary_input_chunk or tuple(self._leaf_consumption(
-                    selected_raw_chunk, summary_input_chunk, sources, anchored_input, anchor_claims,
-                    dependent_reply_message_ids)[3:]) != (list(prepared.covered_store_ids),) * 2):
-                self._reject_prepared_chain(prepared, "host_unit_split")  # the pass reruns on its own chunk
+            if action == "continue":
                 continue
-            if not summary_input_chunk:
-                compacted_chunk = selected_raw_chunk
-                source_tokens = count_messages_tokens(selected_raw_chunk)
-                summary_text = (
-                    "Filtered replies derived from ignored messages.\n"
-                    "[Expand for details: ignored-dependent reply]"
-                )
-                _level = 0
-                _rescue_attempts = 0
-            else:
-                if no_call_only:
-                    serialized, clipped = self._serialize_messages_with_clip(summary_input_chunk)
-                    if self._summary_route_stop_applies(force_overflow, None if clipped else serialized):
-                        sweep_stop_reason = "summary_route_unavailable"
-                        break
-                # Pre-compaction extraction: best-effort, never blocks compaction.
-                # Use the same dependency-filtered view as summarization so ignored
-                # turns cannot leak through derived assistant/tool replies.
-                if self._config.extraction_enabled:
-                    # #1122: reserve the next admit's floor/estimate and timeout-handling overhead.
-                    est = budget.estimate(self._primary_summary_route())
-                    extraction_deadline = (
-                        budget.usable_deadline
-                        - max(est, _THRESHOLD_FULL_SWEEP_MIN_CALL_SECONDS)
-                        - _EXTRACTION_HEADROOM_SECONDS
-                    )
-                    if budget.progress and budget.soft > 0:
-                        extraction_deadline = min(
-                            extraction_deadline, budget.t0 + budget.soft - est - _EXTRACTION_HEADROOM_SECONDS
-                        )
-                    extraction_deadline = min(extraction_deadline, sweep_deadline)
-                    span_started = time.monotonic()
-                    try:
-                        self._run_pre_compaction_extraction(summary_input_chunk, deadline=extraction_deadline)
-                    finally:
-                        self._pre_leaf_span("extraction", span_started)
-                if bool(
-                    getattr(
-                        self._config,
-                        "assertion_extraction_enabled",
-                        False,
-                    )
-                ):
-                    self._schedule_pre_compaction_assertions(summary_input_chunk)
+            if action == "return":
+                return result
+            prepared = leaf.prepared
 
-                self._end_pre_leaf_phase(budget, "first_leaf")
-                step_started = time.monotonic() if threshold_full_sweep_active else 0.0
-                self._last_leaf_level_3_verbatim = False
-                self._last_leaf_content_filter_error = False
-                try:
-                    full_map = self._compress_run.store_ids_by_message_id  # #1147 r1: use the full pass lineage.
-                    self._leaf_rescue_admit = lambda chunk: any(anchor_claims.get(id(m)) for m in chunk) or bool(
-                        self._get_store_ids_for_messages([sources.get(id(m), m) for m in chunk], full_map))
-                    summary_kwargs: dict[str, Any] = {"focus_topic": focus_topic}
-                    if threshold_full_sweep_active:
-                        summary_kwargs["deadline"] = sweep_deadline
-                    (
-                        compacted_chunk,
-                        source_tokens,
-                        summary_text,
-                        _level,
-                        _rescue_attempts,
-                    ) = (self._summarize_leaf_chunk_with_rescue if prepared is None
-                         else self._prepared_leaf_summary(prepared))(
-                        summary_input_chunk,
-                        **summary_kwargs,
-                    )
-                except Exception as exc:
-                    if isinstance(exc, SweepBudgetExhausted):
-                        sweep_stop_reason = exc.reason  # #608: a stop, with or without a leaf (#605: or soft; any path)
-                        break
-                    if isinstance(exc, UnattributedRescueRefused):  # #1147 r1: a safe no-op, before another call.
-                        self._warn_unattributed_leaf(summary_input_chunk)
-                        noop_reason, unattributed_leaf_refused = "selected leaf chunk lacks raw store lineage", True
-                        break
-                    if threshold_full_sweep_active and leaf_compacted_this_turn:
-                        sweep_stop_reason = "leaf_summary_error"
-                        logger.warning(
-                            "LCM threshold full sweep stopped after %d persisted leaf pass(es): %s",
-                            leaf_passes,
-                            exc,
-                        )
-                        break
-                    raise
-                finally:
-                    self._leaf_rescue_admit = None  # #1147 r1: the rescue hook lives for this call only
-                    if threshold_full_sweep_active:
-                        sweep_step_done("summariser", step_started)
-                # #652: no truncated level 3 leaf while the fit can rescue; the backlog stays. A level 3 that
-                # is the whole source (it already fits the truncation budget) loses nothing and is written.
-                if _level == 3 and self._fit_can_rescue(force_overflow) and not (
-                        self._last_leaf_level_3_verbatim or self._last_leaf_content_filter_error):
-                    sweep_stop_reason = "summary_result_rejected"
-                    break
-            compacted_chunk, compacted_positions, source_lookup_chunk, source_store_ids, consumed_store_ids = (
-                self._leaf_consumption(selected_raw_chunk, compacted_chunk, sources, anchored_input, anchor_claims,
-                                       dependent_reply_message_ids))
-            selected_raw_len = len(source_lookup_chunk)
-            remaining_messages = working_messages[leading_anchor_count + selected_raw_len:]
-            source_tokens = count_messages_tokens(source_lookup_chunk)
-            if not consumed_store_ids:  # #1141: oldest-prefix rescue can discard the last durable source.
-                self._warn_unattributed_leaf(compacted_chunk)  # #1147 r1: keep the publication backstop.
-                noop_reason, unattributed_leaf_refused = "selected leaf chunk lacks raw store lineage", True
+            state.unattributed_leaf_refused = unattributed_leaf_refused
+            action, result = self._prepare_leaf_input(state, leaf, dependent_reply_message_ids, sweep_step_done)
+            sweep_stop_reason = state.sweep_stop_reason
+            noop_reason = state.noop_reason
+            unattributed_leaf_refused = state.unattributed_leaf_refused
+            if action == "break":
                 break
-            earliest_at, latest_at = self._store.get_time_bounds(source_store_ids)
-            summary_tokens = count_tokens(summary_text)
-
-            node = SummaryNode(
-                session_id=self._session_id,
-                depth=0,
-                summary=summary_text,
-                token_count=summary_tokens,
-                source_token_count=source_tokens,
-                source_ids=source_store_ids,
-                source_type="messages",
-                created_at=time.time(),
-                earliest_at=earliest_at,
-                latest_at=latest_at,
-                expand_hint=self._extract_expand_hint(summary_text),
-            )
-            published_frontier = (
-                max(consumed_store_ids) if consumed_store_ids else 0
-            )
-            publication_state = self._lifecycle.get_by_conversation(
-                self._conversation_id
-            )
-            expected_frontier = int(
-                getattr(publication_state, "current_frontier_store_id", 0)
-            )
-            carried_ranges = self._load_compression_carry_ranges()
-            filter_exclusion_proofs = self._stored_publication_filter_exclusions(
-                expected_frontier,
-                published_frontier,
-                consumed_store_ids,
-                filter_exclusion_proofs,
-                carried_ranges,
-            )
-            publication_excluded_store_ids.extend(filter_exclusion_proofs)
+            if action == "continue":
+                continue
+            if action == "return":
+                return result
+            selected_raw_chunk = leaf.selected_raw_chunk
+            anchored_input = leaf.anchored_input
+            summary_input_chunk = leaf.summary_input_chunk
+            sources = leaf.sources
+            anchor_claims = leaf.anchor_claims
+            state.focus_topic = focus_topic
+            state.leaf_compacted_this_turn = leaf_compacted_this_turn
+            state.leaf_passes = leaf_passes
+            state.noop_reason = noop_reason
+            state.sweep_stop_reason = sweep_stop_reason
+            state.unattributed_leaf_refused = unattributed_leaf_refused
+            leaf.summary_input_chunk = summary_input_chunk
+            leaf.selected_raw_chunk = selected_raw_chunk
+            leaf.prepared = prepared
+            leaf.sources = sources
+            leaf.anchor_claims = anchor_claims
+            action, result = self._summarize_selected_leaf(state, leaf, sweep_step_done)
+            sweep_stop_reason = state.sweep_stop_reason
+            noop_reason = state.noop_reason
+            unattributed_leaf_refused = state.unattributed_leaf_refused
+            if action == "break":
+                break
+            if action == "continue":
+                continue
+            if action == "return":
+                return result
+            _level = leaf.level
+            _rescue_attempts = leaf.rescue_attempts
+            leaf.anchored_input = anchored_input
+            action, result = self._build_leaf_publication(state, leaf, dependent_reply_message_ids)
+            noop_reason = state.noop_reason
+            unattributed_leaf_refused = state.unattributed_leaf_refused
+            if action == "break":
+                break
+            if action == "continue":
+                continue
+            if action == "return":
+                return result
             # The frontier consumes every durable row removed from the active
             # prefix, including trailing dependent replies. Summary lineage
             # excludes those replies; their durable ledger drives replay cleanup.
-            try:
-                self._publish_leaf_node(
-                    node,
-                    level=_level,
-                    model=self._take_leaf_summary_model(),
-                    expected_frontier=expected_frontier,
-                    consumed_store_ids=consumed_store_ids,
-                    publication_excluded_store_ids=publication_excluded_store_ids,
-                    filter_exclusion_proofs=filter_exclusion_proofs,
-                    carried_ranges=carried_ranges,
-                    before_publication=None if prepared is None else self._prepared_leaf_revalidation(prepared),
-                )
-            except Exception as exc:
-                if prepared is not None:  # #787: counted by reason; a failed revalidation reruns the pass
-                    if isinstance(exc, leaf_prep.PromotionRejected):
-                        self._reject_prepared_chain(prepared, exc.reason)
-                        continue
-                    if isinstance(exc, (LifecycleBindingChangedError, LifecyclePublicationConflictError)):
-                        self._reject_prepared_chain(prepared, "binding_changed" if isinstance(
-                            exc, LifecycleBindingChangedError) else "frontier_moved" if "frontier generation changed"
-                            in str(exc) else "fence_conflict")
-                if (
-                    not _is_sqlite_locked_error(exc)
-                    and not isinstance(exc, LifecycleBindingChangedError)
-                    and not isinstance(exc, LifecyclePublicationConflictError)
-                ):
-                    raise
-                fallback = working_messages
-                context_is_assembled = False
-                if leaf_passes or dropped_replayed_scaffold_messages:
-                    fallback = self._assemble_committed_compaction_context(
-                        working_messages,
-                        anchor_source_messages,
-                        recovery_assembly_cap,
-                    )
-                    context_is_assembled = True
-                return self._fail_open_after_publication_failure(
-                    fallback,
-                    exc,
-                    compress_started=_compress_started,
-                    threshold_full_sweep_active=threshold_full_sweep_active,
-                    recovery_assembly_cap=recovery_assembly_cap,
-                    leaf_passes=leaf_passes,
-                    condensation_passes=pre_leaf_condensation_passes,  # #653: completed pre-leaf passes
-                    context_is_assembled=context_is_assembled,
-                )
-            self._last_compacted_store_id = published_frontier
-            self._compress_host_rows_consumed += selected_raw_len
-            self._compress_hidden_rows_consumed += len(compacted_chunk) - len(compacted_positions)
-            self._invalidate_rollups_for_published_node(node)
-
-            pressure_remaining_messages = pressure_messages[leading_anchor_count + selected_raw_len:]
-            working_messages = working_messages[:leading_anchor_count] + remaining_messages
-            pressure_messages = pressure_messages[:leading_anchor_count] + pressure_remaining_messages
-            leaf_compacted_this_turn, no_call_only, refused_input = True, False, None
-            budget.progress, budget.leaves = budget.progress or "leaf", budget.leaves + 1
-            self._sweep_budget_hold_until = 0.0  # #608: a stored leaf ends the hold
-            self._hung_summary_strike, self._sweep_budget_hold_turn_paced = None, False
-            self._no_progress_hold, self._no_progress_candidate = None, False  # #651: hidden-only leaves too
-            leaf_passes += 1
-            if prepared is not None:  # #787: a promoted pass spends no summariser pass
-                leaf_prep.promoted(str(self._store.db_path), self._conversation_id, prepared)
-                promoted_leaves, max_leaf_passes = promoted_leaves + 1, max_leaf_passes + 1
-                prep_freed += count_messages_tokens(source_lookup_chunk) - count_tokens(summary_text)
-            level3_leaves += _level == 3
-            estimated_active_tokens = max(0, estimated_active_tokens - source_tokens + summary_tokens)
-            if (
-                getattr(self._config, "large_output_transcript_gc_enabled", False)
-                and source_store_ids
-            ):
-                committed_context = self._assemble_committed_compaction_context(
-                    working_messages,
-                    anchor_source_messages,
-                    recovery_assembly_cap,
-                )
-                try:
-                    self._maybe_gc_compacted_tool_results(
-                        compacted_chunk,
-                        source_store_ids,
-                    )
-                except Exception as exc:
-                    if not _is_sqlite_locked_error(exc):
-                        raise
-                    return self._fail_open_after_publication_failure(
-                        committed_context,
-                        exc,
-                        compress_started=_compress_started,
-                        threshold_full_sweep_active=threshold_full_sweep_active,
-                        recovery_assembly_cap=recovery_assembly_cap,
-                        leaf_passes=leaf_passes,
-                        condensation_passes=pre_leaf_condensation_passes,
-                        context_is_assembled=True,
-                    )
-
-            if prepared is not None:
-                if estimated_active_tokens <= prep_low_water:  # design §4.4, D-10: the leaf path stops at L
-                    sweep_stop_reason = "prepared_leaves_promoted"
-                    break
-                if not threshold_full_sweep_active:
-                    continue  # the next prepared leaf, else the leaf path's own pass
-            if threshold_full_sweep_active:
-                leading_anchor_count = self._leading_anchor_count(working_messages)
-                remaining_fresh_tail_start = self._fresh_tail_start(working_messages)
-                remaining_raw = working_messages[
-                    leading_anchor_count:remaining_fresh_tail_start
-                ]
-                if not remaining_raw:
-                    # #597: owned hidden backlog left above the frontier is not drained; the next pass takes it
-                    # (the loop's admission, deadline and pass budget still bound it).
-                    step_started = time.monotonic()
-                    hidden_left = self._store_complete_backlog(working_messages, leading_anchor_count)
-                    sweep_step_done("store_complete", step_started)
-                    if hidden_left:
-                        continue
-                    sweep_raw_drained = True
-                    sweep_stop_reason = "raw_prefix_drained"
-                    break
-                continue
-
-            if not self._config.dynamic_leaf_chunk_enabled:
+            state._compress_started = _compress_started
+            state.anchor_source_messages = anchor_source_messages
+            state.dropped_replayed_scaffold_messages = dropped_replayed_scaffold_messages
+            state.leaf_passes = leaf_passes
+            state.pre_leaf_condensation_passes = pre_leaf_condensation_passes
+            state.recovery_assembly_cap = recovery_assembly_cap
+            state.threshold_full_sweep_active = threshold_full_sweep_active
+            state.working_messages = working_messages
+            action, result = self._publish_selected_leaf(state, leaf)
+            if action == "break":
                 break
+            if action == "continue":
+                continue
+            if action == "return":
+                return result
+            state._compress_started = _compress_started
+            state.anchor_source_messages = anchor_source_messages
+            state.budget = budget
+            state.critical_budget_pressure = critical_budget_pressure
+            state.deferred_maintenance_active = deferred_maintenance_active
+            state.estimated_active_tokens = estimated_active_tokens
+            state.force_overflow = force_overflow
+            state.leaf_compacted_this_turn = leaf_compacted_this_turn
+            state.leaf_passes = leaf_passes
+            state.level3_leaves = level3_leaves
+            state.max_leaf_passes = max_leaf_passes
+            state.no_call_only = no_call_only
+            state.pre_leaf_condensation_passes = pre_leaf_condensation_passes
+            state.prep_freed = prep_freed
+            state.prep_low_water = prep_low_water
+            state.pressure_messages = pressure_messages
+            state.promoted_leaves = promoted_leaves
+            state.recovery_assembly_cap = recovery_assembly_cap
+            state.refused_input = refused_input
+            state.sweep_raw_drained = sweep_raw_drained
+            state.sweep_stop_reason = sweep_stop_reason
+            state.threshold_full_sweep_active = threshold_full_sweep_active
+            state.working_messages = working_messages
+            leaf.leading_anchor_count = leading_anchor_count
+            action, result = self._advance_after_leaf(state, leaf, sweep_step_done)
+            estimated_active_tokens = state.estimated_active_tokens
+            leading_anchor_count = leaf.leading_anchor_count
+            leaf_compacted_this_turn = state.leaf_compacted_this_turn
+            leaf_passes = state.leaf_passes
+            level3_leaves = state.level3_leaves
+            max_leaf_passes = state.max_leaf_passes
+            no_call_only = state.no_call_only
+            prep_freed = state.prep_freed
+            pressure_messages = state.pressure_messages
+            promoted_leaves = state.promoted_leaves
+            refused_input = state.refused_input
+            sweep_raw_drained = state.sweep_raw_drained
+            sweep_stop_reason = state.sweep_stop_reason
+            working_messages = state.working_messages
+            if action == "break":
+                break
+            if action == "continue":
+                continue
+            if action == "return":
+                return result
 
-            if not force_overflow:
-                if (not deferred_maintenance_active) and self.threshold_tokens > 0 and estimated_active_tokens < self.threshold_tokens:
-                    break
-                leading_anchor_count = self._leading_anchor_count(working_messages)
-                remaining_fresh_tail_start = self._fresh_tail_start(working_messages)
-                remaining_raw = working_messages[
-                    leading_anchor_count:remaining_fresh_tail_start
-                ]
-                if not remaining_raw:
-                    break
-                pressure_remaining_raw = pressure_messages[
-                    leading_anchor_count:remaining_fresh_tail_start
-                ]
-                remaining_raw_tokens = count_messages_tokens(pressure_remaining_raw)
-                remaining_threshold = self._working_leaf_chunk_tokens(remaining_raw_tokens)
-                if remaining_raw_tokens < remaining_threshold:
-                    if not (deferred_maintenance_active and critical_budget_pressure):
-                        break
+        state.promoted_leaves = promoted_leaves
+        state.prep_freed = prep_freed
+        state.prep_low_water = prep_low_water
+        state.estimated_active_tokens = estimated_active_tokens
+        state.budget = budget
+        state.leaf_compacted_this_turn = leaf_compacted_this_turn
+        state.no_call_only = no_call_only
+        state.sweep_stop_reason = sweep_stop_reason
+        state.sweep_raw_drained = sweep_raw_drained
+        state.working_messages = working_messages
+        state.pressure_messages = pressure_messages
+        state.dropped_replayed_scaffold_messages = dropped_replayed_scaffold_messages
+        state.refused_input = refused_input
+        state.threshold_full_sweep_active = threshold_full_sweep_active
+        state.leaf_passes = leaf_passes
+        state.max_leaf_passes = max_leaf_passes
+        state.noop_reason = noop_reason
+        state.force_overflow = force_overflow
+        self._settle_leaf_stop(state, warn_rejected)
+        working_messages = state.working_messages
+        pressure_messages = state.pressure_messages
+        dropped_replayed_scaffold_messages = state.dropped_replayed_scaffold_messages
+        sweep_stop_reason = state.sweep_stop_reason
+        sweep_raw_drained = state.sweep_raw_drained
+        noop_reason = state.noop_reason
 
-        if promoted_leaves:
-            logger.info("LCM promoted %d prepared leaves: tokens_freed=%d low_water=%d at_low_water=%s",
-                        promoted_leaves, prep_freed, int(prep_low_water), estimated_active_tokens <= prep_low_water)
-        self._end_pre_leaf_phase(budget, "leaf" if leaf_compacted_this_turn else "stopped")
-        if no_call_only:  # #628: this pass stored no leaf while every route is refused
-            sweep_stop_reason, sweep_raw_drained = "summary_route_unavailable", False
-            # review of #723: and returns the list it started with (no scaffold or ignored-backlog edit of its own)
-            working_messages, pressure_messages, dropped_replayed_scaffold_messages = refused_input
-        if (
-            threshold_full_sweep_active
-            and not sweep_raw_drained
-            and not sweep_stop_reason
-            and leaf_passes >= max_leaf_passes
-        ):
-            sweep_stop_reason = "pass_budget_exhausted"
-
-        if sweep_stop_reason == "summary_route_unavailable":
-            seconds_left = self._summary_route_seconds_left()
-            logger.warning(
-                "LCM compaction stopped: summary route unavailable (circuit open, %ds left); %d leaves written, "
-                "backlog kept",
-                seconds_left,
-                leaf_passes,
-            )
-            if not leaf_compacted_this_turn:
-                noop_reason = "summary route unavailable"
-                self._start_sweep_budget_hold(seconds_left, turn_paced=(
-                    self._sweep_budget_hold_turn_paced
-                    and self._sweep_budget_hold_active()
-                    and self._hung_summary_strike is not None
-                    and self._hung_summary_strike[0] == self._hold_conversation_key()
-                ))
-        elif sweep_stop_reason == "summary_result_rejected":
-            warn_rejected()
-            if not leaf_compacted_this_turn:
-                noop_reason = "summary result rejected"
-
-        if budget.hung_route is not None:
-            first_hang = (
-                self._hung_summary_strike is None
-                or self._hung_summary_strike[0] != self._hold_conversation_key())
-            if not first_hang:
-                # #1369: even an exempt forced retry consumes the pending turn-end release.
-                self._sweep_budget_hold_turn_paced = False
-            if not force_overflow:
-                if first_hang:
-                    self._hung_summary_strike = (self._hold_conversation_key(), budget.hung_route)
-                if self._hung_summary_route_has_fallback(budget):
-                    self._no_progress_candidate = False  # let the next automatic pass try the fallback
-                    logger.info(
-                        "LCM skipping sweep budget hold: hung summary route %s opened its circuit; "
-                        "fallback route available", budget.hung_route,
-                    )
-                else:
-                    if first_hang:
-                        self._no_progress_candidate = False
-                    self._start_sweep_budget_hold(turn_paced=first_hang)
-
-        if not leaf_compacted_this_turn:
-            if pre_leaf_condensation_reason == "summary_result_rejected":
-                warn_rejected()
-            if sweep_stop_reason == "time_budget_exhausted":
-                noop_reason = "threshold sweep time budget spent before the first leaf"
-                logger.warning(
-                    "LCM threshold sweep spent its time budget before the first leaf: %.1fs (budget %.0fs); steps: %s",
-                    time.monotonic() - budget.t0,
-                    budget.hard,
-                    ", ".join(f"{step}={seconds:.1f}s" for step, seconds in sweep_step_seconds.items()),
-                )
-                if (not force_overflow and pre_leaf_condensation_passes == 0
-                        and budget.hung_route is None):  # #909: stored condensation is progress
-                    self._start_sweep_budget_hold()
-            self._refresh_raw_backlog_debt(
-                working_messages,
-                observed_tokens=observed_prompt_tokens,
-            )
-            if force_overflow and len(messages) >= 1:
-                leading_anchor_count = self._leading_anchor_count(working_messages)
-                compressed = self._assemble_overflow_recovery_context(
-                    working_messages[0] if leading_anchor_count else None,
-                    working_messages[leading_anchor_count:],
-                    assembly_cap_override=recovery_assembly_cap,
-                    **(
-                        {"retained_user_message": working_messages[1]}
-                        if leading_anchor_count == 2
-                        else {}
-                    ),
-                )
-                return self._finalize_forced_overflow_result(
-                    working_messages,
-                    compressed,
-                    assembly_cap_override=recovery_assembly_cap,
-                    ingest_cleanup_changed_active_context=ingest_cleanup_changed_active_context,
-                )
-            active_context_messages = self._drop_preexisting_generated_ignored_dependent_eof_replies(
-                working_messages,
-                preexisting_dependent_reply_records,
-            )
-            if dropped_replayed_scaffold_messages:
-                leading_anchor_count = self._leading_anchor_count(active_context_messages)
-                if resumed_ahead == 1 and leading_anchor_count == 1 and active_context_messages[1].get("role") == "user":
-                    leading_anchor_count = 2  # #457: attempt 1's retained anchor, kept, goes back ahead of its summary
-                anchor_leading_count = self._leading_anchor_count(anchor_source_messages)
-                self._pending_context_anchor_messages = anchor_source_messages[anchor_leading_count:]
-                try:
-                    sanitized_messages = self._assemble_context(
-                        active_context_messages[0] if leading_anchor_count else None,
-                        active_context_messages[leading_anchor_count:],
-                        assembly_cap_override=recovery_assembly_cap,
-                        **(
-                            {"retained_user_message": active_context_messages[1]}
-                            if leading_anchor_count == 2
-                            else {}
-                        ),
-                    )
-                finally:
-                    self._pending_context_anchor_messages = None
-            else:
-                sanitized_messages = self._sanitize_active_context_messages(
-                    active_context_messages,
-                    insert_missing_tool_stubs=False,
-                )
-            if sanitized_messages != working_messages or ingest_cleanup_changed_active_context:
-                # _ingest_messages() already advanced the cursor to the original
-                # active-context length. If the host continues from a sanitized
-                # or reassembled context, keeping the old cursor could make the
-                # next appended messages look already ingested. This applies to
-                # content-only cleanup as well as dropped-message cleanup.
-                self._ingest_cursor = len(sanitized_messages)
-                # A resumed committed prefix returns that compaction's output.
-                self._last_compression_status = "compacted" if resumed_prefix else "sanitized"
-                if unattributed_leaf_refused:  # #1147: the refusal reason stays visible
-                    self._last_compression_noop_reason = noop_reason
-                    self._note_fresh_tail_pressure_relieved()
-                elif noop_reason.startswith(_RETAINED_NOOP_REASON):  # #1162: no leaf; the reason stays visible
-                    self._last_compression_noop_reason = noop_reason
-                    logger.info("LCM compression no-op: %s", noop_reason)
-                else:
-                    self._last_compression_noop_reason = ""
-                    self._note_fresh_tail_pressure_relieved()
-            else:
-                if dropped_replayed_scaffold_messages:
-                    # The active context changed even though no new leaf node was
-                    # written. Keep the cursor aligned with the returned context
-                    # so the next appended turn is ingested instead of skipped.
-                    self._ingest_cursor = len(sanitized_messages)
-                self._last_compression_status = "noop"
-                self._last_compression_noop_reason = noop_reason
-                hidden_label = self._hidden_backlog_label()
-                logger.info("LCM compression no-op: %s%s", noop_reason,
-                            f", hidden_rows={hidden_label}" if hidden_label is not None else "")
-            if threshold_full_sweep_active:
-                duration_ms = (time.perf_counter() - _compress_started) * 1000.0
-                # #605: a stored pre-leaf condensation is progress, so its stop is a partial one, not a no-op.
-                condensed_then_stopped = (
-                    pre_leaf_condensation_passes > 0
-                    and sweep_stop_reason in _THRESHOLD_FULL_SWEEP_PARTIAL_STOP_REASONS
-                )
-                self._last_threshold_full_sweep = {
-                    **self._last_threshold_full_sweep,
-                    "status": "partial" if condensed_then_stopped else "noop",
-                    "duration_ms": round(duration_ms, 3),
-                    "stop_reason": sweep_stop_reason or noop_reason,
-                    "budget_exhausted": sweep_stop_reason
-                    in {"pass_budget_exhausted", "time_budget_exhausted"},
-                    **self._hidden_backlog_status(),
-                }
-            self._write_generated_ignored_placeholder_hash_counts(
-                self._generated_placeholder_digest_budget_for_active_replay(sanitized_messages)
-            )
-            self._write_generated_ignored_placeholder_hash_ordinals(
-                self._generated_placeholder_digest_ordinals_for_active_replay(sanitized_messages)
-            )
-            return sanitized_messages
+        state.leaf_compacted_this_turn = leaf_compacted_this_turn
+        state.pre_leaf_condensation_reason = pre_leaf_condensation_reason
+        state.sweep_stop_reason = sweep_stop_reason
+        state.noop_reason = noop_reason
+        state.budget = budget
+        state.sweep_step_seconds = sweep_step_seconds
+        state.force_overflow = force_overflow
+        state.pre_leaf_condensation_passes = pre_leaf_condensation_passes
+        state.working_messages = working_messages
+        state.observed_prompt_tokens = observed_prompt_tokens
+        state.recovery_assembly_cap = recovery_assembly_cap
+        state.ingest_cleanup_changed_active_context = ingest_cleanup_changed_active_context
+        state.preexisting_dependent_reply_records = preexisting_dependent_reply_records
+        state.dropped_replayed_scaffold_messages = dropped_replayed_scaffold_messages
+        state.resumed_ahead = resumed_ahead
+        state.anchor_source_messages = anchor_source_messages
+        state.resumed_prefix = resumed_prefix
+        state.unattributed_leaf_refused = unattributed_leaf_refused
+        state.threshold_full_sweep_active = threshold_full_sweep_active
+        state._compress_started = _compress_started
+        transfer, returned = self._finish_without_leaf(state, messages, warn_rejected)
+        if transfer == "return":
+            return returned
 
         state._compress_started = _compress_started
         state.anchor_source_messages = anchor_source_messages
