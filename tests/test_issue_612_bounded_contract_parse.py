@@ -67,7 +67,6 @@ def test_t1_a_valid_reply_is_unchanged_and_tolerates_nothing():
 # -- T2: everything else is still rejected, naming the failed check -------------------------------------------
 
 @pytest.mark.parametrize(("reply", "expected"), [
-    (PLAIN_BODY, "envelope"),
     (f'<lcm-summary nonce="{"f" * 32}">\n{PLAIN_BODY}\n{CLOSE}', "envelope"),
     (f"preamble\n{OPEN}\n{PLAIN_BODY}\n{CLOSE}", "envelope"),
     (f"{OPEN}\n{OPEN}\n{PLAIN_BODY}\n{CLOSE}", "nonce_count"),
@@ -86,7 +85,7 @@ def test_t1_a_valid_reply_is_unchanged_and_tolerates_nothing():
     (f"{OPEN}\n{LINES}\n**{HINT}*\n{CLOSE}", "closing_hint"),
     (f"{OPEN}\n{LINES}\n\"\"{HINT}\"\"\"\n{CLOSE}", "closing_hint"),
     (f"{OPEN}\n{LINES}\n{'_' * 50_000}\n{CLOSE}", "closing_hint"),
-], ids=["no-envelope", "wrong-nonce", "outside-text", "two-opening-tags", "closer-lcm",
+], ids=["wrong-nonce", "outside-text", "two-opening-tags", "closer-lcm",
         "closer-not-last", "short-body", "missing-hint", "hint-not-last", "unbalanced-quote", "placeholder-echo",
         "placeholder-only", "wrapper-short-body", "wrapper-missing-hint", "nested-wrapper", "label-without-space",
         "unequal-emphasis", "unequal-quotes", "long-rule-line"])

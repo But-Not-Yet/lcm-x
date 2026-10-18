@@ -545,6 +545,49 @@ def _plain_expand_hint(line: str) -> str:
     return "Expand for details about: " + candidate.split(":", 1)[1].strip()
 
 
+def _strip_summary_placeholder_echo(body: str) -> tuple[str, bool]:
+    """Drop echoed ``<summary body ...>`` placeholder lines from a summary body.
+
+    The contract template shows the placeholder line between the envelope tags, and quantized models
+    echo it verbatim into their reply. Returns ``(cleaned_body, stripped_any)``; the caller decides
+    whether the echo is tolerated, because the envelope-less path already tolerates it under
+    ``missing_envelope`` while the opening-tag path names it ``summary_wrapper``.
+    """
+    lines = body.splitlines()
+    kept = [line for line in lines if not line.lstrip().startswith("<summary body")]
+    return "\n".join(kept).strip(), len(kept) != len(lines)
+
+
+def _check_envelopeless_summary(stripped: str, max_tokens: int) -> tuple[str, str, tuple[str, ...]]:
+    """Judge a reply that never opened the envelope by its content alone.
+
+    A model that follows a competing output-format instruction (the mandatory skeleton in
+    LCM_CUSTOM_INSTRUCTIONS) drops the envelope while still producing a full summary, so the hijack
+    decision moves to the content gates: the envelope is a test paper, never a storage format -- the
+    deterministic L3 fallback already persists envelope-less summaries through
+    ``_truncate_text_to_tokens``. Echoed prompt furniture is removed first: the ``<summary body ...>``
+    placeholder line and a trailing orphan ``</lcm-summary>``/``</summary>``.
+    """
+    body, _ = _strip_summary_placeholder_echo(stripped)
+    kept = body.splitlines()
+    while kept and kept[-1].strip() in ("</lcm-summary>", "</summary>"):
+        kept.pop()
+    body = "\n".join(kept).strip()
+    minimum_body_tokens = max(4, min(16, max(1, int(max_tokens) // 16)))
+    if count_tokens(body) < minimum_body_tokens:
+        return "", "short_body", ()
+    raw_last_line = body.splitlines()[-1]
+    if not _SUMMARY_EXPAND_HINT_RE.fullmatch(raw_last_line.strip()):
+        plain = _plain_expand_hint(raw_last_line.strip())
+        if not plain:
+            return "", "closing_hint", ()
+        body = body[: len(body) - len(raw_last_line)] + plain
+        if count_tokens(body) < minimum_body_tokens:
+            # Accept a decorated reply only if its plain form would be accepted.
+            return "", "short_body", ()
+    return body, "", ("missing_envelope",)
+
+
 def _normalize_expand_hint(line: str) -> tuple[str, list[str]]:
     tags = []
     for pattern, replacement, tag in (
@@ -586,8 +629,12 @@ def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[
     ``<summary>`` wrapper around the whole body, one layer of quotes or emphasis on the closing hint, and
     ``unclosed_envelope`` (#1163). A missing closer is safe because it carries no nonce and the closing-hint check
     still anchors the body; it is not accepted when a closer appears anywhere after the opener (text written past
-    a closed envelope) or when the body holds any tag-like token or a reasoning header line (an unclosed reasoning block). The
-    nonce opening tag, its uniqueness, the body minimum and a recognised closing hint are still required.
+    a closed envelope) or when the body holds any tag-like token or a reasoning header line (an unclosed reasoning block).
+    A reply with no opening tag at all is judged by the content gates alone (``missing_envelope``): the envelope is a
+    test paper, never a storage format, and a competing output-format instruction drops it while the body stays a
+    real summary -- the deterministic L3 fallback persists envelope-less bodies too. Any nonce-bearing opening tag
+    outside the leading position stays a hard rejection, so the exact-nonce anti-injection core is untouched.
+    The nonce opening tag, its uniqueness, the body minimum and a recognised closing hint are still required.
     """
     if not nonce:
         return content, "", ()
@@ -595,6 +642,15 @@ def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[
     closing_tag = "</lcm-summary>"
     tolerated: list[str] = []
     stripped = content.strip()
+    if not stripped.startswith(opening_tag):
+        # Content gates decide a reply that never opened the envelope: a competing output-format
+        # instruction drops the envelope while still producing a full summary, and the deterministic
+        # L3 fallback already persists envelope-less bodies. Any nonce-bearing opening tag outside
+        # the leading position is a wrong nonce or text outside the envelope -- both stay a hard
+        # rejection, so the anti-injection core (exact nonce, exactly one opener) is untouched.
+        if "<lcm-summary nonce=" in stripped:
+            return "", "envelope", ()
+        return _check_envelopeless_summary(stripped, max_tokens)
     if not stripped.endswith(closing_tag) and stripped.endswith("</summary>"):
         closing_tag = "</summary>"
         tolerated.append("summary_closer")
@@ -620,6 +676,26 @@ def _check_summary_contract(content: str, nonce: str, max_tokens: int) -> tuple[
         return "", "envelope" if unclosed_envelope else "nonce_count", ()
     body = stripped[len(opening_tag) :].strip() if unclosed_envelope else (
         stripped[len(opening_tag) : -len(closing_tag)].strip())
+    # Symmetric with the envelope-less path: strip an echoed ``<summary body ...>`` placeholder line.
+    # When the echo opened a ``</summary>`` the slice did not consume (the outer closer was
+    # ``</lcm-summary>``), the orphan line is stripped too -- but only alongside an echo and only when
+    # a non-empty body remains, so a body that legitimately ends in a lone ``</summary>`` under an
+    # ``</lcm-summary>`` closer is never mis-stripped, and the #612 literal-``<summary>`` wrapper
+    # tolerance below keeps handling its shape untouched.
+    stripped_body, echo_stripped = _strip_summary_placeholder_echo(body)
+    if not stripped_body:
+        # An echo-only body keeps its pre-strip shape: the placeholder line itself fails the
+        # Expand-line gate, exactly as the #612 "placeholder-only" case always did.
+        echo_stripped = False
+    else:
+        body = stripped_body
+        if echo_stripped:
+            tolerated.append("summary_wrapper")
+            body_lines = body.splitlines()
+            if body_lines and body_lines[-1].strip() == "</summary>":
+                remainder = "\n".join(body_lines[:-1]).strip()
+                if remainder:
+                    body = remainder
     wrapper = _SUMMARY_WRAPPER_RE.match(body)
     if wrapper and "<summary>" not in wrapper.group("inner") and "</summary>" not in wrapper.group("inner"):
         body = wrapper.group("inner").strip()
