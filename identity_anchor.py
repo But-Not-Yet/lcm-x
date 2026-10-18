@@ -451,13 +451,16 @@ class IdentityAnchorMixin:
 
         Candidates already have today's content identity, verified scope and single-consumption filter.
         A tolerated copy keeps its stamp, so it cannot independently prove the next carried copy.
+        The host folds consecutive user content only: the predecessor and its match must be user rows,
+        the stamp must move forward, and an identical predecessor text gives no positional proof.
         """
-        if (not chain or messages[idx].get("message_uid") or messages[idx].get("role") != "user"
+        if (idx < 1 or not chain or messages[idx].get("message_uid") or messages[idx].get("role") != "user"
                 or len(previous) != 1 or stamps.get(idx - 1) is None or stamps.get(idx) is None
-                or stamps[idx - 1] == stamps[idx]):
+                or stamps[idx] <= stamps[idx - 1] or messages[idx - 1].get("role") != "user"
+                or messages[idx - 1].get("content") == messages[idx].get("content")):
             return []
         prior = previous[0]
-        if prior.get("observed_at") != stamps[idx - 1] and not null_bound:
+        if prior.get("role") != "user" or prior.get("observed_at") != stamps[idx - 1] and not null_bound:
             return []
         return [row for row in copies if int(row["store_id"]) == int(prior["store_id"]) + 1
                 and row.get("observed_at") == stamps[idx - 1]]

@@ -50,11 +50,12 @@ def test_rotation_replay_then_fresh_repeat(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("guard", ["accepted", "ancestry", "gap", "previous-unproven", "null",
-                                   "equal-stamp", "consumed", "content", "uid", "consecutive"])
+                                   "equal-stamp", "consumed", "content", "uid", "consecutive",
+                                   "assistant-predecessor", "backward-stamp"])
 def test_carry_tolerance_requires_every_proof(tmp_path: Path, guard: str) -> None:
     """Exercise the audit plan on real storage; each missing proof stores the uncertain occurrence."""
     lineage(tmp_path, guard != "ancestry")
-    previous = message("previous", 10.)
+    previous = message("previous", 10., "assistant" if guard == "assistant-predecessor" else "user")
     current = message("current", 20.)
     with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
         engine.ingest([previous])
@@ -68,6 +69,8 @@ def test_carry_tolerance_requires_every_proof(tmp_path: Path, guard: str) -> Non
             previous = message("previous", 9.)
         if guard == "equal-stamp":
             current = message("current", 10.)
+        if guard == "backward-stamp":
+            current = message("current", 5.)
         if guard == "content":
             current = message("different", 20.)
         if guard == "uid":
@@ -87,6 +90,19 @@ def test_carry_tolerance_requires_every_proof(tmp_path: Path, guard: str) -> Non
             assert len(view) - 1 not in plan.get("matched", {})
         matched = [int(row["store_id"]) for rows in plan.get("matched", {}).values() for row in rows]
         assert len(matched) == len(set(matched))
+
+
+def test_identical_predecessor_text_gives_no_carry_proof(tmp_path: Path) -> None:
+    """Stored A@10, B@10, B@10 and view A@10, B@10, B@20: the fresh B@20 is stored, not absorbed."""
+    lineage(tmp_path)
+    with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
+        engine.ingest([message("first", 10.)])
+        engine.on_session_start("child", platform="cli", context_length=128000, conversation_id="conv")
+        engine.ingest([message("same", 10.), message("same", 10.)])
+        view = [message("first", 10.), message("same", 10.), message("same", 20.)]
+        plan = engine._identity_anchor_prematch(view, view, len(view), 0)
+        assert plan["cursor"] <= len(view) - 1
+        assert len(view) - 1 not in plan.get("matched", {})
 
 
 def test_fresh_repeat_immediately_after_same_text(tmp_path: Path) -> None:
