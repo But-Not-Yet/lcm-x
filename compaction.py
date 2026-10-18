@@ -2793,6 +2793,107 @@ class CompactionMixin:
             )
         return "next", None
 
+    def _advance_after_leaf(
+        self, state: _CompressionState, leaf: _LeafState,
+        sweep_step_done: Callable[[str, float], float],
+    ) -> tuple[Literal["next", "break", "continue", "return"], Optional[List[Dict[str, Any]]]]:
+        """Advance the committed leaf and choose the next loop transfer."""
+        self._last_compacted_store_id = leaf.published_frontier
+        self._compress_host_rows_consumed += leaf.selected_raw_len
+        self._compress_hidden_rows_consumed += len(leaf.compacted_chunk) - len(leaf.compacted_positions)
+        self._invalidate_rollups_for_published_node(leaf.node)
+
+        pressure_remaining_messages = state.pressure_messages[leaf.leading_anchor_count + leaf.selected_raw_len:]
+        state.working_messages = state.working_messages[:leaf.leading_anchor_count] + leaf.remaining_messages
+        state.pressure_messages = state.pressure_messages[:leaf.leading_anchor_count] + pressure_remaining_messages
+        state.leaf_compacted_this_turn, state.no_call_only, state.refused_input = True, False, None
+        state.budget.progress, state.budget.leaves = state.budget.progress or "leaf", state.budget.leaves + 1
+        self._sweep_budget_hold_until = 0.0  # #608: a stored leaf ends the hold
+        self._hung_summary_strike, self._sweep_budget_hold_turn_paced = None, False
+        self._no_progress_hold, self._no_progress_candidate = None, False  # #651: hidden-only leaves too
+        state.leaf_passes += 1
+        if leaf.prepared is not None:  # #787: a promoted pass spends no summariser pass
+            leaf_prep.promoted(str(self._store.db_path), self._conversation_id, leaf.prepared)
+            state.promoted_leaves, state.max_leaf_passes = state.promoted_leaves + 1, state.max_leaf_passes + 1
+            state.prep_freed += count_messages_tokens(leaf.source_lookup_chunk) - count_tokens(leaf.summary_text)
+        state.level3_leaves += leaf.level == 3
+        state.estimated_active_tokens = max(0, state.estimated_active_tokens - leaf.source_tokens + leaf.summary_tokens)
+        if (
+            getattr(self._config, "large_output_transcript_gc_enabled", False)
+            and leaf.source_store_ids
+        ):
+            committed_context = self._assemble_committed_compaction_context(
+                state.working_messages,
+                state.anchor_source_messages,
+                state.recovery_assembly_cap,
+            )
+            try:
+                self._maybe_gc_compacted_tool_results(
+                    leaf.compacted_chunk,
+                    leaf.source_store_ids,
+                )
+            except Exception as exc:
+                if not _is_sqlite_locked_error(exc):
+                    raise
+                return "return", self._fail_open_after_publication_failure(
+                    committed_context,
+                    exc,
+                    compress_started=state._compress_started,
+                    threshold_full_sweep_active=state.threshold_full_sweep_active,
+                    recovery_assembly_cap=state.recovery_assembly_cap,
+                    leaf_passes=state.leaf_passes,
+                    condensation_passes=state.pre_leaf_condensation_passes,
+                    context_is_assembled=True,
+                )
+
+        if leaf.prepared is not None:
+            if state.estimated_active_tokens <= state.prep_low_water:  # design §4.4, D-10: the leaf path stops at L
+                state.sweep_stop_reason = "prepared_leaves_promoted"
+                return "break", None
+            if not state.threshold_full_sweep_active:
+                return "continue", None  # the next prepared leaf, else the leaf path's own pass
+        if state.threshold_full_sweep_active:
+            leaf.leading_anchor_count = self._leading_anchor_count(state.working_messages)
+            remaining_fresh_tail_start = self._fresh_tail_start(state.working_messages)
+            remaining_raw = state.working_messages[
+                leaf.leading_anchor_count:remaining_fresh_tail_start
+            ]
+            if not remaining_raw:
+                # #597: owned hidden backlog left above the frontier is not drained; the next pass takes it
+                # (the loop's admission, deadline and pass budget still bound it).
+                step_started = time.monotonic()
+                hidden_left = self._store_complete_backlog(state.working_messages, leaf.leading_anchor_count)
+                sweep_step_done("store_complete", step_started)
+                if hidden_left:
+                    return "continue", None
+                state.sweep_raw_drained = True
+                state.sweep_stop_reason = "raw_prefix_drained"
+                return "break", None
+            return "continue", None
+
+        if not self._config.dynamic_leaf_chunk_enabled:
+            return "break", None
+
+        if not state.force_overflow:
+            if (not state.deferred_maintenance_active) and self.threshold_tokens > 0 and state.estimated_active_tokens < self.threshold_tokens:
+                return "break", None
+            leaf.leading_anchor_count = self._leading_anchor_count(state.working_messages)
+            remaining_fresh_tail_start = self._fresh_tail_start(state.working_messages)
+            remaining_raw = state.working_messages[
+                leaf.leading_anchor_count:remaining_fresh_tail_start
+            ]
+            if not remaining_raw:
+                return "break", None
+            pressure_remaining_raw = state.pressure_messages[
+                leaf.leading_anchor_count:remaining_fresh_tail_start
+            ]
+            remaining_raw_tokens = count_messages_tokens(pressure_remaining_raw)
+            remaining_threshold = self._working_leaf_chunk_tokens(remaining_raw_tokens)
+            if remaining_raw_tokens < remaining_threshold:
+                if not (state.deferred_maintenance_active and state.critical_budget_pressure):
+                    return "break", None
+        return "next", None
+
     def _compress_impl(self, messages: List[Dict[str, Any]],
                        current_tokens: int = None,
                        focus_topic: Optional[str] = None,
@@ -3128,9 +3229,6 @@ class CompactionMixin:
                 continue
             if action == "return":
                 return result
-            compacted_chunk = leaf.compacted_chunk
-            source_tokens = leaf.source_tokens
-            summary_text = leaf.summary_text
             _level = leaf.level
             _rescue_attempts = leaf.rescue_attempts
             leaf.anchored_input = anchored_input
@@ -3143,16 +3241,6 @@ class CompactionMixin:
                 continue
             if action == "return":
                 return result
-            compacted_chunk = leaf.compacted_chunk
-            compacted_positions = leaf.compacted_positions
-            source_lookup_chunk = leaf.source_lookup_chunk
-            source_store_ids = leaf.source_store_ids
-            selected_raw_len = leaf.selected_raw_len
-            remaining_messages = leaf.remaining_messages
-            source_tokens = leaf.source_tokens
-            summary_tokens = leaf.summary_tokens
-            node = leaf.node
-            published_frontier = leaf.published_frontier
             # The frontier consumes every durable row removed from the active
             # prefix, including trailing dependent replies. Summary lineage
             # excludes those replies; their durable ledger drives replay cleanup.
@@ -3171,100 +3259,51 @@ class CompactionMixin:
                 continue
             if action == "return":
                 return result
-            self._last_compacted_store_id = published_frontier
-            self._compress_host_rows_consumed += selected_raw_len
-            self._compress_hidden_rows_consumed += len(compacted_chunk) - len(compacted_positions)
-            self._invalidate_rollups_for_published_node(node)
-
-            pressure_remaining_messages = pressure_messages[leading_anchor_count + selected_raw_len:]
-            working_messages = working_messages[:leading_anchor_count] + remaining_messages
-            pressure_messages = pressure_messages[:leading_anchor_count] + pressure_remaining_messages
-            leaf_compacted_this_turn, no_call_only, refused_input = True, False, None
-            budget.progress, budget.leaves = budget.progress or "leaf", budget.leaves + 1
-            self._sweep_budget_hold_until = 0.0  # #608: a stored leaf ends the hold
-            self._hung_summary_strike, self._sweep_budget_hold_turn_paced = None, False
-            self._no_progress_hold, self._no_progress_candidate = None, False  # #651: hidden-only leaves too
-            leaf_passes += 1
-            if prepared is not None:  # #787: a promoted pass spends no summariser pass
-                leaf_prep.promoted(str(self._store.db_path), self._conversation_id, prepared)
-                promoted_leaves, max_leaf_passes = promoted_leaves + 1, max_leaf_passes + 1
-                prep_freed += count_messages_tokens(source_lookup_chunk) - count_tokens(summary_text)
-            level3_leaves += _level == 3
-            estimated_active_tokens = max(0, estimated_active_tokens - source_tokens + summary_tokens)
-            if (
-                getattr(self._config, "large_output_transcript_gc_enabled", False)
-                and source_store_ids
-            ):
-                committed_context = self._assemble_committed_compaction_context(
-                    working_messages,
-                    anchor_source_messages,
-                    recovery_assembly_cap,
-                )
-                try:
-                    self._maybe_gc_compacted_tool_results(
-                        compacted_chunk,
-                        source_store_ids,
-                    )
-                except Exception as exc:
-                    if not _is_sqlite_locked_error(exc):
-                        raise
-                    return self._fail_open_after_publication_failure(
-                        committed_context,
-                        exc,
-                        compress_started=_compress_started,
-                        threshold_full_sweep_active=threshold_full_sweep_active,
-                        recovery_assembly_cap=recovery_assembly_cap,
-                        leaf_passes=leaf_passes,
-                        condensation_passes=pre_leaf_condensation_passes,
-                        context_is_assembled=True,
-                    )
-
-            if prepared is not None:
-                if estimated_active_tokens <= prep_low_water:  # design §4.4, D-10: the leaf path stops at L
-                    sweep_stop_reason = "prepared_leaves_promoted"
-                    break
-                if not threshold_full_sweep_active:
-                    continue  # the next prepared leaf, else the leaf path's own pass
-            if threshold_full_sweep_active:
-                leading_anchor_count = self._leading_anchor_count(working_messages)
-                remaining_fresh_tail_start = self._fresh_tail_start(working_messages)
-                remaining_raw = working_messages[
-                    leading_anchor_count:remaining_fresh_tail_start
-                ]
-                if not remaining_raw:
-                    # #597: owned hidden backlog left above the frontier is not drained; the next pass takes it
-                    # (the loop's admission, deadline and pass budget still bound it).
-                    step_started = time.monotonic()
-                    hidden_left = self._store_complete_backlog(working_messages, leading_anchor_count)
-                    sweep_step_done("store_complete", step_started)
-                    if hidden_left:
-                        continue
-                    sweep_raw_drained = True
-                    sweep_stop_reason = "raw_prefix_drained"
-                    break
-                continue
-
-            if not self._config.dynamic_leaf_chunk_enabled:
+            state._compress_started = _compress_started
+            state.anchor_source_messages = anchor_source_messages
+            state.budget = budget
+            state.critical_budget_pressure = critical_budget_pressure
+            state.deferred_maintenance_active = deferred_maintenance_active
+            state.estimated_active_tokens = estimated_active_tokens
+            state.force_overflow = force_overflow
+            state.leaf_compacted_this_turn = leaf_compacted_this_turn
+            state.leaf_passes = leaf_passes
+            state.level3_leaves = level3_leaves
+            state.max_leaf_passes = max_leaf_passes
+            state.no_call_only = no_call_only
+            state.pre_leaf_condensation_passes = pre_leaf_condensation_passes
+            state.prep_freed = prep_freed
+            state.prep_low_water = prep_low_water
+            state.pressure_messages = pressure_messages
+            state.promoted_leaves = promoted_leaves
+            state.recovery_assembly_cap = recovery_assembly_cap
+            state.refused_input = refused_input
+            state.sweep_raw_drained = sweep_raw_drained
+            state.sweep_stop_reason = sweep_stop_reason
+            state.threshold_full_sweep_active = threshold_full_sweep_active
+            state.working_messages = working_messages
+            leaf.leading_anchor_count = leading_anchor_count
+            action, result = self._advance_after_leaf(state, leaf, sweep_step_done)
+            estimated_active_tokens = state.estimated_active_tokens
+            leading_anchor_count = leaf.leading_anchor_count
+            leaf_compacted_this_turn = state.leaf_compacted_this_turn
+            leaf_passes = state.leaf_passes
+            level3_leaves = state.level3_leaves
+            max_leaf_passes = state.max_leaf_passes
+            no_call_only = state.no_call_only
+            prep_freed = state.prep_freed
+            pressure_messages = state.pressure_messages
+            promoted_leaves = state.promoted_leaves
+            refused_input = state.refused_input
+            sweep_raw_drained = state.sweep_raw_drained
+            sweep_stop_reason = state.sweep_stop_reason
+            working_messages = state.working_messages
+            if action == "break":
                 break
-
-            if not force_overflow:
-                if (not deferred_maintenance_active) and self.threshold_tokens > 0 and estimated_active_tokens < self.threshold_tokens:
-                    break
-                leading_anchor_count = self._leading_anchor_count(working_messages)
-                remaining_fresh_tail_start = self._fresh_tail_start(working_messages)
-                remaining_raw = working_messages[
-                    leading_anchor_count:remaining_fresh_tail_start
-                ]
-                if not remaining_raw:
-                    break
-                pressure_remaining_raw = pressure_messages[
-                    leading_anchor_count:remaining_fresh_tail_start
-                ]
-                remaining_raw_tokens = count_messages_tokens(pressure_remaining_raw)
-                remaining_threshold = self._working_leaf_chunk_tokens(remaining_raw_tokens)
-                if remaining_raw_tokens < remaining_threshold:
-                    if not (deferred_maintenance_active and critical_budget_pressure):
-                        break
+            if action == "continue":
+                continue
+            if action == "return":
+                return result
 
         state.promoted_leaves = promoted_leaves
         state.prep_freed = prep_freed
