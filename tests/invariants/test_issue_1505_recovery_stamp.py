@@ -179,8 +179,8 @@ def live_rewrite(engine: Any, *, observe: bool = True) -> tuple[list[dict[str, A
 @pytest.mark.parametrize("shape", ["rotation", "cold-compress", "cold-rotation", "trim", "steer",
                                     "compression-callback", "copied-compress"])
 def test_recovery_alias_survives_delayed_replay(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shape: str) -> None:
-    pin_char_counter(monkeypatch)
-    ScriptedSummarizer("outage").install(monkeypatch)
+    pin_char_counter(monkeypatch)  # type: ignore[no-untyped-call]
+    ScriptedSummarizer("outage").install(monkeypatch)  # type: ignore[no-untyped-call]
     lineage(tmp_path)
     with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
         view, text = live_rewrite(engine)

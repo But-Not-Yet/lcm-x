@@ -315,6 +315,15 @@ class IdentityAnchorMixin:
             carried = self._identity_anchor_durable_stamp(carried, matched.get(idx - 1, ()), stamps.get(idx - 1))
             if carried:
                 self._identity_anchor_take(idx, carried, consumed, matched, plan)
+            elif any(r["row"] is messages[idx] for r in getattr(self, "_identity_anchor_recoveries", ())):
+                # No intermediate ingest: the rewritten recovery may be after the cursor already.
+                copies = [{"store_id": entry[2]} for entry in getattr(self, "_identity_anchor_recent", ())
+                          if entry[0] in [str(self._session_id), *chain] and entry[1] == identity_at(idx)
+                          and entry[2] not in consumed]
+                recovery = self._identity_anchor_recovery_stamp(messages, idx, stamps, copies, chain)
+                if recovery:
+                    plan["relations"].append(("alt_stamp", stamps[idx], recovery, None))
+                    self._identity_anchor_take(idx, recovery, consumed, matched, plan)
         if start < cursor:
             self._identity_anchor_audit(messages, identity_messages, cursor, start, stamps, identity_at, consumed, plan,
                                         matched)
@@ -408,13 +417,16 @@ class IdentityAnchorMixin:
             carried = self._identity_anchor_carried_stamp(
                 messages, idx, stamps, copies, previous, chain, distinct=_distinct_from_predecessor(identity_at, idx))
             carried = self._identity_anchor_durable_stamp(carried, previous, stamps.get(idx - 1))
-            recovery = self._identity_anchor_recovery_stamp(messages, idx, stamps, copies, chain)
+            recovery_candidates = copies
             # #1328: equal content at a different known stamp is a different occurrence.
             # A NULL copy needs independent occurrence proof before consumption or unique backfill.
             copies = [row for row in copies if row.get("observed_at") == stamps[idx]
                       or row.get("observed_at") is None and bound_null(idx, row)]
             if not copies:
-                copies = carried or recovery
+                copies = carried or self._identity_anchor_recovery_stamp(
+                    messages, idx, stamps, recovery_candidates, chain)
+                if copies and not carried:
+                    plan["relations"].append(("alt_stamp", stamps[idx], copies, None))
             if copies:
                 consumed.add(int(copies[0]["store_id"]))
                 plan.setdefault("matched", {})[idx] = [copies[0]]  # host-uid shadow only
@@ -451,55 +463,83 @@ class IdentityAnchorMixin:
     def _identity_anchor_record_recovery(self, result, emissions) -> None:
         """#1505: keep the actual published recovery object, never a displaced-occurrence mapping."""
         entries = [d for d in emissions if d.get("kind") == "recovery"]
-        previous = getattr(self, "_identity_anchor_recovery", None)
-        if len(entries) != 1 or previous and not previous.get("used"):
-            self._identity_anchor_recovery = {"blocked": True}
+        if len(entries) != 1:
             return
         idx = entries[0]["output_occurrence"]["index"]
         row = result[idx]
-        self._identity_anchor_recovery = {"row": row, "content": row["content"], "index": idx,
-                                          "session": str(self._session_id), "uid": row.get("message_uid"),
-                                          "store": self._store, "home": str(self._hermes_home),
-                                          "conversation": str(self._conversation_id),
-                                          "stamp": None, "used": False}
+        receipt = {"row": row, "content": row["content"], "index": idx,
+                   "session": str(self._session_id), "keys": self._identity_anchor_occurrence_keys(row),
+                   "store": self._store, "home": str(self._hermes_home), "conversation": str(self._conversation_id),
+                   "generation": getattr(self, "_identity_anchor_user_generation", 0), "stamp": None, "used": False}
+        receipts = list(getattr(self, "_identity_anchor_recoveries", ()))
+        for previous in receipts:
+            if (previous["row"] is row or previous["store"] is self._store
+                    and previous["generation"] == receipt["generation"]):
+                previous["blocked"] = receipt["blocked"] = True
+        self._identity_anchor_recoveries = (receipts + [receipt])[-4:]
+        self._identity_anchor_recovery = receipt
+
+    @staticmethod
+    def _identity_anchor_occurrence_keys(row) -> dict:
+        # _row_id is the host's insertion address, reassigned during compaction, not an event id.
+        return {key: value for key, value in row.items()
+                if (key.endswith("_id") or key.endswith("_uid")) and key != "_row_id"}
 
     def _identity_anchor_observe_recovery(self) -> None:
         """Capture the emitted object's own host stamp while its generated bytes still survive."""
-        receipt = getattr(self, "_identity_anchor_recovery", None)
-        if not receipt or receipt.get("blocked") or receipt.get("stamp") is not None:
-            return
-        row = receipt["row"]
-        if row.get("role") == "user" and row.get("content") == receipt["content"]:
-            receipt["stamp"] = _normalize_observed_at(row.get("timestamp"))
+        for receipt in getattr(self, "_identity_anchor_recoveries", ()):
+            if receipt.get("blocked") or receipt["used"] or receipt["stamp"] is not None:
+                continue
+            row = receipt["row"]
+            if (row.get("role") == "user" and row.get("content") == receipt["content"]
+                    and self._identity_anchor_occurrence_keys(row) == receipt["keys"]):
+                receipt["stamp"] = _normalize_observed_at(row.get("timestamp"))
 
     def _identity_anchor_recovery_stamp(self, messages, idx, stamps, copies, chain) -> list:
         """One live positional replacement of LCM's own recovery row; every uncertainty stores.
 
         Equal stamps, equal normalized text, alternate stamps and copied dicts cannot stand in for
-        the exact emitted object. Its stamp was observed before its bytes changed. Cold replays have
-        no such proof. The existing audit owns exact identity, verified scope and single consumption.
+        the exact emitted object. A stamp first seen after the rewrite additionally needs the R5
+        recent-store proof. Persist the alias through the caller's plan; cold replays use R1.
         """
-        receipt = getattr(self, "_identity_anchor_recovery", None)
-        if (not receipt or receipt.get("blocked") or receipt.get("stamp") is None
+        from .reconcile import _proof_user_identity
+
+        receipts = getattr(self, "_identity_anchor_recoveries", ())
+        own = [r for r in receipts if r["row"] is messages[idx]]
+        if len(own) != 1:
+            return []
+        receipt, stamp = own[0], stamps.get(idx)
+        if (receipt.get("blocked") or receipt["used"] or stamp is None
                 or receipt["store"] is not self._store or receipt["home"] != str(self._hermes_home)
                 or receipt["conversation"] != str(self._conversation_id)
-                or idx != receipt["index"] or messages[idx] is not receipt["row"]
-                or messages[idx].get("role") != "user" or messages[idx].get("message_uid") != receipt["uid"]
-                or stamps.get(idx) != receipt["stamp"] or len(copies) != 1):
+                or idx != receipt["index"] or messages[idx].get("role") != "user"
+                or self._identity_anchor_occurrence_keys(messages[idx]) != receipt["keys"]
+                or receipt["stamp"] is not None and stamp != receipt["stamp"] or len(copies) != 1):
             return []
         scope = [str(self._session_id), *chain]
         if receipt["session"] not in scope:
             return []
         store_id = int(copies[0]["store_id"])
+        if any(r.get("store_id") == store_id for r in receipts):
+            return []
+        if receipt["stamp"] is None:
+            identity = _proof_user_identity(self._message_replay_identity(messages[idx], strip_carrier=False))
+            recent = [entry for entry in getattr(self, "_identity_anchor_recent", ())
+                      if entry[0] in scope and _proof_user_identity(entry[1]) == identity]
+            if (len(recent) != 1 or recent[0][2] != store_id or recent[0][3] in (None, stamp)
+                    or receipt["generation"] != getattr(self, "_identity_anchor_user_generation", 0)):
+                return []
         row = self._store.get_batch([store_id]).get(store_id)
         if (not row or row.get("session_id") not in scope or row.get("role") != "user"
-                or row.get("observed_at") is None or row["observed_at"] == receipt["stamp"]):
+                or row.get("observed_at") is None or row["observed_at"] == stamp
+                or _proof_user_identity(self._message_replay_identity(row, stored_row=True))
+                != _proof_user_identity(self._message_replay_identity(messages[idx], strip_carrier=False))):
             return []
         for session in scope:
             followers = self._store.get_range(session, start_id=store_id + 1, limit=257)
             if len(followers) == 257 or any(r.get("role") not in {"assistant", "tool"} for r in followers):
                 return []
-        receipt["used"] = True
+        receipt.update(used=True, store_id=store_id, stamp=stamp)
         return [row]
 
     @staticmethod
@@ -1277,9 +1317,12 @@ class IdentityAnchorMixin:
     def _identity_anchor_remember(self, stored) -> None:
         """R5 current-turn window: (session, identity, store_id, observed_at) of user rows just stored."""
         recent = list(getattr(self, "_identity_anchor_recent", ()))
+        before = len(recent)
         for identity, store_id, message in stored:
             if identity is not None and identity[0] == "user":
                 recent.append((self._session_id, identity, int(store_id), _normalize_observed_at(message.get("timestamp"))))
+        if len(recent) > before:
+            self._identity_anchor_user_generation = getattr(self, "_identity_anchor_user_generation", 0) + 1
         self._identity_anchor_recent = recent[-_RECENT_CAP:]
 
 
