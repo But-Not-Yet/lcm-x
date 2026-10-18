@@ -44,11 +44,12 @@ ISSUES = {
     916: (("F4",), "acp-process continuity: survival projection removes the current user tag"),
     1501: (("B1", "B2"), "rotation replay after a carried host stamp, including a previous-GA store"),
     1505: (("B1", "B2"), "forced-recovery user turn stored twice after the crash and cold restart (since #1328)"),
+    1508: (("B1", "B2"), "T34 duplicate after the recovery crash on stamp-only rotation"),
     1506: (("B1", "B2"), "previous-GA composite of T12+T13 kept next to the replayed parts after the restart"),
 }
 # issue -> host-name prefixes on which its bars are declared (absent: every host); ci.gate reads it
 ISSUE_HOSTS = {821: ("r34.4-", "upstream-uid"), 861: ("ref-", "customer-", "r34.4-", "r34.10-", "upstream-uid"),
-               871: ("r34.4-", "r34.10-"), 1506: ("ref-", "floor-", "upstream-main")}
+               871: ("r34.4-", "r34.10-"), 1506: ("ref-", "floor-", "upstream-main"), 1508: ("ref-", "floor-", "upstream-main")}
 # issue -> transports on which its bars are declared (absent: every transport); ci.gate reads it
 ISSUE_TRANSPORTS = {861: ("acp-process",)}
 
@@ -193,7 +194,7 @@ def registry() -> list[dict]:
     cells = []
     for m, ip in modes():
         cells += [
-            cell(f"overflow-recovery-restart/{m}", [534, 1505], in_place=ip, turns=36,
+            cell(f"overflow-recovery-restart/{m}", [534, 1505, 1508], in_place=ip, turns=36,
                  user={"repeat_from": {"31": 1, "32": 1600, "33": 800}}, bars=["B1", "B2"], min_compactions=1,
                  summary_repeat=200,
                  tool_plan=[{"turns": [32], "calls": [{"name": "write_file", "args": {
