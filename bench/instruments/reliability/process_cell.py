@@ -411,7 +411,7 @@ class ProcessCell:
         except (AD.DriverError, OSError, ValueError) as exc:
             if self.deadline is not None and time.monotonic() >= self.deadline and not isinstance(exc, PhaseDeadline):
                 exc = PhaseDeadline(f"phase {self.phase} exceeded its {self.phase_timeout}s deadline ({exc})")
-            return {"exit": "error", "reason": f"{type(exc).__name__}: {exc}; stderr: {self.stderr_tail(150)}"[:600]}
+            return {"exit": "error", "reason": f"{f'{type(exc).__name__}: {exc}'[:280]}; stderr: {self.stderr_tail(150)}"}
         finally:
             if not closed:
                 rc = self.proc.close()
