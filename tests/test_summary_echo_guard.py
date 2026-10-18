@@ -66,9 +66,23 @@ def test_g1_non_string_is_not_a_rejection():
 
 
 def test_g2_rejection_precedes_node_write_in_compress_source():
+    # 上游重构后写入被拆进 _publish_leaf_node，_compress_impl 文本里不再有 add_node。
+    # 同一不变量在新结构下的三段等价锚点：守卫在 summarize 阶段就 break；
+    # 调用方在 publish 之前先看到 break；写入只发生在 publish 里。
+    guard_src = inspect.getsource(_c.CompactionMixin._summarize_selected_leaf)
+    echo_pos = guard_src.index("_summary_looks_like_instruction_echo(")
+    stop_pos = guard_src.index('state.sweep_stop_reason = "summary_result_rejected"', echo_pos)
+    pass_pos = guard_src.index('return "next"', stop_pos)
+    assert echo_pos < stop_pos < pass_pos, (
+        "instruction-echo rejection must set the stop reason and break BEFORE the leaf passes on"
+    )
     src = inspect.getsource(_c.CompactionMixin._compress_impl)
-    echo_pos = src.index("_summary_looks_like_instruction_echo(")
-    add_pos = src.index("self._dag.add_node(")
-    assert echo_pos < add_pos, (
-        "instruction-echo rejection must break BEFORE the summary node is written"
+    summarize_pos = src.index("_summarize_selected_leaf(")
+    publish_pos = src.index("self._publish_leaf_node(", summarize_pos)
+    assert summarize_pos < publish_pos, (
+        "the summarize call (and its echo rejection) must precede the node publication step"
+    )
+    publish_src = inspect.getsource(_c.CompactionMixin._publish_leaf_node)
+    assert "self._dag.add_node(" in publish_src, (
+        "the node write must live in the publication step that the rejection short-circuits"
     )
