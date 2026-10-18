@@ -252,6 +252,7 @@ SCENARIOS = (
     Scenario('objective-overcap-without-objective', 14, shape='objective', cap=1),
     Scenario('objective-trim', 14, shape='trim', cap=1),
     Scenario('objective-trim-parts', 14, shape='trim-parts', cap=1, depths=(0,)),
+    Scenario('objective-trim-generated', 14, shape='trim-recall', cap=1, recall=True),
     Scenario('metadata-absent', 15, depths=(0,), metadata=False),
     Scenario('metadata-present', 15, depths=(0,)),
     Scenario('trial-fold', 16, shape='fold', retained=True, depths=(0,), persist=False),
@@ -375,12 +376,17 @@ def setup(engine: Any, case: Scenario, patch: pytest.MonkeyPatch) -> tuple[Messa
         engine._pending_context_anchor_messages = [message('user', objective), *tail]
     elif case.shape == 'reply':
         engine._pending_context_anchor_messages = [message('user', 'Earlier objective'), *tail]
+    if case.shape == 'trim-recall':
+        engine._pending_context_anchor_messages = [message('user', 'Earlier objective'), *tail]
     if case.recall:
         tools: Any = importlib.import_module('hermes_lcm.tools')
         vectors: Any = importlib.import_module('hermes_lcm.vector_store')
         patch.setattr(tools, 'resolve_provider', lambda _config: Provider())
+        recall_summary = 'kanban dashboard sprint plan'
+        if case.shape == 'trim-recall':
+            recall_summary += '\n\n---\n\n' + OBJECTIVE + '\nquoted objective'
         node_id = engine._dag.add_node(dag_module.SummaryNode(
-            session_id='earlier-session', depth=0, summary='kanban dashboard sprint plan', token_count=20,
+            session_id='earlier-session', depth=0, summary=recall_summary, token_count=20,
             source_token_count=40, source_ids=[], source_type='messages', created_at=1700000000.0))
         store = vectors.VectorStore(engine._store.db_path, config=engine._config)
         try:
@@ -493,6 +499,7 @@ def observe(case: Scenario, root: Path) -> Trace:
             # Code objects are the qualified observer identity, never co_name.
             target = inspect.unwrap(engine_module.LCMEngine._assemble_context).__code__
             store_map = engine_module.LCMEngine._get_store_id_map_for_messages.__code__
+            lineage_load = inspect.unwrap(engine_module.LCMEngine._load_folded_tail_lineage).__code__
             cleanup = engine_module.LCMEngine._sanitize_active_context_messages.__code__
             visibility = engine_module._stamp_generated_model_only.__code__
             counters = {engine_module.count_message_tokens.__code__, engine_module.count_messages_tokens.__code__,
@@ -505,6 +512,7 @@ def observe(case: Scenario, root: Path) -> Trace:
                         services[method.__code__] = module_name + '.' + name
             calls: dict[int, str] = {}
             entries = 0
+            lineage_loaded: set[int] = set()
             def profile(frame: FrameType, event: str, arg: Any) -> None:
                 nonlocal entries
                 code = frame.f_code
@@ -515,16 +523,26 @@ def observe(case: Scenario, root: Path) -> Trace:
                     entries += 1
                     events.append('assembly enter rejected=' + canonical.compact(frame.f_locals.get('_reply_rejected')))
                 caller = frame.f_back
-                if (event == 'call' and code in {cleanup, visibility} and caller is not None
-                        and caller.f_code is target and 'existing_folded_lineage' in caller.f_locals
-                        and caller.f_locals.get('folded_original_tail') is not None):
+                assembly = caller
+                if (assembly is not None and assembly.f_code is not target
+                        and assembly.f_code.co_filename == target.co_filename):
+                    assembly = assembly.f_back
+                if assembly is not None and assembly.f_code is not target:
+                    assembly = None
+                if event == 'call' and code is lineage_load and assembly is not None:
+                    lineage_loaded.add(id(assembly))
+                if code is target and event == 'return':
+                    lineage_loaded.discard(id(frame))
+                if (event == 'call' and code in {cleanup, visibility} and assembly is not None
+                        and id(assembly) in lineage_loaded
+                        and assembly.f_locals.get('folded_original_tail') is not None):
                     # Fold recovery currently has no generated rows. Record the
                     # shared provenance list, including when empty: cleanup must
                     # update the same collection used by the final visibility pass.
                     generated = frame.f_locals.get('generated_rows')
                     kind = 'cleanup' if code is cleanup else 'visibility'
                     events.append(f'fold provenance {kind} ' + encoded({
-                        'assembly_owned': generated is caller.f_locals['generated_rows'],
+                        'assembly_owned': generated is assembly.f_locals['generated_rows'],
                         'rows': len(generated) if generated is not None else None,
                     }))
                 label = services.get(code)
