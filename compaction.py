@@ -119,6 +119,9 @@ class _CompressionState:
     condensation_passes: int = 0
     post_drain_condensation_skipped: str = ""
 
+    level3_leaves: int = 0
+    promoted_leaves: int = 0
+
 
 @dataclass
 class _LeafState:
@@ -2263,6 +2266,107 @@ class CompactionMixin:
 
         return "next", None
 
+    def _finish_with_leaf(
+        self, state: _CompressionState, messages: List[Dict[str, Any]], current_tokens: Optional[int],
+    ) -> List[Dict[str, Any]]:
+        # Step 7: Assemble new active context
+        self._refresh_raw_backlog_debt(
+            state.working_messages,
+            observed_tokens=state.observed_prompt_tokens,
+        )
+        compressed = state.pre_condensation_context
+        if state.condensation_passes:
+            compressed = self._assemble_committed_compaction_context(
+                state.working_messages,
+                state.anchor_source_messages,
+                state.recovery_assembly_cap,
+            )
+        self.compression_count += 1
+        self._last_compaction_duration_ms = (time.perf_counter() - state._compress_started) * 1000.0
+        logger.info(
+            "LCM leaf compaction finished in %.1fms", self._last_compaction_duration_ms
+        )
+        self._last_compression_status = "compacted"
+        self._last_compression_noop_reason = ""
+        self._note_fresh_tail_pressure_relieved()
+        if state.recovery_assembly_cap is None:
+            self._last_overflow_recovery_failed = False
+        else:
+            self._last_overflow_recovery_failed = (
+                count_messages_tokens(compressed) > state.recovery_assembly_cap + self._kept_reply_tokens(compressed))
+            if self._last_overflow_recovery_failed:
+                logger.warning(
+                    "LCM overflow recovery could not get under cap=%d after compaction; returning best-effort context (%d tokens)",
+                    state.recovery_assembly_cap,
+                    count_messages_tokens(compressed),
+                )
+        # Reset cursor to the length of the compressed context so that
+        # only messages appended *after* this point get ingested next time.
+        self._ingest_cursor = len(compressed)
+        self._ingest_cursor_needs_reconcile = False
+
+        logger.info(
+            "LCM compaction #%d: %d messages → %d (%d leaf pass%s, %d→%d tokens%s, %d DAG nodes%s%s)%s",
+            self.compression_count,
+            len(messages),
+            len(compressed),
+            state.leaf_passes,
+            "es" if state.leaf_passes != 1 else "",
+            count_messages_tokens(messages),
+            count_messages_tokens(compressed),
+            f", host_tokens={current_tokens}" if current_tokens is not None and current_tokens > 0 else "",  # #627
+            len(self._dag.get_session_nodes(self._session_id)),
+            f", {state.level3_leaves} level 3 leaves" if state.level3_leaves else "",
+            ", forced overflow recovery" if state.force_overflow else "",
+            f", hidden_rows={self._hidden_backlog_label()}" if self._last_hidden_backlog is not None else "",
+        )
+
+        # ── Active-context cleanup / tool-pair guardrail (same as _assemble_context) ──
+        # compress() output is consumed directly by the main loop in some
+        # edge cases (e.g. forced overflow recovery bypassing _assemble_context).
+        compressed = self._sanitize_active_context_messages(compressed)
+        if state.threshold_full_sweep_active:
+            total_passes = state.leaf_passes + state.pre_leaf_condensation_passes + state.condensation_passes
+            duration_ms = (time.perf_counter() - state._compress_started) * 1000.0
+            final_stop_reason = state.sweep_stop_reason or "raw_prefix_drained"
+            self._last_threshold_full_sweep = {
+                "status": (
+                    "partial" if final_stop_reason in _THRESHOLD_FULL_SWEEP_PARTIAL_STOP_REASONS else "completed"
+                ),
+                "leaf_passes": state.leaf_passes,
+                **({"promoted_leaves": state.promoted_leaves} if state.promoted_leaves else {}),  # #787
+                "condensation_passes": state.pre_leaf_condensation_passes + state.condensation_passes,
+                "pre_leaf_condensation_passes": state.pre_leaf_condensation_passes,
+                "pre_leaf_condensation_stop_reason": state.pre_leaf_condensation_reason,
+                "post_drain_condensation_skipped": state.post_drain_condensation_skipped,
+                "total_passes": total_passes,
+                "duration_ms": round(duration_ms, 3),
+                "tokens_before": self._last_threshold_full_sweep["tokens_before"],
+                "tokens_after": count_messages_tokens(compressed),
+                "summary_prefix_tokens_before": state.sweep_summary_prefix_before,
+                "summary_prefix_tokens_after": self._summary_frontier_tokens(),
+                "summary_prefix_target_tokens": state.sweep_target_tokens,
+                "stop_reason": final_stop_reason,
+                "budget_exhausted": final_stop_reason
+                in {"pass_budget_exhausted", "time_budget_exhausted"},
+                **self._hidden_backlog_status(),
+            }
+        self._write_generated_ignored_placeholder_hash_counts(
+            self._generated_placeholder_digest_budget_for_active_replay(compressed)
+        )
+        self._write_generated_ignored_placeholder_hash_ordinals(
+            self._generated_placeholder_digest_ordinals_for_active_replay(compressed)
+        )
+        record_successful_compaction = getattr(
+            self,
+            "_record_successful_compaction_telemetry",
+            None,
+        )
+        if callable(record_successful_compaction):
+            record_successful_compaction()
+
+        return compressed
+
     def _compress_impl(self, messages: List[Dict[str, Any]],
                        current_tokens: int = None,
                        focus_topic: Optional[str] = None,
@@ -3052,105 +3156,19 @@ class CompactionMixin:
         transfer, returned = self._condense_after_leaves(state, focus_topic, warn_rejected)
         if transfer == "return":
             return returned
-        pre_condensation_context = state.pre_condensation_context
-        condensation_passes = state.condensation_passes
-        post_drain_condensation_skipped = state.post_drain_condensation_skipped
-        sweep_stop_reason = state.sweep_stop_reason
 
-        # Step 7: Assemble new active context
-        self._refresh_raw_backlog_debt(
-            working_messages,
-            observed_tokens=observed_prompt_tokens,
-        )
-        compressed = pre_condensation_context
-        if condensation_passes:
-            compressed = self._assemble_committed_compaction_context(
-                working_messages,
-                anchor_source_messages,
-                recovery_assembly_cap,
-            )
-        self.compression_count += 1
-        self._last_compaction_duration_ms = (time.perf_counter() - _compress_started) * 1000.0
-        logger.info(
-            "LCM leaf compaction finished in %.1fms", self._last_compaction_duration_ms
-        )
-        self._last_compression_status = "compacted"
-        self._last_compression_noop_reason = ""
-        self._note_fresh_tail_pressure_relieved()
-        if recovery_assembly_cap is None:
-            self._last_overflow_recovery_failed = False
-        else:
-            self._last_overflow_recovery_failed = (
-                count_messages_tokens(compressed) > recovery_assembly_cap + self._kept_reply_tokens(compressed))
-            if self._last_overflow_recovery_failed:
-                logger.warning(
-                    "LCM overflow recovery could not get under cap=%d after compaction; returning best-effort context (%d tokens)",
-                    recovery_assembly_cap,
-                    count_messages_tokens(compressed),
-                )
-        # Reset cursor to the length of the compressed context so that
-        # only messages appended *after* this point get ingested next time.
-        self._ingest_cursor = len(compressed)
-        self._ingest_cursor_needs_reconcile = False
-
-        logger.info(
-            "LCM compaction #%d: %d messages → %d (%d leaf pass%s, %d→%d tokens%s, %d DAG nodes%s%s)%s",
-            self.compression_count,
-            len(messages),
-            len(compressed),
-            leaf_passes,
-            "es" if leaf_passes != 1 else "",
-            count_messages_tokens(messages),
-            count_messages_tokens(compressed),
-            f", host_tokens={current_tokens}" if current_tokens is not None and current_tokens > 0 else "",  # #627
-            len(self._dag.get_session_nodes(self._session_id)),
-            f", {level3_leaves} level 3 leaves" if level3_leaves else "",
-            ", forced overflow recovery" if force_overflow else "",
-            f", hidden_rows={self._hidden_backlog_label()}" if self._last_hidden_backlog is not None else "",
-        )
-
-        # ── Active-context cleanup / tool-pair guardrail (same as _assemble_context) ──
-        # compress() output is consumed directly by the main loop in some
-        # edge cases (e.g. forced overflow recovery bypassing _assemble_context).
-        compressed = self._sanitize_active_context_messages(compressed)
-        if threshold_full_sweep_active:
-            total_passes = leaf_passes + pre_leaf_condensation_passes + condensation_passes
-            duration_ms = (time.perf_counter() - _compress_started) * 1000.0
-            final_stop_reason = sweep_stop_reason or "raw_prefix_drained"
-            self._last_threshold_full_sweep = {
-                "status": (
-                    "partial" if final_stop_reason in _THRESHOLD_FULL_SWEEP_PARTIAL_STOP_REASONS else "completed"
-                ),
-                "leaf_passes": leaf_passes,
-                **({"promoted_leaves": promoted_leaves} if promoted_leaves else {}),  # #787
-                "condensation_passes": pre_leaf_condensation_passes + condensation_passes,
-                "pre_leaf_condensation_passes": pre_leaf_condensation_passes,
-                "pre_leaf_condensation_stop_reason": pre_leaf_condensation_reason,
-                "post_drain_condensation_skipped": post_drain_condensation_skipped,
-                "total_passes": total_passes,
-                "duration_ms": round(duration_ms, 3),
-                "tokens_before": self._last_threshold_full_sweep["tokens_before"],
-                "tokens_after": count_messages_tokens(compressed),
-                "summary_prefix_tokens_before": sweep_summary_prefix_before,
-                "summary_prefix_tokens_after": self._summary_frontier_tokens(),
-                "summary_prefix_target_tokens": sweep_target_tokens,
-                "stop_reason": final_stop_reason,
-                "budget_exhausted": final_stop_reason
-                in {"pass_budget_exhausted", "time_budget_exhausted"},
-                **self._hidden_backlog_status(),
-            }
-        self._write_generated_ignored_placeholder_hash_counts(
-            self._generated_placeholder_digest_budget_for_active_replay(compressed)
-        )
-        self._write_generated_ignored_placeholder_hash_ordinals(
-            self._generated_placeholder_digest_ordinals_for_active_replay(compressed)
-        )
-        record_successful_compaction = getattr(
-            self,
-            "_record_successful_compaction_telemetry",
-            None,
-        )
-        if callable(record_successful_compaction):
-            record_successful_compaction()
-
-        return compressed
+        state._compress_started = _compress_started
+        state.anchor_source_messages = anchor_source_messages
+        state.force_overflow = force_overflow
+        state.leaf_passes = leaf_passes
+        state.level3_leaves = level3_leaves
+        state.observed_prompt_tokens = observed_prompt_tokens
+        state.pre_leaf_condensation_passes = pre_leaf_condensation_passes
+        state.pre_leaf_condensation_reason = pre_leaf_condensation_reason
+        state.promoted_leaves = promoted_leaves
+        state.recovery_assembly_cap = recovery_assembly_cap
+        state.sweep_summary_prefix_before = sweep_summary_prefix_before
+        state.sweep_target_tokens = sweep_target_tokens
+        state.threshold_full_sweep_active = threshold_full_sweep_active
+        state.working_messages = working_messages
+        return self._finish_with_leaf(state, messages, current_tokens)
