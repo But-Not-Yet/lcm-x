@@ -114,6 +114,11 @@ class _CompressionState:
     no_call_only: bool = False
     refused_input: Optional[tuple[List[Dict[str, Any]], List[Dict[str, Any]], bool]] = None
 
+    leaf_passes: int = 0
+    pre_condensation_context: List[Dict[str, Any]] = field(default_factory=list)
+    condensation_passes: int = 0
+    post_drain_condensation_skipped: str = ""
+
 
 @dataclass
 class _LeafState:
@@ -2194,6 +2199,70 @@ class CompactionMixin:
                 return "break", None
         return "next", None
 
+    def _condense_after_leaves(
+        self, state: _CompressionState, focus_topic: Optional[str], warn_rejected: Callable[[], None],
+    ) -> tuple[Literal["next", "return"], Optional[List[Dict[str, Any]]]]:
+        # Step 6: Check if condensation is needed. A threshold full sweep only
+        # condenses after the eligible raw prefix has been drained, and shares
+        # the same total pass/deadline budget as its leaf work.
+        state.pre_condensation_context = self._assemble_committed_compaction_context(
+            state.working_messages,
+            state.anchor_source_messages,
+            state.recovery_assembly_cap,
+        )
+        state.condensation_passes = 0
+        # #652: a route that just rejected the pre-leaf condensation is not asked again in this call.
+        state.post_drain_condensation_skipped = ""
+        try:
+            if state.threshold_full_sweep_active:
+                if state.sweep_raw_drained and state.pre_leaf_condensation_reason == "summary_result_rejected":
+                    state.post_drain_condensation_skipped = "pre_leaf_rejected"
+                    state.sweep_stop_reason = "summary_result_rejected"
+                elif state.sweep_raw_drained:
+                    remaining_passes = max(
+                        0,
+                        _THRESHOLD_FULL_SWEEP_MAX_PASSES - state.leaf_passes - state.pre_leaf_condensation_passes,
+                    )
+                    state.condensation_passes, state.sweep_stop_reason = (
+                        self._run_threshold_sweep_condensation(
+                            target_tokens=state.sweep_target_tokens,
+                            pass_budget=remaining_passes,
+                            deadline=state.sweep_deadline,
+                            focus_topic=focus_topic,
+                        )
+                    )
+            else:
+                state.condensation_passes = self._maybe_condense(
+                    focus_topic=focus_topic,
+                    leaf_compacted_this_turn=True,
+                    force_overflow=state.force_overflow,
+                    critical_budget_pressure=state.critical_budget_pressure,
+                )
+        except Exception as exc:
+            if not _is_sqlite_locked_error(exc):
+                raise
+            return "return", self._fail_open_after_publication_failure(
+                state.pre_condensation_context,
+                exc,
+                compress_started=state._compress_started,
+                threshold_full_sweep_active=state.threshold_full_sweep_active,
+                recovery_assembly_cap=state.recovery_assembly_cap,
+                leaf_passes=state.leaf_passes,
+                condensation_passes=state.pre_leaf_condensation_passes + int(
+                    getattr(exc, "lcm_completed_condensation_passes", 0)
+                ),
+                context_is_assembled=True,
+            )
+        if (
+            state.sweep_stop_reason == "summary_result_rejected"
+            or state.pre_leaf_condensation_reason == "summary_result_rejected"
+            or (not state.threshold_full_sweep_active  # _maybe_condense sets it fresh on this path only
+                and self._last_condensation_suppressed_reason == "summary_result_rejected")
+        ):
+            warn_rejected()
+
+        return "next", None
+
     def _compress_impl(self, messages: List[Dict[str, Any]],
                        current_tokens: int = None,
                        focus_topic: Optional[str] = None,
@@ -2966,64 +3035,27 @@ class CompactionMixin:
             )
             return sanitized_messages
 
-        # Step 6: Check if condensation is needed. A threshold full sweep only
-        # condenses after the eligible raw prefix has been drained, and shares
-        # the same total pass/deadline budget as its leaf work.
-        pre_condensation_context = self._assemble_committed_compaction_context(
-            working_messages,
-            anchor_source_messages,
-            recovery_assembly_cap,
-        )
-        condensation_passes = 0
-        # #652: a route that just rejected the pre-leaf condensation is not asked again in this call.
-        post_drain_condensation_skipped = ""
-        try:
-            if threshold_full_sweep_active:
-                if sweep_raw_drained and pre_leaf_condensation_reason == "summary_result_rejected":
-                    post_drain_condensation_skipped = "pre_leaf_rejected"
-                    sweep_stop_reason = "summary_result_rejected"
-                elif sweep_raw_drained:
-                    remaining_passes = max(
-                        0,
-                        _THRESHOLD_FULL_SWEEP_MAX_PASSES - leaf_passes - pre_leaf_condensation_passes,
-                    )
-                    condensation_passes, sweep_stop_reason = (
-                        self._run_threshold_sweep_condensation(
-                            target_tokens=sweep_target_tokens,
-                            pass_budget=remaining_passes,
-                            deadline=sweep_deadline,
-                            focus_topic=focus_topic,
-                        )
-                    )
-            else:
-                condensation_passes = self._maybe_condense(
-                    focus_topic=focus_topic,
-                    leaf_compacted_this_turn=True,
-                    force_overflow=force_overflow,
-                    critical_budget_pressure=critical_budget_pressure,
-                )
-        except Exception as exc:
-            if not _is_sqlite_locked_error(exc):
-                raise
-            return self._fail_open_after_publication_failure(
-                pre_condensation_context,
-                exc,
-                compress_started=_compress_started,
-                threshold_full_sweep_active=threshold_full_sweep_active,
-                recovery_assembly_cap=recovery_assembly_cap,
-                leaf_passes=leaf_passes,
-                condensation_passes=pre_leaf_condensation_passes + int(
-                    getattr(exc, "lcm_completed_condensation_passes", 0)
-                ),
-                context_is_assembled=True,
-            )
-        if (
-            sweep_stop_reason == "summary_result_rejected"
-            or pre_leaf_condensation_reason == "summary_result_rejected"
-            or (not threshold_full_sweep_active  # _maybe_condense sets it fresh on this path only
-                and self._last_condensation_suppressed_reason == "summary_result_rejected")
-        ):
-            warn_rejected()
+        state._compress_started = _compress_started
+        state.anchor_source_messages = anchor_source_messages
+        state.critical_budget_pressure = critical_budget_pressure
+        state.force_overflow = force_overflow
+        state.leaf_passes = leaf_passes
+        state.pre_leaf_condensation_passes = pre_leaf_condensation_passes
+        state.pre_leaf_condensation_reason = pre_leaf_condensation_reason
+        state.recovery_assembly_cap = recovery_assembly_cap
+        state.sweep_deadline = sweep_deadline
+        state.sweep_raw_drained = sweep_raw_drained
+        state.sweep_stop_reason = sweep_stop_reason
+        state.sweep_target_tokens = sweep_target_tokens
+        state.threshold_full_sweep_active = threshold_full_sweep_active
+        state.working_messages = working_messages
+        transfer, returned = self._condense_after_leaves(state, focus_topic, warn_rejected)
+        if transfer == "return":
+            return returned
+        pre_condensation_context = state.pre_condensation_context
+        condensation_passes = state.condensation_passes
+        post_drain_condensation_skipped = state.post_drain_condensation_skipped
+        sweep_stop_reason = state.sweep_stop_reason
 
         # Step 7: Assemble new active context
         self._refresh_raw_backlog_debt(
