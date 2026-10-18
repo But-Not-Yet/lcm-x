@@ -122,6 +122,10 @@ class _CompressionState:
     level3_leaves: int = 0
     promoted_leaves: int = 0
 
+    leaf_compacted_this_turn: bool = False
+    prep_freed: int = 0
+    prep_low_water: float = 0.0
+
 
 @dataclass
 class _LeafState:
@@ -2202,6 +2206,69 @@ class CompactionMixin:
                 return "break", None
         return "next", None
 
+    def _settle_leaf_stop(
+        self, state: _CompressionState, warn_rejected: Callable[[], None],
+    ) -> None:
+        """Settle the leaf stop without changing a committed partial result."""
+        if state.promoted_leaves:
+            logger.info("LCM promoted %d prepared leaves: tokens_freed=%d low_water=%d at_low_water=%s",
+                        state.promoted_leaves, state.prep_freed, int(state.prep_low_water), state.estimated_active_tokens <= state.prep_low_water)
+        self._end_pre_leaf_phase(state.budget, "leaf" if state.leaf_compacted_this_turn else "stopped")
+        if state.no_call_only:  # #628: this pass stored no leaf while every route is refused
+            state.sweep_stop_reason, state.sweep_raw_drained = "summary_route_unavailable", False
+            # review of #723: and returns the list it started with (no scaffold or ignored-backlog edit of its own)
+            state.working_messages, state.pressure_messages, state.dropped_replayed_scaffold_messages = state.refused_input
+        if (
+            state.threshold_full_sweep_active
+            and not state.sweep_raw_drained
+            and not state.sweep_stop_reason
+            and state.leaf_passes >= state.max_leaf_passes
+        ):
+            state.sweep_stop_reason = "pass_budget_exhausted"
+
+        if state.sweep_stop_reason == "summary_route_unavailable":
+            seconds_left = self._summary_route_seconds_left()
+            logger.warning(
+                "LCM compaction stopped: summary route unavailable (circuit open, %ds left); %d leaves written, "
+                "backlog kept",
+                seconds_left,
+                state.leaf_passes,
+            )
+            if not state.leaf_compacted_this_turn:
+                state.noop_reason = "summary route unavailable"
+                self._start_sweep_budget_hold(seconds_left, turn_paced=(
+                    self._sweep_budget_hold_turn_paced
+                    and self._sweep_budget_hold_active()
+                    and self._hung_summary_strike is not None
+                    and self._hung_summary_strike[0] == self._hold_conversation_key()
+                ))
+        elif state.sweep_stop_reason == "summary_result_rejected":
+            warn_rejected()
+            if not state.leaf_compacted_this_turn:
+                state.noop_reason = "summary result rejected"
+
+        if state.budget.hung_route is not None:
+            first_hang = (
+                self._hung_summary_strike is None
+                or self._hung_summary_strike[0] != self._hold_conversation_key())
+            if not first_hang:
+                # #1369: even an exempt forced retry consumes the pending turn-end release.
+                self._sweep_budget_hold_turn_paced = False
+            if not state.force_overflow:
+                if first_hang:
+                    self._hung_summary_strike = (self._hold_conversation_key(), state.budget.hung_route)
+                if self._hung_summary_route_has_fallback(state.budget):
+                    self._no_progress_candidate = False  # let the next automatic pass try the fallback
+                    logger.info(
+                        "LCM skipping sweep budget hold: hung summary route %s opened its circuit; "
+                        "fallback route available", state.budget.hung_route,
+                    )
+                else:
+                    if first_hang:
+                        self._no_progress_candidate = False
+                    self._start_sweep_budget_hold(turn_paced=first_hang)
+
+
     def _condense_after_leaves(
         self, state: _CompressionState, focus_topic: Optional[str], warn_rejected: Callable[[], None],
     ) -> tuple[Literal["next", "return"], Optional[List[Dict[str, Any]]]]:
@@ -2964,63 +3031,31 @@ class CompactionMixin:
                     if not (deferred_maintenance_active and critical_budget_pressure):
                         break
 
-        if promoted_leaves:
-            logger.info("LCM promoted %d prepared leaves: tokens_freed=%d low_water=%d at_low_water=%s",
-                        promoted_leaves, prep_freed, int(prep_low_water), estimated_active_tokens <= prep_low_water)
-        self._end_pre_leaf_phase(budget, "leaf" if leaf_compacted_this_turn else "stopped")
-        if no_call_only:  # #628: this pass stored no leaf while every route is refused
-            sweep_stop_reason, sweep_raw_drained = "summary_route_unavailable", False
-            # review of #723: and returns the list it started with (no scaffold or ignored-backlog edit of its own)
-            working_messages, pressure_messages, dropped_replayed_scaffold_messages = refused_input
-        if (
-            threshold_full_sweep_active
-            and not sweep_raw_drained
-            and not sweep_stop_reason
-            and leaf_passes >= max_leaf_passes
-        ):
-            sweep_stop_reason = "pass_budget_exhausted"
-
-        if sweep_stop_reason == "summary_route_unavailable":
-            seconds_left = self._summary_route_seconds_left()
-            logger.warning(
-                "LCM compaction stopped: summary route unavailable (circuit open, %ds left); %d leaves written, "
-                "backlog kept",
-                seconds_left,
-                leaf_passes,
-            )
-            if not leaf_compacted_this_turn:
-                noop_reason = "summary route unavailable"
-                self._start_sweep_budget_hold(seconds_left, turn_paced=(
-                    self._sweep_budget_hold_turn_paced
-                    and self._sweep_budget_hold_active()
-                    and self._hung_summary_strike is not None
-                    and self._hung_summary_strike[0] == self._hold_conversation_key()
-                ))
-        elif sweep_stop_reason == "summary_result_rejected":
-            warn_rejected()
-            if not leaf_compacted_this_turn:
-                noop_reason = "summary result rejected"
-
-        if budget.hung_route is not None:
-            first_hang = (
-                self._hung_summary_strike is None
-                or self._hung_summary_strike[0] != self._hold_conversation_key())
-            if not first_hang:
-                # #1369: even an exempt forced retry consumes the pending turn-end release.
-                self._sweep_budget_hold_turn_paced = False
-            if not force_overflow:
-                if first_hang:
-                    self._hung_summary_strike = (self._hold_conversation_key(), budget.hung_route)
-                if self._hung_summary_route_has_fallback(budget):
-                    self._no_progress_candidate = False  # let the next automatic pass try the fallback
-                    logger.info(
-                        "LCM skipping sweep budget hold: hung summary route %s opened its circuit; "
-                        "fallback route available", budget.hung_route,
-                    )
-                else:
-                    if first_hang:
-                        self._no_progress_candidate = False
-                    self._start_sweep_budget_hold(turn_paced=first_hang)
+        state.promoted_leaves = promoted_leaves
+        state.prep_freed = prep_freed
+        state.prep_low_water = prep_low_water
+        state.estimated_active_tokens = estimated_active_tokens
+        state.budget = budget
+        state.leaf_compacted_this_turn = leaf_compacted_this_turn
+        state.no_call_only = no_call_only
+        state.sweep_stop_reason = sweep_stop_reason
+        state.sweep_raw_drained = sweep_raw_drained
+        state.working_messages = working_messages
+        state.pressure_messages = pressure_messages
+        state.dropped_replayed_scaffold_messages = dropped_replayed_scaffold_messages
+        state.refused_input = refused_input
+        state.threshold_full_sweep_active = threshold_full_sweep_active
+        state.leaf_passes = leaf_passes
+        state.max_leaf_passes = max_leaf_passes
+        state.noop_reason = noop_reason
+        state.force_overflow = force_overflow
+        self._settle_leaf_stop(state, warn_rejected)
+        working_messages = state.working_messages
+        pressure_messages = state.pressure_messages
+        dropped_replayed_scaffold_messages = state.dropped_replayed_scaffold_messages
+        sweep_stop_reason = state.sweep_stop_reason
+        sweep_raw_drained = state.sweep_raw_drained
+        noop_reason = state.noop_reason
 
         if not leaf_compacted_this_turn:
             if pre_leaf_condensation_reason == "summary_result_rejected":
