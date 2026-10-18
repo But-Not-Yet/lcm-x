@@ -306,7 +306,8 @@ def test_leaf_phase_image_pricing_preserves_auxiliary_at_host_depth(
         print(json.dumps(dict(path=path, roots=sorted(observed_roots), distances=distances, paths=paths), sort_keys=True))
 
 
-@pytest.mark.parametrize("path", ["condense", "sweep", "overflow", "locked", "debt", "reply"])
+@pytest.mark.parametrize("path", ["condense", "sweep", "overflow", "locked", "debt", "reply",
+                                  "stop-debt", "stop-overflow", "stop-anchor", "stop-reply"])
 def test_finish_phase_callbacks_preserve_auxiliary_at_host_depth(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str,
 ) -> None:
@@ -328,6 +329,8 @@ def test_finish_phase_callbacks_preserve_auxiliary_at_host_depth(
     source = inspect.getsource(compaction)
     driver = next(n for n in ast.walk(ast.parse(source))
                   if isinstance(n, ast.FunctionDef) and n.name == "_compress_impl")
+    f1 = next((n for n in driver.body if isinstance(n, ast.If)
+               and ast.unparse(n.test) == "not leaf_compacted_this_turn"), None)
     f2 = next((n.lineno for n in driver.body if isinstance(n, ast.Assign)
                and ast.unparse(n.targets[0]) == "pre_condensation_context"), None)
     f3 = next((n.lineno for n in driver.body if isinstance(n, ast.Expr)
@@ -347,10 +350,16 @@ def test_finish_phase_callbacks_preserve_auxiliary_at_host_depth(
                     l3_truncate_tokens=2, condensation_fanin=2,
                     temporal_rollups_enabled=False, embeddings_enabled=False,
                     large_output_externalization_enabled=False)
-    if path == "reply":
+    if path.startswith("stop-"):
+        settings.update(fresh_tail_count=100, fresh_tail_pressure_yield_enabled=False,
+                        deferred_maintenance_enabled=path == "stop-debt",
+                        max_assembly_tokens=2000 if path == "stop-overflow" else 100000)
+    if path in {"reply", "stop-reply"}:
         settings.update(fresh_tail_count=7, leaf_chunk_tokens=400, dynamic_leaf_chunk_max=400,
                         max_assembly_tokens=1300, threshold_full_sweep_enabled=True,
                         summary_prefix_target_tokens=1000)
+        if path == "stop-reply":
+            settings.update(fresh_tail_count=100, threshold_full_sweep_enabled=False)
     with harness.engine_context(tmp_path, window=200000, session_id="foreground-session", **settings) as engine:
         def boundary() -> None:
             nonlocal active_root
@@ -358,14 +367,17 @@ def test_finish_phase_callbacks_preserve_auxiliary_at_host_depth(
             chain = []
             while frame is not None:
                 name = frame.f_code.co_name
-                if name in {"_condense_after_leaves", "_finish_with_leaf"}:
-                    phase = "F2" if name == "_condense_after_leaves" else "F3"
+                if name in {"_finish_without_leaf", "_condense_after_leaves", "_finish_with_leaf"}:
+                    phase = {"_finish_without_leaf": "F1", "_condense_after_leaves": "F2",
+                             "_finish_with_leaf": "F3"}[name]
                     break
                 if name == "_compress_impl":
                     if f3 is not None and frame.f_lineno >= f3:
                         phase = "F3"
                     elif f2 is not None and frame.f_lineno >= f2:
                         phase = "F2"
+                    elif f1 is not None and f1.lineno <= frame.f_lineno <= f1.end_lineno:
+                        phase = "F1"
                     else:
                         return
                     break
@@ -373,7 +385,8 @@ def test_finish_phase_callbacks_preserve_auxiliary_at_host_depth(
                 frame = frame.f_back
             else:
                 return
-            active_root = phase + ":" + chain[-1]
+            root = "_assemble_context" if chain[-1] == "inner" and "_assemble_context" in chain else chain[-1]
+            active_root = phase + ":" + root
             if "estimate" in chain:
                 estimated_roots.add(active_root)
             agent._memory_write_origin = "background_review"
@@ -390,7 +403,7 @@ def test_finish_phase_callbacks_preserve_auxiliary_at_host_depth(
             estimate_calls += 1
             # Reject each kept-reply proposal against its following host-input
             # measurement, exercising the rejection path without an internal mock.
-            return 1000000 if path == "reply" and estimate_calls % 2 else 0
+            return 1000000 if path in {"reply", "stop-reply"} and estimate_calls % 2 else 0
 
         def price() -> int:
             boundary()
@@ -445,7 +458,17 @@ def test_finish_phase_callbacks_preserve_auxiliary_at_host_depth(
         image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}
         for row in view[1:]:
             row["content"] = [{"type": "text", "text": row["content"]}, image]
-        if path == "reply":
+        if path == "stop-anchor":
+            engine.ingest(view)
+            engine._dag.add_node(dag.SummaryNode(
+                session_id="foreground-session", depth=0, summary="Committed prefix. " + PAD,
+                token_count=500, source_token_count=1200, source_ids=[3, 4, 5],
+                source_type="messages", created_at=100.0))
+            engine._lifecycle.advance_frontier(engine._conversation_id, "foreground-session", 5)
+            engine._last_compacted_store_id = 5
+            for _ in range(3):
+                engine._summary_circuit_breaker.record_failure("trace-model")
+        if path in {"reply", "stop-reply"}:
             from tests.test_issue_1162_keep_reply import PAD as REPLY_PAD, _Host
 
             host = _Host(True)
@@ -455,15 +478,19 @@ def test_finish_phase_callbacks_preserve_auxiliary_at_host_depth(
         previous = sys.getprofile()
         sys.setprofile(profile)
         try:
-            agent.compress(engine, view, None if path in {"locked", "reply"} else 250000 if path == "overflow" else 3000)
+            agent.compress(engine, view, None if path in {"locked", "reply", "stop-reply"} else 250000 if path in {"overflow", "stop-overflow"} else 3000)
         finally:
             sys.setprofile(previous)
-        assert {key[:2] for key in distances} == ({"F2"} if path in {"locked", "reply"} else {"F2", "F3"})
-        if path == "reply":
-            assert estimated_roots == {"F2:_assemble_committed_compaction_context"}
+        assert {key[:2] for key in distances} == (
+            {"F1"} if path.startswith("stop-") else {"F2"} if path in {"locked", "reply"} else {"F2", "F3"})
+        if path in {"reply", "stop-reply"}:
+            assert estimated_roots == ({"F1:_assemble_overflow_recovery_context"} if path == "stop-reply"
+                                       else {"F2:_assemble_committed_compaction_context"})
             assert estimate_calls == 2
         required = {"condense": "F2:_maybe_condense", "sweep": "F2:_run_threshold_sweep_condensation",
-                    "locked": "F2:_fail_open_after_publication_failure", "debt": "F3:_refresh_raw_backlog_debt"}
+                    "locked": "F2:_fail_open_after_publication_failure", "debt": "F3:_refresh_raw_backlog_debt",
+                    "stop-debt": "F1:_refresh_raw_backlog_debt", "stop-anchor": "F1:_assemble_context",
+                    "stop-overflow": "F1:_assemble_overflow_recovery_context"}
         if path in required:
             assert required[path] in distances
         print(json.dumps(dict(path=path, distances=distances, paths=paths), sort_keys=True))
