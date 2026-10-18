@@ -2741,6 +2741,58 @@ class CompactionMixin:
         leaf.publication_excluded_store_ids.extend(leaf.filter_exclusion_proofs)
         return "next", None
 
+    def _publish_selected_leaf(
+        self, state: _CompressionState, leaf: _LeafState,
+    ) -> tuple[Literal["next", "break", "continue", "return"], Optional[List[Dict[str, Any]]]]:
+        """Publish one selected leaf without advancing uncommitted state."""
+        try:
+            self._publish_leaf_node(
+                leaf.node,
+                level=leaf.level,
+                model=self._take_leaf_summary_model(),
+                expected_frontier=leaf.expected_frontier,
+                consumed_store_ids=leaf.consumed_store_ids,
+                publication_excluded_store_ids=leaf.publication_excluded_store_ids,
+                filter_exclusion_proofs=leaf.filter_exclusion_proofs,
+                carried_ranges=leaf.carried_ranges,
+                before_publication=None if leaf.prepared is None else self._prepared_leaf_revalidation(leaf.prepared),
+            )
+        except Exception as exc:
+            if leaf.prepared is not None:  # #787: counted by reason; a failed revalidation reruns the pass
+                if isinstance(exc, leaf_prep.PromotionRejected):
+                    self._reject_prepared_chain(leaf.prepared, exc.reason)
+                    return "continue", None
+                if isinstance(exc, (LifecycleBindingChangedError, LifecyclePublicationConflictError)):
+                    self._reject_prepared_chain(leaf.prepared, "binding_changed" if isinstance(
+                        exc, LifecycleBindingChangedError) else "frontier_moved" if "frontier generation changed"
+                        in str(exc) else "fence_conflict")
+            if (
+                not _is_sqlite_locked_error(exc)
+                and not isinstance(exc, LifecycleBindingChangedError)
+                and not isinstance(exc, LifecyclePublicationConflictError)
+            ):
+                raise
+            fallback = state.working_messages
+            context_is_assembled = False
+            if state.leaf_passes or state.dropped_replayed_scaffold_messages:
+                fallback = self._assemble_committed_compaction_context(
+                    state.working_messages,
+                    state.anchor_source_messages,
+                    state.recovery_assembly_cap,
+                )
+                context_is_assembled = True
+            return "return", self._fail_open_after_publication_failure(
+                fallback,
+                exc,
+                compress_started=state._compress_started,
+                threshold_full_sweep_active=state.threshold_full_sweep_active,
+                recovery_assembly_cap=state.recovery_assembly_cap,
+                leaf_passes=state.leaf_passes,
+                condensation_passes=state.pre_leaf_condensation_passes,  # #653: completed pre-leaf passes
+                context_is_assembled=context_is_assembled,
+            )
+        return "next", None
+
     def _compress_impl(self, messages: List[Dict[str, Any]],
                        current_tokens: int = None,
                        focus_topic: Optional[str] = None,
@@ -2869,7 +2921,6 @@ class CompactionMixin:
             fresh_tail_start = leaf.fresh_tail_start
             leading_anchor_count = leaf.leading_anchor_count
             publication_excluded_store_ids = leaf.publication_excluded_store_ids
-            filter_exclusion_proofs = leaf.filter_exclusion_proofs
             hidden_backlog = leaf.hidden_backlog
             copy_lookup = leaf.copy_lookup
 
@@ -3096,65 +3147,30 @@ class CompactionMixin:
             compacted_positions = leaf.compacted_positions
             source_lookup_chunk = leaf.source_lookup_chunk
             source_store_ids = leaf.source_store_ids
-            consumed_store_ids = leaf.consumed_store_ids
             selected_raw_len = leaf.selected_raw_len
             remaining_messages = leaf.remaining_messages
             source_tokens = leaf.source_tokens
             summary_tokens = leaf.summary_tokens
             node = leaf.node
             published_frontier = leaf.published_frontier
-            expected_frontier = leaf.expected_frontier
-            carried_ranges = leaf.carried_ranges
-            filter_exclusion_proofs = leaf.filter_exclusion_proofs
             # The frontier consumes every durable row removed from the active
             # prefix, including trailing dependent replies. Summary lineage
             # excludes those replies; their durable ledger drives replay cleanup.
-            try:
-                self._publish_leaf_node(
-                    node,
-                    level=_level,
-                    model=self._take_leaf_summary_model(),
-                    expected_frontier=expected_frontier,
-                    consumed_store_ids=consumed_store_ids,
-                    publication_excluded_store_ids=publication_excluded_store_ids,
-                    filter_exclusion_proofs=filter_exclusion_proofs,
-                    carried_ranges=carried_ranges,
-                    before_publication=None if prepared is None else self._prepared_leaf_revalidation(prepared),
-                )
-            except Exception as exc:
-                if prepared is not None:  # #787: counted by reason; a failed revalidation reruns the pass
-                    if isinstance(exc, leaf_prep.PromotionRejected):
-                        self._reject_prepared_chain(prepared, exc.reason)
-                        continue
-                    if isinstance(exc, (LifecycleBindingChangedError, LifecyclePublicationConflictError)):
-                        self._reject_prepared_chain(prepared, "binding_changed" if isinstance(
-                            exc, LifecycleBindingChangedError) else "frontier_moved" if "frontier generation changed"
-                            in str(exc) else "fence_conflict")
-                if (
-                    not _is_sqlite_locked_error(exc)
-                    and not isinstance(exc, LifecycleBindingChangedError)
-                    and not isinstance(exc, LifecyclePublicationConflictError)
-                ):
-                    raise
-                fallback = working_messages
-                context_is_assembled = False
-                if leaf_passes or dropped_replayed_scaffold_messages:
-                    fallback = self._assemble_committed_compaction_context(
-                        working_messages,
-                        anchor_source_messages,
-                        recovery_assembly_cap,
-                    )
-                    context_is_assembled = True
-                return self._fail_open_after_publication_failure(
-                    fallback,
-                    exc,
-                    compress_started=_compress_started,
-                    threshold_full_sweep_active=threshold_full_sweep_active,
-                    recovery_assembly_cap=recovery_assembly_cap,
-                    leaf_passes=leaf_passes,
-                    condensation_passes=pre_leaf_condensation_passes,  # #653: completed pre-leaf passes
-                    context_is_assembled=context_is_assembled,
-                )
+            state._compress_started = _compress_started
+            state.anchor_source_messages = anchor_source_messages
+            state.dropped_replayed_scaffold_messages = dropped_replayed_scaffold_messages
+            state.leaf_passes = leaf_passes
+            state.pre_leaf_condensation_passes = pre_leaf_condensation_passes
+            state.recovery_assembly_cap = recovery_assembly_cap
+            state.threshold_full_sweep_active = threshold_full_sweep_active
+            state.working_messages = working_messages
+            action, result = self._publish_selected_leaf(state, leaf)
+            if action == "break":
+                break
+            if action == "continue":
+                continue
+            if action == "return":
+                return result
             self._last_compacted_store_id = published_frontier
             self._compress_host_rows_consumed += selected_raw_len
             self._compress_hidden_rows_consumed += len(compacted_chunk) - len(compacted_positions)
