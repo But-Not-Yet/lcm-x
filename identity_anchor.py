@@ -309,7 +309,8 @@ class IdentityAnchorMixin:
                 continue
             copies = [row for row, forms in by_stamp.get(stamps.get(idx - 1), ())
                       if int(row["store_id"]) not in consumed and identity_at(idx) in forms]
-            carried = self._identity_anchor_carried_stamp(messages, idx, stamps, copies, matched.get(idx - 1, ()), chain)
+            carried = self._identity_anchor_carried_stamp(messages, idx, stamps, copies, matched.get(idx - 1, ()), chain,
+                                                          distinct=_distinct_from_predecessor(identity_at, idx))
             if carried:
                 self._identity_anchor_take(idx, carried, consumed, matched, plan)
         if start < cursor:
@@ -403,7 +404,7 @@ class IdentityAnchorMixin:
                 continue
             previous = matched.get(idx - 1, plan.get("matched", {}).get(idx - 1, ()))
             carried = self._identity_anchor_carried_stamp(
-                messages, idx, stamps, copies, previous, chain,
+                messages, idx, stamps, copies, previous, chain, distinct=_distinct_from_predecessor(identity_at, idx),
                 null_bound=len(previous) == 1 and previous[0].get("observed_at") is None
                 and bound_null(idx - 1, previous[0]))
             # #1328: equal content at a different known stamp is a different occurrence.
@@ -446,15 +447,17 @@ class IdentityAnchorMixin:
                         len(missed), min(missed), self._session_id)
 
     @staticmethod
-    def _identity_anchor_carried_stamp(messages, idx, stamps, copies, previous, chain, *, null_bound=False) -> list:
+    def _identity_anchor_carried_stamp(messages, idx, stamps, copies, previous, chain, *, distinct=False,
+                                       null_bound=False) -> list:
         """#1501: exact adjacent occurrence proof for the host's carried predecessor stamp.
 
         Candidates already have today's content identity, verified scope and single-consumption filter.
         A tolerated copy keeps its stamp, so it cannot independently prove the next carried copy.
         The host folds consecutive user content only: the predecessor and its match must be user rows,
-        the stamp must move forward, and an identical predecessor text gives no positional proof.
+        the stamp must move forward, and an identical predecessor text gives no positional proof
+        (``distinct``: the caller compares both rows in the matching identity form).
         """
-        if (idx < 1 or not chain or messages[idx].get("message_uid") or messages[idx].get("role") != "user"
+        if (idx < 1 or not distinct or not chain or messages[idx].get("message_uid") or messages[idx].get("role") != "user"
                 or len(previous) != 1 or stamps.get(idx - 1) is None or stamps.get(idx) is None
                 or stamps[idx] <= stamps[idx - 1] or messages[idx - 1].get("role") != "user"
                 or messages[idx - 1].get("content") == messages[idx].get("content")):
@@ -1173,6 +1176,17 @@ def _composite_relation(group, stamp) -> list:
     """One composite relation group, keyed by the constituent whose host stamp the composite carries."""
     head = next((row for row in group if row.get("observed_at") == stamp), group[0])
     return [(int(head["store_id"]), "composite", int(row["store_id"]), ordinal, stamp) for ordinal, row in enumerate(group)]
+
+
+def _distinct_from_predecessor(identity_at, idx: int) -> bool:
+    """#1501: the view rows ``idx - 1`` and ``idx`` differ in the form occurrence matching compares
+    (edge whitespace stripped, structured content canonical); an unknown identity is never distinct."""
+    from .reconcile import _proof_user_identity
+
+    if idx < 1:
+        return False
+    previous, current = identity_at(idx - 1), identity_at(idx)
+    return previous is not None and current is not None and _proof_user_identity(previous) != _proof_user_identity(current)
 
 
 def _lossy(identity) -> bool:

@@ -1,6 +1,7 @@
 """I1: a proven rotation replay survives a carried host stamp, without losing fresh repeats."""
 from __future__ import annotations
 
+import json
 import sqlite3
 from copy import deepcopy
 from pathlib import Path
@@ -11,7 +12,7 @@ import pytest
 from tests.harness import engine_context
 
 
-def message(text: str, stamp: float | None, role: str = "user") -> dict[str, Any]:
+def message(text: Any, stamp: float | None, role: str = "user") -> dict[str, Any]:
     return {"role": role, "content": text, "timestamp": stamp}
 
 
@@ -92,17 +93,29 @@ def test_carry_tolerance_requires_every_proof(tmp_path: Path, guard: str) -> Non
         assert len(matched) == len(set(matched))
 
 
-def test_identical_predecessor_text_gives_no_carry_proof(tmp_path: Path) -> None:
+PARTS = [{"type": "text", "text": "same"}]
+
+
+@pytest.mark.parametrize("previous_content,current_content", [
+    ("same", "same"),
+    (" same ", "same"),  # equal after the edge-whitespace normalization matching applies
+    (PARTS, json.dumps(PARTS, ensure_ascii=False, sort_keys=True)),  # structured vs its canonical text
+], ids=["identical", "edge-whitespace", "structured"])
+def test_identical_predecessor_text_gives_no_carry_proof(tmp_path: Path, previous_content: Any,
+                                                         current_content: Any) -> None:
     """Stored A@10, B@10, B@10 and view A@10, B@10, B@20: the fresh B@20 is stored, not absorbed."""
     lineage(tmp_path)
     with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
         engine.ingest([message("first", 10.)])
         engine.on_session_start("child", platform="cli", context_length=128000, conversation_id="conv")
-        engine.ingest([message("same", 10.), message("same", 10.)])
-        view = [message("first", 10.), message("same", 10.), message("same", 20.)]
+        engine.ingest([message(current_content, 10.), message(current_content, 10.)])
+        view = [message("first", 10.), message(previous_content, 10.), message(current_content, 20.)]
         plan = engine._identity_anchor_prematch(view, view, len(view), 0)
         assert plan["cursor"] <= len(view) - 1
         assert len(view) - 1 not in plan.get("matched", {})
+    with engine_context(tmp_path, window=128000, session_id="child", conversation_id="conv") as engine:
+        engine.ingest(deepcopy(view))
+        assert 20. in [r["observed_at"] for r in engine._store.get_session_messages("child")]
 
 
 def test_fresh_repeat_immediately_after_same_text(tmp_path: Path) -> None:
