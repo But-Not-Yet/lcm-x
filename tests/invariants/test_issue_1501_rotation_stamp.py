@@ -167,3 +167,22 @@ def test_model_switch_wrapper_gives_no_carry_proof(tmp_path: Path) -> None:
     with engine_context(tmp_path, window=128000, session_id="child", conversation_id="conv") as engine:
         engine.ingest(deepcopy(view))
         assert 20. in [r["observed_at"] for r in engine._store.get_session_messages("child")]
+
+
+@pytest.mark.parametrize("cursor", [0, 2], ids=["cold-restart", "audit"])
+def test_alternate_stamp_predecessor_gives_no_carry_proof(tmp_path: Path, cursor: int) -> None:
+    """Stored A@5 with a recorded alternate stamp 10, then B@10 next to it; view A@10, B@20: B@20 is stored."""
+    lineage(tmp_path)
+    with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
+        engine.ingest([message("first", 5.)])
+        (prior,) = engine._store.get_session_messages("parent")
+        engine.on_session_start("child", platform="cli", context_length=128000, conversation_id="conv")
+        engine.ingest([message("second", 10.)])
+        engine._store.add_message_relations([[(int(prior["store_id"]), "alt_stamp", None, None, 10.)]])
+    view = [message("first", 10.), message("second", 20.)]
+    with engine_context(tmp_path, window=128000, session_id="child", conversation_id="conv") as engine:
+        plan = engine._identity_anchor_prematch(deepcopy(view), deepcopy(view), cursor, 0)
+        assert [r["store_id"] for r in plan["matched"][0]] == [prior["store_id"]]  # A matches through its alias
+        assert 1 not in plan["matched"]
+        engine.ingest(deepcopy(view))
+        assert [r["observed_at"] for r in engine._store.get_session_messages("child")] == [10., 20.]
