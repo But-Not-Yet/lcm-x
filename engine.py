@@ -7237,8 +7237,12 @@ class LCMEngine(
         originals = [messages[idx] for idx, _msg in messages_to_store_with_index]
         self._watch_stored_user_rows(zip(originals, protected_messages, store_ids))
         if anchor_plan is not None:
+            stored_at = {idx: store_id for (idx, _msg), store_id in zip(messages_to_store_with_index, store_ids)}
+            try:  # #1501 provenance, read before the commit's R5 backfill; a miss leaves the duplicate fallback
+                self._identity_anchor_mark_carried(messages, stored_at, anchor_plan)
+            except Exception as exc:
+                logger.warning("LCM carried-stamp marker write failed (%s)", type(exc).__name__)
             try:
-                stored_at = {idx: store_id for (idx, _msg), store_id in zip(messages_to_store_with_index, store_ids)}
                 self._identity_anchor_commit(anchor_plan, {idx: stored_at[idx] for idx in anchor_remainders if idx in stored_at})
                 self._identity_anchor_remember([
                     (self._message_replay_identity(reconcile_messages[idx], strip_carrier=False), store_id, messages[idx])
