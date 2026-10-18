@@ -311,7 +311,7 @@ class IdentityAnchorMixin:
                       if int(row["store_id"]) not in consumed and identity_at(idx) in forms]
             carried = self._identity_anchor_carried_stamp(messages, idx, stamps, copies, matched.get(idx - 1, ()), chain,
                                                           distinct=_distinct_from_predecessor(identity_at, idx))
-            carried = self._identity_anchor_durable_stamp(carried, stamps.get(idx - 1))
+            carried = self._identity_anchor_durable_stamp(carried, matched.get(idx - 1, ()), stamps.get(idx - 1))
             if carried:
                 self._identity_anchor_take(idx, carried, consumed, matched, plan)
         if start < cursor:
@@ -404,11 +404,11 @@ class IdentityAnchorMixin:
                 plan.setdefault("ws", []).append((ws, identity_messages[idx]))
                 continue
             previous = matched.get(idx - 1, plan.get("matched", {}).get(idx - 1, ()))
+            null_prior = len(previous) == 1 and previous[0].get("observed_at") is None and bound_null(idx - 1, previous[0])
             carried = self._identity_anchor_carried_stamp(
                 messages, idx, stamps, copies, previous, chain, distinct=_distinct_from_predecessor(identity_at, idx),
-                null_bound=len(previous) == 1 and previous[0].get("observed_at") is None
-                and bound_null(idx - 1, previous[0]))
-            carried = self._identity_anchor_durable_stamp(carried, stamps.get(idx - 1))
+                null_bound=null_prior)
+            carried = self._identity_anchor_durable_stamp(carried, previous, stamps.get(idx - 1), null_bound=null_prior)
             # #1328: equal content at a different known stamp is a different occurrence.
             # A NULL copy needs independent occurrence proof before consumption or unique backfill.
             copies = [row for row in copies if row.get("observed_at") == stamps[idx]
@@ -470,10 +470,17 @@ class IdentityAnchorMixin:
         return [row for row in copies if int(row["store_id"]) == int(prior["store_id"]) + 1
                 and row.get("observed_at") == stamps[idx - 1]]
 
-    def _identity_anchor_durable_stamp(self, rows, stamp) -> list:
-        """#1501: the carried candidates whose own stored row holds ``stamp``; a recorded alternate stamp
-        (``find_rows_by_observed_at``'s R5 projection) proves another occurrence, never a carried stamp."""
-        stored = self._store.get_batch(sorted({int(row["store_id"]) for row in rows})) if rows else {}
+    def _identity_anchor_durable_stamp(self, rows, previous, stamp, *, null_bound=False) -> list:
+        """#1501: the carried candidates whose own stored row holds ``stamp``, when the proven predecessor's
+        own stored row holds it too (a NULL predecessor only under its canonical binding). A recorded
+        alternate stamp (``find_rows_by_observed_at``'s R5 projection) proves another occurrence, never
+        a carried stamp, on either row."""
+        if not rows or len(previous) != 1:
+            return []
+        prior = int(previous[0]["store_id"])
+        stored = self._store.get_batch(sorted({prior, *(int(row["store_id"]) for row in rows)}))
+        if prior not in stored or stored[prior].get("observed_at") != (None if null_bound else stamp):
+            return []
         return [row for row in rows if (stored.get(int(row["store_id"])) or {}).get("observed_at") == stamp]
 
     def _identity_anchor_inserted(self, messages, start: int, cursor: int) -> set:
