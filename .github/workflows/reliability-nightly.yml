@@ -54,21 +54,24 @@ jobs:
       - name: R2 acp-process, all cells
         run: python bench/instruments/reliability/run_matrix.py --transport acp-process --hosts-file "$RUNNER_TEMP/hosts.json" --hosts "${{ matrix.host }}" --plugin-ref HEAD --cells all --jobs 4 --out "$OUT/r2"
 
-      # Explicit opt-in cells: retain diagnostics separately from the existing gate inputs.
-      - name: Default-window R1 in-process (report-only)
-        continue-on-error: ${{ env.DEFAULT_WINDOW_REPORT_ONLY == 'true' }}
-        timeout-minutes: 30  # a hang here must not starve the gate step below
-        run: python bench/instruments/reliability/run_matrix.py --hosts-file "$RUNNER_TEMP/hosts.json" --hosts "${{ matrix.host }}" --plugin-ref HEAD --cells 'default-window/*' --jobs 4 --out "$OUT/default-window-r1"
+      - name: Gate (ERROR, or a G-REL-1 FAIL without an open targeted issue)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue list -R "$GITHUB_REPOSITORY" --state open --limit 1000 --json number --jq '.[].number' > "$RUNNER_TEMP/open-issues.txt"
+          python -m bench.instruments.reliability.ci gate "$OUT/r1/results.jsonl" "$OUT/r2/results.jsonl" --open-issues "$RUNNER_TEMP/open-issues.txt"
 
-      - name: Default-window R2 acp-process (report-only)
+      # Explicit opt-in cells, after the gate so they can never delay it; R1 only (process_cell.unsupported() rejects default-window/* under R2).
+      - name: Default-window R1 in-process (report-only)
+        if: always()
         continue-on-error: ${{ env.DEFAULT_WINDOW_REPORT_ONLY == 'true' }}
-        timeout-minutes: 30  # a hang here must not starve the gate step below
-        run: python bench/instruments/reliability/run_matrix.py --transport acp-process --hosts-file "$RUNNER_TEMP/hosts.json" --hosts "${{ matrix.host }}" --plugin-ref HEAD --cells 'default-window/*' --jobs 4 --out "$OUT/default-window-r2"
+        timeout-minutes: 30
+        run: python bench/instruments/reliability/run_matrix.py --hosts-file "$RUNNER_TEMP/hosts.json" --hosts "${{ matrix.host }}" --plugin-ref HEAD --cells 'default-window/*' --jobs 4 --out "$OUT/default-window-r1"
 
       - name: Job summary
         if: always()
         run: |
-          for t in r1 r2 default-window-r1 default-window-r2; do
+          for t in r1 r2 default-window-r1; do
             printf '\n## %s\n\n' "$t" >> "$GITHUB_STEP_SUMMARY"
             if [ -f "$OUT/$t/MATRIX.md" ]; then
               cat "$OUT/$t/MATRIX.md" >> "$GITHUB_STEP_SUMMARY"
@@ -90,12 +93,6 @@ jobs:
             reliability-out/default-window-*/**
           if-no-files-found: warn
 
-      - name: Gate (ERROR, or a G-REL-1 FAIL without an open targeted issue)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh issue list -R "$GITHUB_REPOSITORY" --state open --limit 1000 --json number --jq '.[].number' > "$RUNNER_TEMP/open-issues.txt"
-          python -m bench.instruments.reliability.ci gate "$OUT/r1/results.jsonl" "$OUT/r2/results.jsonl" --open-issues "$RUNNER_TEMP/open-issues.txt"
 
   latency:
     runs-on: ubuntu-latest
