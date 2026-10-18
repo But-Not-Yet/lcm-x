@@ -155,6 +155,19 @@ class _LeafState:
     level: int = 0
     rescue_attempts: int = 0
 
+    summary_tokens: int = 0
+    anchored_input: Any = None
+    compacted_positions: List[int] = field(default_factory=list)
+    source_lookup_chunk: List[Dict[str, Any]] = field(default_factory=list)
+    source_store_ids: List[int] = field(default_factory=list)
+    consumed_store_ids: List[int] = field(default_factory=list)
+    selected_raw_len: int = 0
+    remaining_messages: List[Dict[str, Any]] = field(default_factory=list)
+    node: Optional[SummaryNode] = None
+    published_frontier: int = 0
+    expected_frontier: int = 0
+    carried_ranges: List[tuple[str, int, int]] = field(default_factory=list)
+
 
 def select_oldest_leaf_chunk(
     candidate_raw: List[Dict[str, Any]],
@@ -2675,6 +2688,57 @@ class CompactionMixin:
                 return "break", None
         return "next", None
 
+    def _build_leaf_publication(
+        self, state: _CompressionState, leaf: _LeafState,
+        dependent_reply_message_ids: set[int],
+    ) -> tuple[Literal["next", "break", "continue", "return"], Optional[List[Dict[str, Any]]]]:
+        """Build publication inputs only after confirming durable leaf coverage."""
+        leaf.compacted_chunk, leaf.compacted_positions, leaf.source_lookup_chunk, leaf.source_store_ids, leaf.consumed_store_ids = (
+            self._leaf_consumption(leaf.selected_raw_chunk, leaf.compacted_chunk, leaf.sources, leaf.anchored_input, leaf.anchor_claims,
+                                   dependent_reply_message_ids))
+        leaf.selected_raw_len = len(leaf.source_lookup_chunk)
+        leaf.remaining_messages = state.working_messages[leaf.leading_anchor_count + leaf.selected_raw_len:]
+        leaf.source_tokens = count_messages_tokens(leaf.source_lookup_chunk)
+        if not leaf.consumed_store_ids:  # #1141: oldest-prefix rescue can discard the last durable source.
+            self._warn_unattributed_leaf(leaf.compacted_chunk)  # #1147 r1: keep the publication backstop.
+            state.noop_reason, state.unattributed_leaf_refused = "selected leaf chunk lacks raw store lineage", True
+            return "break", None
+        earliest_at, latest_at = self._store.get_time_bounds(leaf.source_store_ids)
+        leaf.summary_tokens = count_tokens(leaf.summary_text)
+
+        leaf.node = SummaryNode(
+            session_id=self._session_id,
+            depth=0,
+            summary=leaf.summary_text,
+            token_count=leaf.summary_tokens,
+            source_token_count=leaf.source_tokens,
+            source_ids=leaf.source_store_ids,
+            source_type="messages",
+            created_at=time.time(),
+            earliest_at=earliest_at,
+            latest_at=latest_at,
+            expand_hint=self._extract_expand_hint(leaf.summary_text),
+        )
+        leaf.published_frontier = (
+            max(leaf.consumed_store_ids) if leaf.consumed_store_ids else 0
+        )
+        publication_state = self._lifecycle.get_by_conversation(
+            self._conversation_id
+        )
+        leaf.expected_frontier = int(
+            getattr(publication_state, "current_frontier_store_id", 0)
+        )
+        leaf.carried_ranges = self._load_compression_carry_ranges()
+        leaf.filter_exclusion_proofs = self._stored_publication_filter_exclusions(
+            leaf.expected_frontier,
+            leaf.published_frontier,
+            leaf.consumed_store_ids,
+            leaf.filter_exclusion_proofs,
+            leaf.carried_ranges,
+        )
+        leaf.publication_excluded_store_ids.extend(leaf.filter_exclusion_proofs)
+        return "next", None
+
     def _compress_impl(self, messages: List[Dict[str, Any]],
                        current_tokens: int = None,
                        focus_topic: Optional[str] = None,
@@ -3016,50 +3080,30 @@ class CompactionMixin:
             summary_text = leaf.summary_text
             _level = leaf.level
             _rescue_attempts = leaf.rescue_attempts
-            compacted_chunk, compacted_positions, source_lookup_chunk, source_store_ids, consumed_store_ids = (
-                self._leaf_consumption(selected_raw_chunk, compacted_chunk, sources, anchored_input, anchor_claims,
-                                       dependent_reply_message_ids))
-            selected_raw_len = len(source_lookup_chunk)
-            remaining_messages = working_messages[leading_anchor_count + selected_raw_len:]
-            source_tokens = count_messages_tokens(source_lookup_chunk)
-            if not consumed_store_ids:  # #1141: oldest-prefix rescue can discard the last durable source.
-                self._warn_unattributed_leaf(compacted_chunk)  # #1147 r1: keep the publication backstop.
-                noop_reason, unattributed_leaf_refused = "selected leaf chunk lacks raw store lineage", True
+            leaf.anchored_input = anchored_input
+            action, result = self._build_leaf_publication(state, leaf, dependent_reply_message_ids)
+            noop_reason = state.noop_reason
+            unattributed_leaf_refused = state.unattributed_leaf_refused
+            if action == "break":
                 break
-            earliest_at, latest_at = self._store.get_time_bounds(source_store_ids)
-            summary_tokens = count_tokens(summary_text)
-
-            node = SummaryNode(
-                session_id=self._session_id,
-                depth=0,
-                summary=summary_text,
-                token_count=summary_tokens,
-                source_token_count=source_tokens,
-                source_ids=source_store_ids,
-                source_type="messages",
-                created_at=time.time(),
-                earliest_at=earliest_at,
-                latest_at=latest_at,
-                expand_hint=self._extract_expand_hint(summary_text),
-            )
-            published_frontier = (
-                max(consumed_store_ids) if consumed_store_ids else 0
-            )
-            publication_state = self._lifecycle.get_by_conversation(
-                self._conversation_id
-            )
-            expected_frontier = int(
-                getattr(publication_state, "current_frontier_store_id", 0)
-            )
-            carried_ranges = self._load_compression_carry_ranges()
-            filter_exclusion_proofs = self._stored_publication_filter_exclusions(
-                expected_frontier,
-                published_frontier,
-                consumed_store_ids,
-                filter_exclusion_proofs,
-                carried_ranges,
-            )
-            publication_excluded_store_ids.extend(filter_exclusion_proofs)
+            if action == "continue":
+                continue
+            if action == "return":
+                return result
+            compacted_chunk = leaf.compacted_chunk
+            compacted_positions = leaf.compacted_positions
+            source_lookup_chunk = leaf.source_lookup_chunk
+            source_store_ids = leaf.source_store_ids
+            consumed_store_ids = leaf.consumed_store_ids
+            selected_raw_len = leaf.selected_raw_len
+            remaining_messages = leaf.remaining_messages
+            source_tokens = leaf.source_tokens
+            summary_tokens = leaf.summary_tokens
+            node = leaf.node
+            published_frontier = leaf.published_frontier
+            expected_frontier = leaf.expected_frontier
+            carried_ranges = leaf.carried_ranges
+            filter_exclusion_proofs = leaf.filter_exclusion_proofs
             # The frontier consumes every durable row removed from the active
             # prefix, including trailing dependent replies. Summary lineage
             # excludes those replies; their durable ledger drives replay cleanup.
