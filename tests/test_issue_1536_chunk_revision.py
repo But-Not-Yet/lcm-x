@@ -3,6 +3,8 @@
 from collections.abc import Iterator
 import importlib
 from pathlib import Path
+import re
+import sqlite3
 from types import SimpleNamespace
 from typing import Any
 
@@ -171,3 +173,113 @@ def test_full_backfill_stamps_coverage_bound(store: Store) -> None:
     run(store, incremental=False)
     assert counts(store) == {1: 1, 2: 1, 3: 1}
     assert metadata(store, "chunk_policy_revision_through") == "3"
+
+
+@pytest.mark.parametrize("kind", ["whitespace", "heads", "provider"])
+def test_exceptional_gap_scan_stays_flat_with_appends(
+    store: Store, monkeypatch: pytest.MonkeyPatch, kind: str,
+) -> None:
+    config, vectors, identity, _ = store
+    policy = "heads" if kind == "heads" else "conversational"
+    hole = "REFUSE this document" if kind == "provider" else "\n\t"
+    role = "tool" if kind == "heads" else "user"
+    add_rows(store, [(i, "user", LONG) for i in range(1, 101)], set(range(1, 101)))
+    metadata(store, "chunk_policy_revision", 2)
+    metadata(store, "chunk_policy_revision_through", 100)
+    add_rows(store, [(101, role, hole), (102, "assistant", LONG)], {102})
+    config.embedding_max_batch_items = 1
+
+    def embed(documents: list[str]) -> list[list[float]]:
+        if hole in documents:
+            raise command.ProviderPreDispatchError("synthetic local rejection")
+        return [[1.0, 0.0] for _ in documents]
+
+    provider = SimpleNamespace(provider_id="ollama", model_id="model-a",
+                               last_skipped_documents=[], embed_documents=embed)
+    monkeypatch.setattr(command, "resolve_provider", lambda *_a, **_kw: provider)
+    sql: list[str] = []
+    connect = sqlite3.connect
+
+    def traced(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        conn = connect(*args, **kwargs)
+        conn.set_trace_callback(sql.append)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", traced)
+    visits: list[int] = []
+    statuses: list[str] = []
+    for turn in range(24):
+        high = 102 + 8 * turn
+        add_rows(store, [(high + i, "user", LONG) for i in range(1, 9)], set())
+        before = list(vectors.connection.execute("SELECT * FROM messages ORDER BY store_id"))
+        sql.clear()
+        result = command._chunk_backfill_run(
+            config, config.database_path, apply=True, limit=32, retry_uncertain=False,
+            policy=policy, incremental=True,
+        )
+        assert isinstance(result, dict), result
+        if kind != "provider":
+            assert result["error"] is None and not result["failed"], result
+        scanned = 0
+        for statement in sql:
+            if "FROM messages AS m" not in statement:
+                continue
+            bounds = re.search(r"store_id >= (\d+) AND store_id <= (\d+) AND store_id < (\d+)", statement)
+            assert bounds is not None, statement
+            low, upper, ceiling = map(int, bounds.groups())
+            scanned += max(0, min(upper + 1, ceiling) - low)
+        visits.append(scanned)
+        statuses.append(command._chunk_backlog_estimate(vectors.connection, identity.identity_hash, policy))
+        assert before == list(vectors.connection.execute("SELECT * FROM messages ORDER BY store_id"))
+    assert max(visits[2:]) <= visits[1] + 16, visits
+    assert statuses == (["1 (gap-fill)"] * 24 if kind == "provider" else ["0"] * 24)
+    assert set(counts(store)) == set(range(1, 295)) - {101}
+
+
+def test_rejected_gap_remains_backlog_then_recovers_within_two_passes(
+    store: Store, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, vectors, identity, _ = store
+    add_rows(store, [(1, "user", LONG), (2, "user", SHORT), (3, "assistant", LONG)], {1, 3})
+    metadata(store, "chunk_policy_revision", 2)
+    metadata(store, "chunk_policy_revision_through", 1)
+    rejecting = True
+
+    def embed(documents: list[str]) -> list[list[float]]:
+        if rejecting and SHORT in documents:
+            raise command.ProviderPreDispatchError("synthetic local rejection")
+        return [[1.0, 0.0] for _ in documents]
+
+    provider = SimpleNamespace(provider_id="ollama", model_id="model-a",
+                               last_skipped_documents=[], embed_documents=embed)
+    monkeypatch.setattr(command, "resolve_provider", lambda *_a, **_kw: provider)
+    for turn in range(5):
+        add_rows(store, [(turn + 4, "user", LONG)], set())
+        result = command._chunk_backfill_run(
+            config, config.database_path, apply=True, limit=32, retry_uncertain=False,
+            policy="conversational", incremental=True,
+        )
+        assert isinstance(result, dict) and result["failed"], result
+        assert 2 not in counts(store)
+        assert "(gap-fill)" in command._chunk_backlog_estimate(
+            vectors.connection, identity.identity_hash, "conversational",
+        )
+    rejecting = False
+    run(store)
+    run(store)
+    assert counts(store) == dict.fromkeys(range(1, 9), 1)
+    assert command._chunk_backlog_estimate(vectors.connection, identity.identity_hash, "conversational") == "0"
+
+
+def test_healthy_appends_have_no_gapfill_status_suffix(store: Store) -> None:
+    add_rows(store, [(1, "user", LONG)], {1})
+    metadata(store, "chunk_policy_revision", 2)
+    metadata(store, "chunk_policy_revision_through", 1)
+    for turn in range(20):
+        add_rows(store, [(turn + 2, "user", LONG)], set())
+        run(store)
+        config, vectors, _, _ = store
+        before = list(vectors.connection.execute("SELECT * FROM metadata ORDER BY key"))
+        engine = SimpleNamespace(_config=config, _store=SimpleNamespace(db_path=config.database_path))
+        assert "embedding_backlog_chunks: 0" in command._embedding_maintenance_status_lines(engine)
+        assert before == list(vectors.connection.execute("SELECT * FROM metadata ORDER BY key"))
