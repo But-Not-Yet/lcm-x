@@ -4346,7 +4346,10 @@ def _chunk_gapfill_bounds(conn, identity_hash, bounds, revision):
             (f"chunk_policy_revision_through:{identity_hash}",),
         ).fetchone()
         if through is not None:
-            low = max(low, int(through[0]) + 1)
+            try:
+                low = max(low, int(through[0]) + 1)
+            except (TypeError, ValueError):
+                pass  # An unreadable bound proves nothing; revalidate the whole cursor range.
     return (low, high) if low <= high else None
 
 
