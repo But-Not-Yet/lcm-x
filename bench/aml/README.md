@@ -48,7 +48,7 @@ Load your token from your own secret store into `AML_ADDSEARCH_TOKEN`; do not
 put it in command history. Set the remaining environment variables:
 
 ```bash
-export AML_DB_ROOT=/path/to/private/evaluation-data
+export AML_DB_ROOT=/path/to/evaluation-data
 export AML_OMNIMEMEVAL_REPO=/path/to/OmniMemEval
 export AML_EMBED_CACHE_SOURCE=/path/to/offline/fastembed-cache
 export AML_PYTHON=python3  # optional; defaults to python3
@@ -56,7 +56,7 @@ bash bench/aml/run_aml_server.sh /path/to/lcm-x-tree
 ```
 
 The launcher requires the database root, OmniMemEval tree, and nonempty token.
-The cache source defaults to `~/.cache/fastembed` and must contain
+The cache source defaults to `.cache/fastembed` in the home directory and must contain
 `models--qdrant--bge-small-en-v1.5-onnx-q`; startup copies it into the database
 root. Put a public HTTPS tunnel in front of `127.0.0.1:8791` for AML access.
 
