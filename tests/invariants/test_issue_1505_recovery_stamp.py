@@ -24,11 +24,13 @@ def lineage(root: Path, verified: bool = True) -> None:
                        [("parent", None, "compression" if verified else "normal"), ("child", "parent", None)])
 
 
-def recover(engine: Any, end: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def recover(engine: Any, end: bool = False, *, text: str = "[T32] rebuild the index " * 500,
+            orphan_count: int = 1) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Drive the real forced assembly/finalization and its publication, with no internal mocks."""
-    current = message("[T32] rebuild the index " * 500, 20.)
+    current = message(text, 20.)
     source = [message("[T31] earlier request", 10.), message("earlier reply", 11., "assistant"), current,
-              {"role": "tool", "content": "orphan result", "tool_call_id": "orphan", "timestamp": 21.}]
+              *[{"role": "tool", "content": "orphan result", "tool_call_id": f"orphan-{i}", "timestamp": 21. + i}
+                for i in range(orphan_count)]]
     engine.ingest(source)
     result = engine._assemble_overflow_recovery_context(None, source, assembly_cap_override=120)
     result = engine._finalize_forced_overflow_result(source, result, assembly_cap_override=120)
@@ -173,6 +175,56 @@ def live_rewrite(engine: Any) -> tuple[list[dict[str, Any]], str]:
     engine.ingest(view)
     assert_copies(engine, current["content"])
     return view, current["content"]
+
+
+@pytest.mark.parametrize("foreign_count", [1, 17], ids=["foreign-follower", "evicted-candidate"])
+def test_pending_recovery_receipt_keeps_conversation_scope(tmp_path: Path, foreign_count: int) -> None:
+    lineage(tmp_path)
+    with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
+        view, current = recover(engine)
+        view[-1]["timestamp"] = 30.
+        engine.ingest(deepcopy(view))
+        engine.on_session_start("parent", platform="cli", context_length=128000, conversation_id="other-conv")
+        foreign = [message(f"foreign request {i}", 100. + i) for i in range(foreign_count)]
+        if foreign_count == 17:
+            foreign[-1] = message(current["content"], 200.)
+        engine.ingest(foreign)
+        engine.on_session_start("parent", platform="cli", context_length=128000, conversation_id="conv")
+        view[-1]["content"] = current["content"]
+        engine.ingest([*view, message("reply", 31., "assistant")])
+        if foreign_count == 1:
+            assert_copies(engine, current["content"])
+        engine.on_session_start("parent", platform="cli", context_length=128000, conversation_id="other-conv")
+        engine.ingest([message(current["content"], 30.), message("reply", 32., "assistant")])
+        copies = [r for r in users(engine) if r["conversation_id"] == "other-conv"
+                  and r["content"] == current["content"]]
+        assert sorted(r["observed_at"] for r in copies) == ([30., 200.] if foreign_count == 17 else [30.])
+
+
+def test_observed_recovery_rotation_normalizes_edge_whitespace(tmp_path: Path) -> None:
+    lineage(tmp_path)
+    with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
+        view, current = recover(engine, text="   " + "repeated text " * 500 + "   ")
+        view[-1]["timestamp"] = 30.
+        engine.ingest(deepcopy(view))
+        engine.on_session_end("parent", view)
+        engine.on_session_start("child", platform="cli", context_length=128000, conversation_id="conv",
+                                boundary_reason="compression", old_session_id="parent")
+        view[-1]["content"] = current["content"].strip()
+        engine.ingest([*view, message("reply", 31., "assistant")])
+        copies = [r for r in users(engine) if r["content"].strip() == current["content"].strip()]
+        assert [r["observed_at"] for r in copies] == [20.]
+
+
+def test_observed_recovery_candidate_outside_audit_tail(tmp_path: Path) -> None:
+    lineage(tmp_path)
+    with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
+        view, current = recover(engine, orphan_count=70)
+        view[-1]["timestamp"] = 30.
+        engine.ingest(deepcopy(view))
+        view[-1]["content"] = current["content"]
+        engine.ingest([*view, message("reply", 100., "assistant")])
+        assert_copies(engine, current["content"])
 
 
 @pytest.mark.parametrize("cold", [False, True], ids=["warm", "cold-restart"])
