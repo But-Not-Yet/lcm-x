@@ -813,3 +813,149 @@ def test_leaf_commit_and_advance_callbacks_at_host_depth(
         assert required[path] in distances, (distances, engine._foreground_budget.leaves, engine._last_threshold_full_sweep, engine._last_compression_noop_reason)
         print(json.dumps(dict(path=path, distances=distances, paths=paths), sort_keys=True))
         assert max(distance for row in distances.values() for distance in row.values()) < 28
+
+
+@pytest.mark.parametrize("path", ["live", "prepared", "dependent", "yield"])
+def test_leaf_selection_and_input_callbacks_at_host_depth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str,
+) -> None:
+    """Measure every leaf-phase root reaching pricing or an auxiliary provider."""
+    import ast
+    import inspect
+    import json
+    import re
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    from tests.behaviour.compress_trace_harness import PAD, Scenario, leaf_prep, transcript
+
+    harness.pin_char_counter(monkeypatch)
+    compaction = importlib.import_module("hermes_lcm.compaction")
+    driver = next(n for n in ast.walk(ast.parse(inspect.getsource(compaction)))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_compress_impl")
+    loop = next(n for n in driver.body if isinstance(n, ast.While))
+    l2 = next((n for n in loop.body if isinstance(n, ast.If)
+               and ast.unparse(n.test) == "not explicit_focus_topic"), None)
+    l3 = next((n for n in loop.body if isinstance(n, ast.Assign)
+               and any(isinstance(t, ast.Name) and t.id == "selected_raw_chunk" for t in n.targets)), None)
+    l3_end = next((n for n in loop.body if isinstance(n, ast.If)
+                   and any(isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+                           and c.func.attr == "_reject_prepared_chain" for c in ast.walk(n))), None)
+    agent = _LateAuxiliaryAgent()
+    distances: dict[str, dict[str, int]] = {}
+    paths: dict[str, dict[str, list[str]]] = {}
+    active_root = ""
+    settings = dict(fresh_tail_count=2, fresh_tail_max_tokens=0, leaf_chunk_tokens=800,
+                    context_threshold=0.001, max_assembly_tokens=100000, summary_model="trace-model",
+                    threshold_full_sweep_enabled=False, embeddings_enabled=False, temporal_rollups_enabled=False,
+                    large_output_externalization_enabled=False, extraction_enabled=path == "extraction",
+                    background_leaf_prep_enabled=path == "prepared")
+    if path == "prepared":
+        settings.update(context_threshold=0.75, leaf_chunk_tokens=4000, dynamic_leaf_chunk_max=4000,
+                        max_assembly_tokens=200000, background_leaf_prep_max_calls=64)
+    if path == "dependent":
+        settings.update(leaf_chunk_tokens=1)
+    if path == "yield":
+        settings.update(leaf_chunk_tokens=100000, dynamic_leaf_chunk_enabled=True, survival_fit=False,
+                        fresh_tail_pressure_yield_min_observations=1)
+    monkeypatch.setattr(leaf_prep, "_LEAF_PREP", leaf_prep._LeafPrep())
+    with harness.engine_context(tmp_path, window=200000, session_id="foreground-session", **settings) as engine:
+        def boundary() -> None:
+            nonlocal active_root
+            frame, chain = inspect.currentframe(), []
+            while frame is not None:
+                name = frame.f_code.co_name
+                if name in {"_select_leaf_candidate", "_prepare_leaf_input"}:
+                    phase = "L2" if name == "_select_leaf_candidate" else "L3"
+                    break
+                if name == "_compress_impl":
+                    if l2 is not None and l3 is not None and l2.lineno <= frame.f_lineno < l3.lineno:
+                        phase = "L2"
+                    elif l3 is not None and l3_end is not None and l3.lineno <= frame.f_lineno <= l3_end.end_lineno:
+                        phase = "L3"
+                    else:
+                        return
+                    break
+                chain.append(name)
+                frame = frame.f_back
+            else:
+                return
+            active_root = phase + ":" + chain[-1]
+            agent._memory_write_origin = "background_review"
+            try:
+                assert engine._thread_context_session_id() == "review-session"
+                assert engine._in_process_auxiliary_caller_generation("review-session") > 0
+            finally:
+                agent._memory_write_origin = ""
+                active_root = ""
+
+        def price() -> int:
+            boundary()
+            return 1500
+
+        def call_llm(**kwargs: Any) -> Any:
+            boundary()
+            nonce = re.search(r'<lcm-summary nonce="([a-f0-9]+)">', kwargs["messages"][0]["content"])
+            content = (f'<lcm-summary nonce="{nonce[1]}">\nEarlier turns preserved evidence.\n'
+                       'Expand for details about: turns\n</lcm-summary>') if nonce else "[]"
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+
+        def profile(frame: Any, event: str, value: Any) -> None:
+            name = frame.f_code.co_name
+            if event != "return" or not active_root or name not in {
+                "_in_process_auxiliary_session_id_from_stack", "_in_process_auxiliary_caller_generation"
+            }:
+                return
+            chain, current = [], frame.f_back
+            while current is not None:
+                chain.append(current.f_code.co_name)
+                if current.f_locals.get("self") is agent:
+                    break
+                current = current.f_back
+            assert current is not None
+            row = distances.setdefault(active_root, {})
+            if len(chain) > row.get(name, 0):
+                row[name] = len(chain)
+                paths.setdefault(active_root, {})[name] = chain
+
+        pricing, auxiliary = ModuleType("agent.image_token_cost"), ModuleType("agent.auxiliary_client")
+        pricing.current_image_token_cost, auxiliary.call_llm = price, call_llm
+        monkeypatch.setitem(sys.modules, pricing.__name__, pricing)
+        monkeypatch.setitem(sys.modules, auxiliary.__name__, auxiliary)
+        view = transcript(Scenario("leaf-stack", turns=8))
+        if path == "dependent":
+            view = [harness.user("Previously consumed request. " + PAD),
+                    harness.assistant("Dependent answer. " + PAD), harness.assistant("Dependent continuation. " + PAD),
+                    harness.user("Fresh request."), harness.assistant("Fresh answer.")]
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}
+        for row in view:
+            if row["role"] != "system":
+                row["content"] = [{"type": "text", "text": row["content"]}, image]
+        engine.ingest(view)
+        if path == "dependent":
+            engine._compress_run.store_ids_by_message_id = engine._get_store_id_map_for_messages(view)
+            for row in view[1:3]:
+                engine._remember_generated_ignored_dependent_reply(row, row["content"][0]["text"])
+            engine._lifecycle.advance_frontier(engine._conversation_id, "foreground-session", 1)
+            engine._last_compacted_store_id = 1
+            view = view[1:]
+            engine._ingest_cursor = len(view)
+        if path == "prepared":
+            engine.last_prompt_tokens = 150000
+            engine._prepare_leaves_after_turn(view)
+            assert leaf_prep._LEAF_PREP.wait_idle(10)
+            assert leaf_prep._LEAF_PREP.status()["cached_leaves"] > 0
+        engine._foreground_budget = engine._new_foreground_budget()
+        previous = sys.getprofile()
+        sys.setprofile(profile)
+        try:
+            agent.compress(engine, view, 150000 if path == "prepared" else 3000)
+        finally:
+            sys.setprofile(previous)
+        required = {"live": "L2:_select_oldest_leaf_chunk", "prepared": "L2:_match_prepared_leaf",
+                    "dependent": "L2:count_messages_tokens", "yield": "L2:_maybe_engage_fresh_tail_pressure_yield"}
+        assert required[path] in distances
+        if path in {"live", "prepared"}:
+            assert "L3:_identity_anchor_summary_input" in distances
+        print(json.dumps(dict(path=path, distances=distances, paths=paths), sort_keys=True))
+        assert max(distance for row in distances.values() for distance in row.values()) < 28
