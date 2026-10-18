@@ -379,3 +379,48 @@ def test_stale_receipt_does_not_block_new_recoveries(tmp_path: Path, abandoned: 
             engine.ingest([*view, message("reply", stamp + 3, "assistant")])
             assert_copies(engine, current["content"])
         assert len(engine._identity_anchor_recoveries) <= 4
+
+
+@pytest.mark.parametrize("legacy", ["", None, "conv"], ids=["blank", "null", "attributed"])
+@pytest.mark.parametrize("target", ["parent", "child"])
+def test_recovery_alias_never_spans_conversations_through_a_blank_row(tmp_path: Path, legacy: Any, target: str) -> None:
+    """A row with no recorded conversation must not lend its alias to another conversation after a cold reopen."""
+    lineage(tmp_path)
+    with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
+        view, current = recover(engine)
+        engine._store._conn.execute("UPDATE messages SET conversation_id=? WHERE observed_at=20", (legacy,))
+        engine._store._conn.commit()
+        view[-1]["timestamp"] = 30.
+        engine.ingest(deepcopy(view))
+        view[-1]["content"] = current["content"]
+        engine.ingest([*view, message("reply", 31., "assistant")])
+    with engine_context(tmp_path, window=128000, session_id=target, conversation_id="other") as engine:
+        engine.ingest([{**message(current["content"], 30.), "platform_message_id": "other-conversation-event"},
+                       message("other reply", 32., "assistant")])
+        own = [r for r in engine._store.get_session_messages(target)
+               if r["content"] == current["content"] and r["conversation_id"] == "other"]
+        assert len(own) == 1
+
+
+@pytest.mark.parametrize("shape", ["observed", "copied-dict", "changed-stamp", "changed-position", "new-uid"])
+def test_recovery_receipt_never_vouches_for_a_later_user_turn(tmp_path: Path, shape: str) -> None:
+    """The recovered turn's stored copy predates its recovery; a retry of a later request in the reused dict is stored."""
+    lineage(tmp_path)
+    later = "[B distinct from the recovered turn] retry this newer request"
+    with engine_context(tmp_path, window=128000, session_id="parent", conversation_id="conv") as engine:
+        saved, _ = recover(engine)
+        saved[-1]["timestamp"] = 30.
+        engine.ingest(deepcopy(saved))
+        engine.ingest([*saved, message("response to recovery", 35., "assistant"), message(later, 40.),
+                       message("response to B", 41., "assistant")])
+        retry = list(saved)
+        if shape == "copied-dict":
+            retry[-1] = dict(retry[-1])
+        elif shape == "changed-position":
+            retry.insert(0, message("retained response", 29., "assistant"))
+        retry[-1]["content"] = later
+        retry[-1]["timestamp"] = 50. if shape == "changed-stamp" else 30.
+        if shape == "new-uid":
+            retry[-1]["message_uid"] = "new-B-occurrence"
+        engine.ingest([*retry, message("response to B retry", 51., "assistant")])
+        assert len([r for r in users(engine) if r["content"] == later]) >= 2
