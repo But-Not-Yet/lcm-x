@@ -363,7 +363,8 @@ def test_unreadable_revision_bound_revalidates_full_gap(store: Store, bound: str
         assert counts(store) == dict.fromkeys(range(1, 6), 1)
 
 
-@pytest.mark.parametrize("extra", [{}, {"format": 2, "cursor": {"low": 1, "high": 5}}])
+@pytest.mark.parametrize("extra", [{}, {"format": 2, "cursor": {"low": 1, "high": 5}},
+                                   {"pending": [3, *range(1000, 1600)]}])
 def test_scan_record_from_a_newer_revision_is_not_trusted(store: Store, extra: dict[str, Any]) -> None:
     _, vectors, identity, _ = store
     add_rows(store, [(1, "user", LONG), (2, "user", SHORT), (3, "user", SHORT),
