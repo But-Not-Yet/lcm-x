@@ -421,8 +421,11 @@ class ProcessCell:
         return P1.backlog_low(self.d, last_turn, self.backlog_log)
 
     def stderr_tail(self) -> str:
+        """The host's stderr for an error reason: the first and last 1,000 characters (#985: a bare tail
+        cut off which installer or command a host that exits early asks the operator to run)."""
         path = self.d / f"host-{self.phase}.stderr"
-        return path.read_text(errors="replace")[-300:] if path.exists() else ""
+        text = path.read_text(errors="replace") if path.exists() else ""
+        return text if len(text) <= 2000 else f"{text[:1000]} … {text[-1000:]}"
 
     def phase_record(self, first: int, result: dict) -> dict:
         notes = [n for n in read_jsonl(self.d / "observer.jsonl") if n["phase"] == self.phase]
