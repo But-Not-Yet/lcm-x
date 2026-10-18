@@ -61,9 +61,10 @@ jobs:
           gh issue list -R "$GITHUB_REPOSITORY" --state open --limit 1000 --json number --jq '.[].number' > "$RUNNER_TEMP/open-issues.txt"
           python -m bench.instruments.reliability.ci gate "$OUT/r1/results.jsonl" "$OUT/r2/results.jsonl" --open-issues "$RUNNER_TEMP/open-issues.txt"
 
-      # Explicit opt-in cells, after the gate so they can never delay it; R1 only (process_cell.unsupported() rejects default-window/* under R2).
+      # Explicit opt-in cells, after the gate step so they cannot hold up its verdict; R1 only (process_cell.unsupported() rejects
+      # default-window/* under R2). Skipped on cancellation; after a failed gate they add one short report-only step (cells take ~15 s).
       - name: Default-window R1 in-process (report-only)
-        if: always()
+        if: ${{ !cancelled() }}
         continue-on-error: ${{ env.DEFAULT_WINDOW_REPORT_ONLY == 'true' }}
         timeout-minutes: 30
         run: python bench/instruments/reliability/run_matrix.py --hosts-file "$RUNNER_TEMP/hosts.json" --hosts "${{ matrix.host }}" --plugin-ref HEAD --cells 'default-window/*' --jobs 4 --out "$OUT/default-window-r1"
