@@ -8,7 +8,7 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## v0.28.0 (repeated compaction, slow summarisers)
 
-- [FILL AT TAG: #1505 entry (PR #1516)]
+- Fix: during a forced overflow recovery, a host that overwrites LCM-X's recovery row in place with the current user turn no longer gets that turn stored a second time. LCM-X recognises the exact recovery object it emitted and the stamp it observed on it, and records the match through the existing alternate-stamp relation, so later replays, rotations, trims and cold restarts keep one copy. Matches are limited to one conversation, and every uncertain case stores the turn. No new setting and no schema change. (#1505)
 
 - Fix: the `conversational` chunk policy (and the conversational half of `heads`) now embeds every non-empty user and assistant turn; before, turns under 40 tokens got no vector, and short turns often carry the fact a later question asks about. On LoCoMo (1,540 questions, shared OmniMemEval protocol) local embeddings scored 0.710 with the minimum and 0.791 without it, against 0.751 with embeddings off. Stores chunked before this change are filled in by the automatic chunk pass (new messages first, then the missing turns newest first), and `/lcm status` marks the chunk backlog `(gap-fill)` until it is done. Tool rows and the `full` policy are unchanged; no new setting. (#1197)
 
