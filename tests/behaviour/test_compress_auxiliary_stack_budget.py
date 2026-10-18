@@ -304,3 +304,167 @@ def test_leaf_phase_image_pricing_preserves_auxiliary_at_host_depth(
         assert observed_roots and len(distances) == 2
         assert max(distances.values()) < 28
         print(json.dumps(dict(path=path, roots=sorted(observed_roots), distances=distances, paths=paths), sort_keys=True))
+
+
+@pytest.mark.parametrize("path", ["condense", "sweep", "overflow", "locked", "debt", "reply"])
+def test_finish_phase_callbacks_preserve_auxiliary_at_host_depth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str,
+) -> None:
+    """Measure real finish-phase estimator, image and summary host paths."""
+    import ast
+    import inspect
+    import json
+    import re
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    from tests.behaviour.compress_trace_harness import PAD, Scenario, dag, transcript
+
+    survival = importlib.import_module("hermes_lcm.survival_fit")
+    host_estimate = survival._host_estimate
+    harness.pin_char_counter(monkeypatch)
+    monkeypatch.setattr(survival, "_host_estimate", host_estimate)
+    compaction = importlib.import_module("hermes_lcm.compaction")
+    source = inspect.getsource(compaction)
+    driver = next(n for n in ast.walk(ast.parse(source))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_compress_impl")
+    f2 = next((n.lineno for n in driver.body if isinstance(n, ast.Assign)
+               and ast.unparse(n.targets[0]) == "pre_condensation_context"), None)
+    f3 = next((n.lineno for n in driver.body if isinstance(n, ast.Expr)
+               and isinstance(n.value, ast.Call)
+               and ast.unparse(n.value.func) == "self._refresh_raw_backlog_debt"), None)
+    agent = _LateAuxiliaryAgent()
+    distances: dict[str, dict[str, int]] = {}
+    paths: dict[str, dict[str, list[str]]] = {}
+    active_root = ""
+    estimated_roots: set[str] = set()
+    estimate_calls = 0
+    settings = dict(fresh_tail_count=2, fresh_tail_max_tokens=0, leaf_chunk_tokens=800,
+                    context_threshold=0.001, threshold_full_sweep_enabled=path == "sweep",
+                    max_assembly_tokens=2000 if path == "overflow" else 20000 if path == "locked" else 100000,
+                    deferred_maintenance_enabled=path == "debt",
+                    summary_prefix_target_tokens=20, summary_model="trace-model",
+                    l3_truncate_tokens=2, condensation_fanin=2,
+                    temporal_rollups_enabled=False, embeddings_enabled=False,
+                    large_output_externalization_enabled=False)
+    if path == "reply":
+        settings.update(fresh_tail_count=7, leaf_chunk_tokens=400, dynamic_leaf_chunk_max=400,
+                        max_assembly_tokens=1300, threshold_full_sweep_enabled=True,
+                        summary_prefix_target_tokens=1000)
+    with harness.engine_context(tmp_path, window=200000, session_id="foreground-session", **settings) as engine:
+        def boundary() -> None:
+            nonlocal active_root
+            frame = inspect.currentframe()
+            chain = []
+            while frame is not None:
+                name = frame.f_code.co_name
+                if name in {"_condense_after_leaves", "_finish_with_leaf"}:
+                    phase = "F2" if name == "_condense_after_leaves" else "F3"
+                    break
+                if name == "_compress_impl":
+                    if f3 is not None and frame.f_lineno >= f3:
+                        phase = "F3"
+                    elif f2 is not None and frame.f_lineno >= f2:
+                        phase = "F2"
+                    else:
+                        return
+                    break
+                chain.append(name)
+                frame = frame.f_back
+            else:
+                return
+            active_root = phase + ":" + chain[-1]
+            if "estimate" in chain:
+                estimated_roots.add(active_root)
+            agent._memory_write_origin = "background_review"
+            try:
+                assert engine._thread_context_session_id() == "review-session"
+                assert engine._in_process_auxiliary_caller_generation("review-session") > 0
+            finally:
+                agent._memory_write_origin = ""
+                active_root = ""
+
+        def estimate(messages: Any) -> int:
+            nonlocal estimate_calls
+            boundary()
+            estimate_calls += 1
+            # Reject each kept-reply proposal against its following host-input
+            # measurement, exercising the rejection path without an internal mock.
+            return 1000000 if path == "reply" and estimate_calls % 2 else 0
+
+        def price() -> int:
+            boundary()
+            return 1500
+
+        def call_llm(**kwargs: Any) -> Any:
+            boundary()
+            if path == "locked" and engine._last_compacted_store_id > 0:
+                engine._dag._conn.execute("""CREATE TEMP TRIGGER IF NOT EXISTS lock_summary
+                    BEFORE INSERT ON summary_nodes
+                    BEGIN SELECT RAISE(ABORT, 'database is locked'); END""")
+            nonce = re.search(r'<lcm-summary nonce="([a-f0-9]+)">', kwargs["messages"][0]["content"])
+            assert nonce is not None
+            content = (f'<lcm-summary nonce="{nonce[1]}">\n'
+                       'Earlier turns recorded source evidence and preserved the pending request.\n'
+                       'Expand for details about: turns\n</lcm-summary>')
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+
+        def profile(frame: Any, event: str, value: Any) -> None:
+            name = frame.f_code.co_name
+            if event != "return" or not active_root or name not in {
+                "_in_process_auxiliary_session_id_from_stack", "_in_process_auxiliary_caller_generation"
+            }:
+                return
+            chain, current = [], frame.f_back
+            while current is not None:
+                chain.append(current.f_code.co_name)
+                if current.f_locals.get("self") is agent:
+                    break
+                current = current.f_back
+            assert current is not None
+            row = distances.setdefault(active_root, {})
+            if len(chain) > row.get(name, 0):
+                row[name] = len(chain)
+                paths.setdefault(active_root, {})[name] = chain
+
+        metadata = ModuleType("agent.model_metadata")
+        metadata.estimate_messages_tokens_rough = estimate
+        pricing = ModuleType("agent.image_token_cost")
+        pricing.current_image_token_cost = price
+        auxiliary = ModuleType("agent.auxiliary_client")
+        auxiliary.call_llm = call_llm
+        for module in (metadata, pricing, auxiliary):
+            monkeypatch.setitem(sys.modules, module.__name__, module)
+        if path in {"condense", "locked"}:
+            for i, depth in enumerate((0, 0, 1)):
+                engine._dag.add_node(dag.SummaryNode(
+                    session_id="foreground-session", depth=depth, summary=f"Seed {i}. " + PAD,
+                    token_count=500, source_token_count=1000, source_ids=[],
+                    source_type="messages", created_at=100.0 + i))
+        view = transcript(Scenario("finish-stack", turns=4 if path == "sweep" else 8))
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}
+        for row in view[1:]:
+            row["content"] = [{"type": "text", "text": row["content"]}, image]
+        if path == "reply":
+            from tests.test_issue_1162_keep_reply import PAD as REPLY_PAD, _Host
+
+            host = _Host(True)
+            view = [row for i in range(1, 5) for row in (host.user(f"[T{i}] ask"), host.reply(f"reply to T{i}"))]
+            view += [host.user("continue", pad=REPLY_PAD * 3), host.call(1), host.result(1),
+                     host.user("continue", pad=REPLY_PAD * 3), host.call(2), host.result(2)]
+        previous = sys.getprofile()
+        sys.setprofile(profile)
+        try:
+            agent.compress(engine, view, None if path in {"locked", "reply"} else 250000 if path == "overflow" else 3000)
+        finally:
+            sys.setprofile(previous)
+        assert {key[:2] for key in distances} == ({"F2"} if path in {"locked", "reply"} else {"F2", "F3"})
+        if path == "reply":
+            assert estimated_roots == {"F2:_assemble_committed_compaction_context"}
+            assert estimate_calls == 2
+        required = {"condense": "F2:_maybe_condense", "sweep": "F2:_run_threshold_sweep_condensation",
+                    "locked": "F2:_fail_open_after_publication_failure", "debt": "F3:_refresh_raw_backlog_debt"}
+        if path in required:
+            assert required[path] in distances
+        print(json.dumps(dict(path=path, distances=distances, paths=paths), sort_keys=True))
+        assert max(distance for row in distances.values() for distance in row.values()) < 28
