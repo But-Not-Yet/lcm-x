@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import sqlite3
+import sys
 import tempfile
 import time
 from collections.abc import Iterator
@@ -68,6 +69,25 @@ class Scenario:
 
 
 SCENARIOS = (
+    *(Scenario(f"stop-hang-{history}-{overflow}-{fallback}", mode="timeout", sweep=True, force=False,
+               current_tokens=250000 if overflow else 3000, setup="hang-repeat" if history else "",
+               overrides=(("summary_fallback_models", ["trace-fallback"] if fallback else []),))
+      for history in (False, True) for overflow in (False, True) for fallback in (False, True)),
+    Scenario("stop-route-after-leaf", mode="close-after-leaf", sweep=True),
+    Scenario("stop-rejection-after-leaf", mode="reject-after-leaf", sweep=True),
+    Scenario("stop-refused-restore", mode="open-circuit", shape="legacy-filter", setup="stored",
+             overrides=(("ignore_message_patterns", ["IGNORE THIS ROW"]),)),
+    Scenario("stop-overflow-no-leaf", turns=1, current_tokens=250000,
+             overrides=(("max_assembly_tokens", 2000), ("fresh_tail_pressure_yield_enabled", False))),
+    Scenario("stop-scaffold-equal", shape="ignored-no-system", setup="stored",
+             overrides=(("ignore_message_patterns", ["IGNORE THIS ROW"]), ("leaf_chunk_tokens", 20000))),
+    Scenario("stop-resumed-anchor", setup="resume-anchor", mode="open-circuit"),
+    Scenario("stop-reason-retained", setup="retained-proof", shape="no-system", retry=True,
+             overrides=(("fresh_tail_count", 1), ("leaf_chunk_tokens", 1))),
+    Scenario("stop-reason-unattributed", setup="rotated", retry=True,
+             overrides=(("fresh_tail_pressure_yield_enabled", False),)),
+    Scenario("stop-reason-cleared", shape="legacy-filter", setup="stored",
+             overrides=(("ignore_message_patterns", ["IGNORE THIS ROW"]), ("leaf_chunk_tokens", 20000))),
     Scenario("finish-repeat-condensation-skipped", mode="reject-pre-only", sweep=True,
              seeded_depths=(0, 0, 0), overrides=(("summary_prefix_target_tokens", 100),)),
     Scenario("finish-post-drain-read-error", mode="post-frontier-read-error", sweep=True,
@@ -575,6 +595,9 @@ def transcript(case: Scenario) -> list[dict[str, Any]]:
         rows[1]["content"] = "My preferred name is Reference. Preserve this identity. " + PAD
     if case.shape == "ignored":
         rows[3]["content"] = "IGNORE THIS ROW " + PAD
+    if case.shape == "ignored-no-system":
+        rows[3]["content"] = rows[4]["content"] = "IGNORE THIS ROW " + PAD
+        rows = rows[1:]
     if case.shape.startswith("legacy-"):
         index = 3 if case.shape == "legacy-filter" else len(rows) - (5 if case.shape == "legacy-tail" else 3)
         rows[index]["content"] = "IGNORE THIS ROW " + PAD
@@ -654,6 +677,8 @@ class Provider:
             raise RuntimeError("maximum context length exceeded")
         if mode == "outage" or (mode == "outage-after-leaves" and self.calls >= 8):
             return None
+        if mode == "reject-after-leaf" and self.calls > 1:
+            return "not shorter " * 4000
         if mode == "reject-first" and self.calls == 1:
             return "not shorter " * 4000
         return f"Earlier turns, call {self.calls}.\nExpand for details about: turns"
@@ -758,6 +783,10 @@ def observe(case: Scenario, root: Path) -> Trace:
                         large_output_externalization_path=str(root / "home" / "payloads"),
                         summary_prefix_target_tokens=1000)
         settings.update(dict(case.overrides))
+        if case.setup == "retained-proof":
+            from tests.test_host_uid_shadow import _state_db
+
+            _state_db(root, [("S", None, None)])
         context: Any = engine_context
         with context(root, window=case.window, conversation_id="trace-conversation", **settings) as engine:
             view = transcript(case)
@@ -771,6 +800,23 @@ def observe(case: Scenario, root: Path) -> Trace:
                     source_type="messages", created_at=100.0))
                 engine._lifecycle.advance_frontier("trace-conversation", "S", 4)
                 engine._last_compacted_store_id = 4
+            if case.setup == "resume-anchor":
+                for row in view:
+                    row.pop("timestamp", None)
+                engine.ingest(view)
+                engine._dag.add_node(dag.SummaryNode(
+                    session_id="S", depth=0, summary="Committed prefix. Expand for details about: turns",
+                    token_count=20, source_token_count=1200, source_ids=[3, 4, 5],
+                    source_type="messages", created_at=100.0))
+                engine._lifecycle.advance_frontier("trace-conversation", "S", 5)
+                engine._last_compacted_store_id = 5
+            if case.setup == "retained-proof":
+                for index, row in enumerate(view):
+                    row["message_uid"] = f"occurrence-{index}"
+                engine.ingest(view)
+                view = [*view[2:], dict(view[0]), dict(view[1])]
+                view.insert(2, {"role": "assistant", "content": ""})
+                engine._ingest_cursor = len(view)
             if case.setup == "bypass-no-aux":
                 engine.ingest(view)
                 engine.on_session_start("trace-bypass", context_length=200000, platform="cli")
@@ -845,6 +891,14 @@ def observe(case: Scenario, root: Path) -> Trace:
                 provider.calls = 0
                 if case.setup == "prepared-route-changed":
                     engine._config.summary_model = "changed-trace-model"
+            if case.setup == "hang-repeat":
+                engine._foreground_budget = engine._new_foreground_budget()
+                with engine._fresh_tail_pressure_yield_invocation():
+                    engine._compress_impl(view, current_tokens=3000, force=False)
+                assert engine._hung_summary_strike == ("trace-conversation", "trace-model")
+                clock.now += 301  # the route circuit expires before the longer sweep hold
+                events.clear()
+                provider.calls = 0
             initial = state(engine, canonical)
             conns = connections(engine)
             shapes: dict[tuple[str, str], int] = {}
@@ -865,6 +919,10 @@ def observe(case: Scenario, root: Path) -> Trace:
                 return sqlite3.SQLITE_OK
 
             def trace_sql(connection: str, sql: str) -> None:
+                if (case.mode == "close-after-leaf" and connection == "_dag"
+                        and sql.strip() == "COMMIT" and provider.calls == 1):
+                    for _ in range(3):
+                        engine._summary_circuit_breaker.record_failure("trace-model")
                 if (case.mode in {"frontier-read-error", "post-frontier-read-error"} and connection == "_dag"
                         and sql.strip() == "COMMIT" and provider.calls == (8 if case.mode == "post-frontier-read-error" else 1) and not frontier_read_denied):
                     # Publication errors are converted to condensation_error by
@@ -907,11 +965,28 @@ def observe(case: Scenario, root: Path) -> Trace:
                             before_calls = provider.calls
                             before_rows = harness.stored_rows(engine, "S")
                             before_nodes = engine._dag.get_session_nodes("S", limit=10000)
+                        if case.name == "stop-reason-unattributed" and attempt:
+                            view = [*view, {"role": "assistant", "content": ""}]
                         propagated_frontier_error = False
+                        fit_causes: list[str] = []
+
+                        def profile_fit(frame: Any, event: str, value: Any) -> None:
+                            if previous_profile is not None:
+                                previous_profile(frame, event, value)
+                            if event == "call" and frame.f_code.co_name == "_survival_fit":
+                                fit_causes.append(frame.f_locals["fit_cause"])
+
+                        previous_profile = sys.getprofile()
+                        if case.name.startswith("stop-reason-") and (case.setup != "rotated" or attempt):
+                            sys.setprofile(profile_fit)
                         try:
                             with engine._fresh_tail_pressure_yield_invocation():
-                                returned = engine._compress_impl(view, current_tokens=case.current_tokens,
-                                                                 force=case.force, focus_topic=case.focus)
+                                if case.name.startswith("stop-reason-") and (case.setup != "rotated" or attempt):
+                                    returned = engine.compress(view, current_tokens=case.current_tokens,
+                                                               force=case.force, focus_topic=case.focus)
+                                else:
+                                    returned = engine._compress_impl(view, current_tokens=case.current_tokens,
+                                                                     force=case.force, focus_topic=case.focus)
                             events.append("return " + compact(canonical.value(returned)))
                         except BaseException as exc:
                             if not isinstance(exc, (Exception, HostInterrupted)):
@@ -932,6 +1007,7 @@ def observe(case: Scenario, root: Path) -> Trace:
                                 assert not compaction._is_sqlite_locked_error(exc)
                                 propagated_frontier_error = True
                         finally:
+                            sys.setprofile(previous_profile)
                             if case.mode in {"frontier-read-error", "post-frontier-read-error"}:
                                 engine._dag._conn.set_authorizer(None)
                         if case.setup == "resume-wide-tail":
@@ -943,6 +1019,56 @@ def observe(case: Scenario, root: Path) -> Trace:
                                            and row["role"] == out.get("role") for out in returned)
                                        for row in view[int(engine._last_compacted_store_id):])
                             events.append("resumed prefix: no new leaf; durable rows unchanged; remaining tail survives")
+                        if case.name.startswith("stop-"):
+                            assert engine._pending_context_anchor_messages is None
+                            if case.name.startswith("stop-hang-"):
+                                assert engine._foreground_budget.hung_route == "trace-model"
+                                repeated = case.setup == "hang-repeat"
+                                overflow = case.current_tokens == 250000
+                                fallback = bool(dict(case.overrides)["summary_fallback_models"])
+                                expected_strike = None if overflow and not repeated else ("trace-conversation", "trace-model")
+                                assert engine._hung_summary_strike == expected_strike
+                                assert engine._sweep_budget_hold_turn_paced == (not repeated and not overflow and not fallback)
+                                events.append("hang settlement " + compact(canonical.value({
+                                    "strike": engine._hung_summary_strike, "turn_paced": engine._sweep_budget_hold_turn_paced,
+                                    "hold_until": engine._sweep_budget_hold_until})))
+                            if case.mode in {"close-after-leaf", "reject-after-leaf"}:
+                                assert engine._foreground_budget.leaves == 1, (case.name, engine._foreground_budget.leaves, engine._last_threshold_full_sweep)
+                                assert engine._last_compression_noop_reason == ""
+                                assert engine._sweep_budget_hold_until == 0
+                                assert returned != view and engine._dag.get_session_nodes("S")
+                                assert engine._last_threshold_full_sweep["stop_reason"] == (
+                                    "summary_route_unavailable" if case.mode == "close-after-leaf" else "summary_result_rejected")
+                                events.append("partial success: one leaf, no no-leaf hold or reason overwrite")
+                            if case.setup == "resume-anchor":
+                                assert provider.calls == 0 and returned[1] == view[1]
+                                assert str(returned[2]["content"]).startswith("[Recent Summary")
+                                assert engine._ingest_cursor == len(returned)
+                                events.append("resumed anchor precedes committed summary; pending anchors cleared")
+                            if case.name == "stop-refused-restore":
+                                assert returned == view and provider.calls == 0
+                                assert engine._last_compression_noop_reason == "summary route unavailable"
+                                events.append("refused-input snapshot restored including the ignored row")
+                            if case.name == "stop-overflow-no-leaf":
+                                assert engine._foreground_budget.leaves == 0 and provider.calls == 0
+                                assert engine._last_compression_status == "overflow_recovery"
+                            if case.name == "stop-scaffold-equal":
+                                expected = [row for row in view if "IGNORE THIS ROW" not in row["content"]]
+                                assert returned == expected and engine._last_compression_status == "noop"
+                                assert engine._ingest_cursor == len(returned)
+                                events.append("scaffold drop: assembly equals filtered working view; cursor aligned")
+                            if case.name.startswith("stop-reason-") and (case.setup != "rotated" or attempt):
+                                assert fit_causes
+                                if case.name.endswith("retained"):
+                                    assert fit_causes[-1].startswith(compaction._RETAINED_NOOP_REASON)
+                                    assert engine._last_compression_status == "sanitized"
+                                elif case.name.endswith("unattributed") and attempt:
+                                    assert fit_causes == ["selected leaf chunk lacks raw store lineage"]
+                                    assert engine._last_compression_status == "sanitized"
+                                elif case.name.endswith("cleared"):
+                                    assert fit_causes == [""]
+                                    assert engine._last_compression_status == "sanitized"
+                                events.append("wrapper fit_cause " + compact(fit_causes))
                         if case.mode == "frontier-read-error":
                             assert frontier_read_denied and propagated_frontier_error
                             assert engine._foreground_budget.leaf_reserve == 0.0
