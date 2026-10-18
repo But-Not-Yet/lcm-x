@@ -27,3 +27,17 @@ def test_long_stderr_keeps_the_first_and_last_thousand_characters(tmp_path):
 def test_short_and_missing_stderr_are_returned_whole(tmp_path):
     assert _cell(tmp_path, "short").stderr_tail() == "short"
     assert _cell(tmp_path / "missing", None).stderr_tail() == ""
+
+
+def test_cutoff_is_exact_at_two_edges(tmp_path):
+    at = "a" * 1000 + "b" * 1000
+    assert _cell(tmp_path, at).stderr_tail() == at
+    (tmp_path / "over").mkdir()
+    over = "a" * 1000 + "x" + "b" * 1000
+    assert _cell(tmp_path / "over", over).stderr_tail() == "a" * 1000 + " … " + "b" * 1000
+
+
+def test_capped_reason_keeps_both_ends_within_its_budget(tmp_path):
+    text = "HEAD" + "." * 5000 + "TAIL"
+    out = _cell(tmp_path, text).stderr_tail(150)
+    assert out.startswith("HEAD") and out.endswith("TAIL") and len(out) == 303

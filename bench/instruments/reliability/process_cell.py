@@ -411,7 +411,7 @@ class ProcessCell:
         except (AD.DriverError, OSError, ValueError) as exc:
             if self.deadline is not None and time.monotonic() >= self.deadline and not isinstance(exc, PhaseDeadline):
                 exc = PhaseDeadline(f"phase {self.phase} exceeded its {self.phase_timeout}s deadline ({exc})")
-            return {"exit": "error", "reason": f"{type(exc).__name__}: {exc}; stderr: {self.stderr_tail()}"[:600]}
+            return {"exit": "error", "reason": f"{type(exc).__name__}: {exc}; stderr: {self.stderr_tail(150)}"[:600]}
         finally:
             if not closed:
                 rc = self.proc.close()
@@ -420,12 +420,12 @@ class ProcessCell:
     def low_backlog(self, last_turn: int) -> bool:
         return P1.backlog_low(self.d, last_turn, self.backlog_log)
 
-    def stderr_tail(self) -> str:
-        """The host's stderr for an error reason: the first and last 1,000 characters (#985: a bare tail
+    def stderr_tail(self, edge: int = 1000) -> str:
+        """The host's stderr for an error reason: its first and last ``edge`` characters (#985: a bare tail
         cut off which installer or command a host that exits early asks the operator to run)."""
         path = self.d / f"host-{self.phase}.stderr"
         text = path.read_text(errors="replace") if path.exists() else ""
-        return text if len(text) <= 2000 else f"{text[:1000]} … {text[-1000:]}"
+        return text if len(text) <= 2 * edge else f"{text[:edge]} … {text[-edge:]}"
 
     def phase_record(self, first: int, result: dict) -> dict:
         notes = [n for n in read_jsonl(self.d / "observer.jsonl") if n["phase"] == self.phase]
