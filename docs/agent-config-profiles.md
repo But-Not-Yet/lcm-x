@@ -12,6 +12,10 @@ each feature does and why, see [Feature overview](features-overview.md).
 
 1. **Environment variables (`LCM_*`) are the primary surface** and always win.
    Set them in the environment that launches Hermes.
+   On a multiplexed Hermes gateway, routed profiles do not read the gateway's
+   process environment: put these settings and provider keys in each profile's
+   `.env` or configured secret source instead. `LCM_HERMES_BASE_DIR` always comes
+   from the process environment.
 2. **`~/.hermes/config.yaml`** participates in three narrow, deliberate ways:
    - `plugins.enabled: [hermes-lcm-x]` + `context.engine: lcm-x` activate the
      plugin (see [Operator guide → Activate](operator-guide.md#activate));

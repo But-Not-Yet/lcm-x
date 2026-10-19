@@ -96,6 +96,14 @@ def lcm_env_get(name: str, default=None):
     return lcm_env().get(name, default)
 
 
+def containment_base_dir():
+    """The operator's storage containment root stays process-wide.
+
+    It is never routed through a profile, so a profile can neither drop nor widen it.
+    """
+    return os.environ.get("LCM_HERMES_BASE_DIR")
+
+
 def _parse_pattern_list(raw: str) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 

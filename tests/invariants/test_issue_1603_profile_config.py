@@ -330,11 +330,30 @@ def test_launch_profile_multiplex_composition(host, load_profile, tmp_path, monk
         assert config.lcm_env_get("LCM_CONTEXT_THRESHOLD") == "0.66"
 
 
+def test_routed_profile_keeps_process_containment_root(host, load_profile, tmp_path, monkeypatch):
+    base = (tmp_path / "contained").resolve()
+    monkeypatch.setenv("LCM_HERMES_BASE_DIR", str(base))
+    home = base / "routed"
+    home.mkdir(parents=True)
+    for mapping in ({}, {"LCM_HERMES_BASE_DIR": "/"}):
+        with host.bind(home, mapping):
+            module, _ = load_profile(register=False)
+            diagnostics = importlib.import_module(module.__name__ + ".diagnostics")
+            externalize = importlib.import_module(module.__name__ + ".externalize")
+            assert diagnostics._enforce_state_db_containment(home / "lcm.db", description="fixture") == home / "lcm.db"
+            with pytest.raises(ValueError):
+                diagnostics._enforce_state_db_containment(tmp_path / "outside.db", description="fixture")
+            with pytest.raises(ValueError):
+                externalize.get_large_output_storage_dir(
+                    SimpleNamespace(large_output_externalization_path=str(tmp_path / "outside")), str(home), create=False)
+
+
 def test_environment_read_inventory():
     """AST inventory, including aliased getenv/environ access in plugin modules."""
     allowed = {
         ("config.py", "lcm_env"): "sole resolver: explicit single-profile/old-host fallback",
         ("config.py", "from_env"): "identity check to distinguish routed snapshot from process mapping",
+        ("config.py", "containment_base_dir"): "LCM_HERMES_BASE_DIR: operator containment root stays process-wide",
         ("embedding_provider.py", "__init__"): "FASTEMBED_CACHE_PATH: process-wide model download cache",
         ("inactive_record.py", "_process_start"): "LC_ALL=C subprocess for ps process identity, not profile configuration",
     }
