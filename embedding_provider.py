@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Protocol, Sequence
 from urllib.parse import urlsplit
 
-from .config import LCMConfig, embedding_provider_id
+from .config import LCMConfig, embedding_provider_id, lcm_env_get, profile_bound
 from .tokens import count_tokens
 
 logger = logging.getLogger(__name__)
@@ -302,7 +302,7 @@ def _run_blocking_with_deadline(
             worker_slots.release()
 
     worker = threading.Thread(
-        target=run, name=f"lcm-{provider.lower()}-embedding", daemon=True
+        target=profile_bound(run), name=f"lcm-{provider.lower()}-embedding", daemon=True
     )
     try:
         worker.start()
@@ -632,7 +632,7 @@ class VoyageProvider(_ResilientProvider):
         the flat ``/v1/embeddings`` request unchanged and returns
         ``list[list[float]]`` ordered to ``texts``.
         """
-        api_key = os.environ.get("VOYAGE_API_KEY", "").strip()
+        api_key = lcm_env_get("VOYAGE_API_KEY", "").strip()
         if not api_key:
             raise VoyageError("auth", "VOYAGE_API_KEY is not set")
         if payload is None:
@@ -1296,7 +1296,7 @@ class VoyageProvider(_ResilientProvider):
             return []
         budget = max(0.001, float(timeout))
         deadline = time.monotonic() + budget
-        api_key = os.environ.get("VOYAGE_API_KEY", "").strip()
+        api_key = lcm_env_get("VOYAGE_API_KEY", "").strip()
         if not api_key:
             raise VoyageError("auth", "VOYAGE_API_KEY is not set")
         payload: dict[str, Any] = {
@@ -1605,10 +1605,10 @@ class OpenAICompatibleProvider(_ResilientProvider):
         deadline_budget_s: float | None = None,
         before_transport: Callable[[], None] | None = None,
     ) -> list[list[float]]:
-        api_key = os.environ.get(self.api_key_env, "").strip()
+        api_key = lcm_env_get(self.api_key_env, "").strip()
         if not api_key:
             # Convenience fallback: SiliconFlow key name used by OpenViking.
-            api_key = os.environ.get("SILICONFLOW_API_KEY", "").strip()
+            api_key = lcm_env_get("SILICONFLOW_API_KEY", "").strip()
         if not api_key:
             raise EmbeddingProviderError(
                 f"{self.api_key_env} (or SILICONFLOW_API_KEY) is not set"
@@ -2056,7 +2056,7 @@ def probe_provider_availability(config: LCMConfig) -> dict[str, Any]:
         return result(True, "fastembed is importable")
 
     if embedding_provider_id(provider) == "voyage":
-        if not os.environ.get("VOYAGE_API_KEY", "").strip():
+        if not lcm_env_get("VOYAGE_API_KEY", "").strip():
             return result(False, "VOYAGE_API_KEY is not set")
         return result(
             True,
@@ -2070,8 +2070,8 @@ def probe_provider_availability(config: LCMConfig) -> dict[str, Any]:
             or "LCM_EMBEDDING_API_KEY"
         ).strip()
         has_key = bool(
-            os.environ.get(api_key_env, "").strip()
-            or os.environ.get("SILICONFLOW_API_KEY", "").strip()
+            lcm_env_get(api_key_env, "").strip()
+            or lcm_env_get("SILICONFLOW_API_KEY", "").strip()
         )
         if not has_key:
             return result(

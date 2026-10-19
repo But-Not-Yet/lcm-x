@@ -33,7 +33,7 @@ from .compaction_policy import (
     resolve_threshold,
     threshold_tokens,
 )
-from .config import LCMConfig, _disabled_tool_names
+from .config import LCMConfig, _disabled_tool_names, containment_base_dir, lcm_env_get, profile_bound
 from .dag import SummaryDAG, SummaryNode
 from .diagnostics import _enforce_state_db_containment
 from .engine_registry import (
@@ -1028,6 +1028,9 @@ class LCMEngine(
     def __init__(self, config: LCMConfig | None = None,
                  hermes_home: str = ""):
         self._config = config or LCMConfig.from_env()
+        self._absolute_threshold_tokens = getattr(
+            self._config, "_absolute_threshold_tokens", None
+        )
         global _NATIVE_RECOVERY_WARNING_LOGGED
         if self._config.native_recovery and not _NATIVE_RECOVERY_WARNING_LOGGED:
             _NATIVE_RECOVERY_WARNING_LOGGED = True
@@ -1801,8 +1804,9 @@ class LCMEngine(
         # setpoint (e.g. ~130K for high-quality coding recall). Ratio-based
         # LCM_CONTEXT_THRESHOLD alone drifts with context_length.
         try:
+            absolute = getattr(self, "_absolute_threshold_tokens", None)
             absolute_threshold_tokens = int(
-                os.environ.get("LCM_ABSOLUTE_THRESHOLD_TOKENS", "0") or 0
+                (lcm_env_get("LCM_ABSOLUTE_THRESHOLD_TOKENS", "0") if absolute is None else absolute) or 0
             )
         except (TypeError, ValueError):
             absolute_threshold_tokens = 0
@@ -2879,7 +2883,7 @@ class LCMEngine(
 
             _ROLLUP_MAINTENANCE_SCHEDULER.schedule(
                 key,
-                maintain,
+                profile_bound(maintain),
                 owner=self._rollup_maintenance_owner,
             )
         except Exception:
@@ -2935,7 +2939,7 @@ class LCMEngine(
 
             _EMBEDDING_MAINTENANCE_SCHEDULER.schedule(
                 self._rollup_maintenance_key("embeddings"),
-                maintain,
+                profile_bound(maintain),
                 owner=self._embedding_maintenance_owner,
             )
         except Exception:
@@ -3140,7 +3144,7 @@ class LCMEngine(
 
     def _get_allowed_hermes_base(self) -> Path | None:
         """Get the allowed base directory for hermes_home, or None if not restricted."""
-        env_base = os.environ.get("LCM_HERMES_BASE_DIR")
+        env_base = containment_base_dir()
         if env_base:
             return Path(env_base).expanduser().resolve()
         return None  # No restriction when env var not set
@@ -7565,7 +7569,7 @@ class LCMEngine(
             self._assertion_extraction_sources_scheduled += len(snapshots)
         self._assertion_extraction_idle.clear()
         worker = threading.Thread(
-            target=self._run_assertion_extraction_batch,
+            target=profile_bound(self._run_assertion_extraction_batch),
             args=(str(self._store.db_path), tuple(snapshots), model, timeout_seconds),
             name="lcm-assertion-extraction",
             daemon=True,

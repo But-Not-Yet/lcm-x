@@ -99,6 +99,14 @@ def _load_standalone_config():
     return _STANDALONE_CONFIG
 
 
+def lcm_env_get(name: str, default=None):
+    if __package__ in sys.modules:
+        from .config import lcm_env_get as read_env
+    else:
+        read_env = _load_standalone_config().lcm_env_get
+    return read_env(name, default)
+
+
 def _env_flag_enabled(name: str, default: bool = False) -> bool:
     if __package__ in sys.modules:
         from .config import _parse_bool_env
@@ -164,7 +172,7 @@ def _session_context_value(name: str) -> str:
     try:
         from gateway.session_context import get_session_env
     except ImportError:
-        return str(os.environ.get(name, "") or "")
+        return str(lcm_env_get(name, "") or "")
     try:
         return str(get_session_env(name, "") or "")
     except Exception:
@@ -582,7 +590,7 @@ def register(ctx):
         hermes_home = str(get_hermes_home())
     except Exception as exc:
         logger.warning("hermes-lcm-x: could not import get_hermes_home (%s); falling back to env", exc)
-        hermes_home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
+        hermes_home = lcm_env_get("HERMES_HOME", os.path.expanduser("~/.hermes"))
 
     engine = LCMEngine(config=config, hermes_home=hermes_home)
 
