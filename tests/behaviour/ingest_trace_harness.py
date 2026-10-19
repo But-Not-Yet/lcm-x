@@ -145,6 +145,8 @@ SCENARIOS = (
     Scenario("row-filter-generated-append-error", "F1/W1", shape="quarantine", variant="generated-append", fault="append"),
     Scenario("row-filter-ignore-ledger-lock", "F1/W1", shape="ignored-ledger",
              variant="ignore-ledger", fault="locked", stored=0),
+    Scenario("replay-build-mapped-ignore", "P2", shape="ignored", variant="mapped-only"),
+    Scenario("replay-build-quarantine-prefix", "P2", shape="quarantine-prefix", warm=True),
     Scenario("protect-after-filter-copy", "W0/F1", shape="ignored-ledger", variant="protect-ledger", fault="locked", stored=0),
     Scenario("protect-path-error", "W0", shape="protect-error", variant="single", fault="protect-path", stored=0),
     Scenario("sqlite-locked-existing-tail", "W1", variant="delta", fault="locked", stored=4),
@@ -412,6 +414,9 @@ def prepare(engine: Any, case: Scenario, root: Path, engines: ExitStack) -> tupl
     if case.shape == "sequence":
         original = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"turn {i}: " + "alpha beta " * 50,
                      "timestamp": 100. + i, "message_uid": f"host-{i}"} for i in range(24)]
+    elif case.shape == "quarantine-prefix":
+        original = [{"role": "assistant", "content": text * 3000}
+                    for text in ("first repeated segment. ", "second repeated segment. ")]
     elif case.shape in {"raw-stub", "raw-large"}:
         original = []
     elif case.shape == "tools-many":
@@ -525,6 +530,17 @@ def prepare(engine: Any, case: Scenario, root: Path, engines: ExitStack) -> tupl
             if case.variant == "host-held":
                 incoming = [dict(m) for m in active]
             incoming.append({"role": "user", "content": "next"})
+    elif case.shape == "quarantine-prefix":
+        # A missing old payload must not be recreated before the warm cursor;
+        # the other old payload is reused while a fresh tail is externalized.
+        first = engine._store.get_session_messages("S")[0]
+        refs = engine_module.extract_ingest_externalized_refs(first["content"])
+        assert len(refs) == 1
+        (root / "home" / "payloads" / refs[0]).unlink()
+        incoming.append({"role": "assistant", "content": "fresh repeated segment. " * 3000})
+    elif case.variant == "mapped-only":
+        incoming = [{"role": "assistant", "content": "host replacement", "store_id": 2},
+                    {"role": "user", "content": "after mapped ignore"}]
     elif case.variant in {"ignore-ledger", "protect-ledger"}:
         # The SQLite writer lock prevents ledger writes. The second digest
         # displaces the first, and append failure exposes the fallback copies.
@@ -890,6 +906,10 @@ def observe(case: Scenario, root: Path, *, payloads: list[str] | None = None) ->
             manifest = payload_observation(engine)
             if manifest:
                 emit("payloads-after", manifest)
+            if case.shape == "quarantine-prefix":
+                emit("quarantine-payloads-after", [
+                    [path.name, hashlib.sha256(path.read_bytes()).hexdigest()]
+                    for path in sorted((root / "home" / "payloads").glob("*.json"))])
             emit("input-after", incoming)
             emit("aliases-after", aliases(incoming, incoming))
             # Deferred effects are checked by another real ingest and a cold

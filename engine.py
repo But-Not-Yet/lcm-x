@@ -6733,38 +6733,8 @@ class LCMEngine(
             if new_prefix_occurrences:
                 cursor = self._ingest_cursor = min(new_prefix_occurrences)
                 current_prefix_identities = current_prefix_identities[:cursor]
-        scan_start = 0 if self._ingest_cursor_needs_reconcile else cursor
-        ignored_original_messages = [False] * n
-        if self._compiled_ignore_message_patterns:
-            store_id_scope = self._compress_run.preserve_store_ids()
-            self._compress_run.store_ids_by_message_id = self._get_store_id_map_for_messages(messages)
-            with store_id_scope:
-                for idx in range(scan_start, n):
-                    mapped_ignore = self._mapped_stored_row_matches_ignore_message_patterns(messages[idx])
-                    ignored_original_messages[idx] = (
-                        self._matches_ignore_message_patterns(messages[idx])
-                        or mapped_ignore
-                    )
-        externalize_messages = [False] * n
-        prefer_existing_externalized = [False] * n
-        for idx in range(scan_start, n):
-            externalize_messages[idx] = not ignored_original_messages[idx]
-        for idx in range(0, scan_start):
-            prefer_existing_externalized[idx] = not ignored_original_messages[idx]
-        replay_messages = quarantine_suspicious_assistant_messages(
-            messages,
-            session_id=self._session_id,
-            config=self._config,
-            hermes_home=self._hermes_home,
-            externalize=externalize_messages,
-            prefer_existing_externalized=prefer_existing_externalized,
-        )
-        replay_messages = self._redact_active_replay_messages(replay_messages)
-        replay_messages = self._apply_ignored_active_replay_placeholders(
-            messages,
-            replay_messages,
-            scan_start=scan_start,
-            ignored_messages=ignored_original_messages,
+        scan_start, ignored_original_messages, replay_messages = self._build_ingest_replay(
+            messages=messages, n=n, cursor=cursor,
         )
         reconciled_existing_session = self._ingest_cursor_needs_reconcile
         reconcile_messages = replay_messages
@@ -7026,6 +6996,48 @@ class LCMEngine(
         # exceptions are whole-message ``raw_payload`` externalization and the
         # separately opt-in textual tool-result interceptor above.
         return self._remember_active_replay_messages(messages, active_replay_messages)
+
+    def _build_ingest_replay(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        n: int,
+        cursor: int,
+    ) -> tuple[int, list[bool], List[Dict[str, Any]]]:
+        scan_start = 0 if self._ingest_cursor_needs_reconcile else cursor
+        ignored_original_messages = [False] * n
+        if self._compiled_ignore_message_patterns:
+            store_id_scope = self._compress_run.preserve_store_ids()
+            self._compress_run.store_ids_by_message_id = self._get_store_id_map_for_messages(messages)
+            with store_id_scope:
+                for idx in range(scan_start, n):
+                    mapped_ignore = self._mapped_stored_row_matches_ignore_message_patterns(messages[idx])
+                    ignored_original_messages[idx] = (
+                        self._matches_ignore_message_patterns(messages[idx])
+                        or mapped_ignore
+                    )
+        externalize_messages = [False] * n
+        prefer_existing_externalized = [False] * n
+        for idx in range(scan_start, n):
+            externalize_messages[idx] = not ignored_original_messages[idx]
+        for idx in range(0, scan_start):
+            prefer_existing_externalized[idx] = not ignored_original_messages[idx]
+        replay_messages = quarantine_suspicious_assistant_messages(
+            messages,
+            session_id=self._session_id,
+            config=self._config,
+            hermes_home=self._hermes_home,
+            externalize=externalize_messages,
+            prefer_existing_externalized=prefer_existing_externalized,
+        )
+        replay_messages = self._redact_active_replay_messages(replay_messages)
+        replay_messages = self._apply_ignored_active_replay_placeholders(
+            messages,
+            replay_messages,
+            scan_start=scan_start,
+            ignored_messages=ignored_original_messages,
+        )
+        return scan_start, ignored_original_messages, replay_messages
 
     def _ingest_filter_rows(
         self, *,
