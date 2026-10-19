@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .diagnostics import fresh_sqlite_check
+
 
 @dataclass(frozen=True)
 class DoctorFacts:
@@ -86,10 +88,11 @@ def collect_doctor(engine: Any) -> DoctorFacts:
             return f"error: {exc}"
 
     try:
-        integrity_row = store_conn.execute("PRAGMA integrity_check").fetchone()
-        integrity = str(integrity_row[0]) if integrity_row else "unknown"
+        integrity_ok, integrity = fresh_sqlite_check(engine, "integrity_check")
+        if integrity.startswith("error:"):
+            probe_errors["sqlite_integrity"] = True
     except Exception as exc:  # pragma: no cover - defensive
-        integrity = f"error: {exc}"
+        integrity_ok, integrity = False, f"error: {exc} (long-lived connection; unconfirmed)"
         probe_errors["sqlite_integrity"] = True
 
     def _fts_text_status(result: dict[str, command.Any]) -> str:
@@ -156,8 +159,9 @@ def collect_doctor(engine: Any) -> DoctorFacts:
         journal_mode = f"error: {exc}"
         probe_errors["sqlite_journal_mode"] = True
     try:
-        quick_row = store_conn.execute("PRAGMA quick_check").fetchone()
-        quick_check = str(quick_row[0]) if quick_row else "unknown"
+        _, quick_check = fresh_sqlite_check(engine, "quick_check")
+        if quick_check.startswith("error:"):
+            probe_errors["sqlite_quick_check"] = True
     except Exception as exc:  # pragma: no cover - defensive
         quick_check = f"error: {exc}"
         probe_errors["sqlite_quick_check"] = True
@@ -245,7 +249,7 @@ def collect_doctor(engine: Any) -> DoctorFacts:
 
     missing_externalized_refs = int(externalized_integrity.get("externalized_payload_refs_missing", 0) or 0)
     triage_checks: list[dict[str, command.Any]] = []
-    if integrity != "ok":
+    if not integrity_ok:
         triage_checks.append({"check": "database_integrity", "status": "fail", "detail": integrity})
     if schema_health.get("error") or schema_missing_tables:
         triage_checks.append({"check": "schema_core_tables", "status": "fail", "detail": schema_health})
