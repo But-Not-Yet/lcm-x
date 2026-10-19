@@ -12,6 +12,7 @@ import hashlib
 import importlib
 import json
 import logging
+import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -20,6 +21,7 @@ import threading
 from types import FunctionType, MethodType, ModuleType, SimpleNamespace
 from typing import Any, Callable, Iterator
 import uuid
+from urllib.parse import quote
 from enum import Enum
 
 import pytest
@@ -55,6 +57,8 @@ COMMON = (
     "publish-call-error", "publish-row-error", "publication-owner-loss",
     "publication-identity-superseded", "release-failure", "invalid-accepted-index",
     "unresolved-request", "profile-absent-dry", "invalid-dispatch-index",
+    "dtype-match", "read-open-non-sqlite-error", "profile-read-non-sqlite-error",
+    "discovery-read-non-sqlite-error",
 )
 CHUNK_ONLY = (
     "cloud-dry-consent-off", "cloud-dry-consent-on", "cloud-apply-consent-off",
@@ -70,6 +74,9 @@ STORE_PRIMITIVES = frozenset({
     "_run_publish_batch", "publish_embedding_under_lease", "publish_chunk_embedding_under_lease",
     "_publish_under_lease", "_profile_by_identity", "_write_embedding_row", "_write_chunk_row",
     "_validate_embedding_write", "_normalized", "_bump_data_version", "close",
+})
+PROVIDER_PRIMITIVES = frozenset({
+    "embed_query", "embed_documents", "embed_document_batches", "embed_chunk_group_batches",
 })
 WRITE_TABLES = frozenset({
     "sqlite_master", "sqlite_temp_master", "metadata", "lcm_migration_state", "lcm_embedding_profile",
@@ -131,6 +138,8 @@ class Clock:
 class Observer:
     def __init__(self, root: Path, payloads: list[str] | None = None) -> None:
         self.root, self.payloads = str(root), payloads
+        self.roots = sorted({self.root, os.path.realpath(root),
+                             quote(self.root), quote(os.path.realpath(root))}, key=lambda item: (-len(item), item))
         self.events: list[str] = []
         self.errors: list[str] = []
         self.called: set[str] = set()
@@ -147,7 +156,9 @@ class Observer:
 
     def value(self, value: Any) -> Any:
         if isinstance(value, str):
-            return value.replace(self.root, "<sandbox>")
+            for root in self.roots:
+                value = value.replace(root, "<sandbox>")
+            return value
         if value is None or isinstance(value, (int, float, bool)):
             return value
         if isinstance(value, bytes):
@@ -205,8 +216,9 @@ class Observer:
         return sqlite3.SQLITE_OK
 
     def files(self, root: Path) -> None:
-        # Exact fixture database names only; no unrelated directory scan.
-        self.emit("files", [suffix for suffix in ("", "-wal", "-shm") if (root / ("lcm.db" + suffix)).exists()])
+        # Only this case's private sandbox; never inspect unrelated disk state.
+        self.emit("files", sorted(path.relative_to(root).as_posix()
+                                  for path in root.rglob("*") if path.is_file()))
 
     def snapshot(self, path: Path, label: str) -> None:
         previous, self.quiet = self.quiet, True
@@ -238,6 +250,12 @@ class Connection(sqlite3.Connection):
             observer.fault_used = True
             self.set_authorizer(lambda action, *_: sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_DELETE else sqlite3.SQLITE_OK)
         try:
+            fault_table = {"profile-read-non-sqlite-error": "lcm_embedding_profile",
+                           "discovery-read-non-sqlite-error": "summary_nodes" if observer.case.runner == "summary" else "messages"}
+            if (not observer.fault_used and self.label == "connection-1"
+                    and fault_table.get(observer.case.shape, "__absent__") in sql):
+                observer.fault_used = True
+                raise RuntimeError("scripted read failure")
             return super().execute(sql, parameters)
         except Exception as exc:
             observer.emit("sql raises " + self.label, [sql, parameters, exc])
@@ -273,6 +291,23 @@ class ScriptedProvider(OfflineProvider):
         self.case, self.observer, self.clock, self.stop = case, observer, clock, stop
         self.provider_id, self.model_id = config.embedding_provider, config.embedding_model
         self.supports_contextualized_grouping = case.shape == "contextual-model-cap-and-estimates"
+
+    def __getattribute__(self, name: str) -> Any:
+        original = super().__getattribute__(name)
+        if name.startswith("_") or not isinstance(original, (FunctionType, MethodType)):
+            return original
+        def observed(*args: Any, **kwargs: Any) -> Any:
+            observer = self.observer
+            if name not in PROVIDER_PRIMITIVES:
+                observer.errors.append("unregistered provider method: " + name)
+                raise AssertionError(observer.errors[-1])
+            observer.emit("provider call " + name, [args, kwargs])
+            return original(*args, **kwargs)
+        return observed
+
+    def embed_documents(self, texts: Any) -> list[list[float]]:
+        self.documents.extend(texts)
+        return [self.embed_query(text) for text in texts]
 
     def embed_document_batches(self, texts: Any, *, before_dispatch: Callable[[tuple[int, ...]], None]) -> Iterator[Any]:
         texts = list(texts)
@@ -336,7 +371,7 @@ class ScriptedProvider(OfflineProvider):
 def seed(root: Path, case: Scenario, patch: pytest.MonkeyPatch) -> Any:
     root.mkdir(parents=True, exist_ok=True)
     config: Any = storage_config(root, embeddings=True)
-    config.embedding_max_batch_items = 2
+    config.embedding_max_batch_items = 3 if case.shape.startswith("page-B") else 2
     config.embeddings_enabled = case.shape != "disabled"
     cloud = case.shape.startswith("cloud-") or case.shape in {"dry-token-cap", "contextual-model-cap-and-estimates"}
     if cloud:
@@ -344,22 +379,27 @@ def seed(root: Path, case: Scenario, patch: pytest.MonkeyPatch) -> Any:
         config.embedding_model = "voyage-context-3" if case.shape == "contextual-model-cap-and-estimates" else "voyage-4-lite"
     engine = SimpleNamespace(_config=config, _store=SimpleNamespace(db_path=Path(config.database_path)))
     count = 0 if case.shape in {"dry-empty", "apply-empty"} else 3
-    if case.shape in {"apply-one", "page-B-minus-1"}:
+    if case.shape == "apply-one":
         count = 1
-    if case.shape == "page-B":
-        count = 2
+    if case.shape.startswith("page-B"):
+        count = {"page-B-minus-1": 2, "page-B": 3, "page-B-plus-1": 4}[case.shape]
     if case.shape == "incremental-revision-gap-checkpoint":
         count = 4
     seed_summaries: Any = _seed
     seed_chunks: Any = _seed_messages
     seed_summaries(engine, count, register=False)
     text = 'synthetic row "quoted" café ' * 3
+    if case.shape == "cloud-dry-consent-on":
+        text = text.replace("row", "map")  # Equal-sized content keeps the consent previews identical.
     if case.shape == "dry-token-cap":
         text = "x" * 28001
         with sqlite3.connect(config.database_path) as conn:
             conn.execute("UPDATE summary_nodes SET summary=? WHERE depth=0 AND node_id=1", (text,))
+            conn.execute("UPDATE summary_nodes SET summary=? WHERE depth=0 AND node_id=2", ("y" * 27000,))
         conn.close()
     rows = [(i, "trace-session", "history", "user", text + str(i), float(i)) for i in range(1, count + 1)]
+    if case.shape == "dry-token-cap":
+        rows[1] = (2, "trace-session", "history", "user", "y" * 27000, 2.)
     if case.shape == "contextual-model-cap-and-estimates":
         rows = [(1, "trace-session", "history", "user", "a" * 30000, 1.),
                 (2, "trace-session", "history", "user", "b" * 33001, 2.),
@@ -422,7 +462,8 @@ def observe(case: Scenario, root: Path, *, payloads: list[str] | None = None) ->
             o.emit("document aliases", [o.alias(documents), [o.alias(row) for row in documents]])
             o.emit("discovery checkpoint", None)
             o.snapshot(Path(config.database_path), "discovery state")
-            return documents, "fixture-revision", 0, 0, None
+            privacy_revision = "fixture-revision" if command.embedding_provider_requires_privacy(kwargs["provider_name"]) else None
+            return documents, privacy_revision, 0, 0, None
         patch.setattr(command, "_prepare_embedding_provider_documents", prepare)
         patch.setattr(command, "validate_embedding_privacy_dispatch", lambda *args, **kwargs: o.emit("boundary dispatch", None))
         config = seed(root, case, patch)
@@ -443,6 +484,10 @@ def observe(case: Scenario, root: Path, *, payloads: list[str] | None = None) ->
         patch.setattr(socket, "getaddrinfo", offline)
         real_connect = sqlite3.connect
         def connect(*args: Any, **kwargs: Any) -> Connection:
+            if case.shape == "read-open-non-sqlite-error" and not o.fault_used:
+                o.fault_used = True
+                o.emit("connection open raises", "scripted open failure")
+                raise RuntimeError("scripted open failure")
             kwargs.update(factory=Connection, cached_statements=0)
             conn: Connection = real_connect(*args, **kwargs)
             conn.observer = o
@@ -460,6 +505,14 @@ def observe(case: Scenario, root: Path, *, payloads: list[str] | None = None) ->
         stores: list[Any] = []
         def race(kind: str) -> None:
             o.emit("race", kind)
+            if kind == "identity-newer":
+                other_store = real_store(config.database_path, config=config)
+                try:
+                    other_store.register_profile(config.embedding_model, config.embedding_provider, 2,
+                                                 revision="newer-fixture-revision", task="summary")
+                finally:
+                    other_store.close()
+                return
             with sqlite3.connect(config.database_path) as other:
                 if kind == "owner":
                     other.execute("UPDATE metadata SET value=? WHERE key=?", (json.dumps({"owner": "other-owner", "generation": 9, "heartbeat_at": clock.time()}), command._EMBEDDING_BACKFILL_CLAIM_KEY))
@@ -504,7 +557,7 @@ def observe(case: Scenario, root: Path, *, payloads: list[str] | None = None) ->
                         o.files(root)
                     if name == "_init_db" and case.shape == "identity-switch-before-dispatch" and not o.fault_used:
                         o.fault_used = True
-                        race("identity")
+                        race("identity-newer" if case.runner == "summary" else "identity")
                     if name == row_name:
                         published += 1
                     if name == publish_name:
@@ -533,7 +586,7 @@ def observe(case: Scenario, root: Path, *, payloads: list[str] | None = None) ->
                 "limit-then-reopen-resume", "incremental-boundary-resume", "provider-ambiguous-after-subbatch",
                 "contextual-model-cap-and-estimates"} else 1
             for attempt in range(passes):
-                apply = not (case.shape.startswith("dry-") or case.shape in {"profile-absent-dry", "cloud-dry-consent-off", "cloud-dry-consent-on"})
+                apply = not (case.shape.startswith("dry-") or case.shape in {"dtype-match", "discovery-read-non-sqlite-error", "profile-absent-dry", "cloud-dry-consent-off", "cloud-dry-consent-on"})
                 if case.shape == "contextual-model-cap-and-estimates":
                     apply = attempt > 0
                 if attempt:
@@ -543,7 +596,7 @@ def observe(case: Scenario, root: Path, *, payloads: list[str] | None = None) ->
                     o.snapshot(Path(config.database_path), "reopened state")
                 options: dict[str, Any] = dict(apply=apply, limit=1 if case.shape in {"dry-limited", "limit-then-reopen-resume", "incremental-boundary-resume", "incremental-revision-gap-checkpoint"} and attempt == 0 else 100,
                     retry_uncertain=case.shape == "provider-ambiguous-after-subbatch" and attempt > 0, stop_event=stop,
-                    expected_dtype="int8" if case.shape == "dtype-mismatch" else None)
+                    expected_dtype="int8" if case.shape == "dtype-mismatch" else "float32" if case.shape == "dtype-match" else None)
                 db_path = Path(config.database_path) if case.shape != "db-open-error" else root / "missing" / "lcm.db"
                 if case.runner == "chunks":
                     options.update(policy="conversational", confirm_raw_text=case.shape.endswith("-on") or case.shape in {"dry-token-cap", "contextual-model-cap-and-estimates"}, incremental=case.shape.startswith("incremental-"))
