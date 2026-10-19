@@ -178,7 +178,8 @@ def test_premerge_shared_slot_preserves_current_turn(tmp_path, monkeypatch, shap
         capture = shape in {'uid', 'anchor-disabled-after-capture', 'prematch-raises'}
         if shape == 'uid':
             # Required one-shot recovery record, bound to the actual shared object.
-            assert getattr(e, '_premerge_capture', None) is p
+            captured, snapshot = e._premerge_capture
+            assert captured is p and snapshot == p['content']
         if shape in {'cancel-retry', 'r34', 'anchor-off'}:
             assert [row['content'] for row in e._store.get_session_messages('s')] == [q['content']]
         if shape == 'anchor-disabled-after-capture':
@@ -203,5 +204,57 @@ def test_premerge_shared_slot_preserves_current_turn(tmp_path, monkeypatch, shap
         # A second ingest must not retain a capture or create a surplus remainder.
         e.ingest([q, p, reply])
         assert [row['content'] for row in e._store.get_session_messages('s')] == expected
+    finally:
+        e.shutdown()
+
+
+@pytest.mark.parametrize('steer', [True, False], ids=['steer', 'ordinary'])
+def test_unmerged_predecessor_prematch_fault(tmp_path, monkeypatch, steer):
+    """I1: a pre-match fault must not re-store an unchanged predecessor slot."""
+    ctx = register(tmp_path, monkeypatch)
+    e = ctx.engine
+    try:
+        e.on_session_start('s', platform='cli', context_length=128000, conversation_id='conv')
+        q, p, r = message('Q', 9., 'assistant'), message('P', 10.), message('R', 20.)
+        if steer:
+            p['display_kind'] = 'steer'
+        e.ingest([q])
+        ctx.hooks['pre_llm_call'](session_id='s', conversation_id='conv', conversation_history=[q, p, r])
+        if steer:
+            assert getattr(e, '_premerge_capture', None) is None
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError('forced prematch failure')
+
+        monkeypatch.setattr(e, '_identity_anchor_prematch', boom)
+        e.ingest([q, p, r, message('A', 21., 'assistant')])
+        rows = [(row['content'], row['observed_at']) for row in e._store.get_session_messages('s')]
+        assert rows == [('Q', 9.), ('P', 10.), ('R', 20.), ('A', 21.)]
+        assert getattr(e, '_premerge_capture', None) is None
+    finally:
+        e.shutdown()
+
+
+def test_uid_composite_prematch_fault_keeps_both_turns(tmp_path, monkeypatch):
+    """N5/I2: under a fault, keep P and C=P+R rather than lose the current turn."""
+    ctx = register(tmp_path, monkeypatch, whole=True)
+    e = ctx.engine
+    try:
+        e.on_session_start('s', platform='cli', context_length=128000, conversation_id='conv')
+        q, p, r = message('Q', 9., 'assistant'), message('P', 10.), message('R', 20.)
+        p['message_uid'] = 'pending-uid'
+        e.ingest([q])
+        ctx.hooks['pre_llm_call'](session_id='s', conversation_id='conv', conversation_history=[q, p, r])
+        p['_merged_turn_prefix'] = p['content'] + '\n\n'
+        p['content'] += '\n\n' + r['content']
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError('forced prematch failure')
+
+        monkeypatch.setattr(e, '_identity_anchor_prematch', boom)
+        e.ingest([q, p, message('A', 21., 'assistant')])
+        rows = [(row['content'], row['observed_at']) for row in e._store.get_session_messages('s')]
+        assert rows == [('Q', 9.), ('P', 10.), ('P\n\nR', 10.), ('A', 21.)]
+        assert getattr(e, '_premerge_capture', None) is None
     finally:
         e.shutdown()
