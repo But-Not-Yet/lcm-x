@@ -45,6 +45,17 @@ def rollup_row_columns(database):
         return {row[0]: dict(zip(names, row)) for row in conn.execute(f'SELECT {", ".join(names)} FROM lcm_rollups')}
 
 
+def profile_rows(database):
+    """Embedding profiles by rowid, with data_version split from the identity fields."""
+    with sqlite3.connect(database) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = {row["profile_rowid"]: dict(row) for row in conn.execute(
+            "SELECT rowid AS profile_rowid, * FROM lcm_embedding_profile ORDER BY rowid")}
+    return ({key: {name: value for name, value in row.items() if name != "data_version"}
+             for key, row in rows.items()},
+            {key: row["data_version"] for key, row in rows.items()})
+
+
 @pytest.mark.parametrize("source_reader", ("v0.26.2", PREVIOUS_GA))
 @pytest.mark.parametrize("policy", ["defaults", "fleet"])
 def test_shipped_rollups_rollback(
@@ -74,14 +85,21 @@ def test_shipped_rollups_rollback(
             ids = {row[0] for row in conn.execute("SELECT rollup_id FROM lcm_rollups")}
             rollup_columns = rollup_row_columns(tmp_path / "lcm.db")
         vectors = table_hashes(tmp_path, VECTOR_TABLES) if policy == "fleet" else {}
+        profiles, versions = profile_rows(tmp_path / "lcm.db") if policy == "fleet" else ({}, {})
     finally:
         engine.shutdown()
     report = run_old(old_tree(source_reader), tmp_path, host_root, OLD_INGEST_AND_COMPRESS, data=policy)
     assert_preserved(tmp_path, before)
     assert_preserved(tmp_path, rollups)
-    # Newer writers bump the profile's data_version while embedding their new rows.
+    # Newer writers bump the profile's data_version while embedding their new rows;
+    # every other profile field must survive unchanged.
     assert_preserved(tmp_path, {table: rows for table, rows in vectors.items()
                                 if source_reader == "v0.26.2" or table != "lcm_embedding_profile"})
+    if source_reader != "v0.26.2" and profiles:
+        profiles_after, versions_after = profile_rows(tmp_path / "lcm.db")
+        assert {key: profiles_after.get(key) for key in profiles} == profiles
+        assert all(versions_after[key] >= versions[key] for key in versions)
+        assert any(versions_after[key] > versions[key] for key in versions)
     assert payloads.items() <= payload_hashes(tmp_path).items()
     # Both versions understand these rows: publication invalidates them, rather
     # than deleting them. Freeze automatic rebuilding to inspect that durable debt.
