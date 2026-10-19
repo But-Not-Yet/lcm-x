@@ -1,4 +1,4 @@
-"""I1/I2: retain the deferred undo/compress cursor loss as a strict xfail."""
+"""Keep the deferred #1525 undo/compress cursor loss visible as a strict xfail."""
 from __future__ import annotations
 
 import sqlite3
