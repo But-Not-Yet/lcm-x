@@ -652,11 +652,23 @@ def register(ctx):
                     or payload.get("gateway_session_key")
                     or ""
                 )
+
+                def _before_user_merge(active_engine):
+                    # #1508/#849: the host repairs consecutive users after this
+                    # hook. Store the pending predecessor before that repair;
+                    # normal ingest stores the current turn and its carry marker.
+                    history = payload.get("conversation_history") or []
+                    try:
+                        if (len(history) >= 2 and history[-2].get("role") == history[-1].get("role") == "user"
+                                and not active_engine._identity_is_lcm_scaffold(history[-2])):
+                            active_engine.ingest(history[:-1])
+                    except Exception as exc:
+                        logger.warning("LCM pending-predecessor capture failed (%s); continuing pre-LLM context",
+                                       type(exc).__name__)
+                    return _pre_llm_context(active_engine, payload)
+
                 result = use_active_lcm_engine(
-                    lambda active_engine: _pre_llm_context(
-                        active_engine,
-                        payload,
-                    ),
+                    _before_user_merge,
                     session_id=session_id,
                     conversation_id=conversation_id,
                 )
