@@ -135,3 +135,67 @@ def test_followup_observer_mutation(
     actual = trace(name, tmp_path / "mutated")
     assert calls == 3 and mutations == 1
     assert actual != expected, f"G4 missed: {phase} {observer} left the golden unchanged"
+
+
+@pytest.mark.parametrize("name", ["sqlite-locked", "sqlite-duplicate-existing-tail"])
+def test_pending_tail_freezes_batch_and_registers_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str,
+) -> None:
+    """A failed append retains independent rows and the same exception for retry."""
+    engine_type = harness.engine_module.LCMEngine
+    append = engine_type._append_ingest_batch
+    ingest = engine_type._ingest_messages
+    failed: dict[int, tuple[dict[str, Any], Exception]] = {}
+    receipts: list[tuple[bool, bool, bool, bool]] = []
+
+    def append_observed(self: Any, batch: dict[str, Any]) -> Any:
+        try:
+            return append(self, batch)
+        except Exception as exc:
+            failed[id(self)] = (batch, exc)
+            raise
+
+    def ingest_observed(self: Any, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return ingest(self, *args, **kwargs)
+        except Exception as exc:
+            if id(self) in failed and self._pending_session_tails:
+                batch, original = failed[id(self)]
+                pending = self._pending_session_tails[-1]
+                frozen = pending["messages"] == batch["messages"]
+                independent = (pending["messages"] is not batch["messages"]
+                               and all(a is not b for a, b in zip(pending["messages"], batch["messages"])))
+                receipts.append((frozen, independent,
+                                 self in harness.engine_module._PENDING_TAIL_ENGINES, exc is original))
+            raise
+
+    monkeypatch.setattr(engine_type, "_append_ingest_batch", append_observed)
+    monkeypatch.setattr(engine_type, "_ingest_messages", ingest_observed)
+    baseline(name, tmp_path)
+    assert receipts
+    assert all(all(receipt) for receipt in receipts), receipts
+
+
+@pytest.mark.parametrize("name", ["protect-large-user", "tool-stub-single"])
+def test_protected_replay_keeps_source_list_isolated(tmp_path: Path, name: str) -> None:
+    """Observe the original replay list after a storage or tool stub is published."""
+    import sys
+
+    isolated: list[bool] = []
+
+    def observe_return(frame: Any, event: str, arg: Any) -> Any:
+        if frame.f_code.co_name != "_ingest_messages":
+            return None
+        values = frame.f_locals
+        if event == "return" and "protected_messages" in values:
+            active, replay = values["active_replay_messages"], values["replay_messages"]
+            isolated.append(active is not replay and active != replay)
+        return observe_return
+
+    previous = sys.gettrace()
+    sys.settrace(observe_return)
+    try:
+        baseline(name, tmp_path)
+    finally:
+        sys.settrace(previous)
+    assert isolated and all(isolated), isolated
