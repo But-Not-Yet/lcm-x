@@ -74,7 +74,7 @@ OBSERVED_ATTRIBUTES = frozenset({
     "_host_uid_read_error", "_identity_anchor_chain_cache", "_identity_anchor_recent", "_identity_anchor_text_memo",
     "_identity_anchor_recoveries", "_identity_anchor_recovery", "_identity_anchor_user_generation",
     "_identity_anchor_versions", "_pressure_yield_tail_token_limit", "_survival_projected_fields",
-    "_host_uid_lineage_cache", "_engine_uids_pending", "_engine_uids_recorded",
+    "_host_uid_lineage_cache", "_engine_uids_pending", "_engine_uids_recorded", "_premerge_capture",
 })
 Trace = list[str]
 Message = dict[str, Any]
