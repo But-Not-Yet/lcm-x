@@ -8772,7 +8772,7 @@ class LCMEngine(
                 tail_token_total = selection.charged_tokens
             else:
                 tail_selected, tail_token_total = self._select_tail_forced_recovery(
-                    tail_for_selection, assembly_cap, used, stub_over_cap_tool_results)
+                    tail_for_selection, assembly_cap, used)
             summary_budget = max(0, assembly_cap - used - tail_token_total)
             tail_selected, summary_budget, kept_reply = self._keep_newest_reply(
                 tail_messages, anchor_source, tail_for_selection, tail_selected, summary_budget, _reply_rejected)
@@ -8932,8 +8932,7 @@ class LCMEngine(
         self._kept_reply_mark = (result, kept_reply["tokens"]) if kept_reply is not None else None
         return result
 
-    def _select_tail_forced_recovery(self, tail_for_selection, assembly_cap, used,
-                                   stub_over_cap_tool_results) -> tuple[list[Dict[str, Any]], int]:
+    def _select_tail_forced_recovery(self, tail_for_selection, assembly_cap, used) -> tuple[list[Dict[str, Any]], int]:
         """#636 forced recovery: newest-first tool rows, over-cap results stubbed, kept only with their call."""
         kept_tail_reversed: list[Dict[str, Any]] = []
         tail_token_total = 0
@@ -8941,12 +8940,12 @@ class LCMEngine(
         # #636 (forced recovery only): newest-first tool rows since the last kept
         # row, over-cap ones replaced by a bounded stub, kept only with their call.
         pending_results: list[Dict[str, Any]] = []
-        result_names = _tool_result_names(tail_for_selection) if stub_over_cap_tool_results else {}
+        result_names = _tool_result_names(tail_for_selection)
         for index in range(len(tail_for_selection) - 1, -1, -1):
             msg = tail_for_selection[index]
             msg_tokens = count_message_tokens(msg)
             pending_tokens = count_messages_tokens(pending_results) if pending_results else 0
-            if stub_over_cap_tool_results and msg.get("role") == "assistant":
+            if msg.get("role") == "assistant":
                 call_ids = [_tool_call_id(tc) for tc in (msg.get("tool_calls") or [])]
                 result_ids = {str(r.get("tool_call_id") or "").strip() for r in pending_results}
                 # Reserve precisely the plain stubs inserted by the final sanitizer.
@@ -8970,8 +8969,7 @@ class LCMEngine(
                     pending_tokens = count_messages_tokens(pending_results)
             if used + tail_token_total + pending_tokens + msg_tokens > assembly_cap:
                 if (
-                    stub_over_cap_tool_results
-                    and msg.get("role") == "tool"
+                    msg.get("role") == "tool"
                     and not skipped_tail_gap
                     and self._is_budget_droppable_tail_message(msg)
                 ):
@@ -8983,15 +8981,12 @@ class LCMEngine(
                 break
             if skipped_tail_gap:
                 break
-            if stub_over_cap_tool_results and msg.get("role") == "tool":
+            if msg.get("role") == "tool":
                 # Queue even fitting results so the call sees its whole result set.
                 pending_results.append(msg)
                 continue
             if pending_results:
                 call_ids = {_tool_call_id(tc) for tc in (msg.get("tool_calls") or [])}
-                if msg.get("role") == "tool":
-                    pending_results.append(msg)
-                    continue
                 if msg.get("role") != "assistant" or not {
                     str(r.get("tool_call_id") or "").strip() for r in pending_results
                 } <= call_ids:
