@@ -659,3 +659,68 @@ def test_doctor_fresh_integrity(tmp_path, monkeypatch, scenario):
             else:
                 assert "restore from backup" in guidance
                 assert guidance in text
+
+
+@pytest.mark.parametrize("damage", (b"NOT A DATABASE!!", b"\xff" * 100), ids=("header", "page1"))
+def test_doctor_fresh_corruption_error(tmp_path, damage):
+    from tests.harness.engine import engine_context
+
+    with engine_context(tmp_path, embeddings_enabled=False) as engine:
+        db = Path(engine._store.db_path)
+        tools.lcm_doctor({}, engine=engine)
+        command._doctor_text(engine)
+        engine._store.connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        original = db.read_bytes()
+        try:
+            with db.open("r+b") as stream:
+                stream.seek(0 if len(damage) == 16 else 100)
+                stream.write(damage)
+            payload = json.loads(tools.lcm_doctor({}, engine=engine))
+            checks = {c["check"]: c for c in payload["checks"]}
+            text = command._doctor_text(engine)
+            for name in ("database_integrity", "sqlite_storage"):
+                assert checks[name]["status"] == "fail", checks[name]
+                assert "unconfirmed" not in str(checks[name]["detail"]), checks[name]
+                assert "restore from backup" in next(g["operator_action"] for g in payload["guidance"] if g["check"] == name)
+            assert "status: issues-found" in text
+            for prefix in ("sqlite_integrity: error:", "quick_check: error:"):
+                assert any(line.startswith(prefix) and "unconfirmed" not in line for line in text.splitlines()), text
+            assert "restore from backup" in text
+        finally:
+            db.write_bytes(original)
+
+
+def test_doctor_fallback_ok_status(tmp_path, monkeypatch):
+    from hermes_lcm import diagnostics
+    from tests.harness.engine import engine_context
+
+    with engine_context(tmp_path, embeddings_enabled=False) as engine:
+        baseline = command._doctor_text(engine).splitlines()[1]
+        assert baseline != "status: issues-found"
+        monkeypatch.setattr(diagnostics, "connect", _raise)
+        payload = json.loads(tools.lcm_doctor({}, engine=engine))
+        check = next(c for c in payload["checks"] if c["check"] == "database_integrity")
+        assert check["status"] == "pass", check
+        text = command._doctor_text(engine)
+        assert "sqlite_integrity: ok (long-lived connection; unconfirmed)" in text
+        assert text.splitlines()[1] == baseline, text
+
+
+def test_doctor_fresh_connection_read_only(tmp_path, monkeypatch):
+    from hermes_lcm import diagnostics
+    from tests.harness.engine import engine_context
+
+    refused = []
+    real_connect = diagnostics.connect
+    def probe(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        try:
+            conn.execute("CREATE TABLE ro_probe(x)")
+        except sqlite3.OperationalError as exc:
+            refused.append(exc.sqlite_errorname == "SQLITE_READONLY")
+        return conn
+    with engine_context(tmp_path, embeddings_enabled=False) as engine:
+        monkeypatch.setattr(diagnostics, "connect", probe)
+        assert diagnostics.fresh_sqlite_check(engine, "integrity_check") == (True, "ok")
+        assert refused == [True]
+        assert not engine._store.connection.execute("SELECT 1 FROM sqlite_master WHERE name='ro_probe'").fetchall()

@@ -23,6 +23,7 @@ class DoctorFacts:
     schema_existing_tables: list[str]
     schema_core_status: str
     integrity: str
+    integrity_ok: bool
     store_fts: str
     node_fts: str
     store_fts_count: int | str
@@ -346,6 +347,7 @@ def collect_doctor(engine: Any) -> DoctorFacts:
         schema_existing_tables=schema_existing_tables,
         schema_core_status=schema_core_status,
         integrity=integrity,
+        integrity_ok=integrity_ok,
         store_fts=store_fts,
         node_fts=node_fts,
         store_fts_count=store_fts_count,
@@ -627,7 +629,7 @@ def render_doctor(facts: DoctorFacts) -> str:
         issues.append("embedding_provider_health")
         recommended_actions.append(facts.embedding_action)
 
-    doctor_status = "issues-found" if facts.integrity != "ok" or issues else (
+    doctor_status = "issues-found" if not facts.integrity_ok or issues else (
         "action-recommended" if recommended_actions else "ok"
     )
     lines = [
