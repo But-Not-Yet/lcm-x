@@ -32,12 +32,7 @@ finally:
 '''
 
 
-@pytest.mark.parametrize("source_reader", (
-    "v0.26.2",
-    pytest.param(PREVIOUS_GA, marks=pytest.mark.xfail(
-        strict=True, raises=AssertionError,
-        reason="TRIAGE-1: upgraded v0.28.0 writer reports nodes_fts corruption after adding summaries")),
-))
+@pytest.mark.parametrize("source_reader", ("v0.26.2", PREVIOUS_GA))
 @pytest.mark.parametrize("dtype", ["float32", "int8"])
 def test_previous_ga_vectors_survive_upgrade(
     tmp_path: Path, old_tree: Callable[[str], Path], host_root: Path,
