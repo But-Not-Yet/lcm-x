@@ -65,6 +65,19 @@ def test_gate_loss() -> None:
     assert not gate.report(totals, errors, ["base", "candidate1"])
 
 
+@pytest.mark.parametrize("damage", ["errored", "missing"])
+def test_gate_counts_reference_errors(damage: str) -> None:
+    seqs, reference = fixture_records([])
+    good = {1: dict(reference[1])}
+    if damage == "errored":
+        reference[1]["err"] = "RuntimeError"
+    else:
+        del reference[1]
+    totals, errors = gate.score(seqs, reference, [("base", good), ("candidate1", good)])
+    assert errors == 1
+    assert not gate.report(totals, errors, ["base", "candidate1"])
+
+
 def test_gate_multiple_candidates_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                                       capsys: pytest.CaptureFixture[str]) -> None:
     seqs, reference = fixture_records([])
