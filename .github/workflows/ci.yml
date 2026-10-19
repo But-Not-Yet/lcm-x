@@ -55,7 +55,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install test dependencies
-        run: pip install pytest==9.1.1 numpy ruff==0.15.13 hypothesis==6.141.1
+        run: pip install pytest==9.1.1 pytest-xdist==3.8.0 numpy ruff==0.15.13 hypothesis==6.141.1
 
       - name: Use the runtime SQLite library
         uses: ./.github/actions/sqlite-runtime
@@ -161,7 +161,10 @@ jobs:
       - name: Run pytest under low file descriptor limit
         run: |
           ulimit -n 1024
-          python -m pytest tests/ -q -m "not latency"
+          python -m pytest tests/ -q -m "not latency" -n 4 --ignore=tests/test_embedding_privacy.py
+          # Runs alone: one of its tests asserts a wall-clock budget that
+          # parallel load on the runner can exceed.
+          python -m pytest tests/test_embedding_privacy.py -q -m "not latency"
 
       - name: Run static validation
         run: |
