@@ -52,7 +52,7 @@ context:
 You get bounded active context, the summary DAG, lossless recovery, and the
 full `lcm_*` tool set at their tested defaults. The defaults are the
 configuration the managed deployment runs: compaction at `0.75` of the window,
-a 24-message fresh tail capped at 24000 tokens, 8000-token leaf chunks, the
+a 24-message fresh tail capped at 24000 tokens, 24000-token leaf chunks, the
 threshold full sweep.
 
 ## Profile: heavy tool-use coding agent
