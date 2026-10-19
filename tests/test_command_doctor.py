@@ -608,3 +608,45 @@ def test_doctor_render_keeps_duplicate_payload_issue_positions(
         facts = replace(facts, probe_errors={"payload_storage": True, "lifecycle_state": True})
         text = render_doctor(facts)
         assert "issues: payload_storage, lifecycle_state, payload_storage" in text.splitlines()
+
+
+@pytest.mark.parametrize("scenario", ("stale", "corrupt", "fallback"))
+def test_doctor_fresh_integrity(tmp_path, monkeypatch, scenario):
+    from hermes_lcm import diagnostics
+    from hermes_lcm.dag import SummaryNode
+    from tests.harness.engine import engine_context
+
+    with engine_context(tmp_path, embeddings_enabled=False) as engine:
+        store, dag = engine._store.connection, engine._dag.connection
+        for i in range(24):
+            engine._dag.add_node(SummaryNode(session_id="S", summary=f"Synthetic token{i}", created_at=1))
+            if i == 11:
+                assert store.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        stale = store.execute("PRAGMA integrity_check").fetchone()[0]
+        quick = store.execute("PRAGMA quick_check").fetchone()[0]
+        print(f"stale={stale}; quick_check={quick}")
+        assert "fts5:" in stale
+        if scenario == "corrupt":
+            dag.execute("DELETE FROM nodes_fts_data WHERE id=(SELECT min(id) FROM nodes_fts_data WHERE id>10)")
+            dag.commit()
+        if scenario == "fallback":
+            monkeypatch.setattr(diagnostics, "connect", _raise, raising=False)
+        payload = json.loads(tools.lcm_doctor({}, engine=engine))
+        check = next(c for c in payload["checks"] if c["check"] == "database_integrity")
+        text = command._doctor_text(engine)
+        detail = next(line for line in text.splitlines() if line.startswith("sqlite_integrity:"))
+        if scenario == "stale":
+            assert check["status"] == "pass", check
+            assert detail == "sqlite_integrity: ok", detail
+        else:
+            assert check["status"] == "fail", check
+            assert detail != "sqlite_integrity: ok", detail
+            guidance = diagnostics.doctor_guidance_for_check(check)["operator_action"]
+            if scenario == "fallback":
+                assert "long-lived connection" in check["detail"] and "unconfirmed" in check["detail"]
+                assert "long-lived connection" in detail and "unconfirmed" in detail
+                assert "only if" in guidance and "fresh" in guidance
+                assert guidance in text
+            else:
+                assert "restore from backup" in guidance
+                assert guidance in text
