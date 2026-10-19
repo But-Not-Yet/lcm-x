@@ -75,7 +75,6 @@ OBSERVED_ATTRIBUTES = frozenset({
     "_identity_anchor_recoveries", "_identity_anchor_recovery", "_identity_anchor_user_generation",
     "_identity_anchor_versions", "_pressure_yield_tail_token_limit", "_survival_projected_fields",
     "_host_uid_lineage_cache", "_engine_uids_pending", "_engine_uids_recorded",
-    "_premerge_capture",  # Ordered (shared user object, original content) pairs; retired together.
 })
 Trace = list[str]
 Message = dict[str, Any]

@@ -1,13 +1,12 @@
-"""I1/I2: preserve a pending predecessor before the host merges it with the next turn."""
+"""GA-compatible hook, replay and fault checks retained while #1508 is deferred."""
 from copy import deepcopy
-import logging
 import sys
 from types import ModuleType
 
 import pytest
 
 from tests.harness import engine_context
-from tests.invariants.test_issue_1501_rotation_stamp import lineage, message
+from tests.invariants.test_issue_1501_rotation_stamp import message
 from tests.test_packaging_install import _load_plugin_entrypoint_module
 
 
@@ -37,44 +36,6 @@ def register(tmp_path, monkeypatch, *, whole=False):
     return ctx
 
 
-@pytest.mark.parametrize('rotation', [False, True], ids=['in-place', 'rotation'])
-def test_pending_predecessor_composite_and_cold_replay(tmp_path, monkeypatch, rotation):
-    """Crash before T33's reply; the next pre-hook precedes repair and stamp carry-over."""
-    lineage(tmp_path)
-    q, p, r = message('reply T32', 9., 'assistant'), message('[T33] pending', 10.), message('[T34] current', 20.)
-    reply = message('reply T34', 21., 'assistant')
-    session = 'child' if rotation else 'parent'
-    ctx = register(tmp_path, monkeypatch)
-    try:
-        e = ctx.engine
-        e.on_session_start('parent', platform='cli', context_length=128000, conversation_id='conv')
-        e.ingest([deepcopy(q)])
-        if rotation:
-            e.on_session_start(session, platform='cli', context_length=128000, conversation_id='conv',
-                               boundary_reason='compression')
-        ctx.hooks['pre_llm_call'](session_id=session, conversation_id='conv',
-                                  conversation_history=[deepcopy(q), deepcopy(p), deepcopy(r)])
-        # The current request must still be stored through normal ingest, at the host's carried stamp.
-        assert [row['content'] for row in e._store.get_session_messages(session)] == (
-            [p['content']] if rotation else [q['content'], p['content']])
-        e.ingest([deepcopy(q), {**r, 'timestamp': 10.}, deepcopy(reply)])
-        composite = [deepcopy(q), message(p['content'] + '\n\n' + r['content'], 10.), deepcopy(reply)]
-        e.on_session_end(session, composite)
-        before = [row for owner in ('parent', 'child') for row in e._store.get_session_messages(owner)]
-        assert [row['content'] for row in before] == [q['content'], p['content'], r['content'], reply['content']]
-        carried = next(row for row in before if row['content'] == r['content'])
-        assert e._store.get_message_relations([carried['store_id']], 'carried_stamp')
-    finally:
-        ctx.engine.shutdown()
-    with engine_context(tmp_path, window=128000, session_id=session, conversation_id='conv') as e:
-        e.ingest(deepcopy([p, r, reply]))
-        assert [row for owner in ('parent', 'child') for row in e._store.get_session_messages(owner)] == before
-        e.ingest(deepcopy([p, r, reply, message(r['content'], 30.)]))
-        copies = [row for owner in ('parent', 'child') for row in e._store.get_session_messages(owner)
-                  if row['content'] == r['content']]
-        assert [row['observed_at'] for row in copies] == [10., 30.]
-
-
 @pytest.mark.parametrize('previous', [message('completed reply', 9., 'assistant'),
                                      message('Earlier turns have been compacted.\nsummary', 9.)],
                          ids=['completed-turn', 'scaffold'])
@@ -85,39 +46,6 @@ def test_premerge_capture_skips_other_predecessors(tmp_path, monkeypatch, previo
         monkeypatch.setattr(ctx.engine, 'ingest', lambda _rows: pytest.fail('not a pending user pair'))
         assert ctx.hooks['pre_llm_call'](session_id='parent', conversation_id='conv',
                                          conversation_history=[deepcopy(previous), message('current', 20.)]) is None
-    finally:
-        ctx.engine.shutdown()
-
-
-def test_premerge_scaffold_failure_preserves_context(tmp_path, monkeypatch, caplog):
-    ctx = register(tmp_path, monkeypatch)
-    try:
-        e = ctx.engine
-        e.on_session_start('parent', platform='cli', context_length=128000, conversation_id='conv')
-        expected = object()
-        context_calls, ingested = [], []
-        payload = dict(session_id='parent', conversation_id='conv',
-                       conversation_history=[message('pending', 10.), message('current', 20.)])
-
-        def fail_scaffold(_row):
-            raise RuntimeError('private message content must never be logged')
-
-        def context(active_engine, hook_payload):
-            context_calls.append((active_engine, hook_payload))
-            return expected
-
-        monkeypatch.setattr(e, '_identity_is_lcm_scaffold', fail_scaffold)
-        monkeypatch.setattr(e, 'ingest', ingested.append)
-        monkeypatch.setattr(ctx.module, '_pre_llm_context', context)
-        caplog.clear()
-        with caplog.at_level(logging.WARNING, logger=ctx.module.logger.name):
-            assert ctx.hooks['pre_llm_call'](**payload) is expected
-        assert context_calls == [(e, payload)]
-        assert ingested == []
-        assert e._store.get_session_messages('parent') == []
-        assert [(record.levelname, record.getMessage()) for record in caplog.records] == [
-            ('WARNING', 'LCM pending-predecessor capture failed (RuntimeError); continuing pre-LLM context')]
-        assert caplog.records[0].exc_info is None
     finally:
         ctx.engine.shutdown()
 
@@ -154,13 +82,13 @@ def test_same_session_marker_does_not_cross_conversation(tmp_path):
                    for row in rows)
 
 
-@pytest.mark.parametrize('shape', ['cancel-retry', 'r34', 'uid', 'anchor-off', 'anchor-off-uid',
-                                  'anchor-disabled-after-capture', 'prematch-raises'])
+@pytest.mark.parametrize('shape', ['cancel-retry', 'r34', 'anchor-off-uid'])
 def test_premerge_shared_slot_preserves_current_turn(tmp_path, monkeypatch, shape):
     """The pre-hook and host repair share the predecessor dict (I1/I2)."""
-    if shape in {'anchor-off', 'anchor-off-uid'}:
+    if shape == 'anchor-off-uid':
         monkeypatch.setenv('LCM_IDENTITY_ANCHOR', '0')
-    ctx = register(tmp_path, monkeypatch, whole=shape in {'r34', 'uid', 'anchor-off-uid'})
+    whole = shape in {'r34', 'anchor-off-uid'}
+    ctx = register(tmp_path, monkeypatch, whole=whole)
     e = ctx.engine
     try:
         e.on_session_start('s', platform='cli', context_length=128000, conversation_id='conv')
@@ -169,99 +97,28 @@ def test_premerge_shared_slot_preserves_current_turn(tmp_path, monkeypatch, shap
         current = '[T34] current request'
         if shape == 'cancel-retry':
             current = p['content'] + '\n\nUser correction/guidance after interrupt: ' + p['content']
-        if shape in {'uid', 'anchor-off-uid'}:
+        if shape == 'anchor-off-uid':
             p['message_uid'] = 'pending-uid'
         r = message(current, 20.)
         e.ingest([q])
         history = [q, p, r]
         ctx.hooks['pre_llm_call'](session_id='s', conversation_id='conv', conversation_history=list(history))
-        # Anchor off: an override host still captures (it would otherwise lose P);
-        # a whole-composite host keeps P inside the composite, as on main.
-        capture = shape in {'uid', 'anchor-off', 'anchor-disabled-after-capture', 'prematch-raises'}
-        if shape == 'uid':
-            # Required one-shot recovery record, bound to the actual shared object.
-            [(captured, snapshot)] = e._premerge_capture
-            assert captured is p and snapshot == p['content']
-        if shape in {'cancel-retry', 'r34', 'anchor-off-uid'}:
-            assert [row['content'] for row in e._store.get_session_messages('s')] == [q['content']]
-        if shape == 'anchor-off':
-            assert [row['content'] for row in e._store.get_session_messages('s')] == [q['content'], p['content']]
-        if shape == 'anchor-disabled-after-capture':
-            monkeypatch.setenv('LCM_IDENTITY_ANCHOR', '0')
-        if shape == 'prematch-raises':
-            def boom(*_args, **_kwargs):
-                raise RuntimeError('forced prematch failure')
-            monkeypatch.setattr(e, '_identity_anchor_prematch', boom)
+        # v0.28.0 semantics: the pre-LLM hook stores nothing before the host repair.
+        assert [row['content'] for row in e._store.get_session_messages('s')] == [q['content']]
         # Repair mutates P in place, drops R, then persistence applies the override.
-        if shape in {'r34', 'uid', 'anchor-off-uid'}:
+        if whole:
             p['_merged_turn_prefix'] = p['content'] + '\n\n'
             p['content'] += '\n\n' + current
         else:
             p['content'] = current
         reply = message('reply T34', 21., 'assistant')
         e.ingest([q, p, reply])
-        expected_current = p['content'] if shape in {'r34', 'anchor-off-uid'} else current
-        expected = [q['content']] + (['[T33] pending predecessor'] if capture else [])
-        expected += [expected_current, reply['content']]
+        expected = [q['content'], p['content'] if whole else current, reply['content']]
         assert [row['content'] for row in e._store.get_session_messages('s')] == expected
         assert getattr(e, '_premerge_capture', None) is None
-        # A second ingest must not retain a capture or create a surplus remainder.
+        # A second ingest must not create a surplus remainder.
         e.ingest([q, p, reply])
         assert [row['content'] for row in e._store.get_session_messages('s')] == expected
-    finally:
-        e.shutdown()
-
-
-@pytest.mark.parametrize(('users', 'anchor'), [(3, '0'), (4, '0'), (2, '0'), (3, '1')],
-                         ids=['three-off', 'four-off', 'two-off', 'three-on'])
-def test_premerge_user_run_override_host(tmp_path, monkeypatch, users, anchor):
-    """I1/I2: probe-B C1 repair keeps the earliest object with the latest content."""
-    monkeypatch.setenv('LCM_IDENTITY_ANCHOR', anchor)
-    ctx = register(tmp_path, monkeypatch)
-    e = ctx.engine
-    try:
-        e.on_session_start('parent', platform='cli', context_length=128000, conversation_id='conv')
-        q = message('Q', 9., 'assistant')
-        pending = [message(f'P{i}', float(i * 10)) for i in range(1, users)]
-        r, a = message('R', float(users * 10)), message('A', float(users * 10 + 1), 'assistant')
-        e.ingest([q])
-        ctx.hooks['pre_llm_call'](session_id='parent', conversation_id='conv',
-                                  conversation_history=[q, *pending, r])
-        captured = e._premerge_capture
-        expected = [('Q', 9.)] + [(p['content'], p['timestamp']) for p in pending] + [
-            ('R', 10.), ('A', a['timestamp'])]
-        # floor-0.21.3's repair/override removes all later user objects and carries P1's stamp.
-        pending[0]['content'] = r['content']
-        completed = [q, pending[0], a]
-        e.ingest(completed)
-        stored = e._store.get_session_messages('parent')
-        assert [(row['content'], row['observed_at']) for row in stored] == expected
-        assert e._premerge_capture is None
-        e.ingest(completed)
-        e.on_session_end('parent', completed)
-        assert e._store.get_session_messages('parent') == stored
-        assert len(captured) == len(pending)
-        for i, (obj, content) in enumerate(captured):
-            assert obj is pending[i] and content == f'P{i + 1}'
-    finally:
-        e.shutdown()
-
-
-def test_premerge_user_run_stops_at_steer(tmp_path, monkeypatch):
-    """A steer row splits the capture run even though its role is user."""
-    monkeypatch.setenv('LCM_IDENTITY_ANCHOR', '0')
-    ctx = register(tmp_path, monkeypatch)
-    e = ctx.engine
-    try:
-        e.on_session_start('parent', platform='cli', context_length=128000, conversation_id='conv')
-        q, before, steer = message('Q', 9., 'assistant'), message('before', 10.), message('steer', 20.)
-        steer['display_kind'] = 'steer'
-        p1, p2, r = message('P1', 30.), message('P2', 40.), message('R', 50.)
-        ctx.hooks['pre_llm_call'](session_id='parent', conversation_id='conv',
-                                  conversation_history=[q, before, steer, p1, p2, r])
-        assert len(e._premerge_capture) == 2
-        for (obj, content), expected in zip(e._premerge_capture, [p1, p2], strict=True):
-            assert obj is expected and content == expected['content']
     finally:
         e.shutdown()
 
@@ -288,31 +145,6 @@ def test_unmerged_predecessor_prematch_fault(tmp_path, monkeypatch, steer):
         e.ingest([q, p, r, message('A', 21., 'assistant')])
         rows = [(row['content'], row['observed_at']) for row in e._store.get_session_messages('s')]
         assert rows == [('Q', 9.), ('P', 10.), ('R', 20.), ('A', 21.)]
-        assert getattr(e, '_premerge_capture', None) is None
-    finally:
-        e.shutdown()
-
-
-def test_uid_composite_prematch_fault_keeps_both_turns(tmp_path, monkeypatch):
-    """N5/I2: under a fault, keep P and C=P+R rather than lose the current turn."""
-    ctx = register(tmp_path, monkeypatch, whole=True)
-    e = ctx.engine
-    try:
-        e.on_session_start('s', platform='cli', context_length=128000, conversation_id='conv')
-        q, p, r = message('Q', 9., 'assistant'), message('P', 10.), message('R', 20.)
-        p['message_uid'] = 'pending-uid'
-        e.ingest([q])
-        ctx.hooks['pre_llm_call'](session_id='s', conversation_id='conv', conversation_history=[q, p, r])
-        p['_merged_turn_prefix'] = p['content'] + '\n\n'
-        p['content'] += '\n\n' + r['content']
-
-        def boom(*_args, **_kwargs):
-            raise RuntimeError('forced prematch failure')
-
-        monkeypatch.setattr(e, '_identity_anchor_prematch', boom)
-        e.ingest([q, p, message('A', 21., 'assistant')])
-        rows = [(row['content'], row['observed_at']) for row in e._store.get_session_messages('s')]
-        assert rows == [('Q', 9.), ('P', 10.), ('P\n\nR', 10.), ('A', 21.)]
         assert getattr(e, '_premerge_capture', None) is None
     finally:
         e.shutdown()
