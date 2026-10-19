@@ -680,6 +680,7 @@ def register(ctx):
                         from .identity_anchor import identity_anchor_enabled
                         if (identity_anchor_enabled() and len(history) >= 2
                                 and history[-2].get("role") == history[-1].get("role") == "user"
+                                and history[-2].get("display_kind") != "steer"
                                 and not active_engine._identity_is_lcm_scaffold(history[-2])):
                             previous, current = history[-2].get("content"), history[-1].get("content")
                             prefixed = (isinstance(previous, str) and isinstance(current, str)
@@ -687,7 +688,7 @@ def register(ctx):
                             whole = _host_persists_merged_user_prefix()
                             if not prefixed and whole is not None and (not whole or history[-2].get("message_uid")):
                                 active_engine.ingest(history[:-1])
-                                active_engine._premerge_capture = history[-2]
+                                active_engine._premerge_capture = (history[-2], previous)
                     except Exception as exc:
                         logger.warning("LCM pending-predecessor capture failed (%s); continuing pre-LLM context",
                                        type(exc).__name__)
