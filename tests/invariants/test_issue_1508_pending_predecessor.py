@@ -154,13 +154,13 @@ def test_same_session_marker_does_not_cross_conversation(tmp_path):
                    for row in rows)
 
 
-@pytest.mark.parametrize('shape', ['cancel-retry', 'r34', 'uid', 'anchor-off', 'anchor-disabled-after-capture',
-                                  'prematch-raises'])
+@pytest.mark.parametrize('shape', ['cancel-retry', 'r34', 'uid', 'anchor-off', 'anchor-off-uid',
+                                  'anchor-disabled-after-capture', 'prematch-raises'])
 def test_premerge_shared_slot_preserves_current_turn(tmp_path, monkeypatch, shape):
     """The pre-hook and host repair share the predecessor dict (I1/I2)."""
-    if shape == 'anchor-off':
+    if shape in {'anchor-off', 'anchor-off-uid'}:
         monkeypatch.setenv('LCM_IDENTITY_ANCHOR', '0')
-    ctx = register(tmp_path, monkeypatch, whole=shape in {'r34', 'uid'})
+    ctx = register(tmp_path, monkeypatch, whole=shape in {'r34', 'uid', 'anchor-off-uid'})
     e = ctx.engine
     try:
         e.on_session_start('s', platform='cli', context_length=128000, conversation_id='conv')
@@ -169,19 +169,23 @@ def test_premerge_shared_slot_preserves_current_turn(tmp_path, monkeypatch, shap
         current = '[T34] current request'
         if shape == 'cancel-retry':
             current = p['content'] + '\n\nUser correction/guidance after interrupt: ' + p['content']
-        if shape == 'uid':
+        if shape in {'uid', 'anchor-off-uid'}:
             p['message_uid'] = 'pending-uid'
         r = message(current, 20.)
         e.ingest([q])
         history = [q, p, r]
         ctx.hooks['pre_llm_call'](session_id='s', conversation_id='conv', conversation_history=list(history))
-        capture = shape in {'uid', 'anchor-disabled-after-capture', 'prematch-raises'}
+        # Anchor off: an override host still captures (it would otherwise lose P);
+        # a whole-composite host keeps P inside the composite, as on main.
+        capture = shape in {'uid', 'anchor-off', 'anchor-disabled-after-capture', 'prematch-raises'}
         if shape == 'uid':
             # Required one-shot recovery record, bound to the actual shared object.
             captured, snapshot = e._premerge_capture
             assert captured is p and snapshot == p['content']
-        if shape in {'cancel-retry', 'r34', 'anchor-off'}:
+        if shape in {'cancel-retry', 'r34', 'anchor-off-uid'}:
             assert [row['content'] for row in e._store.get_session_messages('s')] == [q['content']]
+        if shape == 'anchor-off':
+            assert [row['content'] for row in e._store.get_session_messages('s')] == [q['content'], p['content']]
         if shape == 'anchor-disabled-after-capture':
             monkeypatch.setenv('LCM_IDENTITY_ANCHOR', '0')
         if shape == 'prematch-raises':
@@ -189,14 +193,14 @@ def test_premerge_shared_slot_preserves_current_turn(tmp_path, monkeypatch, shap
                 raise RuntimeError('forced prematch failure')
             monkeypatch.setattr(e, '_identity_anchor_prematch', boom)
         # Repair mutates P in place, drops R, then persistence applies the override.
-        if shape in {'r34', 'uid'}:
+        if shape in {'r34', 'uid', 'anchor-off-uid'}:
             p['_merged_turn_prefix'] = p['content'] + '\n\n'
             p['content'] += '\n\n' + current
         else:
             p['content'] = current
         reply = message('reply T34', 21., 'assistant')
         e.ingest([q, p, reply])
-        expected_current = p['content'] if shape == 'r34' else current
+        expected_current = p['content'] if shape in {'r34', 'anchor-off-uid'} else current
         expected = [q['content']] + (['[T33] pending predecessor'] if capture else [])
         expected += [expected_current, reply['content']]
         assert [row['content'] for row in e._store.get_session_messages('s')] == expected
