@@ -3521,6 +3521,24 @@ def _embedding_backfill_summary_text(
     return str(result) if isinstance(result, str) else _embedding_backfill_report(**result)
 
 
+def _summary_backfill_estimates(
+    *, documents: list[tuple[str, str, int]], provider_name, config,
+) -> tuple[int, int, int]:
+    est_tokens = sum(document[2] for document in documents)
+    est_cost_tokens = sum(
+        document[2]
+        for document in documents
+        if provider_name.lower() != "voyage"
+        or document[2] <= _VOYAGE_MAX_DOCUMENT_TOKENS
+    )
+    est_batches = _embedding_batch_estimate(
+        provider_name,
+        [document[2] for document in documents],
+        getattr(config, "embedding_max_batch_items", None),
+    )
+    return est_tokens, est_cost_tokens, est_batches
+
+
 def _embedding_backfill_summary_run(
     config, db_path, *, apply: bool, limit: int, retry_uncertain: bool,
     include_next_hint: bool = True, expected_dtype: str | None = None, stop_event=None,
@@ -3586,21 +3604,6 @@ def _embedding_backfill_summary_run(
     finally:
         read_conn.close()
 
-    def _estimates(documents: list[tuple[str, str, int]]) -> tuple[int, int, int]:
-        est_tokens = sum(document[2] for document in documents)
-        est_cost_tokens = sum(
-            document[2]
-            for document in documents
-            if provider_name.lower() != "voyage"
-            or document[2] <= _VOYAGE_MAX_DOCUMENT_TOKENS
-        )
-        est_batches = _embedding_batch_estimate(
-            provider_name,
-            [document[2] for document in documents],
-            getattr(config, "embedding_max_batch_items", None),
-        )
-        return est_tokens, est_cost_tokens, est_batches
-
     if not apply:
         raw_documents = [
             (str(row["node_id"]), str(row["summary"]), count_tokens(row["summary"]))
@@ -3625,7 +3628,9 @@ def _embedding_backfill_summary_run(
         )
         if privacy_withheld:
             privacy_error = None
-        estimated_tokens, estimated_cost_tokens, estimated_batches = _estimates(documents)
+        estimated_tokens, estimated_cost_tokens, estimated_batches = _summary_backfill_estimates(
+            documents=documents, provider_name=provider_name, config=config,
+        )
         return dict(
             mode=mode,
             status="refused" if privacy_error else "dry-run",
@@ -4069,7 +4074,9 @@ def _embedding_backfill_summary_run(
         skipped=len(skipped),
         privacy_withheld=privacy_withheld,
     )
-    estimated_tokens, estimated_cost_tokens, estimated_batches = _estimates(documents)
+    estimated_tokens, estimated_cost_tokens, estimated_batches = _summary_backfill_estimates(
+        documents=documents, provider_name=provider_name, config=config,
+    )
     return dict(
         mode=mode,
         status=status,
@@ -4666,6 +4673,36 @@ def _chunk_backfill_text(
     return str(result) if isinstance(result, str) else _embedding_backfill_report(**result)
 
 
+def _chunk_backfill_estimates(
+    *, documents: list[tuple[str, str, int]], provider_name, model, config,
+) -> tuple[int, int, int]:
+    # The contextualized (voyage-context) chunk apply path groups a message's
+    # chunks into one document, skips a chunk only above the 32K per-chunk
+    # context cap, and plans requests by the context budgets. Model that
+    # exactly so the cost/consent preview matches apply (FIX 4). Plain-voyage
+    # and local providers keep the flat per-document estimate.
+    if (
+        provider_name.strip().lower() in {"voyage", "voyageai"}
+        and _is_voyage_context_model(model)
+    ):
+        return _chunk_context_estimates(
+            documents, getattr(config, "embedding_max_batch_items", None)
+        )
+    est_tokens = sum(document[2] for document in documents)
+    est_cost_tokens = sum(
+        document[2]
+        for document in documents
+        if provider_name.lower() != "voyage"
+        or document[2] <= _VOYAGE_MAX_DOCUMENT_TOKENS
+    )
+    est_batches = _embedding_batch_estimate(
+        provider_name,
+        [document[2] for document in documents],
+        getattr(config, "embedding_max_batch_items", None),
+    )
+    return est_tokens, est_cost_tokens, est_batches
+
+
 def _chunk_backfill_run(
     config, db_path, *, apply: bool, limit: int, retry_uncertain: bool, policy: str,
     confirm_raw_text: bool = False, include_next_hint: bool = True,
@@ -4741,33 +4778,6 @@ def _chunk_backfill_run(
     finally:
         read_conn.close()
 
-    def _estimates(documents: list[tuple[str, str, int]]) -> tuple[int, int, int]:
-        # The contextualized (voyage-context) chunk apply path groups a message's
-        # chunks into one document, skips a chunk only above the 32K per-chunk
-        # context cap, and plans requests by the context budgets. Model that
-        # exactly so the cost/consent preview matches apply (FIX 4). Plain-voyage
-        # and local providers keep the flat per-document estimate.
-        if (
-            provider_name.strip().lower() in {"voyage", "voyageai"}
-            and _is_voyage_context_model(model)
-        ):
-            return _chunk_context_estimates(
-                documents, getattr(config, "embedding_max_batch_items", None)
-            )
-        est_tokens = sum(document[2] for document in documents)
-        est_cost_tokens = sum(
-            document[2]
-            for document in documents
-            if provider_name.lower() != "voyage"
-            or document[2] <= _VOYAGE_MAX_DOCUMENT_TOKENS
-        )
-        est_batches = _embedding_batch_estimate(
-            provider_name,
-            [document[2] for document in documents],
-            getattr(config, "embedding_max_batch_items", None),
-        )
-        return est_tokens, est_cost_tokens, est_batches
-
     if not apply:
         expected_privacy_revision = profile_revision
         if (
@@ -4799,8 +4809,8 @@ def _chunk_backfill_run(
         )
         if privacy_withheld:
             privacy_error = None
-        estimated_tokens, estimated_cost_tokens, estimated_batches = _estimates(
-            documents
+        estimated_tokens, estimated_cost_tokens, estimated_batches = _chunk_backfill_estimates(
+            documents=documents, provider_name=provider_name, model=model, config=config,
         )
         return dict(
             mode=mode,
@@ -5236,7 +5246,9 @@ def _chunk_backfill_run(
         failed=failed, uncertain=uncertain_count, skipped=len(skipped),
         privacy_withheld=privacy_withheld,
     )
-    estimated_tokens, estimated_cost_tokens, estimated_batches = _estimates(documents)
+    estimated_tokens, estimated_cost_tokens, estimated_batches = _chunk_backfill_estimates(
+        documents=documents, provider_name=provider_name, model=model, config=config,
+    )
     return dict(
         mode=mode, status=status, provider=provider_name, model=model,
         pending=pending, selected=len(documents) + privacy_withheld,
