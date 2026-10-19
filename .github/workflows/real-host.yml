@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        host: [floor-0.21.3, r34.10-0.21.5, ref-0.21.5]
+        host: [floor-0.21.3, r34.10-0.21.5, r34.15-0.21.5, ref-0.21.5]
     env:
       HERMES_DISABLE_LAZY_INSTALLS: "1"
       PYTHONDONTWRITEBYTECODE: "1"
