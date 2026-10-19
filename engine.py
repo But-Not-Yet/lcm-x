@@ -6862,20 +6862,6 @@ class LCMEngine(
             if anchor_plan and anchor_plan["replayed"]:
                 logger.info("LCM identity-anchor recognised %d replayed rows: session=%s cursor=%d incoming=%d",
                             len(anchor_plan["replayed"]), self._session_id, cursor, n)
-        captured = getattr(self, "_premerge_capture", None)
-        # Supported hosts mutate the shared dict; copied replacement slots are not covered.
-        captured_slots = []
-        for obj, content in captured or ():
-            slot = next((idx for idx, message in enumerate(messages) if message is obj), None)
-            if slot is not None:
-                captured_slots.append((slot, content))
-        if captured_slots:
-            self._premerge_capture = None  # Retire on the first ingest that sees any shared object.
-            changed_slots = [slot for slot, content in captured_slots if slot < cursor
-                             and messages[slot].get("content") != content]
-            if anchor_plan is None and changed_slots:
-                # #1508: anchor-off/fail-open must still store the host's rewritten current turn.
-                cursor = self._ingest_cursor = min(changed_slots)
         anchored_replay_indexes = anchor_plan["replayed"] if anchor_plan else set()
         anchor_remainders: dict[int, Any] = {}
         fresh_replay_messages = replay_messages  # #772: the host's rows, before any cached copy is spliced in

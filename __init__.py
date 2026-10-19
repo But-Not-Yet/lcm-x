@@ -13,9 +13,7 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
-from functools import cache
 from pathlib import Path
-from types import SimpleNamespace
 
 logger = logging.getLogger(__name__)
 
@@ -29,22 +27,6 @@ LCM_SYSTEM_PROMPT_NOTE = (
     'An "Externalized tool output" stub ending in ref=R means the full output is stored; '
     'lcm_expand(externalized_ref="R") returns it.'
 )
-
-
-@cache
-def _host_persists_merged_user_prefix() -> bool | None:
-    # Probe the host's pure public persistence transform once, with synthetic data.
-    try:
-        from agent.session_persistence import durable_user_row_content
-        merged = "previous\n\ncurrent"
-        content, _ = durable_user_row_content(
-            SimpleNamespace(_persist_user_message_override="current"),
-            {"role": "user", "content": merged, "_merged_turn_prefix": "previous\n\n"}, merged, None)
-        return True if content == merged else False if content == "current" else None
-    except Exception as exc:
-        logger.warning("LCM pending-predecessor capture failed (%s); continuing pre-LLM context",
-                       type(exc).__name__)
-        return None  # Unknown host: retain main's no-capture behaviour.
 
 
 def lcm_system_prompt_note(disabled: set[str]) -> str:
@@ -683,43 +665,11 @@ def register(ctx):
                     or payload.get("gateway_session_key")
                     or ""
                 )
-
-                def _before_user_merge(active_engine):
-                    # #1508/#849: the host repairs consecutive users after this
-                    # hook. Store the pending predecessor before that repair;
-                    # normal ingest stores the current turn and its carry marker.
-                    history = payload.get("conversation_history") or []
-                    try:
-                        from .identity_anchor import identity_anchor_enabled
-                        anchored = identity_anchor_enabled()
-                        if (len(history) >= 2
-                                and history[-2].get("role") == history[-1].get("role") == "user"
-                                and history[-2].get("display_kind") != "steer"
-                                and not active_engine._identity_is_lcm_scaffold(history[-2])):
-                            previous, current = history[-2].get("content"), history[-1].get("content")
-                            prefixed = (isinstance(previous, str) and isinstance(current, str)
-                                        and current.startswith(previous + "\n\n"))
-                            whole = _host_persists_merged_user_prefix()
-                            # Without the anchor only an override host loses the predecessor;
-                            # a whole-composite host keeps it inside the composite.
-                            if not prefixed and whole is not None and (
-                                    not whole or (anchored and history[-2].get("message_uid"))):
-                                captured = []
-                                for row in reversed(history[:-1]):
-                                    if (row.get("role") != "user" or row.get("display_kind") == "steer"
-                                            or active_engine._identity_is_lcm_scaffold(row)):
-                                        break
-                                    captured.append((row, row.get("content")))
-                                captured.reverse()
-                                active_engine.ingest(history[:-1])
-                                active_engine._premerge_capture = captured
-                    except Exception as exc:
-                        logger.warning("LCM pending-predecessor capture failed (%s); continuing pre-LLM context",
-                                       type(exc).__name__)
-                    return _pre_llm_context(active_engine, payload)
-
                 result = use_active_lcm_engine(
-                    _before_user_merge,
+                    lambda active_engine: _pre_llm_context(
+                        active_engine,
+                        payload,
+                    ),
                     session_id=session_id,
                     conversation_id=conversation_id,
                 )

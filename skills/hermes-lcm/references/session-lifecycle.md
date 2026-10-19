@@ -4,14 +4,6 @@ Hermes `/new` starts a new host session. LCM-X binds that session to its own lif
 
 Do not promise that `/new` deletes historical LCM data. Earlier rows remain in `lcm.db` unless an explicitly authorized cleanup removes them, and they remain available through bounded cross-session recall.
 
-When the host's `pre_llm_call` history ends with two user rows, LCM-X ingests the
-pending predecessor before the host repairs consecutive users. Normal ingest
-still stores the current turn. This preserves unanswered turns across crash
-recovery without reconstructing them from a later composite. Carried-stamp
-replay still needs its exact store-time marker, in the same session or a verified
-compression ancestor and the bound conversation; hosts without this history hook
-keep the safe duplicate fallback.
-
 ## CLI reset-time bind host contract
 
 The minimum Hermes capability for CLI `/new` rebinding is a reset-time call to
