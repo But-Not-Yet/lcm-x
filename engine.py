@@ -6984,30 +6984,10 @@ class LCMEngine(
             replay_messages=replay_messages,
         )
 
-        estimates = [count_message_tokens(m) for m in protected_messages]
-        batch = dict(
-            store=self._store, session_id=self._session_id,
-            source=self._session_platform, conversation_id=self._conversation_id,
-            messages=protected_messages, estimates=estimates,
-            metadata_messages=[msg for _idx, msg in messages_to_store_with_index],
+        store_ids = self._store_ingest_rows(
+            messages_to_store_with_index=messages_to_store_with_index,
+            protected_messages=protected_messages,
         )
-        pending_after_store_id = 0
-        if self._session_end_flush_active:
-            tail = self._store.get_session_tail(self._session_id, limit=1)
-            pending_after_store_id = tail[-1]["store_id"] if tail else 0
-        try:
-            store_ids = self._append_ingest_batch(batch)
-        except Exception as exc:
-            if self._session_end_flush_active and _is_sqlite_locked_error(exc):
-                # Freeze the already filtered/protected rows, not the host's
-                # mutable history or the next session's ingest cursor.
-                pending = {**batch, "after_store_id": pending_after_store_id}
-                for key in ("messages", "estimates", "metadata_messages"):
-                    pending[key] = copy.deepcopy(pending[key])
-                if not any(old == pending for old in self._pending_session_tails):
-                    self._pending_session_tails.append(pending)
-                _PENDING_TAIL_ENGINES.add(self)
-            raise
         originals = [messages[idx] for idx, _msg in messages_to_store_with_index]
         self._watch_stored_user_rows(zip(originals, protected_messages, store_ids))
         if anchor_plan is not None:
@@ -7337,6 +7317,37 @@ class LCMEngine(
                     )
                 active_replay_messages[absolute_idx] = stubbed_message
         return protected_messages, active_replay_messages
+
+    def _store_ingest_rows(
+        self, *,
+        messages_to_store_with_index: list[tuple[int, Dict[str, Any]]],
+        protected_messages: List[Dict[str, Any]],
+    ) -> list[int]:
+        estimates = [count_message_tokens(m) for m in protected_messages]
+        batch = dict(
+            store=self._store, session_id=self._session_id,
+            source=self._session_platform, conversation_id=self._conversation_id,
+            messages=protected_messages, estimates=estimates,
+            metadata_messages=[msg for _idx, msg in messages_to_store_with_index],
+        )
+        pending_after_store_id = 0
+        if self._session_end_flush_active:
+            tail = self._store.get_session_tail(self._session_id, limit=1)
+            pending_after_store_id = tail[-1]["store_id"] if tail else 0
+        try:
+            store_ids = self._append_ingest_batch(batch)
+        except Exception as exc:
+            if self._session_end_flush_active and _is_sqlite_locked_error(exc):
+                # Freeze the already filtered/protected rows, not the host's
+                # mutable history or the next session's ingest cursor.
+                pending = {**batch, "after_store_id": pending_after_store_id}
+                for key in ("messages", "estimates", "metadata_messages"):
+                    pending[key] = copy.deepcopy(pending[key])
+                if not any(old == pending for old in self._pending_session_tails):
+                    self._pending_session_tails.append(pending)
+                _PENDING_TAIL_ENGINES.add(self)
+            raise
+        return store_ids
 
     @staticmethod
     def _protected_message_uses_raw_payload_active_stub(message: Dict[str, Any]) -> bool:
