@@ -6,6 +6,8 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
+- Fix: when a leaf input comes back empty, compaction names the branch that stopped it. A missing stored source reads `leaf input has no stored source rows (input_rows_without_source=N)` and a contiguity cut reads `leaf input cannot form a contiguous stored prefix`; before, both carried the retained-occurrence reason with no row. The stop line keeps `reason=` in its base format and adds a single-token `empty_input=no_source,rows:N` or `empty_input=contiguity` field, never together with `blocked=`. (#1162)
+
 ## v0.28.0 (repeated compaction, slow summarisers)
 
 - Fix: during a forced overflow recovery, a host that overwrites LCM-X's recovery row in place with the current user turn no longer gets that turn stored a second time. LCM-X recognises the exact recovery object it emitted and the stamp it observed on it, and records the match through the existing alternate-stamp relation, so later replays, rotations, trims and cold restarts keep one copy. Matches are limited to one conversation, and every uncertain case stores the turn. No new setting and no schema change. (#1505)
