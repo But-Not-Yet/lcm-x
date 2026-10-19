@@ -255,14 +255,9 @@ Only a newly stored non-UID user row R with its own non-NULL stamp s qualifies. 
 stored row P must be a user at s in the current session or verified compression chain, absent
 from the incoming list in the occurrence-matching identity form. Incoming index i - 1 must
 match P's stored predecessor Q by identity and Q's own stamp. No Q means no marker.
-The rotation path verifies the chain when P is in the parent and R in the child;
-an in-place pair can prove both occurrences in the current session without an ancestor.
-Before the host merges consecutive users, the existing `pre_llm_call` hook ingests
-the pending predecessor (not the current turn). Normal ingest can then record the
-replacement signature instead of storing an unproven T34 plus a T33+T34 composite (#1508).
+The verified chain is necessary because the rotation path stores P in the parent and R in the child.
 
-The carried-stamp reader requires both stored rows in the bound conversation and
-the exact R-to-P relation at s as well as every existing
+The carried-stamp reader requires the exact R-to-P relation at s as well as every existing
 adjacency, distinct-content, forward-stamp, lineage and single-consumption guard. This relation
 neither absorbs P nor grants summary coverage. NULL predecessors cannot supply this signature;
 canonical UID binding still serves its existing identity/backfill purpose. Stores written before
