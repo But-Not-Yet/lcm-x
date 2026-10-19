@@ -301,7 +301,7 @@ On the `main` line, output with both opt-in flags enabled is:
 
 ```text
 Plugins (1):
-  ✓ hermes-lcm-x v0.28.0 (15 tools)
+  ✓ hermes-lcm-x v0.28.1 (15 tools)
 
 Provider Plugins:
   Context Engine: lcm-x
@@ -309,10 +309,14 @@ Provider Plugins:
 
 Older `v0.23.x` stable tags report `hermes-lcm v0.23.x (15 tools)` and
 engine `lcm`. Version text alone is not release proof; verify the loaded commit
-and tag. `0.28.0` is the forward identity of the next minor release: the `v0.28.0-rc1`
+and tag. `0.28.1` is the forward identity of the next patch release: the `v0.28.1-rc1`
 tag carries it first, the gauntlet runs at the last rc tag, and the GA tree must be
 that rc tree plus the GA release-notes file (`v0.26.0` at `867eb587` shipped the same way).
-The rollback target for this candidate is `v0.27.0`.
+The rollback target for this candidate is `v0.28.0`. Chunk gap-fill bookkeeping
+is additive metadata, not a SQL schema migration. An old reader ignores the new
+coverage and scan records; re-upgrade revalidates short-turn coverage (#1536, #1548).
+Raw rows and FTS remain available during rollback. Keep a SQLite-safe backup and
+verify ordered messages and the summary DAG through rollback and re-upgrade.
 
 For source checkouts, `lcm_status`, `/lcm status`, `lcm_inspect`,
 `lcm_doctor`, and `/lcm doctor` also report the loaded plugin path and
