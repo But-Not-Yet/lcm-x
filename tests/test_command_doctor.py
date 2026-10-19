@@ -278,6 +278,12 @@ def doctor_engine(
                 "_embedding_provider_health_check",
                 _raise if case == "embedding_raise" else lambda engine: health,
             )
+        from hermes_lcm import diagnostics
+        def connect(*args, **kwargs):
+            fresh = sqlite3.connect(*args, **kwargs, factory=FaultConnection)
+            fresh.fault = lambda q, p: engine._store.connection.fault(q, p)
+            return fresh
+        patch.setattr(diagnostics, "connect", connect)
         yield engine
         if case in {
             "schema_error",
@@ -608,3 +614,113 @@ def test_doctor_render_keeps_duplicate_payload_issue_positions(
         facts = replace(facts, probe_errors={"payload_storage": True, "lifecycle_state": True})
         text = render_doctor(facts)
         assert "issues: payload_storage, lifecycle_state, payload_storage" in text.splitlines()
+
+
+@pytest.mark.parametrize("scenario", ("stale", "corrupt", "fallback"))
+def test_doctor_fresh_integrity(tmp_path, monkeypatch, scenario):
+    from hermes_lcm import diagnostics
+    from hermes_lcm.dag import SummaryNode
+    from tests.harness.engine import engine_context
+
+    with engine_context(tmp_path, embeddings_enabled=False) as engine:
+        store, dag = engine._store.connection, engine._dag.connection
+        for i in range(24):
+            engine._dag.add_node(SummaryNode(session_id="S", summary=f"Synthetic token{i}", created_at=1))
+            if i == 11:
+                assert store.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        stale = store.execute("PRAGMA integrity_check").fetchone()[0]
+        quick = store.execute("PRAGMA quick_check").fetchone()[0]
+        print(f"stale={stale}; quick_check={quick}")
+        assert "fts5:" in stale
+        if scenario == "corrupt":
+            dag.execute("DELETE FROM nodes_fts_data WHERE id=(SELECT min(id) FROM nodes_fts_data WHERE id>10)")
+            dag.commit()
+        if scenario == "fallback":
+            monkeypatch.setattr(diagnostics, "connect", _raise, raising=False)
+        payload = json.loads(tools.lcm_doctor({}, engine=engine))
+        check = next(c for c in payload["checks"] if c["check"] == "database_integrity")
+        text = command._doctor_text(engine)
+        detail = next(line for line in text.splitlines() if line.startswith("sqlite_integrity:"))
+        print(f"{scenario}: {check}; {detail}")
+        if scenario == "stale":
+            assert check["status"] == "pass", check
+            assert detail == "sqlite_integrity: ok", detail
+            assert "quick_check: ok" in text
+            assert next(c for c in payload["checks"] if c["check"] == "sqlite_storage")["status"] == "pass"
+        else:
+            assert check["status"] == "fail", check
+            assert detail != "sqlite_integrity: ok", detail
+            guidance = diagnostics.doctor_guidance_for_check(check)["operator_action"]
+            if scenario == "fallback":
+                assert "long-lived connection" in check["detail"] and "unconfirmed" in check["detail"]
+                assert "long-lived connection" in detail and "unconfirmed" in detail
+                assert "only if" in guidance and "fresh" in guidance
+                assert guidance in text
+            else:
+                assert "restore from backup" in guidance
+                assert guidance in text
+
+
+@pytest.mark.parametrize("damage", (b"NOT A DATABASE!!", b"\xff" * 100), ids=("header", "page1"))
+def test_doctor_fresh_corruption_error(tmp_path, damage):
+    from tests.harness.engine import engine_context
+
+    with engine_context(tmp_path, embeddings_enabled=False) as engine:
+        db = Path(engine._store.db_path)
+        tools.lcm_doctor({}, engine=engine)
+        command._doctor_text(engine)
+        engine._store.connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        original = db.read_bytes()
+        try:
+            with db.open("r+b") as stream:
+                stream.seek(0 if len(damage) == 16 else 100)
+                stream.write(damage)
+            payload = json.loads(tools.lcm_doctor({}, engine=engine))
+            checks = {c["check"]: c for c in payload["checks"]}
+            text = command._doctor_text(engine)
+            for name in ("database_integrity", "sqlite_storage"):
+                assert checks[name]["status"] == "fail", checks[name]
+                assert "unconfirmed" not in str(checks[name]["detail"]), checks[name]
+                assert "restore from backup" in next(g["operator_action"] for g in payload["guidance"] if g["check"] == name)
+            assert "status: issues-found" in text
+            for prefix in ("sqlite_integrity: error:", "quick_check: error:"):
+                assert any(line.startswith(prefix) and "unconfirmed" not in line for line in text.splitlines()), text
+            assert "restore from backup" in text
+        finally:
+            db.write_bytes(original)
+
+
+def test_doctor_fallback_ok_status(tmp_path, monkeypatch):
+    from hermes_lcm import diagnostics
+    from tests.harness.engine import engine_context
+
+    with engine_context(tmp_path, embeddings_enabled=False) as engine:
+        baseline = command._doctor_text(engine).splitlines()[1]
+        assert baseline != "status: issues-found"
+        monkeypatch.setattr(diagnostics, "connect", _raise)
+        payload = json.loads(tools.lcm_doctor({}, engine=engine))
+        check = next(c for c in payload["checks"] if c["check"] == "database_integrity")
+        assert check["status"] == "pass", check
+        text = command._doctor_text(engine)
+        assert "sqlite_integrity: ok (long-lived connection; unconfirmed)" in text
+        assert text.splitlines()[1] == baseline, text
+
+
+def test_doctor_fresh_connection_read_only(tmp_path, monkeypatch):
+    from hermes_lcm import diagnostics
+    from tests.harness.engine import engine_context
+
+    refused = []
+    real_connect = diagnostics.connect
+    def probe(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        try:
+            conn.execute("CREATE TABLE ro_probe(x)")
+        except sqlite3.OperationalError as exc:
+            refused.append(exc.sqlite_errorname == "SQLITE_READONLY")
+        return conn
+    with engine_context(tmp_path, embeddings_enabled=False) as engine:
+        monkeypatch.setattr(diagnostics, "connect", probe)
+        assert diagnostics.fresh_sqlite_check(engine, "integrity_check") == (True, "ok")
+        assert refused == [True]
+        assert not engine._store.connection.execute("SELECT 1 FROM sqlite_master WHERE name='ro_probe'").fetchall()

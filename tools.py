@@ -31,6 +31,7 @@ from .embedding_provider import (
     resolve_provider,
 )
 from .diagnostics import (
+    fresh_sqlite_check,
     _has_lifecycle_fragmentation,
     _state_db_path_for_engine,
     doctor_guidance_for_checks,
@@ -4934,12 +4935,11 @@ def lcm_doctor(args: Dict[str, Any], **kwargs) -> str:
 
     # 1. Database integrity
     try:
-        result = engine._store.connection.execute("PRAGMA integrity_check").fetchone()
-        ok = result and result[0] == "ok"
+        ok, detail = fresh_sqlite_check(engine, "integrity_check")
         checks.append({
             "check": "database_integrity",
             "status": "pass" if ok else "fail",
-            "detail": result[0] if result else "no response",
+            "detail": detail,
         })
     except Exception as e:
         checks.append({
@@ -5047,17 +5047,17 @@ def lcm_doctor(args: Dict[str, Any], **kwargs) -> str:
     # 2. SQLite storage posture and payload diagnostics
     try:
         journal_mode_row = engine._store.connection.execute("PRAGMA journal_mode").fetchone()
-        quick_check_row = engine._store.connection.execute("PRAGMA quick_check").fetchone()
+        quick_ok, quick_detail = fresh_sqlite_check(engine, "quick_check")
         db_path = Path(engine._store.db_path)
         wal_path = Path(str(db_path) + "-wal")
         checks.append({
             "check": "sqlite_storage",
-            "status": "pass" if quick_check_row and quick_check_row[0] == "ok" else "fail",
+            "status": "pass" if quick_ok else "fail",
             "detail": {
                 "database_path": str(db_path),
                 "database_exists": db_path.exists(),
                 "journal_mode": journal_mode_row[0] if journal_mode_row else "unknown",
-                "quick_check": quick_check_row[0] if quick_check_row else "unknown",
+                "quick_check": quick_detail,
                 "database_size_bytes": db_path.stat().st_size if db_path.exists() else 0,
                 "wal_size_bytes": wal_path.stat().st_size if wal_path.exists() else 0,
             },
