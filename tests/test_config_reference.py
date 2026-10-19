@@ -134,9 +134,10 @@ def choice_plugin():
     from pathlib import Path
 
     spec = importlib.util.spec_from_file_location(
-        "hermes_lcm.choice_plugin", Path(__file__).resolve().parents[1] / "__init__.py",
+        "hermes_lcm", Path(__file__).resolve().parents[1] / "__init__.py",
     )
     module = importlib.util.module_from_spec(spec)
+    module.__package__ = "hermes_lcm"
     spec.loader.exec_module(module)
     return module
 
@@ -208,17 +209,17 @@ def test_choice_behavior_table(monkeypatch, choice_plugin):
     from hermes_lcm import command
 
     table = {}
-    for spelling in config._ENV_CHOICES["embedding_provider"][0] + ("unknown", "fast_embed", ""):
+    for spelling in config._ENV_CHOICES["embedding_provider"][0] + ("unknown", "fast_embed", "unsupported", ""):
         for raw in (spelling, spelling.upper(), f" {spelling} "):
             with monkeypatch.context() as patch:
                 table[f"provider:{raw}"] = _provider_choice_row(patch, raw)
-    for mode in config._ENV_CHOICES["preanswer_evidence_mode"][0] + ("unknown", "requirements-v1", ""):
+    for mode in config._ENV_CHOICES["preanswer_evidence_mode"][0] + ("unknown", "requirements-v1", "unsupported", ""):
         for raw in (mode, mode.upper(), f" {mode} "):
             for enabled in (False, True):
                 table[f"mode:{enabled}:{raw}"] = choice_plugin._effective_preanswer_mode(SimpleNamespace(
                     preanswer_evidence_enabled=enabled, preanswer_evidence_mode=raw,
                 ))
-    for dtype in config._ENV_CHOICES["embedding_storage_dtype"][0] + ("unknown", "float16", ""):
+    for dtype in config._ENV_CHOICES["embedding_storage_dtype"][0] + ("unknown", "float16", "unsupported", ""):
         for raw in (dtype, dtype.upper(), f" {dtype} "):
             table[f"dtype:{raw}"] = {
                 "config": command._resolve_storage_dtype(SimpleNamespace(embedding_storage_dtype=raw)),
