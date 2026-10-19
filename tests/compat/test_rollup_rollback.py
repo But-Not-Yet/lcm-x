@@ -97,7 +97,7 @@ def test_shipped_rollups_rollback(
                                 if source_reader == "v0.26.2" or table != "lcm_embedding_profile"})
     if source_reader != "v0.26.2" and profiles:
         profiles_after, versions_after = profile_rows(tmp_path / "lcm.db")
-        assert {key: profiles_after.get(key) for key in profiles} == profiles
+        assert profiles_after == profiles
         assert all(versions_after[key] >= versions[key] for key in versions)
         assert any(versions_after[key] > versions[key] for key in versions)
     assert payloads.items() <= payload_hashes(tmp_path).items()
