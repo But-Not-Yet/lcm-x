@@ -24,7 +24,7 @@ EXPECTED = {
     "keep_reply": "supported",
 }
 # Readers below SHORT_READER_FLOOR use EXPECTED; newer readers support all forms.
-# S6-F1 remains a strict failure for name-only tool results on every reader;
+# S6-F1 remains a strict failure on every reader's supported name-only tool-result cells
 # S6-F2 applies only to non-empty bounded calls below the floor.
 
 

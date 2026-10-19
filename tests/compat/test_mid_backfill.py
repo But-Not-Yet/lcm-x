@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from tests.compat.helpers import PREVIOUS_GA, config_for, run_old
-from tests.harness import stored_rows
 from tests.compat.storage_fixtures import (
     SESSION, VECTOR_TABLES, assert_calls_once, assert_preserved, bind, embed_all,
     finish_embeddings, install_fakes, plugin, seed_history, storage_config,
@@ -90,7 +89,7 @@ def test_stem_backfill_survives_old_writer(
         monkeypatch.setattr(boot.time, "sleep", lambda _: None)
         boot._run_stem_backfill(str(tmp_path / "lcm.db"), spec, "resumed-pass")
         boot.join_background_stem_backfills(timeout=10)
-        expected = sorted(row["store_id"] for row in stored_rows(engine))
+        expected = [row[0] for row in conn.execute("SELECT store_id FROM messages ORDER BY store_id")]
         indexed = [row[0] for row in conn.execute("SELECT id FROM messages_fts_stem_docsize ORDER BY id")]
         assert indexed == expected and len(indexed) == 1502
         assert report["inserted"] > 1501 and report["inserted"] in indexed
@@ -125,6 +124,7 @@ def test_partial_embeddings_survive_old_writer(
             before = table_hashes(tmp_path, VECTOR_TABLES)
         finally:
             engine.shutdown()
+    # v0.26.2 leaves partial embeddings idle; newer writers dispatch incremental embedding.
     report = run_old(old_tree("v0.26.2"), tmp_path, host_root, OLD_EMBEDDING_INTERLUDE)
     assert table_hashes(tmp_path, VECTOR_TABLES) == before
     provider = install_fakes(monkeypatch)
