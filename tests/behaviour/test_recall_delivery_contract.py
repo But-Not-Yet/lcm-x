@@ -341,3 +341,80 @@ def test_event_time_item_cap_skips_bare_tail(corpus, monkeypatch):
     expected["event_time_unavailable"] = True
     expected["event_time_unavailable_reason"] = "response_cap"
     assert recall(corpus, scope_bias=0) == json.dumps(expected)
+
+
+@pytest.mark.parametrize("count", [0, 1, 3])
+@pytest.mark.parametrize("deficit", [0, 1])
+def test_answer_ready_fit_exact_edge(corpus, monkeypatch, count, deficit):
+    set_arms(monkeypatch, chunk=corpus[1][:count])
+    monkeypatch.setattr(tools, "_LCM_RECALL_RESPONSE_CHAR_CAP", 9000)
+    baseline = json.loads(recall(corpus, detail="answer_ready", scope_bias=0))
+    expansion = baseline["provenance"]["answer_ready"]
+    cap = len(json.dumps(baseline, ensure_ascii=False))
+    expansion["response_char_cap"] = cap
+    assert len(json.dumps(baseline, ensure_ascii=False)) == cap
+    monkeypatch.setattr(tools, "_LCM_RECALL_RESPONSE_CHAR_CAP", cap - deficit)
+    raw = recall(corpus, detail="answer_ready", scope_bias=0)
+    if deficit:
+        expansion["response_char_cap"] = cap - 1
+        expansion["query_truncated"] = False
+        if count:
+            baseline["hits"].pop()
+            baseline["total_results"] -= 1
+            expansion["expanded_hit_count"] -= 1
+            expansion["response_truncated"] = True
+    assert raw == json.dumps(baseline, ensure_ascii=False)
+    assert json.loads(raw)["degraded"] is False
+
+
+@pytest.mark.parametrize("remaining", [0, 1])
+def test_answer_ready_fit_whole_hits_and_delta(corpus, monkeypatch, remaining):
+    set_arms(monkeypatch, chunk=corpus[1][:3])
+    monkeypatch.setattr(tools, "_LCM_RECALL_RESPONSE_CHAR_CAP", 9000)
+    baseline = json.loads(recall(corpus, detail="answer_ready", seen_refs=[], scope_bias=0))
+    expected = deepcopy(baseline)
+    expected["hits"] = expected["hits"][:remaining]
+    expected["total_results"] = remaining
+    expansion = expected["provenance"]["answer_ready"]
+    expansion.update(expanded_hit_count=remaining, response_truncated=True, query_truncated=False)
+    cap = len(json.dumps(expected, ensure_ascii=False))
+    expansion["response_char_cap"] = cap
+    assert len(json.dumps(expected, ensure_ascii=False)) == cap
+    monkeypatch.setattr(tools, "_LCM_RECALL_RESPONSE_CHAR_CAP", cap)
+    calls, hydrated, snapshots = [], {}, {}
+    real_hydrate = tools._lcm_recall_answer_ready_content
+
+    def hydrate(engine, entries, **kwargs):
+        calls.append([entry["hit"]["store_id"] for entry in entries])
+        rows = real_hydrate(engine, entries, **kwargs)
+        hydrated.update(rows)
+        snapshots.update(deepcopy(rows))
+        return rows
+
+    monkeypatch.setattr(tools, "_lcm_recall_answer_ready_content", hydrate)
+    raw = recall(corpus, detail="answer_ready", seen_refs=[], scope_bias=0)
+    refs = baseline["delta"]["novel_refs"][:remaining]
+    expected["delta"].update(novel_ref_count=remaining, novel_refs=refs, progress=bool(refs),
+                             termination_reason=None if refs else "no_novel_exact_ref")
+    assert raw == json.dumps(expected, ensure_ascii=False)
+    assert len(raw) <= cap
+    assert calls == [[hit["store_id"] for hit in baseline["hits"]]]
+    assert hydrated == snapshots
+
+
+def test_answer_ready_fit_long_query(corpus, monkeypatch):
+    set_arms(monkeypatch)
+    query = "kanban " * 750
+    monkeypatch.setattr(tools, "_LCM_RECALL_RESPONSE_CHAR_CAP", 9000)
+    expected = json.loads(recall(corpus, query=query, detail="answer_ready", scope_bias=0))
+    assert len(expected["query"]) > 4096
+    expected["query"] = expected["query"][:4096]
+    expansion = expected["provenance"]["answer_ready"]
+    expansion["query_truncated"] = True
+    cap = len(json.dumps(expected, ensure_ascii=False))
+    expansion["response_char_cap"] = cap
+    monkeypatch.setattr(tools, "_LCM_RECALL_RESPONSE_CHAR_CAP", cap)
+    raw = recall(corpus, query=query, detail="answer_ready", scope_bias=0)
+    assert raw == json.dumps(expected, ensure_ascii=False)
+    assert len(raw) == cap
+    assert expansion["response_truncated"] is False
