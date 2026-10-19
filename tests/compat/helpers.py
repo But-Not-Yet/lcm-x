@@ -19,6 +19,7 @@ READERS = {
     "v0.27.0": "c67d7633d963a2ffd24cf90995189ee58e2f88c7",
     "v0.28.0": "709099b3a397a7893a7abae8802ebe7bf605f79e",
 }
+PREVIOUS_GA = "v0.28.0"
 FORMS = ("mark_only", "head_mark", "head_mark_tail")
 VARIANTS = ("text", "structured", "tool_call", "tool_result", "named_tool_result")
 CASES = tuple(f"{form}-{variant}" for form in FORMS for variant in VARIANTS) + (

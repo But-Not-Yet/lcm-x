@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.compat.helpers import config_for, run_old
+from tests.compat.helpers import PREVIOUS_GA, config_for, run_old
+from tests.harness import stored_rows
 from tests.compat.storage_fixtures import (
     SESSION, VECTOR_TABLES, assert_calls_once, assert_preserved, bind, embed_all,
     finish_embeddings, install_fakes, plugin, seed_history, storage_config,
@@ -45,8 +46,10 @@ finally:
 '''
 
 
+@pytest.mark.parametrize("source_reader", ("v0.26.2", PREVIOUS_GA))
 def test_stem_backfill_survives_old_writer(
     tmp_path: Path, old_tree: Callable[[str], Path], host_root: Path, monkeypatch: pytest.MonkeyPatch,
+    source_reader: str,
 ) -> None:
     boot = plugin("db_bootstrap")
     store_mod = plugin("store")
@@ -75,7 +78,7 @@ def test_stem_backfill_survives_old_writer(
         before = table_hashes(tmp_path, ("messages",))
     finally:
         engine.shutdown()
-    report = run_old(old_tree("v0.26.2"), tmp_path, host_root, OLD_STEM_INTERLUDE)
+    report = run_old(old_tree(source_reader), tmp_path, host_root, OLD_STEM_INTERLUDE)
     # Snapshot after the old writer, so its interleaved row is held to the same lossless bar.
     after_old = table_hashes(tmp_path, ("messages",))
     assert report["inserted"] in after_old["messages"]
@@ -87,7 +90,7 @@ def test_stem_backfill_survives_old_writer(
         monkeypatch.setattr(boot.time, "sleep", lambda _: None)
         boot._run_stem_backfill(str(tmp_path / "lcm.db"), spec, "resumed-pass")
         boot.join_background_stem_backfills(timeout=10)
-        expected = [row[0] for row in conn.execute("SELECT store_id FROM messages ORDER BY store_id")]
+        expected = sorted(row["store_id"] for row in stored_rows(engine))
         indexed = [row[0] for row in conn.execute("SELECT id FROM messages_fts_stem_docsize ORDER BY id")]
         assert indexed == expected and len(indexed) == 1502
         assert report["inserted"] > 1501 and report["inserted"] in indexed
