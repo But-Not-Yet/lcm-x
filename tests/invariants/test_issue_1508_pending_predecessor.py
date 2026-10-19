@@ -180,7 +180,7 @@ def test_premerge_shared_slot_preserves_current_turn(tmp_path, monkeypatch, shap
         capture = shape in {'uid', 'anchor-off', 'anchor-disabled-after-capture', 'prematch-raises'}
         if shape == 'uid':
             # Required one-shot recovery record, bound to the actual shared object.
-            captured, snapshot = e._premerge_capture
+            [(captured, snapshot)] = e._premerge_capture
             assert captured is p and snapshot == p['content']
         if shape in {'cancel-retry', 'r34', 'anchor-off-uid'}:
             assert [row['content'] for row in e._store.get_session_messages('s')] == [q['content']]
@@ -208,6 +208,60 @@ def test_premerge_shared_slot_preserves_current_turn(tmp_path, monkeypatch, shap
         # A second ingest must not retain a capture or create a surplus remainder.
         e.ingest([q, p, reply])
         assert [row['content'] for row in e._store.get_session_messages('s')] == expected
+    finally:
+        e.shutdown()
+
+
+@pytest.mark.parametrize(('users', 'anchor'), [(3, '0'), (4, '0'), (2, '0'), (3, '1')],
+                         ids=['three-off', 'four-off', 'two-off', 'three-on'])
+def test_premerge_user_run_override_host(tmp_path, monkeypatch, users, anchor):
+    """I1/I2: probe-B C1 repair keeps the earliest object with the latest content."""
+    monkeypatch.setenv('LCM_IDENTITY_ANCHOR', anchor)
+    ctx = register(tmp_path, monkeypatch)
+    e = ctx.engine
+    try:
+        e.on_session_start('parent', platform='cli', context_length=128000, conversation_id='conv')
+        q = message('Q', 9., 'assistant')
+        pending = [message(f'P{i}', float(i * 10)) for i in range(1, users)]
+        r, a = message('R', float(users * 10)), message('A', float(users * 10 + 1), 'assistant')
+        e.ingest([q])
+        ctx.hooks['pre_llm_call'](session_id='parent', conversation_id='conv',
+                                  conversation_history=[q, *pending, r])
+        captured = e._premerge_capture
+        expected = [('Q', 9.)] + [(p['content'], p['timestamp']) for p in pending] + [
+            ('R', 10.), ('A', a['timestamp'])]
+        # floor-0.21.3's repair/override removes all later user objects and carries P1's stamp.
+        pending[0]['content'] = r['content']
+        completed = [q, pending[0], a]
+        e.ingest(completed)
+        stored = e._store.get_session_messages('parent')
+        assert [(row['content'], row['observed_at']) for row in stored] == expected
+        assert e._premerge_capture is None
+        e.ingest(completed)
+        e.on_session_end('parent', completed)
+        assert e._store.get_session_messages('parent') == stored
+        assert len(captured) == len(pending)
+        for i, (obj, content) in enumerate(captured):
+            assert obj is pending[i] and content == f'P{i + 1}'
+    finally:
+        e.shutdown()
+
+
+def test_premerge_user_run_stops_at_steer(tmp_path, monkeypatch):
+    """A steer row splits the capture run even though its role is user."""
+    monkeypatch.setenv('LCM_IDENTITY_ANCHOR', '0')
+    ctx = register(tmp_path, monkeypatch)
+    e = ctx.engine
+    try:
+        e.on_session_start('parent', platform='cli', context_length=128000, conversation_id='conv')
+        q, before, steer = message('Q', 9., 'assistant'), message('before', 10.), message('steer', 20.)
+        steer['display_kind'] = 'steer'
+        p1, p2, r = message('P1', 30.), message('P2', 40.), message('R', 50.)
+        ctx.hooks['pre_llm_call'](session_id='parent', conversation_id='conv',
+                                  conversation_history=[q, before, steer, p1, p2, r])
+        assert len(e._premerge_capture) == 2
+        for (obj, content), expected in zip(e._premerge_capture, [p1, p2], strict=True):
+            assert obj is expected and content == expected['content']
     finally:
         e.shutdown()
 
