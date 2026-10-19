@@ -329,6 +329,18 @@ prepends the policy. The canonical file and digest source is
 
 ## Troubleshooting
 
+### `Could not apply live compression config` once per session
+
+On Hermes Desktop or the TUI, this warning comes from Hermes' live compression
+sync calling `_coerce_threshold_tokens_cap`, a method only its built-in compressor
+has. See upstream Hermes [#103410](https://github.com/NousResearch/hermes-agent/issues/103410)
+and the fix in [#103411](https://github.com/NousResearch/hermes-agent/pull/103411).
+
+LCM-X resolves its compaction threshold from its own configuration, not this live
+sync. Recall and compaction are unaffected by the missing method; the warning is
+harmless until the upstream fix ships. Live changes to Hermes' `compression.*`
+settings do not update LCM-X's threshold.
+
 ### Session-end warning says `final messages may be absent` or `retry pending`
 
 The interrupted or SQLite-lock raw-flush warning includes `unflushed=N`: the pending message count
