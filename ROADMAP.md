@@ -77,7 +77,7 @@ Where LCM-X stands (2026-10-19):
   | PersonaMem v2 | 33.96 | 8th of 13 | MemOS 40.58; every system scores 26–41 |
 
 - **Inside Hermes, against its built-in compressor** (100 LongMemEval questions, one reader, 2026-10-10): LCM-X with local semantic recall 79, Hermes built-in 78, no difference. With pre-answer evidence LCM-X scores 89 (p = .027), with a higher p90 answer time (#1111).
-- **Agent Memory Leaderboard, cycle 2.** The textual track has been scored and is in the organisers' review. Results are published after that review. The coding track runs before the cycle closes.
+- **Agent Memory Leaderboard (current cycle).** The textual track has been scored and is in the organisers' review. Results are published after that review. The coding track runs before the cycle closes.
 - **LongMemEval-S with a frontier reader.** 85.8% for v0.26.1 with local semantic recall and 72.2% without embeddings (reader gpt-6.1-sol, the benchmark's gpt-4o judge). A frontier model given the full history and no memory system scores 92%.
 - **LongMemEval-V2 Small.** 66.1% on an older tree under its fixed reader and judge, below the 69.9% coding-agent baseline. Not submitted.
 - **Not entered yet:** BEAM 10M, DolphinBench, LifeBench, and LongMemEval-M answer rows.
