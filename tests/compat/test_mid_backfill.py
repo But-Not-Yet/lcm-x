@@ -13,6 +13,10 @@ from tests.compat.storage_fixtures import (
 )
 
 OLD_STEM_INTERLUDE = r'''
+from hermes_lcm import db_bootstrap as old_boot
+# A stem-aware old reader resumes the backfill on open; keep it pending for the new reader.
+if hasattr(old_boot, "dispatch_background_stem_backfill"):
+    old_boot.dispatch_background_stem_backfill = lambda *args: None
 engine = LCMEngine(config=LCMConfig(**options), hermes_home=home)
 try:
     engine.on_session_start("compat-storage", platform="cli", context_length=200_000,
