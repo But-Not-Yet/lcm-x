@@ -38,7 +38,6 @@ def make_engine(ratio=0.35, source=SOURCES[0], enabled=True, maximum=0, reserve=
         reserve_tokens_floor=reserve,
         model_thresholds={"glm-5.2": 0.7, "glm-5.2-1M": 0.25},
     )
-    engine._absolute_threshold_tokens = "0"
     engine.model, engine.provider = "gpt-5.5", "openai-codex"
     for field in FIELDS:
         setattr(engine, field, "untouched")
@@ -102,7 +101,6 @@ def test_setter_characterization(raw, absolute, monkeypatch, caplog):
                 monkeypatch.delenv("LCM_ABSOLUTE_THRESHOLD_TOKENS", raising=False)
             else:
                 monkeypatch.setenv("LCM_ABSOLUTE_THRESHOLD_TOKENS", absolute)
-            engine._absolute_threshold_tokens = absolute  # registration snapshot (#1603)
             result = expected(engine, raw, model, provider, absolute)
             initial_enabled = engine._config.codex_gpt55_autoraise_enabled
             caplog.clear()
@@ -137,28 +135,27 @@ def test_setter_characterization(raw, absolute, monkeypatch, caplog):
                 assert engine._config.codex_gpt55_autoraise_enabled == (initial_enabled and not disable)
 
 
-def test_absolute_override_is_snapshotted_and_autoraise_mutation_sticks(monkeypatch):
+def test_absolute_override_is_live_and_autoraise_mutation_sticks(monkeypatch):
     engine = make_engine()
-    engine._absolute_threshold_tokens = "130000"
     monkeypatch.setenv("LCM_ABSOLUTE_THRESHOLD_TOKENS", "130000")
     assert engine._set_context_length(400_000, source="contract")
     assert (engine.context_threshold, engine.threshold_tokens) == (0.85, 130_000)
     monkeypatch.delenv("LCM_ABSOLUTE_THRESHOLD_TOKENS")
     assert engine._set_context_length(400_000, source="contract")
-    assert (engine.context_threshold, engine.threshold_tokens) == (0.35, 130_000)
+    assert (engine.context_threshold, engine.threshold_tokens) == (0.35, 95_200)
     assert engine._config.codex_gpt55_autoraise_enabled is False
 
 
-def test_warning_and_snapshot_keep_their_place_in_attribute_writes(monkeypatch):
+def test_warning_and_env_read_keep_their_place_in_attribute_writes(monkeypatch):
     import hermes_lcm.engine as module
 
     engine = make_engine(reserve=500_000)
-    engine._absolute_threshold_tokens = "130000"
     original_get = module.os.environ.get
 
     def get(key, default=None):
         if key == "LCM_ABSOLUTE_THRESHOLD_TOKENS":
-            pytest.fail("window update must not reread the environment")
+            engine.events.append(("env", key))
+            return "130000"
         return original_get(key, default)
 
     monkeypatch.setattr(module.os.environ, "get", get)
@@ -170,7 +167,7 @@ def test_warning_and_snapshot_keep_their_place_in_attribute_writes(monkeypatch):
     engine._config = Config(**vars(engine._config))
     assert engine._set_context_length(400_000, source="contract")
     assert [event[0] for event in engine.events] == ["write"] * 9 + [
-        "warning", "write", "write", "config",
+        "warning", "write", "env", "write", "config",
     ]
     engine.events.clear()
     assert engine._set_context_length(0, source="contract")
