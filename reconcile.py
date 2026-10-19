@@ -254,11 +254,17 @@ def _contains_identity_window(
     """
     if not needle or len(needle) > len(haystack):
         return False
+    width = len(needle)
+    starts = range(len(haystack) - width + 1)
+    if not literal_prefix or literal_prefix == needle:
+        # No literal form differs, so the shared rule is exact equality:
+        # keep the C-level slice comparison on this restart-time scan.
+        return any(haystack[start : start + width] == needle for start in starts)
     return any(
         ReconcileMixin._matches_store_tail_suffix(
-            haystack[start : start + len(needle)], needle, literal_prefix,
+            haystack[start : start + width], needle, literal_prefix,
         )
-        for start in range(len(haystack) - len(needle) + 1)
+        for start in starts
     )
 
 
