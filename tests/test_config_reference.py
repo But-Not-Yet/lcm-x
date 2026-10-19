@@ -176,6 +176,27 @@ def _provider_choice_row(monkeypatch, spelling):
             )
         except LookupError:
             pass
+    health_mapped = []
+    with monkeypatch.context() as health:
+        # Isolate spelling resolution from the separately owned privacy policy.
+        health.setattr(tools, "embedding_provider_requires_privacy",
+                       lambda value: config.embedding_provider_id(value) in ("voyage", "openai-compatible"))
+        health.setenv("VOYAGE_API_KEY", "synthetic-placeholder")
+        health.setenv("LCM_EMBEDDING_API_KEY", "synthetic-placeholder")
+        health.setattr(providers.importlib.util, "find_spec", lambda _: object())
+        health.setattr(tools, "_active_embedding_profile_exists", lambda _: False)
+        health.setattr(tools, "embedding_privacy_revision", lambda _: "choice-revision")
+        health.setattr(tools.sqlite3, "connect", lambda *a, **kw: SimpleNamespace(close=lambda: None))
+        health.setattr(tools, "_lcm_store_has_live_chunk_vectors", lambda _: False)
+
+        def capture_health(conn, *, provider, model, task):
+            health_mapped.append(provider)
+            return "choice-revision"
+
+        health.setattr(tools, "_lcm_embedding_profile_revision", capture_health)
+        health_result = tools._embedding_provider_health_check(SimpleNamespace(
+            _config=cfg, _store=SimpleNamespace(db_path="unused"),
+        ))
     auto = maintenance._automatic_chunks_allowed(cfg, command)
     monkeypatch.setattr(command, "_embedding_read_connection", lambda _: SimpleNamespace(close=lambda: None))
     monkeypatch.setattr(command, "_embedding_current_profile", lambda _: None)
@@ -196,6 +217,7 @@ def _provider_choice_row(monkeypatch, spelling):
     return {
         "resolver": resolved, "offline": probe,
         "mapped_id": mapped[0] if mapped else None, "automatic_chunks": auto,
+        "health_mapped_ids": health_mapped, "health_check": health_result,
         "local_registration": local, "chunk_model": providers.default_chunk_model(spelling, "choice-model"),
         "chunk_estimate": [result[key] for key in ("estimated_tokens", "estimated_cost_tokens", "estimated_batches")],
     }
@@ -247,6 +269,7 @@ def test_provider_consumers_follow_choice_constant(monkeypatch, provider):
     actual = _provider_choice_row(monkeypatch, spelling)
     # The probe deliberately reports the configured spelling, not the provider id.
     expected["offline"]["provider"] = spelling
+    expected["health_check"]["detail"]["provider"] = spelling
     assert actual == expected
 
 

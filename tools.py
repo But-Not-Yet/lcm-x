@@ -4409,11 +4409,7 @@ def _embedding_provider_health_check(engine: "LCMEngine") -> dict[str, Any]:
         }
     provider_id = str(probe.get("provider") or "")
     if embedding_provider_requires_privacy(provider_id):
-        provider_id = {
-            "voyageai": "voyage",
-            "openai": "openai-compatible",
-            "siliconflow": "openai-compatible",
-        }.get(provider_id, provider_id)
+        provider_id = embedding_provider_id(provider_id)
         try:
             current_revision = embedding_privacy_revision(config)
         except EmbeddingPrivacyPolicyError as exc:
