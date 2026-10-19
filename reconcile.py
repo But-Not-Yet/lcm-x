@@ -1417,6 +1417,7 @@ class ReconcileMixin:
         if len(candidate_prefix) > len(stored_tail):
             return False
         # #1385: match the durable occurrence's literal identity before its salvage alias.
+        # _contains_identity_window skips this rule when no literal differs; a new admissible form must update it too.
         return all(stored == literal or stored == candidate for stored, literal, candidate in zip(
             stored_tail[-len(candidate_prefix):], literal_prefix or candidate_prefix, candidate_prefix))
 
