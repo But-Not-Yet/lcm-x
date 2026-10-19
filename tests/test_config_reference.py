@@ -223,34 +223,6 @@ def _provider_choice_row(monkeypatch, spelling):
     }
 
 
-def test_choice_behavior_table(monkeypatch, choice_plugin):
-    """The emitted table is also compared byte-for-byte across the refactor."""
-    import json
-    from types import SimpleNamespace
-
-    from hermes_lcm import command
-
-    table = {}
-    for spelling in config._ENV_CHOICES["embedding_provider"][0] + ("unknown", "fast_embed", "unsupported", ""):
-        for raw in (spelling, spelling.upper(), f" {spelling} "):
-            with monkeypatch.context() as patch:
-                table[f"provider:{raw}"] = _provider_choice_row(patch, raw)
-    for mode in config._ENV_CHOICES["preanswer_evidence_mode"][0] + ("unknown", "requirements-v1", "unsupported", ""):
-        for raw in (mode, mode.upper(), f" {mode} "):
-            for enabled in (False, True):
-                table[f"mode:{enabled}:{raw}"] = choice_plugin._effective_preanswer_mode(SimpleNamespace(
-                    preanswer_evidence_enabled=enabled, preanswer_evidence_mode=raw,
-                ))
-    for dtype in config._ENV_CHOICES["embedding_storage_dtype"][0] + ("unknown", "float16", "unsupported", ""):
-        for raw in (dtype, dtype.upper(), f" {dtype} "):
-            table[f"dtype:{raw}"] = {
-                "config": command._resolve_storage_dtype(SimpleNamespace(embedding_storage_dtype=raw)),
-                "override": command._resolve_storage_dtype(None, raw),
-                "flag": command._embedding_backfill_options(["--dtype", raw]),
-            }
-    print("CHOICE_TABLE=" + json.dumps(table, sort_keys=True))
-
-
 def test_choice_constants_feed_reference():
     assert config._ENV_CHOICES["embedding_provider"][0] == tuple(
         spelling for spellings in config.EMBEDDING_PROVIDER_SPELLINGS.values() for spelling in spellings
