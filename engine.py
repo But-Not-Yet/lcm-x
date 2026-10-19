@@ -4462,7 +4462,13 @@ class LCMEngine(
                 self._stable_use_closed
                 or not self._session_id
                 or session_id == self._session_id
-                or self._session_id != self._foreground_session_id
+                or (
+                    self._session_id != self._foreground_session_id
+                    # An initially filtered session has no foreground marker.
+                    # Let it reach the exact empty-reset proof below, but never
+                    # let a filtered side channel replace an existing foreground.
+                    and (self._foreground_session_id or not (self._session_ignored or self._session_stateless))
+                )
                 or self._thread_context_stateless()
                 or self._thread_context_has_auxiliary_session(session_id)
                 or self._is_live_auxiliary_child_session(session_id, self._session_id, {})
