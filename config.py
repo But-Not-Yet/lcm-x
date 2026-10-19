@@ -622,15 +622,32 @@ def _warn_env_range(name: str, value: Any, warnings: list[str]) -> None:
     warnings.append(f"out-of-range env {key}={repr(raw)[:40]} (must be {bounds}); {effect}")
 
 
+# Accepted spellings, in configuration-reference and diagnostic display order.
+EMBEDDING_PROVIDER_SPELLINGS: dict[str, tuple[str, ...]] = {
+    "voyage": ("voyage", "voyageai"),
+    "ollama": ("ollama",),
+    "fastembed": ("fastembed", "fast-embed"),
+    "openai-compatible": ("openai-compatible", "openai", "siliconflow"),
+}
+PREANSWER_EVIDENCE_MODES = ("off", "legacy_selective", "requirements_v1")
+EMBEDDING_STORAGE_DTYPES = ("float32", "int8")
+
+
+def embedding_provider_id(spelling: str) -> str:
+    """Map an already-normalized spelling to its id; preserve unknown values."""
+    return next((provider for provider, spellings in EMBEDDING_PROVIDER_SPELLINGS.items()
+                 if spelling in spellings), spelling)
+
+
 _ENV_CHOICES = {
     "embedding_provider": (
-        ("voyage", "voyageai", "ollama", "fastembed", "fast-embed", "openai-compatible", "openai", "siliconflow"),
+        tuple(spelling for spellings in EMBEDDING_PROVIDER_SPELLINGS.values() for spelling in spellings),
         str.lower, "provider resolution raises ProviderUnavailable when requested",
     ),
     "preanswer_evidence_mode": (
-        ("off", "legacy_selective", "requirements_v1"), str.casefold, "ignored; using 'off'",
+        PREANSWER_EVIDENCE_MODES, str.casefold, "ignored; using 'off'",
     ),
-    "embedding_storage_dtype": (("float32", "int8"), str.lower, "ignored; using 'float32'"),
+    "embedding_storage_dtype": (EMBEDDING_STORAGE_DTYPES, str.lower, "ignored; using 'float32'"),
 }
 
 # Deprecation/removal versions shared by the loader and generated reference.
