@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Protocol, Sequence
 from urllib.parse import urlsplit
 
-from .config import LCMConfig, lcm_env_get, profile_bound
+from .config import LCMConfig, embedding_provider_id, lcm_env_get, profile_bound
 from .tokens import count_tokens
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,7 @@ BeforeDispatch = Callable[[tuple[int, ...]], None]
 # Default model per provider for the raw-history CHUNK corpus. Voyage maps to
 # voyage-context-4 (its contextualized-chunks model); local providers reuse the
 # configured model unchanged (local-first posture, plain per-chunk embedding).
-_DEFAULT_CHUNK_MODELS = {"voyage": "voyage-context-4", "voyageai": "voyage-context-4"}
+_DEFAULT_CHUNK_MODELS = {"voyage": "voyage-context-4"}
 
 
 def default_chunk_model(provider: str, configured_model: str) -> str:
@@ -95,7 +95,7 @@ def default_chunk_model(provider: str, configured_model: str) -> str:
     """
     configured = str(configured_model or "").strip()
     key = str(provider or "").strip().lower()
-    mapped = _DEFAULT_CHUNK_MODELS.get(key)
+    mapped = _DEFAULT_CHUNK_MODELS.get(embedding_provider_id(key))
     if mapped:
         # An explicit context model is the operator's stated chunk-model intent
         # and wins over the mapping; the voyage-context-4 default applies ONLY
@@ -1968,7 +1968,7 @@ def resolve_provider(
     )
     timeout_default = 120.0 if for_backfill else 3.0
     timeout = float(getattr(config, timeout_field, timeout_default))
-    if provider in {"voyage", "voyageai"}:
+    if embedding_provider_id(provider) == "voyage":
         return VoyageProvider(
             model,
             timeout=timeout,
@@ -1977,18 +1977,18 @@ def resolve_provider(
                 getattr(config, "embedding_max_batch_items", _VOYAGE_MAX_BATCH_ITEMS)
             ),
         )
-    if provider == "ollama":
+    if embedding_provider_id(provider) == "ollama":
         return OllamaProvider(
             model,
             base_url=getattr(config, "ollama_base_url", "http://localhost:11434"),
             timeout=timeout,
             spend_guard=spend_guard,
         )
-    if provider in {"fastembed", "fast-embed"}:
+    if embedding_provider_id(provider) == "fastembed":
         return FastembedProvider(
             model, timeout=timeout, spend_guard=spend_guard
         )
-    if provider in {"openai-compatible", "openai", "siliconflow"}:
+    if embedding_provider_id(provider) == "openai-compatible":
         return OpenAICompatibleProvider(
             model,
             base_url=getattr(config, "embedding_base_url", ""),
@@ -2045,7 +2045,7 @@ def probe_provider_availability(config: LCMConfig) -> dict[str, Any]:
             f"embeddings are enabled but {missing} is unset; both must be set",
         )
 
-    if provider in {"fastembed", "fast-embed"}:
+    if embedding_provider_id(provider) == "fastembed":
         if importlib.util.find_spec("fastembed") is None:
             return result(
                 False,
@@ -2055,7 +2055,7 @@ def probe_provider_availability(config: LCMConfig) -> dict[str, Any]:
             )
         return result(True, "fastembed is importable")
 
-    if provider in {"voyage", "voyageai"}:
+    if embedding_provider_id(provider) == "voyage":
         if not lcm_env_get("VOYAGE_API_KEY", "").strip():
             return result(False, "VOYAGE_API_KEY is not set")
         return result(
@@ -2064,7 +2064,7 @@ def probe_provider_availability(config: LCMConfig) -> dict[str, Any]:
             probed=False,
         )
 
-    if provider in {"openai-compatible", "openai", "siliconflow"}:
+    if embedding_provider_id(provider) == "openai-compatible":
         api_key_env = str(
             getattr(config, "embedding_api_key_env", "LCM_EMBEDDING_API_KEY")
             or "LCM_EMBEDDING_API_KEY"
@@ -2086,7 +2086,7 @@ def probe_provider_availability(config: LCMConfig) -> dict[str, Any]:
             probed=False,
         )
 
-    if provider == "ollama":
+    if embedding_provider_id(provider) == "ollama":
         return result(
             True,
             "ollama daemon reachability not probed (offline check); verify with "
