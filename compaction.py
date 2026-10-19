@@ -912,6 +912,15 @@ class CompactionMixin:
                                         else self._last_compression_noop_reason))
             if reason.startswith(_RETAINED_NOOP_REASON):  # sweep on: base's #581 text exactly; the row is blocked=
                 reason = _RETAINED_NOOP_REASON  # (also after leaves of the same sweep, whose no-op reason is empty)
+            empty_reason = getattr(self, "_store_complete_empty_reason", "")
+            empty_input = ""
+            if (empty_reason and budget.selected and not bypassed and reason != "error"
+                    and empty_reason in (reason, self._last_compression_noop_reason)):
+                if reason == empty_reason:  # sweep on: the base text; sweep off keeps the status token
+                    reason = empty_reason.split(" (", 1)[0]
+                empty_input = " empty_input=contiguity"
+                if empty_reason.startswith("leaf input has no stored source rows ("):
+                    empty_input = " empty_input=no_source,rows:" + empty_reason.rsplit("=", 1)[1][:-1]
             blocked = (getattr(self, "_store_complete_blocked", None)
                        if budget.selected and retained and not bypassed else None)
             exited = getattr(self, "_stub_first_exit_now", None) if reason != "error" and not bypassed else None
@@ -924,7 +933,7 @@ class CompactionMixin:
                         f" host={budget.host:.1f}s" if budget.host > 0 else "",
                         " tokens_before={tokens_before} tokens_after={tokens_after} target={target_tokens} "
                         "backlog_rows={backlog_rows}".format(**exited) if exited else "",
-                        " blocked=store_id:%d,role:%s,kind:%s" % blocked[:3] if blocked else "",  # #1162: the row
+                        " blocked=store_id:%d,role:%s,kind:%s" % blocked[:3] if blocked else empty_input,  # #1162
                         f" failure={self._survival_fit_reason}" if reason == "error" and self._survival_fit_reason else "")
         except Exception:
             logger.debug("LCM compaction stop line failed", exc_info=True)
@@ -1310,6 +1319,8 @@ class CompactionMixin:
         """(summary lineage ids, consumed ids) of a leaf over ``chunk``, built as the leaf loop builds its input and
         claims; None when no leaf can start there. The loop's store-complete state is restored afterwards."""
         saved = getattr(self, "_store_complete_excluded", []), getattr(self, "_store_complete_cut", False)
+        saved_diagnostics = (getattr(self, "_store_complete_blocked", None),
+                             getattr(self, "_store_complete_empty_reason", ""))
         selected_input = [message for message in chunk if id(message) not in dependent_reply_message_ids]
         self._store_complete_excluded, self._store_complete_cut = [], False
         try:
@@ -1339,6 +1350,7 @@ class CompactionMixin:
             return consumption
         finally:
             self._store_complete_excluded, self._store_complete_cut = saved
+            self._store_complete_blocked, self._store_complete_empty_reason = saved_diagnostics
 
     def _reject_prepared_chain(self, leaf, reason: str) -> None:
         """#787: the first rejection ends the chain from ``leaf`` on, each leaf counted under ``reason``."""
@@ -2386,7 +2398,8 @@ class CompactionMixin:
                 if state.unattributed_leaf_refused:  # #1147: the refusal reason stays visible
                     self._last_compression_noop_reason = state.noop_reason
                     self._note_fresh_tail_pressure_relieved()
-                elif state.noop_reason.startswith(_RETAINED_NOOP_REASON):  # #1162: no leaf; the reason stays visible
+                elif (state.noop_reason.startswith(_RETAINED_NOOP_REASON)
+                      or (state.noop_reason and state.noop_reason == getattr(self, "_store_complete_empty_reason", ""))):
                     self._last_compression_noop_reason = state.noop_reason
                     logger.info("LCM compression no-op: %s", state.noop_reason)
                 else:
@@ -3049,6 +3062,7 @@ class CompactionMixin:
         selected_input = [message for message in leaf.selected_raw_chunk if id(message) not in dependent_reply_message_ids]
         self._store_complete_excluded, self._store_complete_cut, self._store_complete_blocked = [], False, None
         self._store_complete_copy_exclusion_proofs = {}
+        self._store_complete_empty_reason = ""
         step_started = time.monotonic() if state.threshold_full_sweep_active else 0.0
         leaf.anchored_input = self._identity_anchor_summary_input(
             selected_input, self._compress_run.store_ids_by_message_id, state.working_messages, leaf.selected_raw_chunk,
@@ -3058,10 +3072,10 @@ class CompactionMixin:
         if state.threshold_full_sweep_active and sweep_step_done("identity_anchor", step_started) >= state.sweep_deadline:
             state.sweep_stop_reason = "time_budget_exhausted"
             return "break", None
-        if leaf.anchored_input == []:  # #581: the oldest owned row above the frontier is a retained occurrence
-            blocked = self._store_complete_blocked  # #1162: name it
-            state.noop_reason = _RETAINED_NOOP_REASON + (
-                " (store_id=%d role=%s kind=%s)" % blocked[:3] if blocked else "")
+        if leaf.anchored_input == []:
+            blocked = self._store_complete_blocked
+            state.noop_reason = (_RETAINED_NOOP_REASON + " (store_id=%d role=%s kind=%s)" % blocked[:3]
+                                 if blocked else self._store_complete_empty_reason or "leaf input is empty")
             return "break", None
         leaf.publication_excluded_store_ids.extend(self._store_complete_excluded)
         leaf_map = self._compress_run.store_ids_by_message_id or {}
