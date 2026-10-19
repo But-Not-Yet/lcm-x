@@ -268,12 +268,17 @@ def _answer_ready_baseline(active_engine, question: str, payload: dict):
 
 
 def _effective_preanswer_mode(config) -> str:
+    if __package__ in sys.modules:
+        from .config import PREANSWER_EVIDENCE_MODES
+    else:
+        PREANSWER_EVIDENCE_MODES = _load_standalone_config().PREANSWER_EVIDENCE_MODES
+
     if not bool(getattr(config, "preanswer_evidence_enabled", False)):
         return "off"
     raw = str(getattr(config, "preanswer_evidence_mode", "") or "").strip().casefold()
     if not raw:
         return "legacy_selective"
-    return raw if raw in {"off", "legacy_selective", "requirements_v1"} else "off"
+    return raw if raw in PREANSWER_EVIDENCE_MODES else "off"
 
 
 def _pre_llm_context(active_engine, payload: dict) -> dict | None:
