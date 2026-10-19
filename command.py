@@ -3521,6 +3521,24 @@ def _embedding_backfill_summary_text(
     return str(result) if isinstance(result, str) else _embedding_backfill_report(**result)
 
 
+def _summary_backfill_estimates(
+    *, documents: list[tuple[str, str, int]], provider_name, config,
+) -> tuple[int, int, int]:
+    est_tokens = sum(document[2] for document in documents)
+    est_cost_tokens = sum(
+        document[2]
+        for document in documents
+        if provider_name.lower() != "voyage"
+        or document[2] <= _VOYAGE_MAX_DOCUMENT_TOKENS
+    )
+    est_batches = _embedding_batch_estimate(
+        provider_name,
+        [document[2] for document in documents],
+        getattr(config, "embedding_max_batch_items", None),
+    )
+    return est_tokens, est_cost_tokens, est_batches
+
+
 def _embedding_backfill_summary_run(
     config, db_path, *, apply: bool, limit: int, retry_uncertain: bool,
     include_next_hint: bool = True, expected_dtype: str | None = None, stop_event=None,
@@ -3586,21 +3604,6 @@ def _embedding_backfill_summary_run(
     finally:
         read_conn.close()
 
-    def _estimates(documents: list[tuple[str, str, int]]) -> tuple[int, int, int]:
-        est_tokens = sum(document[2] for document in documents)
-        est_cost_tokens = sum(
-            document[2]
-            for document in documents
-            if provider_name.lower() != "voyage"
-            or document[2] <= _VOYAGE_MAX_DOCUMENT_TOKENS
-        )
-        est_batches = _embedding_batch_estimate(
-            provider_name,
-            [document[2] for document in documents],
-            getattr(config, "embedding_max_batch_items", None),
-        )
-        return est_tokens, est_cost_tokens, est_batches
-
     if not apply:
         raw_documents = [
             (str(row["node_id"]), str(row["summary"]), count_tokens(row["summary"]))
@@ -3625,7 +3628,9 @@ def _embedding_backfill_summary_run(
         )
         if privacy_withheld:
             privacy_error = None
-        estimated_tokens, estimated_cost_tokens, estimated_batches = _estimates(documents)
+        estimated_tokens, estimated_cost_tokens, estimated_batches = _summary_backfill_estimates(
+            documents=documents, provider_name=provider_name, config=config,
+        )
         return dict(
             mode=mode,
             status="refused" if privacy_error else "dry-run",
@@ -4069,7 +4074,9 @@ def _embedding_backfill_summary_run(
         skipped=len(skipped),
         privacy_withheld=privacy_withheld,
     )
-    estimated_tokens, estimated_cost_tokens, estimated_batches = _estimates(documents)
+    estimated_tokens, estimated_cost_tokens, estimated_batches = _summary_backfill_estimates(
+        documents=documents, provider_name=provider_name, config=config,
+    )
     return dict(
         mode=mode,
         status=status,
