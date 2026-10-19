@@ -54,5 +54,5 @@ Scoring is per sequence and distinct `(role, content)` key, encoded as
 
 The final candidate passes a class when LOSS is zero and non-resend DUP keys
 do not exceed the base's count. Earlier candidates are diagnostic comparisons,
-as in the original gate. The overall gate also requires zero missing/error
-ledger records. Literal DUP counts remain visible even when resend-excused.
+as in the original gate. The overall gate also requires zero missing or errored
+records in every ledger, the reference included. Literal DUP counts remain visible even when resend-excused.

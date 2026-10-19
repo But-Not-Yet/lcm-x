@@ -11,12 +11,16 @@ import pytest
 from tests.harness import engine_context
 
 
+class StoredRowsMismatch(AssertionError):
+    """Only the #1525 stored-row loss may satisfy the strict xfail."""
+
+
 def message(content: str, stamp: float, role: str = "user") -> dict[str, Any]:
     return {"role": role, "content": content, "timestamp": stamp}
 
 
 @pytest.mark.xfail(
-    strict=True, raises=AssertionError,
+    strict=True, raises=StoredRowsMismatch,
     reason="#1525: after an undo and an unchanged compress, the next prompt's rows sit below the ingest cursor and are not stored; deferred to host occurrence keys",
 )
 def test_undo_then_prompt(tmp_path: Path) -> None:
@@ -40,5 +44,7 @@ def test_undo_then_prompt(tmp_path: Path) -> None:
         fresh = [message("unique prompt after undo", 70.), message("unique reply after undo", 71., "assistant")]
         engine.ingest(deepcopy(view + fresh))
         rows = engine._store.get_session_messages("parent")
-        assert [(row["role"], row["content"], row["observed_at"]) for row in rows] == [
-            (row["role"], row["content"], row["timestamp"]) for row in full + fresh]
+        stored = [(row["role"], row["content"], row["observed_at"]) for row in rows]
+        expected = [(row["role"], row["content"], row["timestamp"]) for row in full + fresh]
+        if stored != expected:
+            raise StoredRowsMismatch(f"stored {len(stored)} rows; expected {len(expected)}")

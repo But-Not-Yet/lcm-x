@@ -43,7 +43,12 @@ def score(
             for op in seq["ops"]
             if op.startswith("resend:")
         }
-        ref = reference[seed]["ledger"]
+        ref_record = reference.get(seed)
+        if ref_record is None or ref_record.get("err"):
+            # A short or missing reference ledger would under-count LOSS.
+            errors += 1
+            continue
+        ref = ref_record["ledger"]
         for name, tree in ledgers:
             result = tree.get(seed)
             if result is None or result.get("err"):
