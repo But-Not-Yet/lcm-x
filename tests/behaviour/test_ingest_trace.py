@@ -50,11 +50,11 @@ def test_observer_completeness(tmp_path: Path) -> None:
 def test_fixture_scenario_inventory_and_size() -> None:
     data: dict[str, list[str]] = json.loads(GOLDEN.read_text())
     names = [case.name for case in SCENARIOS]
-    assert len(names) == 193
+    assert len(names) == 195
     assert len(names) == len(set(names))
     assert set(data) == set(names), TRACE_GUIDANCE
     # Initial, next and cold ingests now each retain their full observer stream.
-    assert GOLDEN.stat().st_size <= 3_200_000
+    assert GOLDEN.stat().st_size <= 3_250_000
     assert all(len(json.dumps(trace).encode()) <= 45_000 for trace in data.values())
 
 
