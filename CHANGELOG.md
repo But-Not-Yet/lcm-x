@@ -8,8 +8,7 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## v0.28.1 (session continuity and profile settings)
 
-- Fix: preserve the unanswered predecessor before the host merges consecutive user turns. Crash and rotation replay on hosts without message UIDs keeps one copy when the recorded occurrence proves it. Uncertain cases keep the safe duplicate fallback. (#1508, PR #1610)
-- Fix: a run of three or more consecutive user rows keeps the turn's request and reply with the identity anchor off, on a host whose repair keeps the earliest user row with the latest content. rc1 remembered only the row just before the current one, so on that path the request and reply were not stored; v0.28.0 was not affected. (#1625, PR #1627)
+- Deferred: the pending-predecessor capture for #1508 shipped in the rc1 and rc2 prereleases (PR #1610, PR #1627) and is removed. With the identity anchor off it lost a turn's reply when a trailing user run repeated an earlier message (#1632), and stored duplicates after the agent was recreated in the same process (#1633). v0.28.1 keeps v0.28.0 behaviour on that path; the crash-only #1508 fix moves to v0.29.0. The rc1-only #1625 goes with the removed code. (PR #1634)
 - Fix: CLI `/new` from an initially ignored or stateless session binds the next unfiltered session, so its later turns are stored. Existing foreground sessions stay protected. (#1438, PR #1605)
 - Fix: middle-window replay accepts the stored literal placeholder as well as its proven alias. An already stored tool window is not copied again, and fresh results are preserved. (#1437, PR #1604)
 - Fix: warm compaction proof keeps the newest two tool results literal. A retried call and placeholder result are stored as fresh occurrences. The older-result sibling remains open in #1540. (#1529, PR #1541)
