@@ -44,7 +44,7 @@ from .recognition_matching import (
 from .config import _parse_bool_env
 from .fresh_tail import tool_group_safe_end
 from .message_content import normalize_content_value, text_content_for_pattern_matching
-from .store import _normalize_observed_at
+from .store import _normalize_conversation_id_value, _normalize_observed_at
 from .tokens import count_messages_tokens
 
 logger = logging.getLogger(__name__)
@@ -310,7 +310,7 @@ class IdentityAnchorMixin:
                 continue
             copies = [row for row, forms in by_stamp.get(stamps.get(idx - 1), ())
                       if int(row["store_id"]) not in consumed and identity_at(idx) in forms]
-            carried = self._identity_anchor_carried_stamp(messages, idx, stamps, copies, matched.get(idx - 1, ()), chain,
+            carried = self._identity_anchor_carried_stamp(messages, idx, stamps, copies, matched.get(idx - 1, ()),
                                                           distinct=_distinct_from_predecessor(identity_at, idx))
             carried = self._identity_anchor_durable_stamp(carried, matched.get(idx - 1, ()), stamps.get(idx - 1))
             if carried:
@@ -418,7 +418,7 @@ class IdentityAnchorMixin:
                 continue
             previous = matched.get(idx - 1, plan.get("matched", {}).get(idx - 1, ()))
             carried = self._identity_anchor_carried_stamp(
-                messages, idx, stamps, copies, previous, chain, distinct=_distinct_from_predecessor(identity_at, idx))
+                messages, idx, stamps, copies, previous, distinct=_distinct_from_predecessor(identity_at, idx))
             carried = self._identity_anchor_durable_stamp(carried, previous, stamps.get(idx - 1))
             recovery_candidates = copies
             if not copies and any(r["row"] is messages[idx] for r in getattr(self, "_identity_anchor_recoveries", ())):
@@ -550,16 +550,17 @@ class IdentityAnchorMixin:
         return [row]
 
     @staticmethod
-    def _identity_anchor_carried_stamp(messages, idx, stamps, copies, previous, chain, *, distinct=False) -> list:
+    def _identity_anchor_carried_stamp(messages, idx, stamps, copies, previous, *, distinct=False) -> list:
         """#1501: exact adjacent occurrence proof for the host's carried predecessor stamp.
 
         Candidates already have today's content identity, verified scope and single-consumption filter.
+        #1508: same-session proof needs no ancestor; the durable marker is still required below.
         A tolerated copy keeps its stamp, so it cannot independently prove the next carried copy.
         The host folds consecutive user content only: the predecessor and its match must be user rows,
         the stamp must move forward, and an identical predecessor text gives no positional proof
         (``distinct``: the caller compares both rows in the matching identity form).
         """
-        if (idx < 1 or not distinct or not chain or messages[idx].get("message_uid") or messages[idx].get("role") != "user"
+        if (idx < 1 or not distinct or messages[idx].get("message_uid") or messages[idx].get("role") != "user"
                 or len(previous) != 1 or stamps.get(idx - 1) is None or stamps.get(idx) is None
                 or stamps[idx] <= stamps[idx - 1] or messages[idx - 1].get("role") != "user"
                 or messages[idx - 1].get("content") == messages[idx].get("content")):
@@ -579,12 +580,15 @@ class IdentityAnchorMixin:
             return []
         prior = int(previous[0]["store_id"])
         stored = self._store.get_batch(sorted({prior, *(int(row["store_id"]) for row in rows)}))
-        if prior not in stored or stored[prior].get("observed_at") != stamp:
+        conversation = _normalize_conversation_id_value(self._conversation_id)
+        if (prior not in stored or stored[prior].get("observed_at") != stamp
+                or _normalize_conversation_id_value(stored[prior].get("conversation_id")) != conversation):
             return []
         marked = {int(rel["store_id"]) for rel in self._store.get_message_relations(
             [int(row["store_id"]) for row in rows], "carried_stamp")
             if rel["related_store_id"] == prior and rel["observed_at"] == stamp}
         return [row for row in rows if (stored.get(int(row["store_id"])) or {}).get("observed_at") == stamp
+                and _normalize_conversation_id_value(stored[int(row["store_id"])].get("conversation_id")) == conversation
                 and int(row["store_id"]) in marked]
 
     def _identity_anchor_mark_carried(self, messages, stored_at, plan) -> None:
