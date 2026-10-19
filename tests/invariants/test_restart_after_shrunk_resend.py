@@ -1,4 +1,12 @@
-"""I1: pin the current two-row ledger after a shrunk resend and restart."""
+"""Pin the stored rows after a shrunk resend and a restart.
+
+Views: [B0 B1], [B0], [B0 B0], restart, [B0 B1], for bare rows and for rows
+with message UIDs only. Main stores two rows. A deferred #1525 candidate
+re-stored the whole view on restart (five rows). The full-view variant that
+reproduces on main is tracked in #1573. A future occurrence-key design may
+change how the resent B0 is counted, but a restart must not store the view
+again.
+"""
 from __future__ import annotations
 
 from copy import deepcopy
