@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from types import ModuleType, SimpleNamespace
 
@@ -376,3 +377,145 @@ def test_environment_read_inventory():
                 assert isinstance(call, ast.Call) and ast.literal_eval(call.args[0]) == "FASTEMBED_CACHE_PATH"
     assert not failures, "\n".join(failures)
     assert seen == set(allowed), "remove stale allowlist entries or check newly unclassified reads"
+
+
+@pytest.fixture
+def api():
+    return "full"
+
+
+@pytest.fixture
+def scheduled_profiles(host, load_profile, tmp_path, monkeypatch, api):
+    """One module, two pinned homes; workers must inherit B without binding it."""
+    if api == "floor":
+        _floor_api(monkeypatch)
+    module = None
+    for name, batch in [("launch", "11"), ("B", "23")]:
+        home = tmp_path / name
+        mapping = {
+            "VOYAGE_API_KEY": f"fixture-{name}",
+            "LCM_EMBEDDING_BACKFILL_BATCH_SIZE": batch,
+            "LCM_EMBEDDINGS_ENABLED": "false",
+            "LCM_EMBEDDING_PROVIDER": "voyage",
+            "LCM_EMBEDDING_MODEL": "voyage-4",
+            "LCM_ASSERTIONS_ENABLED": "true",
+            "LCM_ASSERTION_EXTRACTION_ENABLED": "true",
+            "LCM_ASSERTION_EXTRACTION_MODEL": f"fixture/{name}",
+        }
+        home.mkdir()
+        (home / ".env").write_text("\n".join(f"{key}={value}" for key, value in mapping.items()))
+        with host.bind(home, mapping):
+            module, engine = load_profile(module)
+        if name == "launch":
+            monkeypatch.setenv("HERMES_HOME", str(home))
+    return module, engine, home, mapping
+
+
+@pytest.mark.parametrize("api", ["full", "floor"])
+def test_contextless_query_worker(host, scheduled_profiles, api):
+    module, engine, home, mapping = scheduled_profiles
+    provider_module = importlib.import_module(module.__name__ + ".embedding_provider")
+    tools = importlib.import_module(module.__name__ + ".tools")
+    provider = provider_module.resolve_provider(engine._config)
+    headers = []
+
+    def transport(*args, **kwargs):
+        headers.append(kwargs["headers"]["Authorization"])
+        return provider_module.HttpResponse(
+            200, {}, json.dumps({"data": [{"embedding": [0.1, 0.2]}]}).encode())
+
+    provider._transport = transport
+    with host.bind(home, mapping):
+        tools._run_within_deadline(
+            lambda: provider_module._run_blocking_with_deadline(
+                lambda: provider.embed_query("fixture query"), timeout=3, provider="fixture"),
+            remaining_s=3, name="fixture-query")
+    assert headers == ["Bearer fixture-B"]
+
+
+@pytest.mark.parametrize("api", ["full", "floor"])
+def test_contextless_maintenance_worker(host, scheduled_profiles, monkeypatch, api):
+    module, engine, home, mapping = scheduled_profiles
+    config = importlib.import_module(module.__name__ + ".config")
+    command = importlib.import_module(module.__name__ + ".command")
+    engine_module = importlib.import_module(module.__name__ + ".engine")
+    release = threading.Event()
+    seen = []
+
+    def maintain(*args, **kwargs):
+        assert release.wait(3)
+        seen.append((command._embedding_backfill_batch_size(), config.lcm_env_get("VOYAGE_API_KEY")))
+
+    monkeypatch.setattr(engine_module, "run_incremental_embedding_pass", maintain)
+    engine._config.embeddings_enabled = True
+    try:
+        with host.bind(home, mapping):
+            engine._schedule_embedding_maintenance()
+    finally:
+        release.set()
+    assert engine.drain_embedding_maintenance(timeout=3)
+    assert seen == [(23, "fixture-B")]
+
+
+def test_profile_bound_reentrance(host, scheduled_profiles):
+    module, _, home, mapping = scheduled_profiles
+    config = importlib.import_module(module.__name__ + ".config")
+    barrier = threading.Barrier(2)
+
+    def read(*, concurrent=False):
+        if concurrent:
+            barrier.wait(timeout=3)
+        return config.lcm_env_get("VOYAGE_API_KEY")
+
+    with host.bind(home, mapping):
+        wrapped = config.profile_bound(read)
+    assert [wrapped(), wrapped()] == ["fixture-B", "fixture-B"]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        jobs = [pool.submit(wrapped, concurrent=True) for _ in range(2)]
+        assert [job.result(timeout=4) for job in jobs] == ["fixture-B", "fixture-B"]
+
+
+def test_profile_bound_resets_lcm_turn_state(host, scheduled_profiles):
+    module, _, home, mapping = scheduled_profiles
+    config = importlib.import_module(module.__name__ + ".config")
+    externalize = importlib.import_module(module.__name__ + ".externalize")
+
+    def read():
+        return (config.lcm_env_get("VOYAGE_API_KEY"), externalize._payload_lookup_memo.get(),
+                externalize.ingest_payload_writes.get())
+
+    with host.bind(home, mapping), externalize.payload_lookup_scope():
+        token = externalize.ingest_payload_writes.set(False)
+        try:
+            wrapped = config.profile_bound(read)
+        finally:
+            externalize.ingest_payload_writes.reset(token)
+    worker = ThreadPoolExecutor(max_workers=1)
+    try:
+        assert worker.submit(wrapped).result(timeout=3) == ("fixture-B", None, True)
+    finally:
+        worker.shutdown()
+
+
+def test_assertion_worker_profile_model(host, scheduled_profiles, monkeypatch):
+    module, engine, home, mapping = scheduled_profiles
+    config = importlib.import_module(module.__name__ + ".config")
+    extraction = importlib.import_module(module.__name__ + ".assertion_extraction")
+    seen = []
+
+    def model_call(prompt, model, timeout):
+        seen.append((model, config.lcm_env_get("LCM_ASSERTION_EXTRACTION_MODEL")))
+        source = json.loads(prompt.split("EXACT_SOURCE:\n", 1)[1])
+        return json.dumps({"schema_version": 1, "source_store_id": source["store_id"],
+                           "source_content_sha256": source["content_sha256"],
+                           "assertions": [], "relations": []}), 0, 0
+
+    monkeypatch.setattr(extraction, "_call_structured_assertion_llm", model_call)
+    engine._session_id = "fixture-session"
+    messages = [{"role": "user", "content": "I prefer tea."}]
+    engine._store.append(engine._session_id, messages[0])
+    with host.bind(home, mapping):
+        assert engine._schedule_pre_compaction_assertions(messages)
+    assert engine._assertion_extraction_idle.wait(3)
+    assert seen == [("fixture/B", "fixture/B")]
+    assert engine._assertion_extraction_sources_failed == 0

@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Protocol, Sequence
 from urllib.parse import urlsplit
 
-from .config import LCMConfig, lcm_env_get
+from .config import LCMConfig, lcm_env_get, profile_bound
 from .tokens import count_tokens
 
 logger = logging.getLogger(__name__)
@@ -302,7 +302,7 @@ def _run_blocking_with_deadline(
             worker_slots.release()
 
     worker = threading.Thread(
-        target=run, name=f"lcm-{provider.lower()}-embedding", daemon=True
+        target=profile_bound(run), name=f"lcm-{provider.lower()}-embedding", daemon=True
     )
     try:
         worker.start()
