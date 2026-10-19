@@ -22,7 +22,10 @@ def fresh_sqlite_check(engine: Any, pragma: str) -> tuple[bool, str]:
         with closing(connect(uri, uri=True, timeout=timeout)) as conn:
             row = conn.execute(f"PRAGMA {pragma}").fetchone()
         return bool(row and row[0] == "ok"), str(row[0]) if row else "no response"
-    except Exception:
+    except Exception as exc:
+        name = getattr(exc, "sqlite_errorname", "")
+        if name.startswith("SQLITE_CORRUPT") or name == "SQLITE_NOTADB":
+            return False, f"error: {exc}"
         try:
             row = engine._store.connection.execute(f"PRAGMA {pragma}").fetchone()
             detail = str(row[0]) if row else "no response"
