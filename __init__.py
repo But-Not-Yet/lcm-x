@@ -704,8 +704,15 @@ def register(ctx):
                             # a whole-composite host keeps it inside the composite.
                             if not prefixed and whole is not None and (
                                     not whole or (anchored and history[-2].get("message_uid"))):
+                                captured = []
+                                for row in reversed(history[:-1]):
+                                    if (row.get("role") != "user" or row.get("display_kind") == "steer"
+                                            or active_engine._identity_is_lcm_scaffold(row)):
+                                        break
+                                    captured.append((row, row.get("content")))
+                                captured.reverse()
                                 active_engine.ingest(history[:-1])
-                                active_engine._premerge_capture = (history[-2], previous)
+                                active_engine._premerge_capture = captured
                     except Exception as exc:
                         logger.warning("LCM pending-predecessor capture failed (%s); continuing pre-LLM context",
                                        type(exc).__name__)
