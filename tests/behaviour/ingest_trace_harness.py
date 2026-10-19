@@ -145,6 +145,12 @@ SCENARIOS = (
     Scenario("row-filter-generated-append-error", "F1/W1", shape="quarantine", variant="generated-append", fault="append"),
     Scenario("row-filter-ignore-ledger-lock", "F1/W1", shape="ignored-ledger",
              variant="ignore-ledger", fault="locked", stored=0),
+    Scenario("protect-after-filter-copy", "W0/F1", shape="ignored-ledger", variant="protect-ledger", fault="locked", stored=0),
+    Scenario("protect-path-error", "W0", shape="protect-error", variant="single", fault="protect-path", stored=0),
+    Scenario("sqlite-locked-existing-tail", "W1", variant="delta", fault="locked", stored=4),
+    Scenario("sqlite-duplicate-existing-tail", "W1", variant="delta", fault="duplicate-tail", stored=4),
+    Scenario("protect-large-assistant", "W0", shape="raw-large", variant="assistant", stored=0),
+    Scenario("protect-large-user", "W0", shape="raw-large", variant="user", stored=0),
 )
 
 
@@ -406,7 +412,7 @@ def prepare(engine: Any, case: Scenario, root: Path, engines: ExitStack) -> tupl
     if case.shape == "sequence":
         original = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"turn {i}: " + "alpha beta " * 50,
                      "timestamp": 100. + i, "message_uid": f"host-{i}"} for i in range(24)]
-    elif case.shape == "raw-stub":
+    elif case.shape in {"raw-stub", "raw-large"}:
         original = []
     elif case.shape == "tools-many":
         original = [{"role": "system", "content": "system"}, {"role": "user", "content": "u1"}]
@@ -501,11 +507,13 @@ def prepare(engine: Any, case: Scenario, root: Path, engines: ExitStack) -> tupl
     elif case.shape == "tools-many":
         incoming = incoming[2:4] + [{"role": "assistant", "content": "new row"}] + incoming[4:-1]
         incoming.append({"role": "user", "content": "u2"})
+    elif case.shape == "raw-large":
+        incoming = [{"role": case.variant, "content": " ".join(f"word{index:05d}" for index in range(11000))}]
     elif case.shape == "raw-stub":
         incoming = [{"role": case.variant, "content": (
             f"[Externalized payload: kind=raw_payload; role={case.variant}; chars=100; bytes=100; ref=synthetic.json]")}
             for _ in range(case.stored)]
-    elif case.shape == "tool-stub":
+    elif case.shape in {"tool-stub", "protect-error"}:
         incoming = [{"role": "tool", "tool_call_id": "call-1", "content": "durable output words " * 100}]
         if case.variant in {"pair", "host-held"}:
             incoming += [{"role": "tool", "tool_call_id": "call-2", "content": "another output " * 100}]
@@ -517,12 +525,15 @@ def prepare(engine: Any, case: Scenario, root: Path, engines: ExitStack) -> tupl
             if case.variant == "host-held":
                 incoming = [dict(m) for m in active]
             incoming.append({"role": "user", "content": "next"})
-    elif case.variant == "ignore-ledger":
+    elif case.variant in {"ignore-ledger", "protect-ledger"}:
         # The SQLite writer lock prevents ledger writes. The second digest
         # displaces the first, and append failure exposes the fallback copies.
         incoming = [{"role": "user", "content": "IGNORE THIS ROW first"},
                     {"role": "assistant", "content": "IGNORE THIS ROW second"},
                     {"role": "user", "content": "ordinary row after ignored messages"}]
+        if case.variant == "protect-ledger":
+            incoming += [{"role": "user", "content": "[Externalized payload: kind=raw_payload; role=user; chars=100; bytes=100; ref=synthetic.json]"},
+                         {"role": "tool", "tool_call_id": "call-1", "content": "durable output words " * 100}]
     elif case.variant == "empty":
         incoming = []
     elif case.variant in {"prefix", "suffix"}:
@@ -635,6 +646,12 @@ def prepare(engine: Any, case: Scenario, root: Path, engines: ExitStack) -> tupl
 def sqlite_fault(engine: Any, fault: str, events: Trace) -> Iterator[None]:
     """Fail real SQL, without mocking ingest phases or store implementations."""
     conn = engine._store._conn
+    if fault == "protect-path":
+        # Exercise the real containment error at payload protection, then permit retry.
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setenv("LCM_HERMES_BASE_DIR", str(Path(engine._hermes_home) / "contained"))
+            yield
+        return
     if fault == "snapshot":
         conn.execute("BEGIN")
         conn.execute("SELECT COUNT(*) FROM messages").fetchone()
@@ -722,7 +739,7 @@ def observe(case: Scenario, root: Path, *, payloads: list[str] | None = None) ->
             summarizer = summarizer_factory()
             summarizer.install(patch)
             settings.update(leaf_chunk_tokens=300, fresh_tail_count=2, fresh_tail_max_tokens=1000)
-        if case.shape == "tool-stub":
+        if case.shape in {"tool-stub", "protect-error", "raw-large"} or case.variant == "protect-ledger":
             settings.update(large_output_externalization_enabled=True,
                             large_output_externalization_threshold_chars=100,
                             large_output_active_replay_stubbing_enabled=True,
