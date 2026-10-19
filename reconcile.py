@@ -242,8 +242,9 @@ def _commit_proof_identity_digest(identity) -> str:
 def _contains_identity_window(
     haystack: list[tuple[str, str, str, str, str]],
     needle: list[tuple[str, str, str, str, str]],
+    literal_prefix: list[tuple[str, str, str, str, str]] | None = None,
 ) -> bool:
-    """True when ``needle`` appears as a contiguous exact window in ``haystack``.
+    """True when the candidate's admissible forms match a contiguous window.
 
     Suffix matching (``_matches_store_tail_suffix``) only proves replay of the
     END of the durable tail. A restarted host can replay a window from the
@@ -254,7 +255,9 @@ def _contains_identity_window(
     if not needle or len(needle) > len(haystack):
         return False
     return any(
-        haystack[start : start + len(needle)] == needle
+        ReconcileMixin._matches_store_tail_suffix(
+            haystack[start : start + len(needle)], needle, literal_prefix,
+        )
         for start in range(len(haystack) - len(needle) + 1)
     )
 
@@ -1920,8 +1923,8 @@ class ReconcileMixin:
             candidate_has_tool_anchor
             and not candidate_has_user_after_tool_anchor
             and (
-                _contains_identity_window(sanitized_replay_tail, candidate_prefix)
-                or _contains_identity_window(stored_tail, candidate_prefix)
+                _contains_identity_window(sanitized_replay_tail, candidate_prefix, literal_prefix)
+                or _contains_identity_window(stored_tail, candidate_prefix, literal_prefix)
             )
         )
 
