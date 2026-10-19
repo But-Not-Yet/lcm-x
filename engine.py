@@ -6977,53 +6977,12 @@ class LCMEngine(
             self._host_uid_shadow(host_uids)
             return self._remember_active_replay_messages(messages, active_replay_messages)
 
-        tool_result_names = _tool_result_names(messages)
-        protected_messages = protect_messages_for_ingest(
-            [msg for _idx, msg in messages_to_store_with_index],
-            session_id=self._session_id,
-            config=self._config,
-            hermes_home=self._hermes_home,
-            tool_name_hints=[tool_result_names.get(idx, "") for idx, _msg in messages_to_store_with_index],
-            context_window_tokens=self._publish_ingest_context_window(),
+        protected_messages, active_replay_messages = self._protect_ingest_rows(
+            messages=messages,
+            messages_to_store_with_index=messages_to_store_with_index,
+            active_replay_messages=active_replay_messages,
+            replay_messages=replay_messages,
         )
-        recovery_tool_result_indices = self._active_replay_recovery_tool_result_indices(
-            active_replay_messages
-        )
-        for (absolute_idx, _replay_msg), protected_msg in zip(
-            messages_to_store_with_index,
-            protected_messages,
-        ):
-            if self._protected_message_uses_raw_payload_active_stub(protected_msg):
-                # Assistant messages must keep their original content in the
-                # active replay: the host renders active_replay_messages to the
-                # user and feeds it back to the model.  Replacing an assistant
-                # response with a placeholder makes the agent's own reasoning
-                # invisible to both.  The store still holds the externalized
-                # version for durable recovery via lcm_expand.
-                _orig_role = str(active_replay_messages[absolute_idx].get("role") or "")
-                if _orig_role == "assistant":
-                    continue
-                if active_replay_messages is replay_messages:
-                    active_replay_messages = self._copy_active_replay_messages_preserving_generated_ids(
-                        replay_messages
-                    )
-                active_message = dict(active_replay_messages[absolute_idx])
-                active_message["content"] = protected_msg["content"]
-                active_replay_messages[absolute_idx] = active_message
-                continue
-
-            active_message = active_replay_messages[absolute_idx]
-            stubbed_message = self._maybe_stub_active_tool_result(
-                active_message,
-                is_recovery_tool_result=(absolute_idx in recovery_tool_result_indices),
-                tool_name=tool_result_names.get(absolute_idx, ""),
-            )
-            if stubbed_message is not None:
-                if active_replay_messages is replay_messages:
-                    active_replay_messages = self._copy_active_replay_messages_preserving_generated_ids(
-                        replay_messages
-                    )
-                active_replay_messages[absolute_idx] = stubbed_message
 
         estimates = [count_message_tokens(m) for m in protected_messages]
         batch = dict(
@@ -7322,6 +7281,62 @@ class LCMEngine(
                 kept.append((absolute_idx, store_msg))
             messages_to_store_with_index = kept
         return messages_to_store_with_index, active_replay_messages
+
+    def _protect_ingest_rows(
+        self, *,
+        messages: List[Dict[str, Any]],
+        messages_to_store_with_index: list[tuple[int, Dict[str, Any]]],
+        active_replay_messages: List[Dict[str, Any]],
+        replay_messages: List[Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        tool_result_names = _tool_result_names(messages)
+        protected_messages = protect_messages_for_ingest(
+            [msg for _idx, msg in messages_to_store_with_index],
+            session_id=self._session_id,
+            config=self._config,
+            hermes_home=self._hermes_home,
+            tool_name_hints=[tool_result_names.get(idx, "") for idx, _msg in messages_to_store_with_index],
+            context_window_tokens=self._publish_ingest_context_window(),
+        )
+        recovery_tool_result_indices = self._active_replay_recovery_tool_result_indices(
+            active_replay_messages
+        )
+        for (absolute_idx, _replay_msg), protected_msg in zip(
+            messages_to_store_with_index,
+            protected_messages,
+        ):
+            if self._protected_message_uses_raw_payload_active_stub(protected_msg):
+                # Assistant messages must keep their original content in the
+                # active replay: the host renders active_replay_messages to the
+                # user and feeds it back to the model.  Replacing an assistant
+                # response with a placeholder makes the agent's own reasoning
+                # invisible to both.  The store still holds the externalized
+                # version for durable recovery via lcm_expand.
+                _orig_role = str(active_replay_messages[absolute_idx].get("role") or "")
+                if _orig_role == "assistant":
+                    continue
+                if active_replay_messages is replay_messages:
+                    active_replay_messages = self._copy_active_replay_messages_preserving_generated_ids(
+                        replay_messages
+                    )
+                active_message = dict(active_replay_messages[absolute_idx])
+                active_message["content"] = protected_msg["content"]
+                active_replay_messages[absolute_idx] = active_message
+                continue
+
+            active_message = active_replay_messages[absolute_idx]
+            stubbed_message = self._maybe_stub_active_tool_result(
+                active_message,
+                is_recovery_tool_result=(absolute_idx in recovery_tool_result_indices),
+                tool_name=tool_result_names.get(absolute_idx, ""),
+            )
+            if stubbed_message is not None:
+                if active_replay_messages is replay_messages:
+                    active_replay_messages = self._copy_active_replay_messages_preserving_generated_ids(
+                        replay_messages
+                    )
+                active_replay_messages[absolute_idx] = stubbed_message
+        return protected_messages, active_replay_messages
 
     @staticmethod
     def _protected_message_uses_raw_payload_active_stub(message: Dict[str, Any]) -> bool:
