@@ -68,7 +68,8 @@ def score(
 
 
 def report(totals: Totals, errors: int, names: Sequence[str]) -> bool:
-    ok = True
+    # An empty or fully errored input exercised nothing, so it cannot pass.
+    ok = any(counts["seqs"] for counts in totals.values())
     for category in sorted(totals):
         counts = totals[category]
         name = names[-1]
