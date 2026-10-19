@@ -1,8 +1,13 @@
 """LCM configuration with defaults and env var overrides."""
+import contextvars
 import logging
 import os
+from collections import ChainMap
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 try:
@@ -14,7 +19,37 @@ except Exception:  # pragma: no cover - optional fallback for minimal installs
 logger = logging.getLogger(__name__)
 
 
-_profile_envs: dict[str, dict[str, str]] = {}
+_profile_envs: dict[str, Mapping[str, str]] = {}
+
+
+def profile_bound(fn):
+    """Carry the scheduling profile into each invocation, including threads.
+
+    Only the host's profile binding should travel: LCM-X's own per-turn context
+    variables start from their defaults, as they would in a fresh thread.
+    """
+    captured = contextvars.copy_context()
+
+    def run(*args, **kwargs):
+        return captured.copy().run(_run_with_lcm_defaults, fn, args, kwargs)
+
+    return run
+
+
+def _run_with_lcm_defaults(fn, args, kwargs):
+    try:
+        from .externalize import _payload_lookup_memo, ingest_payload_writes
+    except ImportError:  # config.py loaded outside the package
+        pass
+    else:
+        _payload_lookup_memo.set(None)
+        ingest_payload_writes.set(True)
+    return fn(*args, **kwargs)
+
+
+@lru_cache(maxsize=128)
+def _resolved_profile_home(raw_home: str) -> str:
+    return str(Path(raw_home).resolve())
 
 
 def lcm_env():
@@ -40,10 +75,10 @@ def lcm_env():
             home = get_hermes_home()
         except ImportError:
             home = bound_home
-        home = str(Path(home).resolve()) if home else None
+        home = _resolved_profile_home(str(home)) if home else None
         current_scope = getattr(secret_scope, "current_secret_scope", lambda: None)
         mapping = current_scope()
-        if bound_home and home != str(Path(bound_home).resolve()):
+        if bound_home and home != _resolved_profile_home(str(bound_home)):
             mapping = None
         if mapping is None:
             if home in _profile_envs:
@@ -52,7 +87,7 @@ def lcm_env():
             # use its own pin or defaults, never reconstruct/borrow a scope.
             build = getattr(secret_scope, "build_profile_secret_scope", None)
             mapping = build(Path(home)) if home and callable(routed) and callable(build) else {}
-        return {**mapping, **({"HERMES_HOME": home} if home else {})}
+        return MappingProxyType(ChainMap({"HERMES_HOME": home}, mapping)) if home else mapping
     except Exception:
         return {}
 
@@ -1234,7 +1269,7 @@ class LCMConfig:
         env = lcm_env()
         pinned = env is not os.environ and bool(env.get("HERMES_HOME"))
         if pinned:
-            _profile_envs[env["HERMES_HOME"]] = dict(env)
+            _profile_envs[env["HERMES_HOME"]] = MappingProxyType(dict(env))
         c = cls()
         c._absolute_threshold_tokens = env.get("LCM_ABSOLUTE_THRESHOLD_TOKENS", "0") if pinned else None
         config_sources: dict[str, str] = {}

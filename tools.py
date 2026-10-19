@@ -92,7 +92,7 @@ from .search_query import (
 )
 from .store import _normalize_observed_at, build_message_fts_spec
 from .vector_store import VectorStore
-from .config import LCMConfig
+from .config import LCMConfig, profile_bound
 
 if TYPE_CHECKING:
     from .engine import LCMEngine
@@ -1537,7 +1537,7 @@ def _run_within_deadline(
         finally:
             slots.release()
 
-    worker = threading.Thread(target=invoke, name=name, daemon=True)
+    worker = threading.Thread(target=profile_bound(invoke), name=name, daemon=True)
     try:
         worker.start()
     except BaseException:
