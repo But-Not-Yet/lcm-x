@@ -13,7 +13,9 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
+from functools import cache
 from pathlib import Path
+from types import SimpleNamespace
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,22 @@ LCM_SYSTEM_PROMPT_NOTE = (
     'An "Externalized tool output" stub ending in ref=R means the full output is stored; '
     'lcm_expand(externalized_ref="R") returns it.'
 )
+
+
+@cache
+def _host_persists_merged_user_prefix() -> bool | None:
+    # Probe the host's pure public persistence transform once, with synthetic data.
+    try:
+        from agent.session_persistence import durable_user_row_content
+        merged = "previous\n\ncurrent"
+        content, _ = durable_user_row_content(
+            SimpleNamespace(_persist_user_message_override="current"),
+            {"role": "user", "content": merged, "_merged_turn_prefix": "previous\n\n"}, merged, None)
+        return True if content == merged else False if content == "current" else None
+    except Exception as exc:
+        logger.warning("LCM pending-predecessor capture failed (%s); continuing pre-LLM context",
+                       type(exc).__name__)
+        return None  # Unknown host: retain main's no-capture behaviour.
 
 
 def lcm_system_prompt_note(disabled: set[str]) -> str:
@@ -659,9 +677,17 @@ def register(ctx):
                     # normal ingest stores the current turn and its carry marker.
                     history = payload.get("conversation_history") or []
                     try:
-                        if (len(history) >= 2 and history[-2].get("role") == history[-1].get("role") == "user"
+                        from .identity_anchor import identity_anchor_enabled
+                        if (identity_anchor_enabled() and len(history) >= 2
+                                and history[-2].get("role") == history[-1].get("role") == "user"
                                 and not active_engine._identity_is_lcm_scaffold(history[-2])):
-                            active_engine.ingest(history[:-1])
+                            previous, current = history[-2].get("content"), history[-1].get("content")
+                            prefixed = (isinstance(previous, str) and isinstance(current, str)
+                                        and current.startswith(previous + "\n\n"))
+                            whole = _host_persists_merged_user_prefix()
+                            if not prefixed and whole is not None and (not whole or history[-2].get("message_uid")):
+                                active_engine.ingest(history[:-1])
+                                active_engine._premerge_capture = history[-2]
                     except Exception as exc:
                         logger.warning("LCM pending-predecessor capture failed (%s); continuing pre-LLM context",
                                        type(exc).__name__)

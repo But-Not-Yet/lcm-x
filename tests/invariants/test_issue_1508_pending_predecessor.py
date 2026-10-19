@@ -1,6 +1,8 @@
 """I1/I2: preserve a pending predecessor before the host merges it with the next turn."""
 from copy import deepcopy
 import logging
+import sys
+from types import ModuleType
 
 import pytest
 
@@ -9,7 +11,12 @@ from tests.invariants.test_issue_1501_rotation_stamp import lineage, message
 from tests.test_packaging_install import _load_plugin_entrypoint_module
 
 
-def register(tmp_path, monkeypatch):
+def register(tmp_path, monkeypatch, *, whole=False):
+    persistence = ModuleType('agent.session_persistence')
+    def durable_user_row_content(agent, _msg, content, api_content):
+        return (content if whole else agent._persist_user_message_override), api_content
+    persistence.durable_user_row_content = durable_user_row_content
+    monkeypatch.setitem(sys.modules, 'agent.session_persistence', persistence)
     monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'home'))
     monkeypatch.setenv('LCM_DATABASE_PATH', str(tmp_path / 'lcm.db'))
     module = _load_plugin_entrypoint_module('hermes_lcm_pending_predecessor')
@@ -145,3 +152,56 @@ def test_same_session_marker_does_not_cross_conversation(tmp_path):
         rows = e._store.get_session_messages('parent')
         assert any(row['content'] == 'current' and row['conversation_id'] == 'B' and row['observed_at'] == 20.
                    for row in rows)
+
+
+@pytest.mark.parametrize('shape', ['cancel-retry', 'r34', 'uid', 'anchor-off', 'anchor-disabled-after-capture',
+                                  'prematch-raises'])
+def test_premerge_shared_slot_preserves_current_turn(tmp_path, monkeypatch, shape):
+    """The pre-hook and host repair share the predecessor dict (I1/I2)."""
+    if shape == 'anchor-off':
+        monkeypatch.setenv('LCM_IDENTITY_ANCHOR', '0')
+    ctx = register(tmp_path, monkeypatch, whole=shape in {'r34', 'uid'})
+    e = ctx.engine
+    try:
+        e.on_session_start('s', platform='cli', context_length=128000, conversation_id='conv')
+        q = message('reply T32', 9., 'assistant')
+        p = message('[T33] pending predecessor', 10.)
+        current = '[T34] current request'
+        if shape == 'cancel-retry':
+            current = p['content'] + '\n\nUser correction/guidance after interrupt: ' + p['content']
+        if shape == 'uid':
+            p['message_uid'] = 'pending-uid'
+        r = message(current, 20.)
+        e.ingest([q])
+        history = [q, p, r]
+        ctx.hooks['pre_llm_call'](session_id='s', conversation_id='conv', conversation_history=list(history))
+        capture = shape in {'uid', 'anchor-disabled-after-capture', 'prematch-raises'}
+        if shape == 'uid':
+            # Required one-shot recovery record, bound to the actual shared object.
+            assert getattr(e, '_premerge_capture', None) is p
+        if shape in {'cancel-retry', 'r34', 'anchor-off'}:
+            assert [row['content'] for row in e._store.get_session_messages('s')] == [q['content']]
+        if shape == 'anchor-disabled-after-capture':
+            monkeypatch.setenv('LCM_IDENTITY_ANCHOR', '0')
+        if shape == 'prematch-raises':
+            def boom(*_args, **_kwargs):
+                raise RuntimeError('forced prematch failure')
+            monkeypatch.setattr(e, '_identity_anchor_prematch', boom)
+        # Repair mutates P in place, drops R, then persistence applies the override.
+        if shape in {'r34', 'uid'}:
+            p['_merged_turn_prefix'] = p['content'] + '\n\n'
+            p['content'] += '\n\n' + current
+        else:
+            p['content'] = current
+        reply = message('reply T34', 21., 'assistant')
+        e.ingest([q, p, reply])
+        expected_current = p['content'] if shape == 'r34' else current
+        expected = [q['content']] + (['[T33] pending predecessor'] if capture else [])
+        expected += [expected_current, reply['content']]
+        assert [row['content'] for row in e._store.get_session_messages('s')] == expected
+        assert getattr(e, '_premerge_capture', None) is None
+        # A second ingest must not retain a capture or create a surplus remainder.
+        e.ingest([q, p, reply])
+        assert [row['content'] for row in e._store.get_session_messages('s')] == expected
+    finally:
+        e.shutdown()
