@@ -913,9 +913,14 @@ class CompactionMixin:
             if reason.startswith(_RETAINED_NOOP_REASON):  # sweep on: base's #581 text exactly; the row is blocked=
                 reason = _RETAINED_NOOP_REASON  # (also after leaves of the same sweep, whose no-op reason is empty)
             empty_reason = getattr(self, "_store_complete_empty_reason", "")
+            empty_input = ""
             if (empty_reason and budget.selected and not bypassed and reason != "error"
                     and empty_reason in (reason, self._last_compression_noop_reason)):
-                reason = empty_reason
+                if reason == empty_reason:  # sweep on: the base text; sweep off keeps the status token
+                    reason = empty_reason.split(" (", 1)[0]
+                empty_input = " empty_input=contiguity"
+                if empty_reason.startswith("leaf input has no stored source rows ("):
+                    empty_input = " empty_input=no_source,rows:" + empty_reason.rsplit("=", 1)[1][:-1]
             blocked = (getattr(self, "_store_complete_blocked", None)
                        if budget.selected and retained and not bypassed else None)
             exited = getattr(self, "_stub_first_exit_now", None) if reason != "error" and not bypassed else None
@@ -928,7 +933,7 @@ class CompactionMixin:
                         f" host={budget.host:.1f}s" if budget.host > 0 else "",
                         " tokens_before={tokens_before} tokens_after={tokens_after} target={target_tokens} "
                         "backlog_rows={backlog_rows}".format(**exited) if exited else "",
-                        " blocked=store_id:%d,role:%s,kind:%s" % blocked[:3] if blocked else "",  # #1162: the row
+                        " blocked=store_id:%d,role:%s,kind:%s" % blocked[:3] if blocked else empty_input,  # #1162
                         f" failure={self._survival_fit_reason}" if reason == "error" and self._survival_fit_reason else "")
         except Exception:
             logger.debug("LCM compaction stop line failed", exc_info=True)

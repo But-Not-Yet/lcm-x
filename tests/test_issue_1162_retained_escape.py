@@ -382,9 +382,7 @@ def test_the_stop_line_parsers_read_the_blocked_line(tmp_path, summaries, lines)
         engine.shutdown()
 
 
-@SWEEP
-@pytest.mark.parametrize("empty", [False, True], ids=["host_summary", "empty_scan"])
-def test_no_source_stop_reaches_log_status_and_doctor(tmp_path, summaries, lines, monkeypatch, sweep, empty):
+def _no_source(tmp_path, monkeypatch, sweep, empty):
     """Inject the selected no-source boundary; attribution and all stop surfaces stay real."""
     pin_char_counter(monkeypatch)
     engine = _engine(tmp_path, sweep)
@@ -401,6 +399,13 @@ def test_no_source_stop_reaches_log_status_and_doctor(tmp_path, summaries, lines
         return action
 
     monkeypatch.setattr(engine, "_select_leaf_candidate", select_without_source)
+    return engine, view
+
+
+@SWEEP
+@pytest.mark.parametrize("empty", [False, True], ids=["host_summary", "empty_scan"])
+def test_no_source_stop_reaches_log_status_and_doctor(tmp_path, summaries, lines, monkeypatch, sweep, empty):
+    engine, view = _no_source(tmp_path, monkeypatch, sweep, empty)
     try:
         engine.ingest(view)
         before = _rows(engine)
@@ -409,12 +414,14 @@ def test_no_source_stop_reaches_log_status_and_doctor(tmp_path, summaries, lines
             view, _ = _passes(engine, view, 1, lines)
             reason = "leaf input has no stored source rows"
             line = next(msg for _, msg in lines[start:] if msg.startswith("LCM compaction stop:"))
-            assert reason in line, line
-            assert f"input_rows_without_source={0 if empty else 1}" in line, line
-            assert "blocked=" not in line and RETAINED not in line, line
+            assert re.search(f"reason={reason} leaves=0 " if sweep else "reason=(noop|sanitized) leaves=0 ", line), line
+            assert f" empty_input=no_source,rows:{0 if empty else 1}" in line, line
+            assert "(input_rows_without_source=" not in line and "blocked=" not in line and RETAINED not in line, line
+            full_reason = f"{reason} (input_rows_without_source={0 if empty else 1})"
+            assert f"LCM compression no-op: {full_reason}" in [msg for _, msg in lines[start:]]
         status = json.loads(lcm_tools.lcm_status({}, engine=engine))
-        assert reason in status["last_compression_noop_reason"]
-        assert reason in status["zero_leaf_streak"]["last_reason"]
+        assert status["last_compression_noop_reason"] == full_reason
+        assert status["zero_leaf_streak"]["last_reason"] == full_reason
         progress = next(check for check in json.loads(lcm_tools.lcm_doctor({}, engine=engine))["checks"]
                         if check["check"] == "compaction_progress")
         assert progress["status"] == "warn"
@@ -425,10 +432,29 @@ def test_no_source_stop_reaches_log_status_and_doctor(tmp_path, summaries, lines
         engine.shutdown()
 
 
-def test_contiguity_cut_does_not_claim_a_retained_blocker(tmp_path, monkeypatch):
-    """An un-emitted mapped row can cut the entire candidate prefix back to empty."""
+@pytest.mark.parametrize("empty", [False, True], ids=["host_summary", "empty_scan"])
+def test_the_stop_line_parsers_read_the_no_source_line(tmp_path, summaries, lines, monkeypatch, empty):
+    from tests.test_host_fallback_stop_line import STOP as host_fallback
+    from tests.test_issue_605_foreground_budget import STOP_LINE as foreground_budget
+    from tests.test_issue_671_stub_first_exit import STOP as stub_first_exit
+
+    engine, view = _no_source(tmp_path, monkeypatch, False, empty)
+    try:
+        _view, trace = _passes(engine, view, 1, lines)
+        for parser in (foreground_budget, host_fallback, stub_first_exit):
+            found = parser.search(trace[0]["line"])
+            assert found and found.group(1) in {"noop", "sanitized"} and found.group(2) == "0", trace[0]["line"]
+    finally:
+        engine.shutdown()
+
+
+@SWEEP
+def test_contiguity_cut_does_not_claim_a_retained_blocker(tmp_path, monkeypatch, lines, sweep):
+    """A real contiguity cut supplies the reason; exercise its final logger at unit level."""
+    from hermes_lcm.escalation import ForegroundBudget, ForegroundEstimates
+
     pin_char_counter(monkeypatch)
-    engine = _engine(tmp_path, False)
+    engine = _engine(tmp_path, sweep)
     rows = [{"role": "user", "content": f"row {i}" + PAD} for i in range(3)]
     try:
         engine.ingest(rows)
@@ -438,8 +464,17 @@ def test_contiguity_cut_does_not_claim_a_retained_blocker(tmp_path, monkeypatch)
         result = engine._store_complete_input(chunk, {}, {id(row): mapping[id(row)] for row in chunk},
                                               chunk, chunk, 0, {}, 1, scanned=(stored, False))
         assert result == [] and engine._store_complete_blocked is None
-        assert engine._store_complete_empty_reason == "leaf input cannot form a contiguous stored prefix"
+        reason = "leaf input cannot form a contiguous stored prefix"
+        assert engine._store_complete_empty_reason == reason
         assert _rows(engine) == stored
+        budget = ForegroundBudget(soft=0, hard=120.0, configured_timeout=60.0, estimates=ForegroundEstimates())
+        budget.sweep_active, budget.selected = sweep, True
+        engine._last_compression_status, engine._last_compression_noop_reason = "noop", reason
+        engine._last_threshold_full_sweep = {"stop_reason": reason} if sweep else {}
+        engine._finish_foreground_budget(budget, [], 10_000)
+        line = next(msg for _, msg in lines if msg.startswith("LCM compaction stop:"))
+        assert f"reason={reason if sweep else 'noop'} leaves=0 " in line, line
+        assert line.endswith(" empty_input=contiguity") and "blocked=" not in line, line
     finally:
         engine.shutdown()
 
