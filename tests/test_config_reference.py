@@ -274,7 +274,8 @@ def test_dtype_consumers_follow_choice_constant(monkeypatch):
     assert isinstance(result, tuple) and result[-1] == "new-dtype"
 
 
-def test_doctor_context_threshold_reproduction(monkeypatch, tmp_path):
+@pytest.mark.parametrize("threshold", (1.5, 0.97))
+def test_doctor_context_threshold_reproduction(monkeypatch, tmp_path, threshold):
     import json
 
     from hermes_lcm import tools
@@ -282,12 +283,18 @@ def test_doctor_context_threshold_reproduction(monkeypatch, tmp_path):
 
     pin_char_counter(monkeypatch)
     monkeypatch.setattr(config, "_load_hermes_config_yaml", lambda: {})
-    monkeypatch.setenv("LCM_CONTEXT_THRESHOLD", "1.5")
+    monkeypatch.setenv("LCM_CONTEXT_THRESHOLD", str(threshold))
     cfg = config.LCMConfig.from_env()
     with engine_context(tmp_path, context_threshold=cfg.context_threshold,
                         config_source_warnings=cfg.config_source_warnings) as engine:
         payload = json.loads(tools.lcm_doctor({}, engine=engine))
-        assert engine._config.context_threshold == 1.5
+        assert engine._config.context_threshold == threshold
+        warnings = next(check["detail"] for check in payload["checks"]
+                        if check["check"] == "config_validation")
+        threshold_lines = [line for line in warnings if "context_threshold" in line.lower()]
+        assert threshold_lines == (cfg.config_source_warnings if threshold > 1 else [
+            "runtime context_threshold > 0.95 leaves very little headroom",
+        ])
         print("THRESHOLD_CHECKS=" + json.dumps([
             check for check in payload["checks"]
             if isinstance(check["detail"], (str, list))
