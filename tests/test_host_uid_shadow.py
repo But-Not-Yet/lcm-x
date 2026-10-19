@@ -51,6 +51,7 @@ def _engine(tmp_path, session: str = "S", conversation: str = "conv") -> LCMEngi
     engine = make_engine(tmp_path, fresh_tail_count=2, leaf_chunk_tokens=1)
     # This fixture places the host state.db beside lcm.db, not in home/.
     engine._hermes_home = str(tmp_path)
+    engine._store._hermes_home = str(tmp_path)
     engine.on_session_start(session, platform="cli", context_length=200_000, conversation_id=conversation)
     return engine
 
@@ -730,6 +731,7 @@ ROLLBACK_READERS = {
 }
 
 PRE_V026_READERS = frozenset({"v0.25.0-rc1", "v0.25.1"})
+assert PRE_V026_READERS <= set(ROLLBACK_READERS)
 
 
 def _skip_or_fail_in_ci(reason):
