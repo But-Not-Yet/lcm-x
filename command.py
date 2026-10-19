@@ -10,7 +10,6 @@ from pathlib import Path
 import dataclasses
 import json
 import math
-import os
 import re
 import sqlite3
 import time
@@ -18,7 +17,7 @@ from typing import Any
 import uuid
 
 from . import config as config_choices
-from .config import embedding_provider_id
+from .config import embedding_provider_id, lcm_env_get
 from .command_auth import CommandInvocation, Decision, authorize
 from .command_doctor import (
     _doctor_text as _doctor_text,
@@ -120,7 +119,7 @@ _EMBEDDING_BACKFILL_BATCH_SIZE = 32
 
 
 def _env_float(key: str, default: float) -> float:
-    raw = os.environ.get(key)
+    raw = lcm_env_get(key)
     if raw is None:
         return default
     try:
@@ -159,7 +158,7 @@ def _embedding_backfill_batch_size(max_batch_items: int | None = None) -> int:
     cap = _VOYAGE_MAX_BATCH_ITEMS
     if isinstance(max_batch_items, int):
         cap = max(1, min(max_batch_items, _VOYAGE_MAX_BATCH_ITEMS))
-    raw = os.environ.get("LCM_EMBEDDING_BACKFILL_BATCH_SIZE")
+    raw = lcm_env_get("LCM_EMBEDDING_BACKFILL_BATCH_SIZE")
     if raw is None:
         return min(_EMBEDDING_BACKFILL_BATCH_SIZE, cap)
     try:
@@ -1801,7 +1800,7 @@ def _preset_suggest_text(engine) -> str:
     explicit = explicit_operator_overrides()
     invalid = invalid_operator_overrides()
     invalid_text = ", ".join(
-        f"{env_var}={os.environ.get(env_var, '')}" for env_var in sorted(invalid.values())
+        f"{env_var}={lcm_env_get(env_var, '')}" for env_var in sorted(invalid.values())
     ) if invalid else "(none)"
     lines.extend([
         f"suggested_preset: {preset.name}",
