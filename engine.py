@@ -33,7 +33,7 @@ from .compaction_policy import (
     resolve_threshold,
     threshold_tokens,
 )
-from .config import LCMConfig, _disabled_tool_names
+from .config import LCMConfig, _disabled_tool_names, lcm_env_get
 from .dag import SummaryDAG, SummaryNode
 from .diagnostics import _enforce_state_db_containment
 from .engine_registry import (
@@ -1028,6 +1028,9 @@ class LCMEngine(
     def __init__(self, config: LCMConfig | None = None,
                  hermes_home: str = ""):
         self._config = config or LCMConfig.from_env()
+        self._absolute_threshold_tokens = getattr(
+            self._config, "_absolute_threshold_tokens", lcm_env_get("LCM_ABSOLUTE_THRESHOLD_TOKENS", "0")
+        )
         global _NATIVE_RECOVERY_WARNING_LOGGED
         if self._config.native_recovery and not _NATIVE_RECOVERY_WARNING_LOGGED:
             _NATIVE_RECOVERY_WARNING_LOGGED = True
@@ -1802,7 +1805,7 @@ class LCMEngine(
         # LCM_CONTEXT_THRESHOLD alone drifts with context_length.
         try:
             absolute_threshold_tokens = int(
-                os.environ.get("LCM_ABSOLUTE_THRESHOLD_TOKENS", "0") or 0
+                self._absolute_threshold_tokens or 0
             )
         except (TypeError, ValueError):
             absolute_threshold_tokens = 0
@@ -3140,7 +3143,7 @@ class LCMEngine(
 
     def _get_allowed_hermes_base(self) -> Path | None:
         """Get the allowed base directory for hermes_home, or None if not restricted."""
-        env_base = os.environ.get("LCM_HERMES_BASE_DIR")
+        env_base = lcm_env_get("LCM_HERMES_BASE_DIR")
         if env_base:
             return Path(env_base).expanduser().resolve()
         return None  # No restriction when env var not set

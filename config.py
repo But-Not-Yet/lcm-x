@@ -14,6 +14,43 @@ except Exception:  # pragma: no cover - optional fallback for minimal installs
 logger = logging.getLogger(__name__)
 
 
+_profile_env: dict[str, str] | None = None
+
+
+def lcm_env():
+    """Profile settings, pinned at registration in Hermes' per-home module.
+
+    Single-profile/older hosts retain process-env semantics. Routed misses and
+    host failures fail closed; never call the host's raising get_secret().
+    """
+    if _profile_env is not None:
+        return _profile_env
+    try:
+        from agent import secret_scope
+    except ImportError:
+        return os.environ
+    try:
+        if not secret_scope.serves_routed_profile():
+            return os.environ
+        home = secret_scope.current_secret_scope_home()
+        try:
+            from hermes_cli.config import get_hermes_home
+            home = str(get_hermes_home())
+        except ImportError:
+            pass
+        mapping = secret_scope.current_secret_scope()
+        bound_home = secret_scope.current_secret_scope_home()
+        if mapping is None or (home and bound_home and Path(home) != Path(bound_home)):
+            mapping = secret_scope.build_profile_secret_scope(Path(home)) if home else {}
+        return {**mapping, **({"HERMES_HOME": str(home)} if home else {})}
+    except Exception:
+        return {}
+
+
+def lcm_env_get(name: str, default=None):
+    return lcm_env().get(name, default)
+
+
 def _parse_pattern_list(raw: str) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
@@ -93,7 +130,7 @@ def _warn_invalid_env(warnings: list[str] | None, key: str, raw: str, value: Any
 
 
 def _parse_int_env(key: str, default: int, *, warnings: list[str] | None = None) -> int:
-    raw = os.environ.get(key)
+    raw = lcm_env_get(key)
     if raw is None:
         return default
     try:
@@ -104,7 +141,7 @@ def _parse_int_env(key: str, default: int, *, warnings: list[str] | None = None)
 
 
 def _parse_float_env(key: str, default: float, *, warnings: list[str] | None = None) -> float:
-    raw = os.environ.get(key)
+    raw = lcm_env_get(key)
     if raw is None:
         return default
     try:
@@ -121,7 +158,7 @@ def _parse_bool_env(
     warnings: list[str] | None = None,
 ) -> bool:
     """Read on every call; unknown (including blank) keeps default unless specified."""
-    raw = os.environ.get(key)
+    raw = lcm_env_get(key)
     if raw is None:
         return default
     normalized = raw.strip().lower()
@@ -137,11 +174,11 @@ def _parse_bool_env(
 
 def _disabled_tool_names() -> set[str]:
     """Tools disabled via LCM_DISABLED_TOOLS (comma-separated lcm_* names)."""
-    return set(_parse_pattern_list(os.environ.get("LCM_DISABLED_TOOLS", "")))
+    return set(_parse_pattern_list(lcm_env_get("LCM_DISABLED_TOOLS", "")))
 
 
 def _parse_str_env(key: str, default):
-    return os.environ.get(key, default)
+    return lcm_env_get(key, default)
 
 
 _HOST_MESSAGE_UID_MODES = ("off", "shadow", "on")
@@ -152,7 +189,7 @@ def host_message_uid_mode() -> str:
     """``LCM_HOST_MESSAGE_UID`` (v0.26.0): ``off`` | ``shadow`` (default) | ``on`` (reserved for slice C; runs as
     ``shadow`` today). An unknown value means ``shadow``, with one WARNING per process."""
     global _host_message_uid_mode_warned
-    raw = (os.environ.get("LCM_HOST_MESSAGE_UID") or "").strip().lower()
+    raw = (lcm_env_get("LCM_HOST_MESSAGE_UID") or "").strip().lower()
     if raw and raw not in _HOST_MESSAGE_UID_MODES and not _host_message_uid_mode_warned:
         _host_message_uid_mode_warned = True
         logger.warning("invalid env LCM_HOST_MESSAGE_UID=%r ignored; using shadow", raw)
@@ -165,7 +202,7 @@ def _parse_int_env_with_source(
     *,
     default_source: str = "default",
 ) -> tuple[int, str, str | None]:
-    raw = os.environ.get(key)
+    raw = lcm_env_get(key)
     if raw is None:
         return default, default_source, None
     try:
@@ -196,7 +233,7 @@ def _parse_float_env_with_source(
     *,
     default_source: str = "default",
 ) -> tuple[float, str, str | None]:
-    raw = os.environ.get(key)
+    raw = lcm_env_get(key)
     if raw is None:
         return default, default_source, None
     try:
@@ -222,7 +259,13 @@ def _config_bool_disabled(value) -> bool:
 
 
 def _hermes_config_path() -> Path:
-    home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+    if _profile_env is not None and _profile_env.get("HERMES_HOME"):
+        return Path(_profile_env["HERMES_HOME"]) / "config.yaml"
+    try:
+        from hermes_cli.config import get_hermes_home
+        home = Path(get_hermes_home())
+    except Exception:
+        home = Path(lcm_env_get("HERMES_HOME") or Path.home() / ".hermes")
     return home / "config.yaml"
 
 
@@ -446,7 +489,7 @@ def hermes_auxiliary_compression_max_concurrency(hermes_home: str = "") -> int |
 
 
 def _lcm_config_string_with_source(env_name: str, yaml_key: str, default: str) -> tuple[str, str]:
-    env_value = os.environ.get(env_name)
+    env_value = lcm_env_get(env_name)
     if env_value is not None:
         return env_value, "env"
     cfg = _load_hermes_config_yaml()
@@ -522,7 +565,7 @@ def _warn_env_range(name: str, value: Any, warnings: list[str]) -> None:
     if (value >= minimum if inclusive else value > minimum) and (maximum is None or value <= maximum):
         return
     key = f"LCM_{name.upper()}"
-    raw = os.environ[key]
+    raw = lcm_env_get(key)
     bounds = f"{'>=' if inclusive else '>'} {minimum}"
     if maximum is not None:
         bounds += f" and <= {maximum}"
@@ -1180,7 +1223,12 @@ class LCMConfig:
     @classmethod
     def from_env(cls) -> "LCMConfig":
         """Build config from environment variables (LCM_ prefix)."""
+        global _profile_env
+        env = lcm_env()
+        if env is not os.environ:
+            _profile_env = dict(env)
         c = cls()
+        c._absolute_threshold_tokens = lcm_env_get("LCM_ABSOLUTE_THRESHOLD_TOKENS", "0")
         config_sources: dict[str, str] = {}
         config_source_warnings: list[str] = []
 
@@ -1258,7 +1306,7 @@ class LCMConfig:
         # config.yaml, then LCM_MODEL_THRESHOLDS env var (comma-separated
         # key:value pairs). Env overrides config.yaml.
         c.model_thresholds = _load_model_thresholds_from_yaml()
-        _raw_env_thresholds = os.environ.get("LCM_MODEL_THRESHOLDS")
+        _raw_env_thresholds = lcm_env_get("LCM_MODEL_THRESHOLDS")
         if _raw_env_thresholds is not None:
             c.model_thresholds = _parse_model_thresholds_env(
                 _raw_env_thresholds, warnings=config_source_warnings
@@ -1325,11 +1373,11 @@ class LCMConfig:
             warning_count = len(config_source_warnings)
             if spec.py_type is str:
                 value = parser(spec.env_key, default)
-                if spec.env_key in os.environ:
+                if lcm_env_get(spec.env_key) is not None:
                     _warn_env_choice(spec.name, value, config_source_warnings)
             else:
                 value = parser(spec.env_key, default, warnings=config_source_warnings)
-                if os.environ.get(spec.env_key, "").strip() and len(config_source_warnings) == warning_count:
+                if lcm_env_get(spec.env_key, "").strip() and len(config_source_warnings) == warning_count:
                     _warn_env_range(spec.name, value, config_source_warnings)
             setattr(c, spec.name, value)
             if value is True and spec.name in ENV_FIELD_DEPRECATIONS:
@@ -1340,15 +1388,15 @@ class LCMConfig:
                 )
 
         # Pattern-list overrides carry a source sidecar and stay explicit.
-        raw_sensitive_patterns = os.environ.get("LCM_SENSITIVE_PATTERNS")
+        raw_sensitive_patterns = lcm_env_get("LCM_SENSITIVE_PATTERNS")
         if raw_sensitive_patterns is not None:
             c.sensitive_patterns = _parse_pattern_list(raw_sensitive_patterns)
             c.sensitive_patterns_source = "env"
-        raw_summary_fallback_models = os.environ.get("LCM_SUMMARY_FALLBACK_MODELS")
+        raw_summary_fallback_models = lcm_env_get("LCM_SUMMARY_FALLBACK_MODELS")
         if raw_summary_fallback_models is not None:
             c.summary_fallback_models = _parse_pattern_list(raw_summary_fallback_models)
 
-        raw_max_age = os.environ.get("LCM_EMPTY_LIFECYCLE_GC_MAX_AGE_HOURS")
+        raw_max_age = lcm_env_get("LCM_EMPTY_LIFECYCLE_GC_MAX_AGE_HOURS")
         if raw_max_age is not None:
             try:
                 c.empty_lifecycle_gc_max_age_hours = float(raw_max_age)
@@ -1358,23 +1406,23 @@ class LCMConfig:
                     raw_max_age, c.empty_lifecycle_gc_max_age_hours,
                 )
 
-        raw_arm_weights = os.environ.get("LCM_RECALL_ARM_WEIGHTS")
+        raw_arm_weights = lcm_env_get("LCM_RECALL_ARM_WEIGHTS")
         if raw_arm_weights is not None:
             c.recall_arm_weights = _parse_arm_weights(
                 raw_arm_weights, _DEFAULT_RECALL_ARM_WEIGHTS, warnings=config_source_warnings
             )
 
-        raw_ignore = os.environ.get("LCM_IGNORE_SESSION_PATTERNS")
+        raw_ignore = lcm_env_get("LCM_IGNORE_SESSION_PATTERNS")
         if raw_ignore is not None:
             c.ignore_session_patterns = _parse_pattern_list(raw_ignore)
             c.ignore_session_patterns_source = "env"
 
-        raw_stateless = os.environ.get("LCM_STATELESS_SESSION_PATTERNS")
+        raw_stateless = lcm_env_get("LCM_STATELESS_SESSION_PATTERNS")
         if raw_stateless is not None:
             c.stateless_session_patterns = _parse_pattern_list(raw_stateless)
             c.stateless_session_patterns_source = "env"
 
-        raw_ignore_messages = os.environ.get("LCM_IGNORE_MESSAGE_PATTERNS")
+        raw_ignore_messages = lcm_env_get("LCM_IGNORE_MESSAGE_PATTERNS")
         if raw_ignore_messages is not None:
             c.ignore_message_patterns = _parse_pattern_list(raw_ignore_messages)
             c.ignore_message_patterns_source = "env"
