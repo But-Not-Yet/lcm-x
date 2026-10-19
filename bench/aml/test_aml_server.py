@@ -16,6 +16,7 @@ from urllib.request import Request, build_opener, ProxyHandler
 
 import pytest
 
+import aml_server
 from aml_server import (APIError, MAX_BYTES, Server, Service, add_generation,
                         authenticated, digest, prune_generations, run_worker,
                         search_response, user_lock, validate)
@@ -376,3 +377,112 @@ def test_search_response_deduplicates_before_top_k():
     assert [row['content'] for row in rows] == ['first', 'second']
     assert len({row['id'] for row in rows}) == 2
     assert [row['score'] for row in rows] == [1.0, 0.5]
+
+
+def test_t1_coding_bounds_order_and_ids():
+    lines = [f'hit {index}: ' + 'λ' * 5000 for index in range(15)]
+    text = '\n'.join([lines[0], '', lines[0], *lines[1:]])
+    textual = search_response(text, 'u', 100)['data']
+    coding = aml_server.coding_search_response(text, 'u', 100)['data']
+    assert len(coding) == 10
+    assert all(len(row['content']) <= 4000 for row in coding)
+    assert sum(len(row['content']) for row in coding) <= 40000
+    assert [row['content'] for row in coding] == [row['content'][:4000] for row in textual[:10]]
+    assert [row['id'] for row in coding] == [row['id'] for row in textual[:10]]
+    assert [row['score'] for row in coding] == [1.0 / (rank + 1) for rank in range(10)]
+
+
+def test_t2_coding_single_empty_and_top_k():
+    line = 'x' * 40001
+    assert aml_server.coding_search_response(line, 'u', 100) == {
+        'data': [dict(id=digest('u\0' + line), content=line[:4000], score=1.0)]}
+    assert aml_server.coding_search_response('', 'u', 100) == {'data': []}
+    rows = aml_server.coding_search_response('a\nb\nc\nd', 'u', 3)['data']
+    assert [row['content'] for row in rows] == ['a', 'b', 'c']
+
+
+def test_t3_textual_literal_unchanged():
+    assert search_response('first\nfirst\n\nsecond\nfirst\nthird', 'u', 2) == {'data': [
+        {'id': 'ff57647e46f19db31e8aea5b77eea364aa57fd302bf0aef0a555638da5dc26b1',
+         'content': 'first', 'score': 1.0},
+        {'id': '6de6d86025a19f3f2f0ef9aac4bb76b9ee351da6ab7a7517be24416d3883ae7b',
+         'content': 'second', 'score': 0.5}]}
+
+
+def gateway_environment(tmp_path, mode):
+    root = tmp_path / 'db'
+    (root / '.model-cache' / 'models--qdrant--bge-small-en-v1.5-onnx-q').mkdir(parents=True)
+    factory = tmp_path / 'omni' / 'scripts' / 'client_factory'
+    factory.mkdir(parents=True)
+    (factory / 'lcmx_client.py').write_text(
+        'class LcmxClient:\n'
+        '    def search(self, query, user_id, top_k):\n'
+        '        assert top_k == 100\n'
+        '        return query\n')
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1', 0))
+        port = listener.getsockname()[1]
+    env = dict(os.environ, AML_DB_ROOT=str(root), AML_OMNIMEMEVAL_REPO=str(factory.parents[1]),
+               AML_ADDSEARCH_TOKEN='synthetic-token', AML_PORT=str(port), PYTHONDONTWRITEBYTECODE='1')
+    env.pop('AML_SEARCH_MODE', None)
+    if mode is not None:
+        env['AML_SEARCH_MODE'] = mode
+    return env, 'http://127.0.0.1:' + str(port)
+
+
+@contextmanager
+def running_gateway(tmp_path, mode):
+    env, base = gateway_environment(tmp_path, mode)
+    with subprocess.Popen([sys.executable, '-B', aml_server.__file__], env=env,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
+        try:
+            deadline = time.monotonic() + 5
+            while True:
+                assert process.poll() is None, process.communicate()
+                try:
+                    assert call(base, '/aml/v1/health')[0] == 200
+                    break
+                except OSError:
+                    assert time.monotonic() < deadline, 'gateway startup timed out'
+                    time.sleep(0.01)
+            yield base, process
+        finally:
+            process.terminate()
+            process.communicate(timeout=5)
+
+
+def test_t4_parent_mode_reaches_real_worker(tmp_path):
+    text = '\n'.join(f'hit {index}: ' + 'x' * 5000 for index in range(15))
+    body = dict(user_id='synthetic-user', query=text, top_k=100)
+    for mode in ('coding', None):
+        with running_gateway(tmp_path / (mode or 'unset'), mode) as (base, _):
+            status, response, _ = call(base, '/aml/v1/search', body, {'X-Api-Key': 'synthetic-token'})
+            assert status == 200
+            expected = search_response(text, digest(body['user_id']), 100)
+            if mode == 'coding':
+                expected['data'] = [dict(row, content=row['content'][:4000]) for row in expected['data'][:10]]
+            assert response == expected
+
+
+def test_t5_invalid_mode_and_textual_defaults(tmp_path):
+    invalid = 'invalid-synthetic-value'
+    env, _ = gateway_environment(tmp_path / 'invalid', invalid)
+    result = subprocess.run([sys.executable, '-B', aml_server.__file__], env=env,
+                            capture_output=True, text=True, timeout=2)
+    assert result.returncode != 0
+    assert 'AML_SEARCH_MODE must be textual or coding' in result.stderr
+    assert 'Traceback' not in result.stderr and invalid not in result.stderr
+    for mode in (None, ''):
+        with running_gateway(tmp_path / ('unset' if mode is None else 'empty'), mode) as (base, _):
+            text = 'x' * 4001
+            status, response, _ = call(base, '/aml/v1/search', dict(user_id='u', query=text),
+                                       {'X-Api-Key': 'synthetic-token'})
+            assert status == 200 and response == search_response(text, digest('u'), 100)
+
+
+def test_t6_startup_receipt_mode_and_privacy(tmp_path):
+    for mode in ('coding', 'textual'):
+        with running_gateway(tmp_path / mode, mode) as (_, process):
+            line = process.stdout.readline()
+            assert json.loads(line) == {'event': 'start', 'search_mode': mode}
+            assert all(value not in line for value in ('synthetic-token', str(tmp_path)))
