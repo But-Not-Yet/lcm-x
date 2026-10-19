@@ -78,6 +78,14 @@ def lcm_env():
         home = _resolved_profile_home(str(home)) if home else None
         current_scope = getattr(secret_scope, "current_secret_scope", lambda: None)
         mapping = current_scope()
+        if mapping is not None and bound_home:
+            try:
+                from hermes_constants import get_hermes_home_override
+                # A stamped scope can route without overriding the launch home.
+                if get_hermes_home_override() is None:
+                    home = _resolved_profile_home(str(bound_home))
+            except Exception:
+                pass  # Older/partial hosts retain the existing home check.
         if bound_home and home != _resolved_profile_home(str(bound_home)):
             mapping = None
         if mapping is None:

@@ -34,8 +34,10 @@ each feature does and why, see [Feature overview](features-overview.md).
    compaction summaries go through the auxiliary model unless you override
    `LCM_SUMMARY_MODEL` — so a fully-local Hermes (local auxiliary model) makes
    every LCM feature below local too, including temporal rollups.
-4. Secrets stay in the environment: the only one LCM ever reads is
-   `VOYAGE_API_KEY`, and only when `LCM_EMBEDDING_PROVIDER=voyage`.
+4. Provider credentials follow the same routed-profile rule: LCM reads
+   `VOYAGE_API_KEY` for Voyage, and the variable named by
+   `LCM_EMBEDDING_API_KEY_ENV` (default `LCM_EMBEDDING_API_KEY`) with
+   `SILICONFLOW_API_KEY` as a fallback for OpenAI-compatible embeddings.
 
 Check what actually took effect at runtime with `/lcm status` (reports config
 sources) and `/lcm doctor` (flags ignored YAML keys and misconfiguration).
