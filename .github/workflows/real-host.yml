@@ -65,6 +65,8 @@ jobs:
             tests/test_issue_524_gen2_replay.py \
             tests/test_issue_559_tool_group_boundary.py \
             tests/test_issue_631_not_a_pm_member.py \
+            tests/test_issue_1306_cli_new.py \
+            tests/invariants/test_issue_1438_cli_new.py \
             tests/test_real_plugin_manager_identity.py \
             tests/test_real_host_bypass_cooldown_wire.py \
             tests/test_real_turn_loop_acp_override.py \
