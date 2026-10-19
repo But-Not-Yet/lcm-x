@@ -242,8 +242,9 @@ def _commit_proof_identity_digest(identity) -> str:
 def _contains_identity_window(
     haystack: list[tuple[str, str, str, str, str]],
     needle: list[tuple[str, str, str, str, str]],
+    literal_prefix: list[tuple[str, str, str, str, str]] | None = None,
 ) -> bool:
-    """True when ``needle`` appears as a contiguous exact window in ``haystack``.
+    """True when the candidate's admissible forms match a contiguous window.
 
     Suffix matching (``_matches_store_tail_suffix``) only proves replay of the
     END of the durable tail. A restarted host can replay a window from the
@@ -253,9 +254,17 @@ def _contains_identity_window(
     """
     if not needle or len(needle) > len(haystack):
         return False
+    width = len(needle)
+    starts = range(len(haystack) - width + 1)
+    if not literal_prefix or literal_prefix == needle:
+        # No literal form differs, so the shared rule is exact equality:
+        # keep the C-level slice comparison on this restart-time scan.
+        return any(haystack[start : start + width] == needle for start in starts)
     return any(
-        haystack[start : start + len(needle)] == needle
-        for start in range(len(haystack) - len(needle) + 1)
+        ReconcileMixin._matches_store_tail_suffix(
+            haystack[start : start + width], needle, literal_prefix,
+        )
+        for start in starts
     )
 
 
@@ -1408,6 +1417,7 @@ class ReconcileMixin:
         if len(candidate_prefix) > len(stored_tail):
             return False
         # #1385: match the durable occurrence's literal identity before its salvage alias.
+        # _contains_identity_window skips this rule when no literal differs; a new admissible form must update it too.
         return all(stored == literal or stored == candidate for stored, literal, candidate in zip(
             stored_tail[-len(candidate_prefix):], literal_prefix or candidate_prefix, candidate_prefix))
 
@@ -1920,8 +1930,8 @@ class ReconcileMixin:
             candidate_has_tool_anchor
             and not candidate_has_user_after_tool_anchor
             and (
-                _contains_identity_window(sanitized_replay_tail, candidate_prefix)
-                or _contains_identity_window(stored_tail, candidate_prefix)
+                _contains_identity_window(sanitized_replay_tail, candidate_prefix, literal_prefix)
+                or _contains_identity_window(stored_tail, candidate_prefix, literal_prefix)
             )
         )
 
