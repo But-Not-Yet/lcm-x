@@ -326,14 +326,12 @@ def test_engine_and_containment_call_time(monkeypatch, tmp_path):
     try:
         for index, raw in enumerate(VALUES):
             set_value(monkeypatch, "LCM_ABSOLUTE_THRESHOLD_TOKENS", raw)
-            engine.shutdown()
-            engine = LCMEngine(config=cfg, hermes_home=str(tmp_path / "home"))
             engine._set_context_length(1000, source="table", model="table", provider="custom")
             expected = 1 if index == 4 else HUGE if index == 15 else 500
             assert engine.threshold_tokens == expected, VALUE_IDS[index]
             set_value(monkeypatch, "LCM_ABSOLUTE_THRESHOLD_TOKENS", None)
             engine._set_context_length(1000, source="table", model="table", provider="custom")
-            assert engine.threshold_tokens == expected  # registration snapshot survives env edits (#1603)
+            assert engine.threshold_tokens == 500
 
         for raw in VALUES:
             set_value(monkeypatch, "LCM_HERMES_BASE_DIR", raw)

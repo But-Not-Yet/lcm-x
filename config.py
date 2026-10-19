@@ -14,35 +14,45 @@ except Exception:  # pragma: no cover - optional fallback for minimal installs
 logger = logging.getLogger(__name__)
 
 
-_profile_env: dict[str, str] | None = None
+_profile_envs: dict[str, dict[str, str]] = {}
 
 
 def lcm_env():
-    """Profile settings, pinned at registration in Hermes' per-home module.
+    """Resolve the home before consulting its registration pin.
 
-    Single-profile/older hosts retain process-env semantics. Routed misses and
-    host failures fail closed; never call the host's raising get_secret().
+    Non-routing hosts keep live process-env semantics, including partial older
+    APIs. Only positively detected routing may fail closed; never call get_secret.
     """
-    if _profile_env is not None:
-        return _profile_env
     try:
         from agent import secret_scope
-    except ImportError:
+        routed = getattr(secret_scope, "serves_routed_profile", None)
+        multiplex = getattr(secret_scope, "is_multiplex_active", None)
+        routing = routed() if callable(routed) else callable(multiplex) and multiplex()
+    except Exception:
+        return os.environ
+    if not routing:
         return os.environ
     try:
-        if not secret_scope.serves_routed_profile():
-            return os.environ
-        home = secret_scope.current_secret_scope_home()
+        scope_home = getattr(secret_scope, "current_secret_scope_home", lambda: None)
+        bound_home = scope_home()
         try:
             from hermes_cli.config import get_hermes_home
-            home = str(get_hermes_home())
+            home = get_hermes_home()
         except ImportError:
-            pass
-        mapping = secret_scope.current_secret_scope()
-        bound_home = secret_scope.current_secret_scope_home()
-        if mapping is None or (home and bound_home and Path(home) != Path(bound_home)):
-            mapping = secret_scope.build_profile_secret_scope(Path(home)) if home else {}
-        return {**mapping, **({"HERMES_HOME": str(home)} if home else {})}
+            home = bound_home
+        home = str(Path(home).resolve()) if home else None
+        current_scope = getattr(secret_scope, "current_secret_scope", lambda: None)
+        mapping = current_scope()
+        if bound_home and home != str(Path(bound_home).resolve()):
+            mapping = None
+        if mapping is None:
+            if home in _profile_envs:
+                return _profile_envs[home]
+            # Floor hosts cannot stamp scope provenance: an unbound read must
+            # use its own pin or defaults, never reconstruct/borrow a scope.
+            build = getattr(secret_scope, "build_profile_secret_scope", None)
+            mapping = build(Path(home)) if home and callable(routed) and callable(build) else {}
+        return {**mapping, **({"HERMES_HOME": home} if home else {})}
     except Exception:
         return {}
 
@@ -259,8 +269,6 @@ def _config_bool_disabled(value) -> bool:
 
 
 def _hermes_config_path() -> Path:
-    if _profile_env is not None and _profile_env.get("HERMES_HOME"):
-        return Path(_profile_env["HERMES_HOME"]) / "config.yaml"
     try:
         from hermes_cli.config import get_hermes_home
         home = Path(get_hermes_home())
@@ -1223,12 +1231,12 @@ class LCMConfig:
     @classmethod
     def from_env(cls) -> "LCMConfig":
         """Build config from environment variables (LCM_ prefix)."""
-        global _profile_env
         env = lcm_env()
-        if env is not os.environ:
-            _profile_env = dict(env)
+        pinned = env is not os.environ and bool(env.get("HERMES_HOME"))
+        if pinned:
+            _profile_envs[env["HERMES_HOME"]] = dict(env)
         c = cls()
-        c._absolute_threshold_tokens = lcm_env_get("LCM_ABSOLUTE_THRESHOLD_TOKENS", "0")
+        c._absolute_threshold_tokens = env.get("LCM_ABSOLUTE_THRESHOLD_TOKENS", "0") if pinned else None
         config_sources: dict[str, str] = {}
         config_source_warnings: list[str] = []
 

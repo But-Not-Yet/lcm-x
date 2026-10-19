@@ -7,6 +7,7 @@ import ast
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict
+import importlib
 import importlib.util
 import json
 import os
@@ -28,6 +29,11 @@ def host(monkeypatch):
     bound_var = ContextVar("bound_home", default=None)
     host = SimpleNamespace(routed=True, builds=[])
     scope = ModuleType("agent.secret_scope")
+    scope.set_multiplex_active = lambda active: setattr(host, "routed", active)
+    scope.set_secret_scope = scope_var.set
+    scope.reset_secret_scope = scope_var.reset
+    scope.get_secret_str = lambda name, default="": raising_get_secret(name, default)
+    scope.load_env_file = lambda path: build(path.parent)
     scope.current_secret_scope = scope_var.get
     scope.current_secret_scope_home = bound_var.get
     scope.serves_routed_profile = lambda: host.routed
@@ -75,7 +81,10 @@ def load_profile():
     names = []
     engines = []
 
-    def load():
+    def load(module=None, *, register=True):
+        if module is not None:
+            module.register(SimpleNamespace(register_context_engine=engines.append))
+            return module, engines[-1]
         name = f"issue1603_profile_{len(names)}"
         names.append(name)
         spec = importlib.util.spec_from_file_location(name, ROOT / "__init__.py",
@@ -83,9 +92,9 @@ def load_profile():
         module = importlib.util.module_from_spec(spec)
         sys.modules[name] = module
         spec.loader.exec_module(module)
-        ctx = SimpleNamespace(register_context_engine=engines.append)
-        module.register(ctx)
-        return module, engines[-1]
+        if register:
+            module.register(SimpleNamespace(register_context_engine=engines.append))
+        return module, engines[-1] if register else None
 
     yield load
     for engine in engines:
@@ -147,11 +156,13 @@ def test_two_homes_keep_registration_values(host, load_profile, tmp_path, monkey
             provider.embed_query("fixture query")
             assert headers_seen == [f"Bearer fixture-routed-{home.name[-1]}"]
 
-        # Executor threads start with no ContextVars; test both it and a later
-        # turn mistakenly carrying the sibling scope. The module is home-owned.
+        # Home-only workers may reuse only the pin for their resolved home.
+        def worker():
+            with host.bind(home):
+                later()
         with ThreadPoolExecutor(max_workers=1) as pool:
-            pool.submit(later).result()
-        with host.bind(tmp_path / "sibling", {"VOYAGE_API_KEY": "fixture-sibling"}):
+            pool.submit(worker).result()
+        with host.bind(home):
             later()
 
 
@@ -194,8 +205,8 @@ def test_scope_failure_uses_defaults(host, load_profile, tmp_path, monkeypatch):
     assert sys.modules[module.__name__ + ".config"].lcm_env_get("VOYAGE_API_KEY", "missing") == "missing"
 
 
-@pytest.mark.parametrize("has_scope_api", [True, False])
-def test_no_scope_snapshot_matches_main(host, load_profile, monkeypatch, tmp_path, has_scope_api):
+@pytest.mark.parametrize("api", ["full", "floor", "absent", "nonrouting_failure"])
+def test_no_scope_snapshot_matches_main(host, load_profile, monkeypatch, tmp_path, api):
     """All dataclass fields equal the main d411e404 fixture, not selected values."""
     fixture = json.loads((ROOT / "tests/fixtures/issue_1603_single_profile.json").read_text())
     for key, value in fixture["env"].items():
@@ -203,17 +214,119 @@ def test_no_scope_snapshot_matches_main(host, load_profile, monkeypatch, tmp_pat
     # Config-only: the artificial containment base is deliberately not a real
     # home. Loading an engine here would conflate config parsing with storage.
     host.routed = False
-    if not has_scope_api:
+    if api == "floor":
+        _floor_api(monkeypatch)
+    if api == "nonrouting_failure":
+        def fail():
+            raise RuntimeError("host predicate unavailable")
+        monkeypatch.setattr(sys.modules["agent.secret_scope"], "serves_routed_profile", fail)
+    if api == "absent":
         monkeypatch.setitem(sys.modules, "agent.secret_scope", None)
         import agent
         monkeypatch.delattr(agent, "secret_scope")
-    name = "issue1603_snapshot_config"
-    spec = importlib.util.spec_from_file_location(name, ROOT / "config.py")
-    module = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, name, module)
-    spec.loader.exec_module(module)
+    module, _ = load_profile(register=False)
+    config = importlib.import_module(module.__name__ + ".config")
     with host.bind(tmp_path):
-        assert asdict(module.LCMConfig.from_env()) == fixture["expected"]
+        assert asdict(config.LCMConfig.from_env()) == fixture["expected"]
+        for key in ("VOYAGE_API_KEY", "SILICONFLOW_API_KEY", "LCM_EMBEDDING_API_KEY"):
+            assert config.lcm_env_get(key) == fixture["env"][key]
+        command = importlib.import_module(module.__name__ + ".command")
+        assert command._embedding_backfill_batch_size() == 23
+        assert command._embedding_backfill_lease_ttl_s() == 100
+        assert command._embedding_backfill_heartbeat_s() == 10
+        assert command._embedding_backfill_budget_s() == 30
+        bootstrap = importlib.import_module(module.__name__ + ".db_bootstrap")
+        assert bootstrap._integrity_check_interval_hours() == 24
+        assert config.host_message_uid_mode() == "off"
+        assert config._disabled_tool_names() == {"lcm_expand", "lcm_grep"}
+        diagnostics = importlib.import_module(module.__name__ + ".diagnostics")
+        base = Path("fixture-base").resolve()
+        assert diagnostics._enforce_state_db_containment(base / "state.db", description="fixture") == base / "state.db"
+        with pytest.raises(ValueError):
+            diagnostics._enforce_state_db_containment(base.parent / "outside.db", description="fixture")
+        # Exercise the actual engine setter, including live edits, outside the
+        # artificial containment/config fixture's unrelated startup settings.
+        monkeypatch.delenv("LCM_HERMES_BASE_DIR")
+        engine_module = importlib.import_module(module.__name__ + ".engine")
+        engine = engine_module.LCMEngine(config=config.LCMConfig(
+            database_path=str(tmp_path / "parity.db"), temporal_rollups_enabled=False), hermes_home=str(tmp_path))
+        try:
+            for value in ("250000", "130000"):
+                monkeypatch.setenv("LCM_ABSOLUTE_THRESHOLD_TOKENS", value)
+                engine._set_context_length(1000000, source="parity", model="fixture", provider="custom")
+                assert engine.threshold_tokens == int(value)
+        finally:
+            engine.shutdown()
+
+
+def _floor_api(monkeypatch):
+    """Exactly the public functions shipped by floor-0.21.3 secret_scope.py."""
+    scope = sys.modules["agent.secret_scope"]
+    monkeypatch.delattr(scope, "serves_routed_profile")
+    monkeypatch.delattr(scope, "current_secret_scope_home")
+    assert {name for name in vars(scope) if not name.startswith("_")} == {
+        "set_multiplex_active", "is_multiplex_active", "set_secret_scope",
+        "reset_secret_scope", "current_secret_scope", "get_secret", "get_secret_str",
+        "load_env_file", "build_profile_secret_scope",
+    }
+
+
+@pytest.mark.parametrize("api", ["full", "floor"])
+def test_one_module_two_homes_and_clones(host, load_profile, tmp_path, monkeypatch, api):
+    if api == "floor":
+        _floor_api(monkeypatch)
+    module = None
+    profiles = []
+    for index in range(2):
+        home = tmp_path / str(index)
+        mapping = {"LCM_CONTEXT_THRESHOLD": str(0.5 + index / 10),
+                   "LCM_ABSOLUTE_THRESHOLD_TOKENS": str(150000 + index * 50000),
+                   "VOYAGE_API_KEY": f"fixture-key-{index}"}
+        with host.bind(home, mapping):
+            module, engine = load_profile(module)
+            config = importlib.import_module(module.__name__ + ".config")
+            assert engine._config.context_threshold == 0.5 + index / 10
+            assert config.lcm_env_get("VOYAGE_API_KEY") == mapping["VOYAGE_API_KEY"]
+        profiles.append((home, engine, dict(mapping)))
+        mapping["VOYAGE_API_KEY"] = "changed-after-registration"
+    for home, engine, mapping in profiles:
+        # No bound scope; only a pin with this exact home can be used.
+        with host.bind(home):
+            assert config.lcm_env_get("VOYAGE_API_KEY") == mapping["VOYAGE_API_KEY"]
+            assert config._hermes_config_path() == home / "config.yaml"
+            clone = engine.clone_for_agent()
+            try:
+                clone._set_context_length(1000000, source="clone", model="fixture", provider="custom")
+                assert clone.context_threshold == float(mapping["LCM_CONTEXT_THRESHOLD"])
+                assert clone.threshold_tokens == int(mapping["LCM_ABSOLUTE_THRESHOLD_TOKENS"])
+                assert config.lcm_env_get("VOYAGE_API_KEY") == mapping["VOYAGE_API_KEY"]
+            finally:
+                clone.shutdown()
+    with host.bind(tmp_path / "unknown"):
+        assert config.lcm_env_get("VOYAGE_API_KEY") is None
+        assert config.lcm_env_get("LCM_CONTEXT_THRESHOLD") is None
+
+
+@pytest.mark.parametrize("composition", ["gateway_files", "serve_launch_overlay"])
+def test_launch_profile_multiplex_composition(host, load_profile, tmp_path, monkeypatch, composition):
+    launch = tmp_path / "launch"
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("LCM_CONTEXT_THRESHOLD", "0.44")
+    monkeypatch.setenv("VOYAGE_API_KEY", "fixture-injected")
+    # gateway._profile_runtime_scope: file sources only. hermes serve's
+    # launch_secret_scope: captured env, then files override it.
+    mapping = {"LCM_CONTEXT_THRESHOLD": "0.66"}
+    if composition == "serve_launch_overlay":
+        mapping = {"VOYAGE_API_KEY": "fixture-injected", **mapping}
+    with host.bind(tmp_path / "other", {"VOYAGE_API_KEY": "fixture-other"}):
+        module, _ = load_profile()
+    with host.bind(launch, mapping):
+        _, engine = load_profile(module)
+    config = importlib.import_module(module.__name__ + ".config")
+    with host.bind(launch):
+        assert engine._config.context_threshold == 0.66
+        assert config.lcm_env_get("VOYAGE_API_KEY") == mapping.get("VOYAGE_API_KEY")
+        assert config.lcm_env_get("LCM_CONTEXT_THRESHOLD") == "0.66"
 
 
 def test_environment_read_inventory():

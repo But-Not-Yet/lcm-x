@@ -305,6 +305,15 @@ registration-time check), provided the running process's environment has been
 updated; changing a parent shell's environment alone requires restarting the
 host to pass it the new values.
 
+On routed profiles, registration snapshots the absolute override for that home;
+model updates and clones keep that snapshot. Other routed readers use the host-bound
+profile mapping or that home's registration pin, never another home's process environment.
+A multiplexed messaging gateway builds every profile's scope, including the launch
+profile, from its `.env` and configured secret sources; process-only settings and
+provider keys do not apply there. `hermes serve` instead supplies its captured launch
+environment overlaid by the launch profile's files; LCM-X preserves that composition.
+Put routed settings and provider keys in each profile's files or secret sources.
+
 Three additional standalone helpers in `config.py` are also outside the scalar
 registry and `LCMConfig.from_env()`:
 

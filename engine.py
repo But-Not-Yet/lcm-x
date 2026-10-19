@@ -1029,7 +1029,7 @@ class LCMEngine(
                  hermes_home: str = ""):
         self._config = config or LCMConfig.from_env()
         self._absolute_threshold_tokens = getattr(
-            self._config, "_absolute_threshold_tokens", lcm_env_get("LCM_ABSOLUTE_THRESHOLD_TOKENS", "0")
+            self._config, "_absolute_threshold_tokens", None
         )
         global _NATIVE_RECOVERY_WARNING_LOGGED
         if self._config.native_recovery and not _NATIVE_RECOVERY_WARNING_LOGGED:
@@ -1804,8 +1804,9 @@ class LCMEngine(
         # setpoint (e.g. ~130K for high-quality coding recall). Ratio-based
         # LCM_CONTEXT_THRESHOLD alone drifts with context_length.
         try:
+            absolute = getattr(self, "_absolute_threshold_tokens", None)
             absolute_threshold_tokens = int(
-                self._absolute_threshold_tokens or 0
+                (lcm_env_get("LCM_ABSOLUTE_THRESHOLD_TOKENS", "0") if absolute is None else absolute) or 0
             )
         except (TypeError, ValueError):
             absolute_threshold_tokens = 0
