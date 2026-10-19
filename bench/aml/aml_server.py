@@ -10,6 +10,7 @@ import argparse
 import contextlib
 from datetime import datetime, timezone
 import fcntl
+from functools import partial
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
@@ -29,6 +30,9 @@ import uuid
 
 MAX_BYTES = 30 * 1024 * 1024
 MAX_SECONDS = 1800
+CODING_TOP_K = 10
+CODING_ITEM_CHARS = 4000
+CODING_TOTAL_CHARS = 40000
 
 
 def digest(value):
@@ -98,16 +102,31 @@ def validate(body, operation):
                 top_k=min(top_k, 100), options=options)
 
 
+def ranked_lines(text, top_k):
+    return list(dict.fromkeys(line for line in text.splitlines() if line.strip()))[:min(top_k, 100)]
+
+
 def search_response(text, user_key, top_k):
     # The adapter collapses stored newlines and emits one line per ranked hit.
     # It does not expose original scores/IDs: provide stable content IDs and
     # monotone rank scores without modifying its retrieval/reranking behavior.
-    lines = list(dict.fromkeys(line for line in text.splitlines() if line.strip()))[:min(top_k, 100)]
+    lines = ranked_lines(text, top_k)
     result = {'data': [dict(id=digest(user_key + '\0' + line), content=line,
                             score=1.0 / (rank + 1)) for rank, line in enumerate(lines)]}
     if len(encoded(result)) > MAX_BYTES:
         raise APIError(413, 'search response exceeds 30 MiB')
     return result
+
+
+def coding_search_response(text, user_key, top_k):
+    rows, total = [], 0
+    for rank, line in enumerate(ranked_lines(text, min(top_k, CODING_TOP_K))):
+        content = line[:CODING_ITEM_CHARS]
+        if rows and total + len(content) > CODING_TOTAL_CHARS:
+            break
+        rows.append(dict(id=digest(user_key + '\0' + line), content=content, score=1.0 / (rank + 1)))
+        total += len(content)
+    return {'data': rows}
 
 
 def fsync_dir(path):
@@ -281,8 +300,9 @@ def worker():
                 user_key = digest(body['user_id'])
                 with user_lock(root, user_key):
                     client = configure_adapter(root)
-                    result = search_response(client.search(body['query'], user_key, body['top_k']),
-                                             user_key, body['top_k'])
+                    response = coding_search_response if payload['search_mode'] == 'coding' else search_response
+                    result = response(client.search(body['query'], user_key, body['top_k']),
+                                      user_key, body['top_k'])
             reply = {'status': 200, 'body': result}
         except APIError as error:
             reply = {'status': error.status, 'body': {'detail': {'reason': error.reason}}}
@@ -292,7 +312,7 @@ def worker():
         handle.write(encoded(reply))
 
 
-def run_worker(root, operation, body, deadline):
+def run_worker(root, operation, body, deadline, search_mode='textual'):
     env = dict(os.environ)
     env.pop('AML_ADDSEARCH_TOKEN', None)
     env['PYTHONDONTWRITEBYTECODE'] = '1'
@@ -303,7 +323,8 @@ def run_worker(root, operation, body, deadline):
                           stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                           env=env) as process:
         try:
-            stdout, _ = process.communicate(encoded(dict(root=str(root), operation=operation, body=body)),
+            stdout, _ = process.communicate(encoded(dict(root=str(root), operation=operation, body=body,
+                                                        search_mode=search_mode)),
                                             timeout=max(0.001, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
             process.kill()
@@ -477,12 +498,16 @@ def main():
     if args.worker:
         worker()
         return
+    search_mode = os.environ.get('AML_SEARCH_MODE') or 'textual'
+    if search_mode not in ('textual', 'coding'):
+        parser.exit(1, 'AML_SEARCH_MODE must be textual or coding\n')
     local_network_only()
     os.umask(0o077)
     token = os.environ.get('AML_ADDSEARCH_TOKEN', '')
     root = Path(os.environ['AML_DB_ROOT']).expanduser().resolve()
     service = Service(root, token, int(os.environ.get('AML_WORKERS', '4')),
-                      float(os.environ.get('AML_REQUEST_TIMEOUT_SECONDS', '1800')))
+                      float(os.environ.get('AML_REQUEST_TIMEOUT_SECONDS', '1800')),
+                      runner=partial(run_worker, search_mode=search_mode))
     # One server per database root; worker file locks also survive parent exit.
     with open(root / '.server.lock', 'a') as lease:
         fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -490,6 +515,7 @@ def main():
         prepare_model_cache(root)
         with Server(service, int(os.environ.get('AML_PORT', '8791')),
                     float(os.environ.get('AML_SLOW_SECONDS', '10'))) as server:
+            print(json.dumps(dict(event='start', search_mode=search_mode)), flush=True)
             server.serve_forever()
 
 

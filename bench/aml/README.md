@@ -45,6 +45,15 @@ body reading and lock waits, and an overdue worker is killed.
 
 ## Run
 
+### Search mode
+
+`AML_SEARCH_MODE` selects `textual` (default when unset or empty) or `coding`
+at startup; other values prevent startup. Coding mode bounds return size for
+the Coding track with fixed `CODING_TOP_K = 10`, `CODING_ITEM_CHARS = 4000`,
+and `CODING_TOTAL_CHARS = 40000`. It preserves ranked order and full-content
+IDs while returning excerpts through the same endpoints. Use a separate
+`AML_DB_ROOT` per mode.
+
 Use a Python environment with the pinned client's and LCM-X's dependencies.
 Load your token from your own secret store into `AML_ADDSEARCH_TOKEN`; do not
 put it in command history. Set the remaining environment variables:
