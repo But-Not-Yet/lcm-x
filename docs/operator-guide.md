@@ -373,6 +373,11 @@ The [generated scalar environment reference](../skills/hermes-lcm/references/con
 
 Most installs only need `plugins.enabled` and `context.engine: lcm-x`.
 
+On a multiplexed Hermes gateway, routed profiles do not read the gateway's process
+environment: put `LCM_*` settings and provider keys in each profile's `.env` or
+configured secret source instead of exporting them. `LCM_HERMES_BASE_DIR`, the storage
+containment root, is the exception: it always comes from the process environment.
+
 Malformed boolean, integer, or float values in the uniform `LCM_*` field loader
 keep the default and appear in `config_source_warnings` in `lcm_status` JSON,
 `/lcm status`, and the `lcm_doctor` configuration check. For example,

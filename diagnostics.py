@@ -7,7 +7,7 @@ from sqlite3 import connect
 from pathlib import Path
 from typing import Any
 
-from .config import lcm_env_get
+from .config import containment_base_dir
 
 
 DOCTOR_ACTION_SAFE_IGNORE = "safe/ignore"
@@ -37,7 +37,7 @@ def fresh_sqlite_check(engine: Any, pragma: str) -> tuple[bool, str]:
 
 def _enforce_state_db_containment(path: Path, *, description: str) -> Path:
     resolved = path.expanduser().resolve()
-    env_base = lcm_env_get("LCM_HERMES_BASE_DIR")
+    env_base = containment_base_dir()
     if env_base:
         allowed_base = Path(env_base).expanduser().resolve()
         try:

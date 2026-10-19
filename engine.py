@@ -33,7 +33,7 @@ from .compaction_policy import (
     resolve_threshold,
     threshold_tokens,
 )
-from .config import LCMConfig, _disabled_tool_names, lcm_env_get, profile_bound
+from .config import LCMConfig, _disabled_tool_names, containment_base_dir, lcm_env_get, profile_bound
 from .dag import SummaryDAG, SummaryNode
 from .diagnostics import _enforce_state_db_containment
 from .engine_registry import (
@@ -3144,7 +3144,7 @@ class LCMEngine(
 
     def _get_allowed_hermes_base(self) -> Path | None:
         """Get the allowed base directory for hermes_home, or None if not restricted."""
-        env_base = lcm_env_get("LCM_HERMES_BASE_DIR")
+        env_base = containment_base_dir()
         if env_base:
             return Path(env_base).expanduser().resolve()
         return None  # No restriction when env var not set
