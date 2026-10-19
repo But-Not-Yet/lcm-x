@@ -15,8 +15,8 @@ import pytest
 
 import hermes_lcm.engine as lcm_engine
 import hermes_lcm.tools as lcm_tools
-from hermes_lcm.config import LCMConfig
 from hermes_lcm.engine import LCMEngine
+from tests.harness import make_engine, pin_char_counter
 
 PAD = " alpha beta gamma delta" * 30
 RETAINED = "leaf would end before an unresolved retained occurrence"
@@ -57,8 +57,11 @@ def lines():
 def _engine(tmp_path, sweep: bool, **config) -> LCMEngine:
     settings = {"fresh_tail_count": 2, "leaf_chunk_tokens": 400, "context_threshold": 0.001,
                 "dynamic_leaf_chunk_max": 400, "threshold_full_sweep_enabled": sweep,
-                "temporal_rollups_enabled": False, "database_path": str(tmp_path / "lcm.db"), **config}
-    engine = LCMEngine(config=LCMConfig(**settings))
+                "temporal_rollups_enabled": False, **config}
+    engine = make_engine(tmp_path, **settings)
+    # The host-identity fixture keeps state.db beside lcm.db.
+    engine._hermes_home = str(tmp_path)
+    engine._store._hermes_home = str(tmp_path)
     engine.on_session_start("S", platform="cli", context_length=200_000, conversation_id="conv")
     return engine
 
@@ -375,5 +378,48 @@ def test_the_stop_line_parsers_read_the_blocked_line(tmp_path, summaries, lines)
         for parser in (foreground_budget, host_fallback, stub_first_exit):
             found = parser.search(line)
             assert found and found.group(1) == "noop" and found.group(2) == "0", (parser.pattern, line)
+    finally:
+        engine.shutdown()
+
+
+@SWEEP
+@pytest.mark.parametrize("empty", [False, True], ids=["host_summary", "empty_scan"])
+def test_no_source_stop_reaches_log_status_and_doctor(tmp_path, summaries, lines, monkeypatch, sweep, empty):
+    """Inject the selected no-source boundary; attribution and all stop surfaces stay real."""
+    pin_char_counter(monkeypatch)
+    engine = _engine(tmp_path, sweep)
+    view = [row for i in range(1, 5) for row in _turn(f"T{i}", 100.0 * i)]
+    summary = {"role": "user", "content": "[CONTEXT COMPACTION] Earlier turns were compacted."}
+    select = engine._select_leaf_candidate
+
+    def select_without_source(state, leaf, *args):
+        action = select(state, leaf, *args)
+        assert action == ("next", None)
+        # A native summary has no raw source; the real mapper bounds the scan below
+        # the first retained mapped row. An empty hidden scan has the same outcome.
+        leaf.to_compact = [] if empty else [summary]
+        return action
+
+    monkeypatch.setattr(engine, "_select_leaf_candidate", select_without_source)
+    try:
+        engine.ingest(view)
+        before = _rows(engine)
+        for _ in range(3):
+            start = len(lines)
+            view, _ = _passes(engine, view, 1, lines)
+            reason = "leaf input has no stored source rows"
+            line = next(msg for _, msg in lines[start:] if msg.startswith("LCM compaction stop:"))
+            assert reason in line, line
+            assert f"input_rows_without_source={0 if empty else 1}" in line, line
+            assert "blocked=" not in line and RETAINED not in line, line
+        status = json.loads(lcm_tools.lcm_status({}, engine=engine))
+        assert reason in status["last_compression_noop_reason"]
+        assert reason in status["zero_leaf_streak"]["last_reason"]
+        progress = next(check for check in json.loads(lcm_tools.lcm_doctor({}, engine=engine))["checks"]
+                        if check["check"] == "compaction_progress")
+        assert progress["status"] == "warn"
+        assert progress["detail"] == status["zero_leaf_streak"]
+        assert progress["detail"]["passes"] == 3
+        assert _rows(engine) == before and not summaries
     finally:
         engine.shutdown()
