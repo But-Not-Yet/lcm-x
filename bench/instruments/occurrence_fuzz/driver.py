@@ -80,23 +80,24 @@ def run(
             "S", platform="cli", context_length=128000, conversation_id="conv"
         )
         for view in seq["views"]:
-            if view == "RESET":
-                engine.on_session_reset()
-            elif view == "RESTART":
-                engine.shutdown()
-                drain(engine_module)
-                engine = engine_module.LCMEngine(
-                    config=config, hermes_home=str(directory / "home")
-                )
-                engine.on_session_start(
-                    "S", platform="cli", context_length=128000, conversation_id="conv"
-                )
-            else:
-                try:
+            # Lifecycle failures are per-sequence errors too, not a driver abort.
+            try:
+                if view == "RESET":
+                    engine.on_session_reset()
+                elif view == "RESTART":
+                    engine.shutdown()
+                    drain(engine_module)
+                    engine = engine_module.LCMEngine(
+                        config=config, hermes_home=str(directory / "home")
+                    )
+                    engine.on_session_start(
+                        "S", platform="cli", context_length=128000, conversation_id="conv"
+                    )
+                else:
                     engine.ingest(deepcopy([seq["rows"][row_id] for row_id in view]))
-                except Exception as exc:
-                    error = type(exc).__name__
-                    break
+            except Exception as exc:
+                error = type(exc).__name__
+                break
             counts.append(len(engine._store.get_session_messages("S")))
         ledger: dict[str, int] = {}
         for row in engine._store.get_session_messages("S"):

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import types
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +77,39 @@ def test_gate_counts_reference_errors(damage: str) -> None:
     totals, errors = gate.score(seqs, reference, [("base", good), ("candidate1", good)])
     assert errors == 1
     assert not gate.report(totals, errors, ["base", "candidate1"])
+
+
+def test_gate_fails_when_nothing_is_scored() -> None:
+    totals, errors = gate.score({}, {}, [("base", {}), ("candidate1", {})])
+    assert errors == 0
+    assert not gate.report(totals, errors, ["base", "candidate1"])
+
+
+class _ResetFails:
+    def __init__(self, **_: Any) -> None:
+        self._store = types.SimpleNamespace(get_session_messages=lambda _sid: [])
+
+    def on_session_start(self, *_: Any, **__: Any) -> None:
+        pass
+
+    def on_session_reset(self) -> None:
+        raise RuntimeError("reset failed")
+
+    def ingest(self, _messages: Any) -> None:
+        pass
+
+    def shutdown(self) -> None:
+        pass
+
+
+def test_driver_records_lifecycle_errors(tmp_path: Path) -> None:
+    config_module = types.SimpleNamespace(LCMConfig=types.SimpleNamespace)
+    engine_module = types.SimpleNamespace(LCMEngine=_ResetFails)
+    seq = {"seed": 7, "rows": {"B0": {"role": "user", "content": "request"}},
+           "views": [["B0"], "RESET", ["B0"]]}
+    result = driver.run(seq, tmp_path / "run", config_module, engine_module, driver._Catch())
+    assert result["err"] == "RuntimeError"
+    assert result["counts"] == [0]
 
 
 def test_gate_multiple_candidates_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
