@@ -278,6 +278,12 @@ def doctor_engine(
                 "_embedding_provider_health_check",
                 _raise if case == "embedding_raise" else lambda engine: health,
             )
+        from hermes_lcm import diagnostics
+        def connect(*args, **kwargs):
+            fresh = sqlite3.connect(*args, **kwargs, factory=FaultConnection)
+            fresh.fault = lambda q, p: engine._store.connection.fault(q, p)
+            return fresh
+        patch.setattr(diagnostics, "connect", connect)
         yield engine
         if case in {
             "schema_error",
@@ -635,9 +641,12 @@ def test_doctor_fresh_integrity(tmp_path, monkeypatch, scenario):
         check = next(c for c in payload["checks"] if c["check"] == "database_integrity")
         text = command._doctor_text(engine)
         detail = next(line for line in text.splitlines() if line.startswith("sqlite_integrity:"))
+        print(f"{scenario}: {check}; {detail}")
         if scenario == "stale":
             assert check["status"] == "pass", check
             assert detail == "sqlite_integrity: ok", detail
+            assert "quick_check: ok" in text
+            assert next(c for c in payload["checks"] if c["check"] == "sqlite_storage")["status"] == "pass"
         else:
             assert check["status"] == "fail", check
             assert detail != "sqlite_integrity: ok", detail
