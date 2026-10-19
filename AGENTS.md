@@ -205,7 +205,8 @@ gh pr merge <PR> --merge --match-head-commit <HEAD_SHA>
   shows, with the candidate no worse than the base; and a Phase B duplicate-only shape reachable
   only under an injected crash or kill, meeting all five conditions in the spec's differential
   rule: only in-flight-turn rows duplicated, each at most twice, with both counts recorded;
-  no amplification after a second crash and recovery in the same session; unambiguous message
+  no amplification after a second crash during another in-flight turn and recovery in the same
+  session; unambiguous message
   identity and complete tool-call/result groups, with no orphaned or doubled tool result in
   assembled context; every base row present, in order, in its session; and verification of
   these conditions by a reviewer from a different model than the classification's author,
