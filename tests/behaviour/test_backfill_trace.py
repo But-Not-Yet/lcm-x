@@ -21,6 +21,14 @@ def compare(expected: list[str], actual: list[str]) -> None:
 
 def reached(case: h.Scenario, payloads: list[str]) -> None:
     """Reject an accidental setup-error golden before treating a shape as recorded."""
+    if case.shape.endswith("non-sqlite-error"):
+        message = "scripted open failure" if case.shape.startswith("read-open") else "scripted read failure"
+        assert values(payloads, "runner raises") == [["RuntimeError", message, None]]
+        if not case.shape.startswith("read-open"):
+            assert values(payloads, "connection close")[0] == "connection-1"
+            assert next(i for i, event in enumerate(payloads) if event.startswith("connection close ")) < next(
+                i for i, event in enumerate(payloads) if event.startswith("runner raises "))
+        return
     assert not values(payloads, "runner raises")
     reports = values(payloads, "report fields")
     assert reports
@@ -43,14 +51,14 @@ def reached(case: h.Scenario, payloads: list[str]) -> None:
     assert isinstance(first, list)
     report = dict(first)
     assert "'function' object" not in str(report)
-    if shape.startswith("dry-") or shape.startswith("cloud-dry-") or shape == "profile-absent-dry":
+    if shape == "dtype-match" or shape.startswith("dry-") or shape.startswith("cloud-dry-") or shape == "profile-absent-dry":
         assert report["status"] == "dry-run"
         assert not values(payloads, "provider dispatch")
         if shape == "dry-token-cap":
             assert report["estimated_cost_tokens"] < report["estimated_tokens"]
     if shape in {"apply-empty", "apply-one", "page-B-minus-1", "page-B", "page-B-plus-1", "cloud-apply-consent-on"}:
         assert report["status"] == "complete"
-        assert report["embedded"] == {"apply-empty": 0, "apply-one": 1, "page-B-minus-1": 1, "page-B": 2}.get(shape, 3)
+        assert report["embedded"] == {"apply-empty": 0, "apply-one": 1, "page-B-minus-1": 2, "page-B": 3, "page-B-plus-1": 4}.get(shape, 3)
     if shape.startswith("provider-m"):
         assert report["status"] == "error" and report["embedded"] == 0
     stops = {"lease-renew-lost-after-page": "lease_lost", "budget-after-page": "op_budget_exhausted",
@@ -73,9 +81,15 @@ def reached(case: h.Scenario, payloads: list[str]) -> None:
         assert report["embedded"] == 0
     if shape == "identity-switch-before-dispatch":
         race = next(i for i, event in enumerate(payloads) if event.startswith("race "))
-        dispatch = next(i for i, event in enumerate(payloads) if event.startswith("provider dispatch "))
-        assert race < dispatch
-        assert report["stop_reason"] == "identity_superseded"
+        if case.runner == "summary":
+            assert not values(payloads, "provider dispatch")
+            assert "active embedding identity changed before backfill dispatch" in report["error"]
+        else:
+            dispatch = next(i for i, event in enumerate(payloads) if event.startswith("provider dispatch "))
+            assert race < dispatch
+            assert report["stop_reason"] == "identity_superseded"
+            # C6 rebuilds identity from the same read-profile tuple; this race
+            # reaches publication protection, not that tautological guard.
     if shape.startswith("incremental-"):
         assert report["stop_reason"] == "process_exit"
         assert values(payloads, "reopen")
@@ -104,12 +118,24 @@ def test_backfill_golden(case: h.Scenario, tmp_path: Path) -> None:
 def test_fixture_inventory_and_size() -> None:
     data = json.loads(h.GOLDEN.read_text())
     assert list(data) == [case.name for case in h.SCENARIOS]
-    assert len(data) == len(set(data)) == 72
+    assert len(data) == len(set(data)) == 80
+    payloads = [json.dumps(trace) for trace in data.values()]
+    assert len(payloads) == len(set(payloads)), "duplicate scenario payloads"
     assert h.GOLDEN.stat().st_size < 5_000_000
 
 
-@pytest.mark.parametrize("probe", ["primitive", "table"])
+@pytest.mark.parametrize("probe", ["primitive", "table", "provider"])
 def test_observer_completeness(probe: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    if probe == "provider":
+        monkeypatch.setattr(h.ScriptedProvider, "trace_probe", lambda self: None, raising=False)
+        original_resolve = h.ScriptedProvider.embed_document_batches
+        def unknown_provider(self: Any, *args: Any, **kwargs: Any) -> Any:
+            self.trace_probe()
+            return original_resolve(self, *args, **kwargs)
+        monkeypatch.setattr(h.ScriptedProvider, "embed_document_batches", unknown_provider)
+        with pytest.raises(AssertionError, match="unregistered provider method"):
+            h.observe(h.Scenario("summary", "apply-one"), tmp_path)
+        return
     original = h.vectors.VectorStore._init_db
     def unknown(self: Any) -> None:
         original(self)
