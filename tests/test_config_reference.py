@@ -269,7 +269,7 @@ def test_dtype_consumers_follow_choice_constant(monkeypatch):
     assert isinstance(result, tuple) and result[-1] == "new-dtype"
 
 
-@pytest.mark.parametrize("threshold", (1.5, 0.97))
+@pytest.mark.parametrize("threshold", (1.5, 0.97, 0, -1, 0.2))
 def test_doctor_context_threshold_reproduction(monkeypatch, tmp_path, threshold):
     import json
 
@@ -287,8 +287,9 @@ def test_doctor_context_threshold_reproduction(monkeypatch, tmp_path, threshold)
         warnings = next(check["detail"] for check in payload["checks"]
                         if check["check"] == "config_validation")
         threshold_lines = [line for line in warnings if "context_threshold" in line.lower()]
-        assert threshold_lines == (cfg.config_source_warnings if threshold > 1 else [
-            "runtime context_threshold > 0.95 leaves very little headroom",
+        assert threshold_lines == (cfg.config_source_warnings if threshold > 1 or threshold <= 0 else [
+            "runtime context_threshold > 0.95 leaves very little headroom" if threshold > 0.95
+            else "runtime context_threshold < 0.3 triggers compaction very early",
         ])
         print("THRESHOLD_CHECKS=" + json.dumps([
             check for check in payload["checks"]

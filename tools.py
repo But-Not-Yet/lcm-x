@@ -5174,7 +5174,11 @@ def lcm_doctor(args: Dict[str, Any], **kwargs) -> str:
                 for warning in getattr(c, "config_source_warnings", []) or [])
     ):
         config_warnings.append("runtime context_threshold > 0.95 leaves very little headroom")
-    if runtime_context_threshold < 0.3:
+    if runtime_context_threshold < 0.3 and not (
+        runtime_context_threshold == c.context_threshold
+        and any(warning.startswith("out-of-range env LCM_CONTEXT_THRESHOLD=")
+                for warning in getattr(c, "config_source_warnings", []) or [])
+    ):
         config_warnings.append("runtime context_threshold < 0.3 triggers compaction very early")
     if c.condensation_fanin < 2:
         config_warnings.append("condensation_fanin < 2 creates excessive depth growth")
