@@ -6,7 +6,18 @@ including the `v1.0.0-beta.*` prereleases, have none. GitHub Releases are publis
 
 ## Unreleased
 
-- Fix: when a leaf input comes back empty, compaction names the branch that stopped it. A missing stored source reads `leaf input has no stored source rows (input_rows_without_source=N)` and a contiguity cut reads `leaf input cannot form a contiguous stored prefix`; before, both carried the retained-occurrence reason with no row. The stop line keeps `reason=` in its base format and adds a single-token `empty_input=no_source,rows:N` or `empty_input=contiguity` field, never together with `blocked=`. (#1162)
+## v0.28.1 (session continuity and profile settings)
+
+- Fix: preserve the unanswered predecessor before the host merges consecutive user turns. Crash and rotation replay on hosts without message UIDs keeps one copy when the recorded occurrence proves it. Uncertain cases keep the safe duplicate fallback. (#1508, PR #1610)
+- Fix: CLI `/new` from an initially ignored or stateless session binds the next unfiltered session, so its later turns are stored. Existing foreground sessions stay protected. (#1438, PR #1605)
+- Fix: middle-window replay accepts the stored literal placeholder as well as its proven alias. An already stored tool window is not copied again, and fresh results are preserved. (#1437, PR #1604)
+- Fix: warm compaction proof keeps the newest two tool results literal. A retried call and placeholder result are stored as fresh occurrences. The older-result sibling remains open in #1540. (#1529, PR #1541)
+- Fix: the doctor checks database integrity on a fresh connection. Healthy FTS indexes no longer trigger false corruption or restore advice after summary writes; real corruption still fails. (#1578, PR #1596)
+- Fix: revalidate short-turn chunk coverage after rollback and re-upgrade. Coverage bounds and resumable gap scans prevent stale revision markers from hiding missing vectors. Raw rows, FTS and the SQL schema are unchanged. This ships the promised derived-index follow-up as a patch-scope exception. (#1536, PR #1548)
+- Fix: routed profiles on a multiplexed gateway read their own LCM settings and provider keys. Background jobs, including the assertion worker, keep the scheduling profile. The containment root stays process-wide. (PR #1614, #1603, #1611)
+- Diagnostics: empty leaf input names a missing stored source or a contiguity cut instead of reporting an unresolved retained occurrence without a blocking row. The stop line adds `empty_input=no_source,rows:N` or `empty_input=contiguity`. This does not recover wedged sessions. (#1162, PR #1599)
+- Tests: document the CLI reset-time bind contract and exercise `/new`, including initially filtered sessions, in real-host CI. The earlier CI-only omission remains classified separately. (#1306, #1439, #1453, PR #1619)
+- Release rules: define D2 inconclusive handling, the reference-agent integrity window, parallel QA and transport resume, and the narrow injected-crash duplicate exception. No product behaviour changes. (#1554, PR #1617)
 
 ## v0.28.0 (repeated compaction, slow summarisers)
 
