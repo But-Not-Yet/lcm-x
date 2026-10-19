@@ -17,6 +17,8 @@ import time
 from typing import Any
 import uuid
 
+from . import config as config_choices
+from .config import embedding_provider_id
 from .command_auth import CommandInvocation, Decision, authorize
 from .command_doctor import (
     _doctor_text as _doctor_text,
@@ -2250,7 +2252,7 @@ def _resolve_storage_dtype(config, override: str | None = None) -> str:
         if override is not None
         else getattr(config, "embedding_storage_dtype", "float32")
     ).strip().lower()
-    return "int8" if value == "int8" else "float32"
+    return value if value in config_choices.EMBEDDING_STORAGE_DTYPES else "float32"
 
 
 def _resolve_store_dim(config, provider_dim: int, override: int | None = None) -> int:
@@ -3203,7 +3205,7 @@ def _embedding_backfill_options(
             continue
         if token == "--dtype" and index + 1 < len(tokens) and not seen_dtype:
             expected_dtype = tokens[index + 1].lower()
-            if expected_dtype not in {"float32", "int8"}:
+            if expected_dtype not in config_choices.EMBEDDING_STORAGE_DTYPES:
                 return "`--dtype` must be one of `float32` or `int8`."
             seen_dtype = True
             index += 2
@@ -4682,7 +4684,7 @@ def _chunk_backfill_estimates(
     # exactly so the cost/consent preview matches apply (FIX 4). Plain-voyage
     # and local providers keep the flat per-document estimate.
     if (
-        provider_name.strip().lower() in {"voyage", "voyageai"}
+        embedding_provider_id(provider_name.strip().lower()) == "voyage"
         and _is_voyage_context_model(model)
     ):
         return _chunk_context_estimates(
