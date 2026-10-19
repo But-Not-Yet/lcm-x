@@ -15,7 +15,7 @@ from tests.test_issue_1306_cli_new import real_reset
 def test_new_from_filtered_first_session(
     tmp_path: Path, pattern: str, history_present: bool, target: str,
 ) -> None:
-    with engine_context(  # type: ignore[no-untyped-call]
+    with engine_context(
         tmp_path, window=8192, session_id="filtered-first", **{pattern: ["filtered-*"]},
     ) as engine:
         history = [{"role": "user", "content": "filtered original turn"}] if history_present else []
@@ -48,7 +48,7 @@ def test_new_from_filtered_first_session(
 
 @pytest.mark.parametrize("pattern", ["ignore_session_patterns", "stateless_session_patterns"])
 def test_filtered_first_bind_without_reset_is_noop(tmp_path: Path, pattern: str) -> None:
-    with engine_context(  # type: ignore[no-untyped-call]
+    with engine_context(
         tmp_path, window=8192, session_id="filtered-first", **{pattern: ["filtered-*"]},
     ) as engine:
         engine.bind_session_state(None, "normal-new")
@@ -58,7 +58,7 @@ def test_filtered_first_bind_without_reset_is_noop(tmp_path: Path, pattern: str)
 
 @pytest.mark.parametrize("pattern", ["ignore_session_patterns", "stateless_session_patterns"])
 def test_filtered_side_channel_cannot_replace_foreground(tmp_path: Path, pattern: str) -> None:
-    with engine_context(  # type: ignore[no-untyped-call]
+    with engine_context(
         tmp_path, window=8192, session_id="normal-first", **{pattern: ["filtered-*"]},
     ) as engine:
         original = [{"role": "user", "content": "durable foreground turn"}]
