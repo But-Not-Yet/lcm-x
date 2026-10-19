@@ -423,3 +423,36 @@ def test_no_source_stop_reaches_log_status_and_doctor(tmp_path, summaries, lines
         assert _rows(engine) == before and not summaries
     finally:
         engine.shutdown()
+
+
+def test_contiguity_cut_does_not_claim_a_retained_blocker(tmp_path, monkeypatch):
+    """An un-emitted mapped row can cut the entire candidate prefix back to empty."""
+    pin_char_counter(monkeypatch)
+    engine = _engine(tmp_path, False)
+    rows = [{"role": "user", "content": f"row {i}" + PAD} for i in range(3)]
+    try:
+        engine.ingest(rows)
+        stored = _rows(engine)
+        mapping = {id(row): saved["store_id"] for row, saved in zip(rows, stored)}
+        chunk = [rows[2], rows[0]]
+        result = engine._store_complete_input(chunk, {}, {id(row): mapping[id(row)] for row in chunk},
+                                              chunk, chunk, 0, {}, 1, scanned=(stored, False))
+        assert result == [] and engine._store_complete_blocked is None
+        assert engine._store_complete_empty_reason == "leaf input cannot form a contiguous stored prefix"
+        assert _rows(engine) == stored
+    finally:
+        engine.shutdown()
+
+
+def test_prepared_input_probe_preserves_the_active_stop_diagnostics(tmp_path, monkeypatch):
+    pin_char_counter(monkeypatch)
+    engine = _engine(tmp_path, False)
+    summary = {"role": "user", "content": "[CONTEXT COMPACTION] Earlier turns were compacted."}
+    try:
+        engine._store_complete_blocked = (7, "user", "shown", 0)
+        engine._store_complete_empty_reason = "previous diagnostic"
+        assert engine._prepared_chunk_consumption([summary], [summary], [], set()) is None
+        assert engine._store_complete_blocked == (7, "user", "shown", 0)
+        assert engine._store_complete_empty_reason == "previous diagnostic"
+    finally:
+        engine.shutdown()
