@@ -61,6 +61,9 @@ def host(monkeypatch):
     cli.config = config
     monkeypatch.setitem(sys.modules, "hermes_cli", cli)
     monkeypatch.setitem(sys.modules, "hermes_cli.config", config)
+    constants = ModuleType("hermes_constants")
+    constants.get_hermes_home_override = home_var.get
+    monkeypatch.setitem(sys.modules, "hermes_constants", constants)
 
     @contextmanager
     def bind(home, mapping=None, *, bound_home=None):
@@ -474,6 +477,58 @@ def test_contextless_maintenance_worker(host, scheduled_profiles, monkeypatch, a
         release.set()
     assert engine.drain_embedding_maintenance(timeout=3)
     assert seen == [(23, "fixture-B")]
+
+
+@pytest.mark.parametrize("background", [False, True])
+def test_stamped_scope_without_home_override(host, scheduled_profiles, monkeypatch, background):
+    """A foreign stamp is routing provenance even without a home override."""
+    module, engine, home, mapping = scheduled_profiles
+    config = importlib.import_module(module.__name__ + ".config")
+    command = importlib.import_module(module.__name__ + ".command")
+    engine_module = importlib.import_module(module.__name__ + ".engine")
+    release = threading.Event()
+    seen = []
+
+    def read(*args, **kwargs):
+        if background:
+            assert release.wait(3)
+        seen.append((config.lcm_env_get("HERMES_HOME"),
+                     config.lcm_env_get("VOYAGE_API_KEY"),
+                     command._embedding_backfill_batch_size()))
+
+    monkeypatch.setattr(engine_module, "run_incremental_embedding_pass", read)
+    engine._config.embeddings_enabled = True
+    try:
+        with host.bind(None, mapping, bound_home=home):
+            from hermes_constants import get_hermes_home_override
+            assert get_hermes_home_override() is None
+            if background:
+                engine._schedule_embedding_maintenance()
+            else:
+                read()
+    finally:
+        release.set()
+    if background:
+        assert engine.drain_embedding_maintenance(timeout=3)
+    assert seen == [(str(home), "fixture-B", 23)]
+
+
+@pytest.mark.parametrize("accessor", ["missing", "raises"])
+def test_stamped_scope_override_accessor_unavailable(host, scheduled_profiles, monkeypatch, accessor):
+    module, _, home, mapping = scheduled_profiles
+    config = importlib.import_module(module.__name__ + ".config")
+    import hermes_constants
+
+    def fail():
+        raise RuntimeError("override accessor unavailable")
+
+    if accessor == "missing":
+        monkeypatch.delattr(hermes_constants, "get_hermes_home_override")
+    else:
+        monkeypatch.setattr(hermes_constants, "get_hermes_home_override", fail)
+    with host.bind(None, mapping, bound_home=home):
+        assert config.lcm_env_get("HERMES_HOME") == str(home.parent / "launch")
+        assert config.lcm_env_get("VOYAGE_API_KEY") == "fixture-launch"
 
 
 def test_profile_bound_reentrance(host, scheduled_profiles):
