@@ -180,18 +180,37 @@ def binding_snapshot(engine):
 @pytest.mark.parametrize("kwargs", [{"session_id": ""}, {"session_id": None}, {}],
                          ids=["blank", "none", "missing"])
 @pytest.mark.parametrize("finalized", [False, True], ids=["live", "ended"])
-def test_background_review_detach_raises_without_state_change(engine, kwargs, finalized):
+def test_background_review_detach_unbinds_without_losing_durable_rows(engine, kwargs, finalized):
+    """FX-F (tiered card t_3f31d9b0): an empty-id bind is a real detach.
+
+    The old contract raised NotImplementedError ("keep compression off on this
+    fork"), which forced the host's review forks to run with compression
+    disabled. The detach now ends the bound session (durable rows survive in
+    the store) and clears the in-memory binding; re-binding happens through
+    on_session_start.
+    """
     history = []
     turn(history, "parent")
     engine.ingest(history)
+    stored_before = engine._store.connection.execute(
+        "SELECT * FROM messages ORDER BY store_id").fetchall()
     if finalized:
         engine.on_session_end("old", history)
-    before = binding_snapshot(engine)
-    attributes = engine.__dict__.copy()
-    with pytest.raises(NotImplementedError, match="cannot detach.*keep compression off"):
-        engine.bind_session_state(session_db=None, **kwargs)
-    assert binding_snapshot(engine) == before
-    assert engine.__dict__ == attributes
+    engine.bind_session_state(session_db=None, **kwargs)
+    assert engine.bound_session_id == ""
+    assert engine.current_session_id == ""
+    assert engine._conversation_id == ""
+    assert engine._foreground_session_id == ""
+    assert engine._ingest_cursor == 0
+    assert engine.compression_count == 0
+    assert resolve_active_lcm_engine(session_id="old") is None
+    stored_after = engine._store.connection.execute(
+        "SELECT * FROM messages ORDER BY store_id").fetchall()
+    assert stored_after == stored_before  # durable rows are never deleted by a detach
+    # A fresh session binds cleanly on the detached engine.
+    engine.on_session_start("review", platform="cli")
+    assert engine.bound_session_id == "review"
+    assert engine._ingest_cursor == 0
 
 
 @pytest.mark.parametrize("binding", ["fresh", "same", "different"])
