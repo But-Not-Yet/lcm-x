@@ -4510,19 +4510,83 @@ class LCMEngine(
             "reset_epoch": state.last_reset_at if state is not None else None,
         }
 
+    def _detach_session_state_unlocked(self) -> None:
+        """FX-F (tiered card t_3f31d9b0): unbind the engine from its session.
+
+        The host's background-review fork (agent/background_review.py
+        ``_detach_fork_compression``) severs the SessionDB/session_id binding
+        with ``(None, "")`` and then compresses the fork's transcript in place.
+        Detach ends the bound session first — durable flush + lifecycle
+        finalize, the same proven shape as the empty-reset branch of
+        ``bind_session_state`` below — then clears the process-local binding
+        and session-scoped runtime state, mirroring the session-field list of
+        ``_reset_profile_runtime_state`` without touching the store.
+
+        Boundary (owner ruling on the card): "no state residue" covers the
+        engine's in-memory state only. Durable rows/summaries of the ended
+        session stay in lcm.db; a later ``on_session_start`` rebinds the
+        engine to a new session with a fresh cursor and counters.
+        """
+        session_id = str(self._session_id or "")
+        if session_id:
+            self._on_session_end_unlocked(session_id, [])
+        self._unregister_active_engine_binding()
+        self._session_id = ""
+        self._session_platform = ""
+        self._foreground_session_id = ""
+        self._foreground_session_platform = ""
+        self._foreground_conversation_id = ""
+        self._clear_foreground_rebind_candidate()
+        self._conversation_id = ""
+        self._session_match_keys = []
+        self._session_ignored = False
+        self._session_stateless = False
+        self._clear_pending_reset_boundary()
+        self._compression_boundary_ingest_pending = False
+        with self._auxiliary_session_lock:
+            self._auxiliary_session_ids.clear()
+            self._auxiliary_lineage_session_ids.clear()
+            self._auxiliary_last_prompt_tokens.clear()
+            self._auxiliary_session_generations.clear()
+            self._auxiliary_generation_tokens.clear()
+            self._auxiliary_next_generation_token = 0
+            self._auxiliary_direct_end_guard_session_ids.clear()
+            self._auxiliary_handoff_parent_session_ids.clear()
+            self._auxiliary_retired_session_generations.clear()
+            self._auxiliary_foreground_reused_session_ids.clear()
+            self._lcm_bypass_lineage_session_ids.clear()
+            self._lcm_bypass_lineage_platforms.clear()
+            self._lcm_non_bypass_platforms.clear()
+            self._lcm_session_last_platform.clear()
+            self._lcm_session_last_normal_platform.clear()
+            self._lcm_session_last_bypassed.clear()
+            self._lcm_session_last_conversation_id.clear()
+            self._lcm_session_last_normal_conversation_id.clear()
+            self._lcm_bypass_message_prefix_fingerprints.clear()
+            self._lcm_normal_message_prefix_fingerprints.clear()
+        self._lcm_current_start_allows_bypass_lineage = False
+        for state in self._host_fallback_states():
+            self._clear_host_fallback_state(state)
+        self._host_fallback_import_warning_logged = False
+        self._clear_thread_context_stateless()
+        self._reset_session_scoped_runtime_state()
+
     def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
         """Handle Hermes' reset-only switch after an end or an empty /new.
 
         CLI /new omits on_session_start, but reset_session_state supplies the
         new id here. The host DB stays host-owned; only the explicit id is used.
-        Detachment is unsupported: Hermes must keep review-fork compression off.
+        Detachment (FX-F): an empty id now detaches the engine from its session
+        (end + finalize + state clear) instead of raising NotImplementedError,
+        so a review fork can sever the binding and compress in place.
         """
         session_id = str(session_id or "")
         if not session_id:
-            raise NotImplementedError(
-                "LCM-X cannot detach a context engine from its session; "
-                "keep compression off on this fork"
-            )
+            with self._exclusive_lifecycle("detach"):
+                if self._stable_use_closed:
+                    return
+                self._detach_session_state_unlocked()
+            return
         with self._exclusive_lifecycle("rebind"):
             if (
                 self._stable_use_closed
