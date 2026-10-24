@@ -78,7 +78,10 @@ def test_g2_rejection_precedes_node_write_in_compress_source():
     )
     src = inspect.getsource(_c.CompactionMixin._compress_impl)
     summarize_pos = src.index("_summarize_selected_leaf(")
-    publish_pos = src.index("self._publish_leaf_node(", summarize_pos)
+    # v0.28.1 re-anchor: upstream split publication into _publish_selected_leaf
+    # (which calls _publish_leaf_node); the invariant is the same on the new call
+    # graph, so the anchor follows the graph, not the old symbol name.
+    publish_pos = src.index("self._publish_selected_leaf(", summarize_pos)
     assert summarize_pos < publish_pos, (
         "the summarize call (and its echo rejection) must precede the node publication step"
     )
