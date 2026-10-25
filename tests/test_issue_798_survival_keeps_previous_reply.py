@@ -61,8 +61,13 @@ def _fit(engine, view, budget):
 
 
 def _base_without_reply(view, ids):
-    """Exact base shape when only the newest whole turn fits (including notice bytes)."""
-    notice = survival_fit._NOTICE.format(n=2, first=ids[0], last=ids[1])
+    """Exact base shape when only the newest whole turn fits (including notice bytes).
+
+    The system slot carries the byte-stable template (feef25ab re-anchored on
+    v0.28.1): per-fit count/store-ids live in the fit record only, so the
+    expected prompt bytes must use _NOTICE_STATIC, not the dynamic _NOTICE.
+    """
+    notice = survival_fit._NOTICE_STATIC
     return [{**view[0], "content": survival_fit.SurvivalFitMixin._survival_with_notice(
         view[0]["content"], notice)}, view[-1]]
 
