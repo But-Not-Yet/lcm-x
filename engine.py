@@ -635,11 +635,45 @@ def _condensation_source_text(nodes) -> str:
 _SUMMARY_DEPTH_LABELS = {0: "Recent", 1: "Session Arc", 2: "Durable"}
 
 
+def _chronological_frontier(pairs):
+    """Order (group, node) pairs for prefix rendering: one chronological line.
+
+    The prefix renders in append order, so the parts must be appended in time order; `group`
+    (the depth index) is kept beside each node because select_prefix uses it for selection
+    priority.  Appending depth by depth put a newer arc block ahead of older leaf blocks and the
+    model read a timeline that jumped backwards at every depth boundary.
+    """
+    return sorted(pairs, key=lambda item: (item[1].created_at or 0.0, item[1].node_id))
+
+
+def _node_time_span(node) -> str:
+    """The node's covered time range, rendered right after the header marker.
+
+    Nodes written before the time-anchor instruction carry no time in their bodies, and the DAG
+    already stores ``earliest_at``/``latest_at`` for every node, so the renderer supplies the
+    anchor instead of rewriting stored summaries.
+    """
+    start = getattr(node, "earliest_at", None)
+    end = getattr(node, "latest_at", None) or getattr(node, "created_at", None) or None
+    if not start and not end:
+        return ""
+    try:
+        if start and end and int(start) != int(end):
+            return (f" {datetime.fromtimestamp(start):%Y-%m-%d %H:%M}"
+                    f"–{datetime.fromtimestamp(end):%H:%M}")
+        ts = end or start
+        if ts is None:
+            return ""
+        return f" {datetime.fromtimestamp(ts):%Y-%m-%d %H:%M}"
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
 def _summary_part_text(node) -> str:
     """One frontier node as context assembly renders it in the summary prefix."""
     label = _SUMMARY_DEPTH_LABELS.get(node.depth, f"Depth-{node.depth}")
     return (
-        f"[{label} Summary (d{node.depth}, node {node.node_id})]\n"
+        f"[{label} Summary (d{node.depth}, node {node.node_id})]{_node_time_span(node)}\n"
         f"{node.summary}\n"
         f"[Expand for details: {node.expand_hint}]"
     )
@@ -8996,11 +9030,18 @@ class LCMEngine(
             # Group by depth, take the most recent uncondensed at each level
             # For active context, we want the highest-level summaries
             # that haven't been condensed into even higher levels
+            ordered: list[tuple[int, SummaryNode]] = []
             for group, d in enumerate(depths):
                 uncondensed = self._dag.get_uncondensed_at_depth(self._session_id, d, newest=True)
                 for node in uncondensed:
-                    part_keys.append((group, node.node_id))
-                    summary_parts.append(_summary_part_text(node))
+                    ordered.append((group, node))
+            # The prefix renders in append order, so append in one chronological line:
+            # appending depth by depth put a newer arc block ahead of older leaf blocks and the
+            # model read a timeline that jumped backwards at every depth boundary.  `group` still
+            # carries the depth priority into select_prefix; only the render order changes.
+            for group, node in _chronological_frontier(ordered):
+                part_keys.append((group, node.node_id))
+                summary_parts.append(_summary_part_text(node))
 
         retained_generated_context_parts: list[str] = []
         summary_message: Optional[Dict[str, Any]] = None
